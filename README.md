@@ -82,6 +82,7 @@
 ```
 /生图 @小王 为基础改成猫娘
 ```
+<img width="1129" height="633" alt="PixPin_2025-11-23_07-14-22" src="https://github.com/user-attachments/assets/f96c8d37-08fd-48b2-b442-4ca8f2a333c4" />
 
 #### 改图模式
 ```
@@ -137,6 +138,7 @@
 /生图 一只可爱的小猫
 # 结果: 纯文本生成，不获取任何头像
 ```
+<img width="1145" height="617" alt="PixPin_2025-11-23_07-13-33" src="https://github.com/user-attachments/assets/fc758319-c412-4da0-bf1b-b509203eec5a" />
 
 ### 高级功能
 
