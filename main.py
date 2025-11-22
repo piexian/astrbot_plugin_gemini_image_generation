@@ -21,6 +21,7 @@ from .utils.api_client import (
     GeminiAPIClient,
     get_api_client,
 )
+from .utils.image_manager import file_to_base64
 
 
 @register(
@@ -379,8 +380,8 @@ class GeminiImageGenerationPlugin(Star):
         else:
             logger.error("✗ API 客户端初始化失败，请检查配置")
 
-    def _collect_reference_images(self, event: AstrMessageEvent) -> list[str]:
-        """从消息和回复中提取参考图片"""
+    async def _collect_reference_images(self, event: AstrMessageEvent) -> list[str]:
+        """从消息和回复中提取参考图片，并转换为base64格式"""
         reference_images = []
         max_images = self.max_reference_images
 
@@ -396,10 +397,15 @@ class GeminiImageGenerationPlugin(Star):
             if isinstance(component, Image) and len(reference_images) < max_images:
                 try:
                     if hasattr(component, "file") and component.file:
-                        reference_images.append(component.file)
-                        logger.debug(
-                            f"✓ 从当前消息提取图片 (当前: {len(reference_images)}/{max_images})"
-                        )
+                        # 将文件转换为base64
+                        base64_data = await file_to_base64(component.file)
+                        if base64_data:
+                            reference_images.append(base64_data)
+                            logger.debug(
+                                f"✓ 从当前消息提取并转换图片 (当前: {len(reference_images)}/{max_images})"
+                            )
+                        else:
+                            logger.warning(f"✗ 图片转换失败: {component.file}")
                 except Exception as e:
                     logger.warning(f"✗ 提取图片失败: {e}")
 
@@ -413,8 +419,15 @@ class GeminiImageGenerationPlugin(Star):
                     ):
                         try:
                             if hasattr(reply_comp, "file") and reply_comp.file:
-                                reference_images.append(reply_comp.file)
-                                self.log_debug("✓ 从回复消息提取图片")
+                                # 将文件转换为base64
+                                base64_data = await file_to_base64(reply_comp.file)
+                                if base64_data:
+                                    reference_images.append(base64_data)
+                                    self.log_debug("✓ 从回复消息提取并转换图片")
+                                else:
+                                    logger.warning(
+                                        f"✗ 回复图片转换失败: {reply_comp.file}"
+                                    )
                         except Exception as e:
                             logger.warning(f"✗ 提取回复图片失败: {e}")
 
@@ -493,7 +506,7 @@ class GeminiImageGenerationPlugin(Star):
         # 收集参考图片
         reference_images = []
         if str(use_reference_images).lower() in {"true", "1", "yes", "y", "是"}:
-            reference_images = self._collect_reference_images(event)
+            reference_images = await self._collect_reference_images(event)
 
         # 自动获取头像作为参考（如果启用了头像功能且检测到关键词）
         avatar_reference = []

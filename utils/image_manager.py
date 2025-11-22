@@ -125,3 +125,73 @@ async def save_base64_image(
     except Exception as e:
         logger.error(f"Base64 解码失败: {e}")
         return None
+
+
+async def file_to_base64(file_path: str) -> str | None:
+    """
+    将文件转换为 base64 编码字符串
+
+    Args:
+        file_path (str): 文件路径，可以是本地路径或 URL
+
+    Returns:
+        str: base64 编码的图片数据（带 data URI scheme），失败返回 None
+    """
+    try:
+        import aiohttp
+        import base64
+        from urllib.parse import urlparse
+
+        # 判断是 URL 还是本地文件
+        parsed = urlparse(file_path)
+        is_url = bool(parsed.scheme and parsed.netloc)
+
+        image_data = None
+
+        if is_url:
+            # URL 路径 - 下载图片
+            async with aiohttp.ClientSession() as session:
+                async with session.get(file_path, timeout=10) as response:
+                    if response.status == 200:
+                        image_data = await response.read()
+                    else:
+                        logger.error(f"下载图片失败: HTTP {response.status}")
+                        return None
+        else:
+            # 本地文件路径
+            with open(file_path, "rb") as f:
+                image_data = f.read()
+
+        if not image_data:
+            logger.error("无法读取图片数据")
+            return None
+
+        # 检测图片格式
+        ext = Path(file_path).suffix.lower()
+        if ext in [".jpg", ".jpeg"]:
+            mime_type = "image/jpeg"
+        elif ext in [".png"]:
+            mime_type = "image/png"
+        elif ext in [".webp"]:
+            mime_type = "image/webp"
+        else:
+            # 尝试从文件头检测
+            if image_data.startswith(b"\xff\xd8"):
+                mime_type = "image/jpeg"
+            elif image_data.startswith(b"\x89PNG"):
+                mime_type = "image/png"
+            elif image_data.startswith(b"RIFF") and image_data[8:12] == b"WEBP":
+                mime_type = "image/webp"
+            else:
+                mime_type = "image/jpeg"  # 默认使用 jpeg
+
+        # 转换为 base64
+        base64_data = base64.b64encode(image_data).decode("utf-8")
+        result = f"data:{mime_type};base64,{base64_data}"
+
+        logger.debug(f"✓ 文件转换为 base64 成功: {file_path} ({len(image_data)} bytes)")
+        return result
+
+    except Exception as e:
+        logger.error(f"文件转换为 base64 失败: {e}")
+        return None
