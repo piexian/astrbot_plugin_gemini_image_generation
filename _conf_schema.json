@@ -146,5 +146,47 @@
         "default": false
       }
     }
+  },
+  "limit_settings": {
+    "description": "限制/限流设置",
+    "type": "object",
+    "hint": "配置群聊限制模式（不限/白名单/黑名单）以及单群限流策略，用于控制在哪些群可以使用生图功能，以及单个群在一个周期内的最大调用次数",
+    "items": {
+      "group_limit_mode": {
+        "description": "群限制模式",
+        "type": "string",
+        "hint": "选择对群聊的限制策略：None 表示不限制；Whitelist 仅允许列表中的群使用；Blacklist 禁止列表中的群使用。",
+        "default": "none",
+        "options": [
+          "none",
+          "whitelist",
+          "blacklist"
+        ]
+      },
+      "group_limit_list": {
+        "description": "群号列表",
+        "type": "list",
+        "hint": "根据上方的群限制模式配置需要生效的群号。群号请填写字符串形式，在 None 模式下此配置不生效。",
+        "default": []
+      },
+      "enable_rate_limit": {
+        "description": "启用群内限流",
+        "type": "bool",
+        "hint": "开启后会对每个群在指定周期内的图像生成/改图请求次数进行限制",
+        "default": false
+      },
+      "rate_limit_period": {
+        "description": "限流周期（秒）",
+        "type": "int",
+        "hint": "每个群的统计周期长度（单位：秒），在此时间窗口内超过最大次数将被拒绝",
+        "default": 60
+      },
+      "max_requests_per_group": {
+        "description": "单群每周期最大请求数",
+        "type": "int",
+        "hint": "在一个周期内，每个群最多允许触发几次图像生成/改图/风格转换等请求。",
+        "default": 5
+      }
+    }
   }
 }
