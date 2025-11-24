@@ -6,7 +6,9 @@ AstrBot Gemini 图像生成插件主文件
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +25,7 @@ from .tl.tl_api import (
     get_api_client,
 )
 from .tl.tl_utils import AvatarManager, download_qq_avatar, send_file
-from .tl.enhanced_prompts import enhance_prompt_for_gemini, enhance_prompt_for_figure
+from .tl.enhanced_prompts import enhance_prompt_for_figure
 
 
 @register(
@@ -251,6 +253,40 @@ class GeminiImageGenerationPlugin(Star):
         # 日志设置
         self.verbose_logging = service_settings.get("verbose_logging", False)
 
+        # 限制/限流设置
+        limit_settings = self.config.get("limit_settings", {})
+        raw_mode = str(limit_settings.get("group_limit_mode", "none")).lower()
+        if raw_mode not in {"none", "whitelist", "blacklist"}:
+            raw_mode = "none"
+        self.group_limit_mode: str = raw_mode
+
+        raw_group_list = limit_settings.get("group_limit_list", []) or []
+        # 统一使用字符串形式保存群号，便于与 NapCat/QQ 等平台的群 ID 对齐
+        self.group_limit_list: set[str] = {
+            str(group_id).strip()
+            for group_id in raw_group_list
+            if str(group_id).strip()
+        }
+
+        self.enable_rate_limit: bool = bool(
+            limit_settings.get("enable_rate_limit", False)
+        )
+        # 限流周期与次数做基础防御，避免异常配置导致错误
+        period = limit_settings.get("rate_limit_period", 60)
+        max_requests = limit_settings.get("max_requests_per_group", 5)
+        try:
+            self.rate_limit_period: int = max(int(period), 1)
+        except (TypeError, ValueError):
+            self.rate_limit_period = 60
+        try:
+            self.max_requests_per_group: int = max(int(max_requests), 1)
+        except (TypeError, ValueError):
+            self.max_requests_per_group = 5
+
+        # 内部限流状态：按群维度统计请求时间戳
+        self._rate_limit_buckets: dict[str, list[float]] = {}
+        self._rate_limit_lock = asyncio.Lock()
+
         # 初始化 API 客户端
         if self.api_keys:
             self.api_client = get_api_client(self.api_keys)
@@ -273,6 +309,119 @@ class GeminiImageGenerationPlugin(Star):
     def log_debug(self, message: str):
         """输出debug级别日志"""
         logger.debug(message)
+
+    @staticmethod
+    def _is_valid_base64_image_str(value: str) -> bool:
+        """粗略判断字符串是否为有效的 base64 图像数据或 data URL"""
+        if not value:
+            return False
+
+        # 已经是 data URL 的情况，要求包含 ';base64,'
+        if value.startswith("data:image/"):
+            return ";base64," in value
+
+        # 纯 base64 数据：尝试严格解码
+        try:
+            base64.b64decode(value, validate=True)
+            return True
+        except Exception:
+            return False
+
+    def _filter_valid_reference_images(
+        self, images: list[str] | None, source: str
+    ) -> list[str]:
+        """
+        过滤出合法的 base64 / data URL 参考图像。
+
+        NapCat 等平台的图片 file_id（例如 D127D0...jpg）会在这里被过滤掉，
+        避免传给 Gemini 导致 Base64 解码错误。
+        """
+        if not images:
+            return []
+
+        valid: list[str] = []
+        for img in images:
+            if not isinstance(img, str) or not img:
+                self.log_debug(f"跳过非字符串参考图像({source}): {type(img)}")
+                continue
+
+            if self._is_valid_base64_image_str(img):
+                valid.append(img)
+            else:
+                # 只打一点点前缀，避免日志过长
+                self.log_debug(
+                    f"跳过非 base64 格式参考图像({source}): {img[:64]}..."
+                )
+
+        return valid
+
+    def _get_group_id_from_event(self, event: AstrMessageEvent) -> str | None:
+        """从事件中解析群ID，仅在群聊场景下返回"""
+        try:
+            if hasattr(event, "group_id") and event.group_id:
+                return str(event.group_id)
+            message_obj = getattr(event, "message_obj", None)
+            if message_obj and getattr(message_obj, "group_id", ""):
+                return str(message_obj.group_id)
+        except Exception as e:
+            self.log_debug(f"获取群ID失败: {e}")
+        return None
+
+    async def _check_and_consume_limit(
+        self, event: AstrMessageEvent
+    ) -> tuple[bool, str | None]:
+        """
+        检查当前事件是否通过群聊黑/白名单和限流校验。
+
+        返回:
+            (是否允许继续执行, 不允许时的提示消息)
+        """
+        group_id = self._get_group_id_from_event(event)
+
+        # 仅对群聊应用黑/白名单与限流，私聊不做限制
+        if not group_id:
+            return True, None
+
+        # 群限制模式：None / Whitelist / Blacklist
+        if self.group_limit_mode == "whitelist":
+            # 仅允许列表内的群可用（静默处理未在白名单中的群）
+            if self.group_limit_list and group_id not in self.group_limit_list:
+                return False, None
+        elif self.group_limit_mode == "blacklist":
+            # 禁止列表内的群使用（静默处理，不返回任何消息）
+            if self.group_limit_list and group_id in self.group_limit_list:
+                return False, None
+
+        # 未开启限流则直接通过
+        if not self.enable_rate_limit:
+            return True, None
+
+        now = time.monotonic()
+        window_start = now - self.rate_limit_period
+
+        async with self._rate_limit_lock:
+            bucket = self._rate_limit_buckets.get(group_id, [])
+            # 清理过期的时间戳
+            bucket = [ts for ts in bucket if ts >= window_start]
+
+            if len(bucket) >= self.max_requests_per_group:
+                # 估算距离窗口重置的剩余时间
+                earliest = bucket[0]
+                retry_after = int(earliest + self.rate_limit_period - now)
+                if retry_after < 0:
+                    retry_after = 0
+
+                self._rate_limit_buckets[group_id] = bucket
+                return (
+                    False,
+                    f"⏱️ 本群在最近 {self.rate_limit_period} 秒内的生图请求次数已达上限（{self.max_requests_per_group} 次），请约 {retry_after} 秒后再试。",
+                )
+
+            # 记录本次请求
+            bucket.append(now)
+            self._rate_limit_buckets[group_id] = bucket
+
+        return True, None
 
     async def initialize(self):
         """插件初始化"""
@@ -368,20 +517,14 @@ class GeminiImageGenerationPlugin(Star):
         if not self.api_client:
             return False, "❌ 错误: API 客户端未初始化，请联系管理员配置 API 密钥"
 
-        # 合并所有参考图片，确保只包含base64字符串
-        all_reference_images = []
-        if reference_images:
-            for img in reference_images:
-                if isinstance(img, str) and img:
-                    all_reference_images.append(img)
-                elif hasattr(img, '__class__'):
-                    logger.warning(f"跳过非字符串的参考图片: {type(img)}")
-        if avatar_reference:
-            for img in avatar_reference:
-                if isinstance(img, str) and img:
-                    all_reference_images.append(img)
-                elif hasattr(img, '__class__'):
-                    logger.warning(f"跳过非字符串的头像图片: {type(img)}")
+        # 合并所有参考图片，确保只包含 base64 / data URL 字符串
+        all_reference_images: list[str] = []
+        all_reference_images.extend(
+            self._filter_valid_reference_images(reference_images, source="消息图片")
+        )
+        all_reference_images.extend(
+            self._filter_valid_reference_images(avatar_reference, source="头像")
+        )
 
         # 限制参考图片数量
         if (
@@ -530,19 +673,13 @@ class GeminiImageGenerationPlugin(Star):
                 avatars = await self.get_avatar_reference(event)
 
             # 合并参考图片和头像，确保只包含base64字符串
-            all_ref_images = []
-            if ref_images:
-                for img in ref_images:
-                    if isinstance(img, str) and img:
-                        all_ref_images.append(img)
-                    elif hasattr(img, '__class__'):
-                        logger.warning(f"跳过非字符串的参考图片: {type(img)}")
-            if avatars:
-                for img in avatars:
-                    if isinstance(img, str) and img:
-                        all_ref_images.append(img)
-                    elif hasattr(img, '__class__'):
-                        logger.warning(f"跳过非字符串的头像图片: {type(img)}")
+            all_ref_images: list[str] = []
+            all_ref_images.extend(
+                self._filter_valid_reference_images(ref_images, source="消息图片")
+            )
+            all_ref_images.extend(
+                self._filter_valid_reference_images(avatars, source="头像")
+            )
 
             # 检测是否需要手办化增强
             figure_keywords = ["手办", "figure", "模型", "手办化", "手办模型"]
@@ -631,6 +768,12 @@ class GeminiImageGenerationPlugin(Star):
         Args:
             prompt: 图像描述
         """
+        allowed, limit_message = await self._check_and_consume_limit(event)
+        if not allowed:
+            if limit_message:
+                yield event.plain_result(limit_message)
+            return
+
         # 判断是否需要头像（只有在有@用户时才使用）
         use_avatar = await self.should_use_avatar(event)
 
@@ -648,6 +791,12 @@ class GeminiImageGenerationPlugin(Star):
     @quick_mode_group.command("头像")
     async def quick_avatar(self, event: AstrMessageEvent, prompt: str):
         """头像快速模式 - 1K分辨率，1:1比例"""
+        allowed, limit_message = await self._check_and_consume_limit(event)
+        if not allowed:
+            if limit_message:
+                yield event.plain_result(limit_message)
+            return
+
         yield event.plain_result("🎨 使用头像模式生成图像...")
 
         # 临时修改配置
@@ -673,6 +822,12 @@ class GeminiImageGenerationPlugin(Star):
     @quick_mode_group.command("海报")
     async def quick_poster(self, event: AstrMessageEvent, prompt: str):
         """海报快速模式 - 2K分辨率，16:9比例"""
+        allowed, limit_message = await self._check_and_consume_limit(event)
+        if not allowed:
+            if limit_message:
+                yield event.plain_result(limit_message)
+            return
+
         yield event.plain_result("🎨 使用海报模式生成图像...")
 
         # 临时修改配置
@@ -698,6 +853,12 @@ class GeminiImageGenerationPlugin(Star):
     @quick_mode_group.command("壁纸")
     async def quick_wallpaper(self, event: AstrMessageEvent, prompt: str):
         """壁纸快速模式 - 4K分辨率，16:9比例"""
+        allowed, limit_message = await self._check_and_consume_limit(event)
+        if not allowed:
+            if limit_message:
+                yield event.plain_result(limit_message)
+            return
+
         yield event.plain_result("🎨 使用壁纸模式生成图像...")
 
         # 临时修改配置
@@ -723,6 +884,12 @@ class GeminiImageGenerationPlugin(Star):
     @quick_mode_group.command("卡片")
     async def quick_card(self, event: AstrMessageEvent, prompt: str):
         """卡片快速模式 - 1K分辨率，3:2比例"""
+        allowed, limit_message = await self._check_and_consume_limit(event)
+        if not allowed:
+            if limit_message:
+                yield event.plain_result(limit_message)
+            return
+
         yield event.plain_result("🎨 使用卡片模式生成图像...")
 
         # 临时修改配置
@@ -748,6 +915,12 @@ class GeminiImageGenerationPlugin(Star):
     @quick_mode_group.command("手机")
     async def quick_mobile(self, event: AstrMessageEvent, prompt: str):
         """手机快速模式 - 2K分辨率，9:16比例"""
+        allowed, limit_message = await self._check_and_consume_limit(event)
+        if not allowed:
+            if limit_message:
+                yield event.plain_result(limit_message)
+            return
+
         yield event.plain_result("🎨 使用手机模式生成图像...")
 
         # 临时修改配置
@@ -770,10 +943,63 @@ class GeminiImageGenerationPlugin(Star):
             self.resolution = old_resolution
             self.aspect_ratio = old_aspect_ratio
 
-  
+    @quick_mode_group.command("手办化")
+    async def quick_figure(self, event: AstrMessageEvent, prompt: str):
+        """手办化快速模式 - 树脂收藏级手办效果"""
+        allowed, limit_message = await self._check_and_consume_limit(event)
+        if not allowed:
+            if limit_message:
+                yield event.plain_result(limit_message)
+            return
+
+        yield event.plain_result("🎨 使用手办化模式生成图像...")
+
+        base_prompt = (
+            "将画面中的角色重塑为顶级收藏级树脂手办，全身动态姿势，置于角色主题底座，高精度材质，手工涂装，"
+            "肌肤纹理与服装材质真实分明。戏剧性硬光为主光源，凸显立体感，无过曝；强效补光消除死黑，细节完整可见。"
+            "背景为窗边景深模糊，侧后方隐约可见产品包装盒。博物馆级摄影质感，全身细节无损，面部结构精准。"
+            "禁止：任何2D元素或照搬原图、塑料感、面部模糊、五官错位、细节丢失。"
+        )
+        full_prompt = base_prompt if not prompt else f"{base_prompt}\n{prompt}"
+
+        # 临时调整分辨率与比例以适配手办展示效果
+        old_resolution = self.resolution
+        old_aspect_ratio = self.aspect_ratio
+
+        try:
+            self.resolution = "2K"
+            self.aspect_ratio = "3:2"
+
+            # 使用与其他快速模式一致的头像逻辑
+            use_avatar = await self.should_use_avatar(event)
+
+            async for result in self._quick_generate_image(
+                event, full_prompt, use_avatar
+            ):
+                yield result
+        finally:
+            self.resolution = old_resolution
+            self.aspect_ratio = old_aspect_ratio
+
     @filter.command("生图帮助")
     async def show_help(self, event: AstrMessageEvent):
         """显示插件使用帮助"""
+        # 黑名单模式下的群需要静默处理，直接返回
+        group_id = self._get_group_id_from_event(event)
+        if group_id and self.group_limit_list:
+            # 黑名单模式：列表内静默
+            if (
+                self.group_limit_mode == "blacklist"
+                and group_id in self.group_limit_list
+            ):
+                return
+            # 白名单模式：不在列表内静默
+            if (
+                self.group_limit_mode == "whitelist"
+                and group_id not in self.group_limit_list
+            ):
+                return
+
         grounding_status = "✓ 启用" if self.enable_grounding else "✗ 禁用"
         smart_retry_status = "✓ 启用" if self.enable_smart_retry else "✗ 禁用"
         avatar_status = "✓ 启用" if self.auto_avatar_reference else "✗ 禁用"
@@ -829,7 +1055,7 @@ class GeminiImageGenerationPlugin(Star):
 /快速 [预设] [描述]
 ```
 > 使用预设参数快速生成图像
-> 预设: 头像/海报/壁纸/卡片/手机
+> 预设: 头像/海报/壁纸/卡片/手机/手办化
 > 示例: `/快速 头像 生成专业的个人头像`
 
 ```
@@ -1068,7 +1294,7 @@ class GeminiImageGenerationPlugin(Star):
 
             <h3><span class="command">/快速 [预设] [描述]</span></h3>
             <p>使用预设参数快速生成图像</p>
-            <p class="example">预设: 头像/海报/壁纸/卡片/手机</p>
+            <p class="example">预设: 头像/海报/壁纸/卡片/手机/手办化</p>
             <p class="example">示例: /快速 头像 生成专业的个人头像</p>
 
             <h3><span class="command">/改图 [描述]</span></h3>
@@ -1147,7 +1373,7 @@ class GeminiImageGenerationPlugin(Star):
 • /换风格 [风格] - 风格转换
 • /生图帮助 - 显示帮助
 
-预设选项: 头像/海报/壁纸/卡片/手机
+预设选项: 头像/海报/壁纸/卡片/手机/手办化
 
 当前配置:
 • 模型: {self.model}
@@ -1172,6 +1398,12 @@ class GeminiImageGenerationPlugin(Star):
         Args:
             prompt: 修改描述，如"把头发改成红色"、"换个背景"、"画成动漫风格"等
         """
+        allowed, limit_message = await self._check_and_consume_limit(event)
+        if not allowed:
+            if limit_message:
+                yield event.plain_result(limit_message)
+            return
+
         # 收集参考图片
         ref_images = await self._collect_reference_images(event)
 
@@ -1195,6 +1427,12 @@ class GeminiImageGenerationPlugin(Star):
             style: 风格描述，如"动漫"、"写实"、"水彩"、"油画"等
             prompt: 额外的修改要求（可选）
         """
+        allowed, limit_message = await self._check_and_consume_limit(event)
+        if not allowed:
+            if limit_message:
+                yield event.plain_result(limit_message)
+            return
+
         full_prompt = f"将参考图像改为{style}风格"
         if prompt:
             full_prompt += f"，{prompt}"
@@ -1275,6 +1513,12 @@ class GeminiImageGenerationPlugin(Star):
             use_reference_images(string): 是否使用上下文中的参考图片（true/false）。当用户意图是"修改"、"变成"、"基于"、"改成"等时，必须设置为"true"
             include_user_avatar(string): 是否包含用户头像作为参考图像（true/false）。当用户说"根据我"、"我的头像"或明显需要用户本人图像时，设置为"true"
         """
+        allowed, limit_message = await self._check_and_consume_limit(event)
+        if not allowed:
+            if limit_message:
+                yield event.plain_result(limit_message)
+            return
+
         if not self.api_client:
             yield event.plain_result(
                 "❌ 错误: API 客户端未初始化，请联系管理员配置 API 密钥"
