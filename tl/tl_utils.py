@@ -349,6 +349,10 @@ class AvatarManager:
             if cleaned_count > 0:
                 logger.debug(f"共清理 {cleaned_count} 个过期头像缓存文件")
 
+    async def cleanup_used_avatars(self):
+        """清理已使用的头像缓存（别名方法）"""
+        await self.cleanup_cache()
+
 
 # 为了向后兼容，提供一些旧名称的别名
 def download_qq_avatar_legacy(user_id: str, cache_name: str) -> Optional[str]:

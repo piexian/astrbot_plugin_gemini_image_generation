@@ -46,6 +46,8 @@ class ApiRequestConfig:
     max_tokens: int = 1000
     reference_images: list[str] | None = None
     response_text: str | None = None  # 存储文本响应
+    enable_smart_retry: bool = True  # 智能重试开关
+    enable_text_response: bool = False  # 文本响应开关
 
 
 class APIError(Exception):
@@ -243,7 +245,7 @@ class GeminiAPIClient:
         return url, headers, payload
 
     async def generate_image(
-        self, config: ApiRequestConfig, max_retries: int = 3, total_timeout: int = 120
+        self, config: ApiRequestConfig, max_retries: int = 3, total_timeout: int = 120, per_retry_timeout: int = None, max_total_time: int = None
     ) -> tuple[str | None, str | None, str | None]:
         """
         生成图像

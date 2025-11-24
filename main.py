@@ -175,56 +175,19 @@ class GeminiImageGenerationPlugin(Star):
         return avatar_images
 
     async def should_use_avatar(self, event: AstrMessageEvent) -> bool:
-        """判断是否应该使用头像作为参考"""
+        """判断是否应该使用头像作为参考（只有在有@用户时才使用）"""
         logger.info(
             f"[AVATAR_DEBUG] 检查auto_avatar_reference: {self.auto_avatar_reference}"
         )
         if not self.auto_avatar_reference:
             return False
 
-        if not hasattr(event, "message_str"):
-            logger.info("[AVATAR_DEBUG] event没有message_str属性")
-            return False
+        # 检查是否有@用户
+        mentioned_users = await self.parse_mentions(event)
+        logger.info(f"[AVATAR_DEBUG] @用户数量: {len(mentioned_users)}")
 
-        prompt = event.message_str.lower()
-        logger.info(f"[AVATAR_DEBUG] 检查消息: '{prompt}'")
-
-        # 更模糊的头像触发条件
-        avatar_keywords = [
-            # 直接头像相关
-            "头像",
-            "根据我",
-            "按照我",
-            "基于我",
-            "参考我",
-            "我的头像",
-            "我的",
-            # 修改相关（包含各种变体）
-            "修改",
-            "改图",
-            "改成",
-            "改为",
-            "变成",
-            "变",
-            "换成",
-            "替换",
-            "调整",
-            "优化",
-            "重做",
-            "重新",
-            "换风格",
-            # @触发（在parse_mentions中处理）
-            # 指令相关
-            "生图",
-            "绘图",
-            "画图",
-            "生成图片",
-            "制作图片",
-        ]
-
-        found_keywords = [keyword for keyword in avatar_keywords if keyword in prompt]
-        logger.info(f"[AVATAR_DEBUG] 找到的关键词: {found_keywords}")
-        return len(found_keywords) > 0
+        # 只有当有@用户时才获取头像
+        return len(mentioned_users) > 0
 
     async def parse_mentions(self, event: AstrMessageEvent) -> list[int]:
         """解析消息中的@用户，返回用户ID列表"""
@@ -634,11 +597,8 @@ class GeminiImageGenerationPlugin(Star):
         Args:
             prompt: 图像描述
         """
-        # 判断是否需要头像
-        use_avatar = self.auto_avatar_reference or any(
-            keyword in prompt.lower()
-            for keyword in ["我", "头像", "自己", "按照我", "根据我", "基于我"]
-        )
+        # 判断是否需要头像（只有在有@用户时才使用）
+        use_avatar = await self.should_use_avatar(event)
 
         yield event.plain_result("🎨 开始生成图像...")
 
@@ -664,11 +624,8 @@ class GeminiImageGenerationPlugin(Star):
             self.resolution = "1K"
             self.aspect_ratio = "1:1"
 
-            # 判断是否需要头像
-            use_avatar = self.auto_avatar_reference or any(
-                keyword in prompt.lower()
-                for keyword in ["我", "头像", "自己", "按照我", "根据我", "基于我"]
-            )
+            # 判断是否需要头像（只有在有@用户时才使用）
+            use_avatar = await self.should_use_avatar(event)
 
             # 调用快速生成方法
             async for result in self._quick_generate_image(event, prompt, use_avatar):
@@ -692,11 +649,8 @@ class GeminiImageGenerationPlugin(Star):
             self.resolution = "2K"
             self.aspect_ratio = "16:9"
 
-            # 判断是否需要头像
-            use_avatar = self.auto_avatar_reference or any(
-                keyword in prompt.lower()
-                for keyword in ["我", "头像", "自己", "按照我", "根据我", "基于我"]
-            )
+            # 判断是否需要头像（只有在有@用户时才使用）
+            use_avatar = await self.should_use_avatar(event)
 
             # 调用快速生成方法
             async for result in self._quick_generate_image(event, prompt, use_avatar):
@@ -720,11 +674,8 @@ class GeminiImageGenerationPlugin(Star):
             self.resolution = "4K"
             self.aspect_ratio = "16:9"
 
-            # 判断是否需要头像
-            use_avatar = self.auto_avatar_reference or any(
-                keyword in prompt.lower()
-                for keyword in ["我", "头像", "自己", "按照我", "根据我", "基于我"]
-            )
+            # 判断是否需要头像（只有在有@用户时才使用）
+            use_avatar = await self.should_use_avatar(event)
 
             # 调用快速生成方法
             async for result in self._quick_generate_image(event, prompt, use_avatar):
@@ -748,11 +699,8 @@ class GeminiImageGenerationPlugin(Star):
             self.resolution = "1K"
             self.aspect_ratio = "3:2"
 
-            # 判断是否需要头像
-            use_avatar = self.auto_avatar_reference or any(
-                keyword in prompt.lower()
-                for keyword in ["我", "头像", "自己", "按照我", "根据我", "基于我"]
-            )
+            # 判断是否需要头像（只有在有@用户时才使用）
+            use_avatar = await self.should_use_avatar(event)
 
             # 调用快速生成方法
             async for result in self._quick_generate_image(event, prompt, use_avatar):
@@ -776,11 +724,8 @@ class GeminiImageGenerationPlugin(Star):
             self.resolution = "2K"
             self.aspect_ratio = "9:16"
 
-            # 判断是否需要头像
-            use_avatar = self.auto_avatar_reference or any(
-                keyword in prompt.lower()
-                for keyword in ["我", "头像", "自己", "按照我", "根据我", "基于我"]
-            )
+            # 判断是否需要头像（只有在有@用户时才使用）
+            use_avatar = await self.should_use_avatar(event)
 
             # 调用快速生成方法
             async for result in self._quick_generate_image(event, prompt, use_avatar):
@@ -1196,12 +1141,9 @@ class GeminiImageGenerationPlugin(Star):
         # 收集参考图片
         ref_images = await self._collect_reference_images(event)
 
-        # 判断是否需要头像
-        use_avatar = self.auto_avatar_reference or any(
-            keyword in prompt.lower() for keyword in ["我", "头像", "自己"]
-        )
-        if use_avatar:
-            avatars = await self.get_avatar_reference(event)
+        # 获取头像（只有在有@用户时才使用）
+        avatars = await self.get_avatar_reference(event)
+        if avatars:
             ref_images.extend(avatars)
 
         # 使用新的快捷生成方法
