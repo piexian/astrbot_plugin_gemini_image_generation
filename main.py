@@ -31,7 +31,7 @@ from .tl.tl_utils import AvatarManager, download_qq_avatar, send_file
     "astrbot_plugin_gemini_image_generation",
     "piexian",
     "Gemini图像生成插件，支持生图和改图，可以自动获取头像作为参考",
-    "v1.2.0",
+    "v1.3.0",
 )
 class GeminiImageGenerationPlugin(Star):
     def __init__(self, context: Context, config: dict[str, Any]):
@@ -321,7 +321,7 @@ class GeminiImageGenerationPlugin(Star):
             return text
 
         import re
-        text = re.sub(r'!\[.*?\]\(.*?\)', '', text)
+        text = re.sub(r"!\[.*?\]\(.*?\)", "", text)
         text = text.strip()
 
         return text
@@ -630,10 +630,12 @@ class GeminiImageGenerationPlugin(Star):
 
         try:
             ref_images = await self._collect_reference_images(event)
+            self.log_debug(f"[MODIFY_DEBUG] 收集到 {len(ref_images)} 张参考图片")
 
             avatars = []
             if use_avatar:
                 avatars = await self.get_avatar_reference(event)
+                self.log_debug(f"[MODIFY_DEBUG] 收集到 {len(avatars)} 个头像")
 
             all_ref_images: list[str] = []
             all_ref_images.extend(
@@ -643,9 +645,30 @@ class GeminiImageGenerationPlugin(Star):
                 self._filter_valid_reference_images(avatars, source="头像")
             )
 
+            self.log_debug(f"[MODIFY_DEBUG] 有效参考图片总数: {len(all_ref_images)}")
+
+            # 改图提示词增强 - 检测是否包含修改意图关键词
+            modify_keywords = ["修改", "改图", "改成", "变成", "调整", "优化", "重做", "更换", "替换", "删除", "添加"]
+            is_modification_request = any(keyword in prompt for keyword in modify_keywords)
+            self.log_debug(f"[MODIFY_DEBUG] 修改关键词匹配: {is_modification_request}")
+
             figure_keywords = ["手办", "figure", "模型", "手办化", "手办模型"]
             if any(keyword in prompt.lower() for keyword in figure_keywords):
                 enhanced_prompt = enhance_prompt_for_figure(prompt)
+                self.log_debug("[MODIFY_DEBUG] 使用手办化提示词增强")
+            elif is_modification_request:
+                # 对于改图请求，进一步强化提示词
+                enhanced_prompt = f"""图像修改任务：{prompt}
+
+请严格按照用户要求修改参考图像，确保：
+1. 必须基于提供的参考图像进行修改
+2. 保持主要对象和构图，只修改用户要求的部分
+3. 修改后的图像要与原图有明显区别
+4. 不要返回完全相同的原图
+5. 修改要自然、合理，保持图像质量
+
+重要：这是一项图像修改任务，不是生成新图像，必须基于参考图像进行修改！"""
+                self.log_debug("[MODIFY_DEBUG] 使用改图提示词增强")
             else:
                 enhanced_prompt = prompt
 
@@ -661,6 +684,13 @@ class GeminiImageGenerationPlugin(Star):
                 enable_smart_retry=self.enable_smart_retry,
                 enable_text_response=self.enable_text_response,
             )
+
+            # 记录改图请求的详细信息
+            self.log_debug("[MODIFY_DEBUG] API请求配置:")
+            self.log_debug(f"  - 提示词: {enhanced_prompt[:100]}...")
+            self.log_debug(f"  - 参考图片数量: {len(all_ref_images) if all_ref_images else 0}")
+            self.log_debug(f"  - 是否改图请求: {is_modification_request}")
+            self.log_debug(f"  - 模型: {self.model}")
 
             yield event.plain_result("🎨 生成中...")
 
@@ -938,7 +968,7 @@ class GeminiImageGenerationPlugin(Star):
         enable_rate_limit = limit_settings.get("enable_rate_limit", False)
         rate_limit_period = limit_settings.get("rate_limit_period", 60)
         max_requests = limit_settings.get("max_requests_per_group", 5)
-        rate_limit_status = f"✓ {max_requests}次/{rate_limit_period}秒" if enable_rate_limit else None
+        rate_limit_status = f"✓ {max_requests}次/{rate_limit_period}秒" if enable_rate_limit else "✗ 禁用"
 
         tool_timeout = self.get_tool_timeout(event)
         timeout_warning = ""
@@ -951,9 +981,9 @@ class GeminiImageGenerationPlugin(Star):
             metadata_path = os.path.join(os.path.dirname(__file__), "metadata.yaml")
             with open(metadata_path, encoding="utf-8") as f:
                 metadata = yaml.safe_load(f)
-                version = metadata.get("version", "v1.2.0")
+                version = metadata.get("version", "v1.3.0")
         except Exception:
-            version = "v1.2.0"
+            version = "v1.3.0"
 
         markdown_content = rf"""# 🎨 Gemini 图像生成插件 {version}
 
@@ -1207,9 +1237,7 @@ class GeminiImageGenerationPlugin(Star):
                     <div class="status-item"><strong>智能重试</strong>: {{ smart_retry_status }}</div>
                     <div class="status-item"><strong>超时时间</strong>: {{ tool_timeout }}秒</div>
                     <div class="status-item"><strong>端点</strong>: {{ api_base }}</div>
-                    {% if rate_limit_status %}
                     <div class="status-item"><strong>速率限制</strong>: {{ rate_limit_status }}</div>
-                    {% endif %}
                 </div>
             </div>
             {% if timeout_warning %}
@@ -1336,15 +1364,22 @@ class GeminiImageGenerationPlugin(Star):
                 yield event.plain_result(limit_message)
             return
 
-        ref_images = await self._collect_reference_images(event)
+        # 构造改图专用提示词，确保修改意图明确
+        modification_prompt = f"""请根据参考图像进行以下修改：{prompt}
 
-        avatars = await self.get_avatar_reference(event)
-        if avatars:
-            ref_images.extend(avatars)
+重要要求：
+- 必须基于提供的参考图像进行修改，不能忽略原图
+- 保持图像的整体构图和主要对象
+- 严格按照用户要求进行修改，不要返回原图
+- 如果修改涉及颜色、风格或背景，必须有明显变化
+- 确保修改后的图像与原图有可区分的差异"""
 
-        async for result in self._quick_generate_image(
-            event, f"根据参考图像修改：{prompt}", False
-        ):
+        yield event.plain_result("🎨 开始修改图像...")
+
+        # 根据配置决定是否使用头像参考
+        use_avatar = await self.should_use_avatar(event)
+
+        async for result in self._quick_generate_image(event, modification_prompt, use_avatar):
             yield result
 
     @filter.command("换风格")
@@ -1367,9 +1402,11 @@ class GeminiImageGenerationPlugin(Star):
             full_prompt += f"，{prompt}"
 
         reference_images = await self._collect_reference_images(event)
-        avatar_reference = (
-            await self.get_avatar_reference(event) if self.auto_avatar_reference else []
-        )
+
+        # 根据配置决定是否使用头像参考
+        avatar_reference = []
+        if await self.should_use_avatar(event):
+            avatar_reference = await self.get_avatar_reference(event)
 
         yield event.plain_result("🎨 开始转换风格...")
 

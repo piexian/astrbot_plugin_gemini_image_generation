@@ -1,8 +1,8 @@
-# AstrBot Gemini 图像生成插件 v1.2.0
+# AstrBot Gemini 图像生成插件 v1.3.0
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/Version-v1.2.0-blue)
+![Version](https://img.shields.io/badge/Version-v1.3.0-blue)
 ![License](https://img.shields.io/badge/License-MIT-orange)
 
 **🎨 强大的 Gemini 图像生成插件，支持智能头像参考和多模式生成**
@@ -13,8 +13,9 @@
 
 ### 🖼️ **核心功能**
 - **生图模式**: 纯文本到图像生成，支持多种风格和参数
-- **改图模式**: 基于参考图像进行修改和风格转换
-- **智能头像参考**: 自动获取用户头像和@指定对象头像作为参考
+- **改图模式**: 基于参考图像进行修改和风格转换，支持配置化头像参考
+- **换风格模式**: 专门的风格转换功能，支持配置化头像参考
+- **智能头像参考**: 自动获取用户头像和@指定对象头像作为参考，改图和换风格功能支持配置控制
 - **多API支持**: 兼容 Google 官方 API 和 OpenAI 兼容格式 API
 
 ### 🛡️ **限制/限流**
@@ -363,7 +364,7 @@
 - [NapCat](https://napneko.github.io/) - OneBot v11 实现
 
 **特别感谢贡献者**:
-- [@exynos967](https://github.com/exynos967) - 限制/限流设置和手办化功能
+- [@exynos967](https://github.com/exynos967) - 限制/限流设置和手办化功能（PR#1）、OpenAI兼容接口分辨率比例修复和混合响应格式支持（PR#3）
 
 ## 📞 联系支持
 
