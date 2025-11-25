@@ -621,7 +621,11 @@ class GeminiImageGenerationPlugin(Star):
             return False, f"❌ 生成图像时发生错误: {str(e)}"
 
     async def _quick_generate_image(
-        self, event: AstrMessageEvent, prompt: str, use_avatar: bool = False
+        self,
+        event: AstrMessageEvent,
+        prompt: str,
+        use_avatar: bool = False,
+        skip_figure_enhance: bool = False,
     ):
         """快捷图像生成"""
         if not self.api_client:
@@ -653,7 +657,9 @@ class GeminiImageGenerationPlugin(Star):
             self.log_debug(f"[MODIFY_DEBUG] 修改关键词匹配: {is_modification_request}")
 
             figure_keywords = ["手办", "figure", "模型", "手办化", "手办模型"]
-            if any(keyword in prompt.lower() for keyword in figure_keywords):
+            if (not skip_figure_enhance) and any(
+                keyword in prompt.lower() for keyword in figure_keywords
+            ):
                 enhanced_prompt = enhance_prompt_for_figure(prompt)
                 self.log_debug("[MODIFY_DEBUG] 使用手办化提示词增强")
             elif is_modification_request:
@@ -919,12 +925,7 @@ class GeminiImageGenerationPlugin(Star):
 
         yield event.plain_result("🎨 使用手办化模式生成图像...")
 
-        base_prompt = (
-            "将画面中的角色重塑为顶级收藏级树脂手办，全身动态姿势，置于角色主题底座，高精度材质，手工涂装，"
-            "肌肤纹理与服装材质真实分明。戏剧性硬光为主光源，凸显立体感，无过曝；强效补光消除死黑，细节完整可见。"
-            "背景为窗边景深模糊，侧后方隐约可见产品包装盒。博物馆级摄影质感，全身细节无损，面部结构精准。"
-            "禁止：任何2D元素或照搬原图、塑料感、面部模糊、五官错位、细节丢失。"
-        )
+        base_prompt = "将画面中的角色重塑为顶级收藏级树脂手办，全身动态姿势，置于角色主题底座，高精度材质，手工涂装，肌肤纹理与服装材质真实分明。戏剧性硬光为主光源，凸显立体感，无过曝；强效补光消除死黑，细节完整可见。背景为窗边景深模糊，侧后方隐约可见产品包装盒。博物馆级摄影质感，全身细节无损，面部结构精准。禁止：任何2D元素或照搬原图、塑料感、面部模糊、五官错位、细节丢失。"
         full_prompt = base_prompt if not prompt else f"{base_prompt}\n{prompt}"
 
         old_resolution = self.resolution
@@ -937,7 +938,7 @@ class GeminiImageGenerationPlugin(Star):
             use_avatar = await self.should_use_avatar(event)
 
             async for result in self._quick_generate_image(
-                event, full_prompt, use_avatar
+                event, full_prompt, use_avatar, True
             ):
                 yield result
         finally:
