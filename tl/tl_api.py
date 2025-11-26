@@ -9,6 +9,7 @@ import asyncio
 import base64
 import binascii
 import json
+import os
 import re
 import urllib.parse
 import urllib.request
@@ -95,6 +96,14 @@ class GeminiAPIClient:
         self.api_keys = api_keys or []
         self.current_key_index = 0
         self._lock = asyncio.Lock()
+        self.proxy = (
+            os.environ.get("HTTPS_PROXY")
+            or os.environ.get("https_proxy")
+            or os.environ.get("HTTP_PROXY")
+            or os.environ.get("http_proxy")
+        )
+        if self.proxy:
+            logger.debug(f"检测到代理配置，使用代理: {self.proxy}")
         logger.debug(f"API 客户端已初始化，支持 {len(self.api_keys)} 个 API 密钥")
 
     async def get_next_api_key(self) -> str:
@@ -545,7 +554,9 @@ class GeminiAPIClient:
         """执行实际的HTTP请求"""
         logger.debug(f"发送请求到: {url[:100]}...")
 
-        async with session.post(url, json=payload, headers=headers) as response:
+        async with session.post(
+            url, json=payload, headers=headers, proxy=self.proxy
+        ) as response:
             logger.debug(f"响应状态: {response.status}")
             response_text = await response.text()
 
@@ -846,7 +857,9 @@ class GeminiAPIClient:
             logger.debug(f"正在下载图像: {image_url[:100]}...")
 
             async with session.get(
-                image_url, timeout=aiohttp.ClientTimeout(total=30)
+                image_url,
+                timeout=aiohttp.ClientTimeout(total=30),
+                proxy=self.proxy,
             ) as response:
                 if response.status != 200:
                     logger.error(f"下载图像失败: HTTP {response.status}")
