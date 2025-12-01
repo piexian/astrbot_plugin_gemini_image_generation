@@ -70,9 +70,50 @@
 - **参考图格式校验**: 参考图会在发送前统一检查 MIME，非 Gemini 支持的类型（PNG/JPEG/WEBP/HEIC/HEIF）将自动转为 PNG 再编码。
 
 
-<img width="1473" height="1386" alt="image" src="https://github.com/user-attachments/assets/0a469eea-c4bb-422b-9541-1eb61784e353" />
-<img width="1429" height="902" alt="image" src="https://github.com/user-attachments/assets/637fbfb8-8f93-4e00-960c-353d17a39c55" />
+### 配置项详解
 
+**api_settings**
+- `provider_id`：必填，从 AstrBot 提供商中选择生图模型。
+- `api_type`：可选，覆盖提供商类型（google/openai）。
+- `model`：可选，覆盖提供商模型名称。
+- `vision_provider_id`：表情包视觉裁剪的提供商 ID（开启识别时必选）。
+
+**image_generation_settings**
+- `resolution`：生成分辨率，默认 `1K`（可选 1K/2K/4K）。
+- `aspect_ratio`：长宽比，默认 `1:1`（常用比例已列出）。
+- `enable_sticker_split`：表情包切割，默认 true。
+- `enable_sticker_zip`：切割后是否打包 ZIP 发送，默认 false。
+- `enable_llm_crop`：表情包切割前是否用视觉模型识别裁剪框，默认 true。
+- `preserve_reference_image_size`：改图/换风格时尽量保留参考图尺寸，默认 false。
+- `enable_grounding`：Gemini 搜索接地，默认 false。
+- `max_reference_images`：参考图最大数量，默认 6。
+- `enable_text_response`：是否同时返回文本说明，默认 false。
+- `force_resolution`：强制传 `image_size` 参数给模型，默认 false。
+- `image_input_mode`：参考图传输格式，默认 `auto`（`force_base64` 纯 base64；`prefer_url` 仅白名单域名走 URL，其余转 base64）。
+
+**retry_settings**
+- `max_attempts_per_key`：每个密钥的最大重试次数，默认 3。
+- `enable_smart_retry`：按错误类型智能重试/切换密钥，默认 true。
+- `total_timeout`：单次调用总超时（秒），默认 120。
+
+**service_settings**
+- `nap_server_address` / `nap_server_port`：NAP 文件传输地址与端口，默认 localhost:3658。
+- `auto_avatar_reference`：自动获取头像作为参考图，默认 false。
+- `verbose_logging`：输出详细日志，默认 false。
+- `theme_settings.mode`：帮助页主题模式 `cycle`/`single`，默认 cycle。
+  - `cycle_config.day_start`/`day_end`：白天时间段（小时），默认 6/18。
+  - `cycle_config.day_template`/`night_template`：模板文件名，默认 `help_template_light` / `help_template_dark`。
+  - `single_config.template_name`：单一模板文件名，默认 `help_template_light`。
+
+**html_render_options**
+- `quality`：HTML 渲染截图质量（1-100，留空走默认）。
+
+**limit_settings**
+- `group_limit_mode`：群限制模式 `none`/`whitelist`/`blacklist`，默认 none。
+- `group_limit_list`：群号列表（字符串）。
+- `enable_rate_limit`：是否开启群内限流，默认 false。
+- `rate_limit_period`：限流周期（秒），默认 60。
+- `max_requests_per_group`：单群周期内最大请求数，默认 5。
 
 
 ### API 配置
