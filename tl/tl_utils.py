@@ -720,7 +720,9 @@ async def normalize_image_input(
             return None, None
 
         cache_dir = image_cache_dir or IMAGE_CACHE_DIR
-        logger.debug(f"[REF_DEBUG] 规范化参考图输入: len={len(image_str)} type={type(image_input)} mode={image_input_mode}")
+        logger.debug(
+            f"[REF_DEBUG] 规范化参考图输入: len={len(image_str)} type={type(image_input)} mode={image_input_mode}"
+        )
 
         # data URI
         if image_str.startswith("data:image/") and ";base64," in image_str:

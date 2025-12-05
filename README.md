@@ -128,7 +128,13 @@
  - `cycle_config.day_template`/`night_template`：模板文件名，默认 `help_template_light` / `help_template_dark`。
  - `single_config.template_name`：单一模板文件名，默认 `help_template_light`。
 
-**html_render_options**
+**help_render_mode**
+- 帮助页渲染模式，可选 `html`/`local`/`text`，默认 `html`。
+  - `html`：使用 t2i 网络服务渲染 HTML 模板（公共接口，可能不稳定可以自建）。
+  - `local`：本地 Pillow 渲染 Markdown（无需浏览器，适合资源受限环境）。
+  - `text`：纯文本输出（最轻量）。
+
+**html_render_options**（仅 html 模式生效）
 - `quality`：截图质量（1-100，留空使用默认值，仅 jpeg 格式生效）。
 - `type`：截图格式，`png` 或 `jpeg`，默认 `png`。
 - `scale`：截图缩放方式，`device`（更清晰）或 `css`（更小更快），默认 `device`。

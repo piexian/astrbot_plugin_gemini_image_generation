@@ -300,7 +300,9 @@ class GeminiAPIClient:
                         qq_data = await download_qq_image(str(image_input))
                         if qq_data:
                             if ";base64," in qq_data:
-                                mime_type = qq_data.split(";", 1)[0].replace("data:", "")
+                                mime_type = qq_data.split(";", 1)[0].replace(
+                                    "data:", ""
+                                )
                                 _, _, raw_b64 = qq_data.partition(";base64,")
                                 data = raw_b64
                             else:
@@ -558,8 +560,8 @@ class GeminiAPIClient:
                                 qq_data = await download_qq_image(str(image_input))
                                 if qq_data:
                                     if ";base64," in qq_data:
-                                        mime_type = (
-                                            qq_data.split(";", 1)[0].replace("data:", "")
+                                        mime_type = qq_data.split(";", 1)[0].replace(
+                                            "data:", ""
                                         )
                                         _, _, raw_b64 = qq_data.partition(";base64,")
                                         data = raw_b64
@@ -740,7 +742,7 @@ class GeminiAPIClient:
                             "[REF_DEBUG][openai] 成功处理参考图 idx=%s mime=%s size=%s",
                             idx,
                             mime_type,
-                            len(str(cleaned if 'cleaned' in locals() else data))
+                            len(str(cleaned if "cleaned" in locals() else data))
                             if (locals().get("cleaned") or data)
                             else 0,
                         )
@@ -1497,7 +1499,9 @@ class GeminiAPIClient:
         for image_format, base64_string in matches:
             # 先简单清洗非法字符，避免因意外插入的符号导致解码失败
             cleaned_b64 = re.sub(r"[^A-Za-z0-9+/=_-]", "", base64_string)
-            image_path = await save_base64_image(cleaned_b64 or base64_string, image_format.lower())
+            image_path = await save_base64_image(
+                cleaned_b64 or base64_string, image_format.lower()
+            )
             if image_path:
                 # 直接使用文件路径，不使用 file:// URI（根据 AstrBot 文档要求）
                 image_url = image_path

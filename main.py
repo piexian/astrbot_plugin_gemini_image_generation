@@ -11,7 +11,6 @@ import os
 import re
 import time
 import urllib.parse
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +26,14 @@ from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, register
 from astrbot.core.provider.entities import ProviderType
 
-from .tl import create_zip, resolve_split_source_to_path, split_image
+from .tl import (
+    create_zip,
+    get_template_path,
+    render_local_pillow,
+    render_text,
+    resolve_split_source_to_path,
+    split_image,
+)
 from .tl.enhanced_prompts import (
     build_quick_prompt,
     enhance_prompt_for_figure,
@@ -345,6 +351,8 @@ class GeminiImageGenerationPlugin(Star):
             "auto_avatar_reference", False
         )
         self.verbose_logging = service_settings.get("verbose_logging", False)
+        # 帮助页渲染模式: html / local / text
+        self.help_render_mode = self.config.get("help_render_mode", "html")
         # html_render_options 在配置中为顶级字段，兼容历史位置（service_settings 下）
         self.html_render_options = (
             self.config.get("html_render_options")
@@ -608,9 +616,7 @@ class GeminiImageGenerationPlugin(Star):
             elif cleaned.lower().startswith("data:image/") and ";base64," in cleaned:
                 valid.append(cleaned)
             else:
-                self.log_debug(
-                    f"跳过非支持格式参考图像({source}): {cleaned[:64]}..."
-                )
+                self.log_debug(f"跳过非支持格式参考图像({source}): {cleaned[:64]}...")
 
         return valid
 
@@ -827,13 +833,16 @@ class GeminiImageGenerationPlugin(Star):
                 # 启动阶段可能尚未加载 provider，不再输出 error，交由 on_astrbot_loaded 补偿
                 logger.debug("启动阶段未读取到 API 密钥，等待 AstrBot 加载完成后再尝试")
 
-    async def _download_qq_image(self, url: str, event: AstrMessageEvent | None = None) -> str | None:
+    async def _download_qq_image(
+        self, url: str, event: AstrMessageEvent | None = None
+    ) -> str | None:
         """对QQ图床/nt.qq.com做特殊处理，优先通过适配器取二进制，失败再走HTTP"""
         try:
             parsed = urllib.parse.urlparse(url)
 
             # 优先使用适配器API拉取原始图片，避免直链失效
             try:
+
                 async def _call_get_image(client, **kwargs):
                     # 兼容 client.api.call_action 和 client.call_action 两种写法
                     if hasattr(client, "api") and hasattr(client.api, "call_action"):
@@ -853,9 +862,7 @@ class GeminiImageGenerationPlugin(Star):
                         if resp.get("url"):
                             return resp["url"]
                         if resp.get("file") and Path(resp["file"]).exists():
-                            mime_guess = (
-                                f"image/{Path(resp['file']).suffix.lstrip('.') or 'png'}"
-                            )
+                            mime_guess = f"image/{Path(resp['file']).suffix.lstrip('.') or 'png'}"
                             data = encode_file_to_base64(resp["file"])
                             return f"data:{mime_guess};base64,{data}"
 
@@ -876,9 +883,7 @@ class GeminiImageGenerationPlugin(Star):
                             if resp.get("url"):
                                 return resp["url"]
                             if resp.get("file") and Path(resp["file"]).exists():
-                                mime_guess = (
-                                    f"image/{Path(resp['file']).suffix.lstrip('.') or 'png'}"
-                                )
+                                mime_guess = f"image/{Path(resp['file']).suffix.lstrip('.') or 'png'}"
                                 data = encode_file_to_base64(resp["file"])
                                 return f"data:{mime_guess};base64,{data}"
 
@@ -917,6 +922,7 @@ class GeminiImageGenerationPlugin(Star):
                 headers["Origin"] = "https://qun.qq.com"
 
             timeout = aiohttp.ClientTimeout(total=12, connect=5)
+
             async def _http_fetch(target_url: str) -> str | None:
                 try:
                     async with aiohttp.ClientSession(
@@ -2403,87 +2409,61 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
         except Exception:
             version = "v1.3.0"
 
+        # 准备模板数据
+        template_data = {
+            "title": f"Gemini 图像生成插件 {version}",
+            "model": self.model,
+            "api_type": self.api_type,
+            "resolution": self.resolution,
+            "aspect_ratio": self.aspect_ratio or "默认",
+            "api_keys_count": len(self.api_keys),
+            "grounding_status": grounding_status,
+            "avatar_status": avatar_status,
+            "smart_retry_status": smart_retry_status,
+            "tool_timeout": tool_timeout,
+            "rate_limit_status": rate_limit_status,
+            "timeout_warning": timeout_warning if timeout_warning else "",
+            "enable_sticker_split": self.enable_sticker_split,
+        }
+
+        templates_dir = os.path.join(os.path.dirname(__file__), "templates")
+        service_settings = self.config.get("service_settings", {})
+        theme_settings = service_settings.get("theme_settings", {})
+
+        # 纯文本模式
+        if self.help_render_mode == "text":
+            yield event.plain_result(render_text(template_data))
+            return
+
+        # 本地 Pillow 渲染模式
+        if self.help_render_mode == "local":
+            try:
+                img_bytes = render_local_pillow(
+                    templates_dir, theme_settings, template_data
+                )
+                # 保存到临时文件
+                from .tl.tl_utils import _build_image_path
+
+                img_path = _build_image_path("png", "help")
+                with open(img_path, "wb") as f:
+                    f.write(img_bytes)
+                yield event.image_result(str(img_path))
+                logger.info("本地 Pillow 帮助图片生成成功")
+                return
+            except Exception as e:
+                logger.error(f"本地 Pillow 渲染失败: {e}")
+                yield event.plain_result(render_text(template_data))
+                return
+
+        # HTML (t2i) 渲染模式
         try:
-            # 获取主题配置
-            service_settings = self.config.get("service_settings", {})
-            theme_settings = service_settings.get("theme_settings", {})
-
-            # 解析配置
-            mode = theme_settings.get("mode", "cycle")
-            cycle_config = theme_settings.get("cycle_config", {})
-            single_config = theme_settings.get("single_config", {})
-
-            # 确定要使用的模板文件名
-            template_filename = "help_template_light"  # 默认值
-
-            if mode == "single":
-                # 单独模式
-                template_filename = single_config.get(
-                    "template_name", "help_template_light"
-                )
-            else:
-                # 循环模式 (默认)
-                day_start = cycle_config.get("day_start", 6)
-                day_end = cycle_config.get("day_end", 18)
-                day_template = cycle_config.get("day_template", "help_template_light")
-                night_template = cycle_config.get(
-                    "night_template", "help_template_dark"
-                )
-
-                current_hour = datetime.now().hour
-                if day_start <= current_hour < day_end:
-                    template_filename = day_template
-                else:
-                    template_filename = night_template
-
-            # 自动补全 .html 后缀
-            if not template_filename.endswith(".html"):
-                template_filename += ".html"
-
-            # 构建模板路径
-            template_path = os.path.join(
-                os.path.dirname(__file__), "templates", template_filename
-            )
-
-            # 检查文件是否存在，不存在则回退
-            if not os.path.exists(template_path):
-                logger.warning(f"模板文件不存在: {template_path}，将回退到默认模板")
-                template_filename = "help_template_light.html"
-                template_path = os.path.join(
-                    os.path.dirname(__file__), "templates", template_filename
-                )
-
-                # 如果默认模板也不存在（极端情况），抛出异常让外层处理
-                if not os.path.exists(template_path):
-                    raise FileNotFoundError(f"找不到模板文件: {template_path}")
-
-            # 准备模板数据
-            template_data = {
-                "title": f"Gemini 图像生成插件 {version}",
-                # 以下字段是为了兼容可能使用了旧变量的模板，虽然新设计应该由css控制
-                "model": self.model,
-                "api_type": self.api_type,
-                "resolution": self.resolution,
-                "aspect_ratio": self.aspect_ratio or "默认",
-                "api_keys_count": len(self.api_keys),
-                "grounding_status": grounding_status,
-                "avatar_status": avatar_status,
-                "smart_retry_status": smart_retry_status,
-                "tool_timeout": tool_timeout,
-                "rate_limit_status": rate_limit_status,
-                "timeout_warning": timeout_warning if timeout_warning else "",
-                "enable_sticker_split": self.enable_sticker_split,
-            }
-
-            # 读取模板文件
+            template_path = get_template_path(templates_dir, theme_settings, ".html")
             with open(template_path, encoding="utf-8") as f:
                 jinja2_template = f.read()
 
-            # 使用AstrBot的html_render方法
             render_opts = {}
             if self.html_render_options.get("quality") is not None:
                 render_opts["quality"] = self.html_render_options["quality"]
-            # 透传更多渲染选项以提升清晰度
             for key in (
                 "type",
                 "full_page",
@@ -2498,44 +2478,16 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
 
             try:
                 html_image_url = await self.html_render(
-                    jinja2_template,
-                    template_data,
-                    options=render_opts or None,
+                    jinja2_template, template_data, options=render_opts or None
                 )
             except TypeError:
-                # 兼容旧版不支持 options 的接口
                 html_image_url = await self.html_render(jinja2_template, template_data)
-            logger.info(f"HTML帮助图片生成成功 (使用模板: {template_filename})")
+            logger.info(f"HTML帮助图片生成成功 (使用模板: {template_path.name})")
             yield event.image_result(html_image_url)
 
         except Exception as e:
             logger.error(f"HTML帮助图片生成失败: {e}")
-            fallback_help = f"""🎨 Gemini 图像生成插件 {version}
-
-基础指令:
-• /生图 [描述] - 生成图像
-• /快速 [预设] [描述] - 快速模式
-• /改图 [描述] - 修改图像
-• /换风格 [风格] - 风格转换
-• /生图帮助 - 显示帮助
-
-预设选项: 头像/海报/壁纸/卡片/手机/手办化
-
-当前配置:
-• 模型: {self.model}
-• 分辨率: {self.resolution}
-• API密钥: {len(self.api_keys)}个
-• LLM工具超时: {tool_timeout}秒
-
-系统状态:
-• 搜索接地: {grounding_status}
-• 自动头像: {avatar_status}
-• 智能重试: {smart_retry_status}
-
-⚠️ HTML渲染失败，使用文本模式显示
-
-错误信息: {str(e)}"""
-            yield event.plain_result(fallback_help)
+            yield event.plain_result(render_text(template_data))
 
     @filter.command("改图")
     async def modify_image(self, event: AstrMessageEvent, prompt: str):
@@ -2634,7 +2586,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
         event: AstrMessageEvent,
         prompt: str,
         use_reference_images: str,
-        include_user_avatar: str = "false",
+        include_user_avatar: str,
         **kwargs,
     ) -> list[Any]:
         """

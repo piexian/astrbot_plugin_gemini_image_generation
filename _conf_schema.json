@@ -284,10 +284,21 @@
       }
     }
   },
+  "help_render_mode": {
+    "description": "帮助页渲染模式",
+    "type": "string",
+    "hint": "html: 使用 t2i 网络服务渲染 HTML；local: 本地 Pillow 渲染 Markdown（无需浏览器）；text: 纯文本",
+    "default": "html",
+    "options": [
+      "html",
+      "local",
+      "text"
+    ]
+  },
   "html_render_options": {
     "description": "HTML 渲染截图选项",
     "type": "object",
-    "hint": "用于 html_render 渲染帮助页时的截图配置",
+    "hint": "用于 html_render 渲染帮助页时的截图配置（仅 html 模式生效）",
     "items": {
       "quality": {
         "description": "截图质量（1-100）",
