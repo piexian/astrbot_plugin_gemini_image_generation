@@ -1191,7 +1191,26 @@ class GeminiAPIClient:
         parse_start = asyncio.get_event_loop().time()
         logger.debug("🔍 开始解析API响应数据...")
 
+        image_urls: list[str] = []
+        image_paths: list[str] = []
+        text_chunks: list[str] = []
+        thought_signature = None
+        fallback_texts = self._collect_fallback_texts(response_data)
+
         if "candidates" not in response_data or not response_data["candidates"]:
+            logger.warning("Google 响应缺少 candidates 字段，尝试从 fallback 文本提取图像")
+            appended = False
+            if fallback_texts:
+                appended = await self._append_images_from_texts(
+                    fallback_texts, image_urls, image_paths
+                )
+            if appended and (image_urls or image_paths):
+                text_content = (
+                    " ".join(t.strip() for t in fallback_texts if t and t.strip())
+                    or None
+                )
+                return image_urls, image_paths, text_content, thought_signature
+
             if "promptFeedback" in response_data:
                 feedback = response_data["promptFeedback"]
                 logger.warning(f"请求被阻止: {feedback}")
@@ -1201,11 +1220,6 @@ class GeminiAPIClient:
 
         candidates = response_data["candidates"]
         logger.debug(f"📝 找到 {len(candidates)} 个候选结果")
-
-        image_urls: list[str] = []
-        image_paths: list[str] = []
-        text_chunks: list[str] = []
-        thought_signature = None
 
         for idx, candidate in enumerate(candidates):
             finish_reason = candidate.get("finishReason")
@@ -1331,6 +1345,16 @@ class GeminiAPIClient:
         if text_content:
             logger.debug(f"🎯 找到文本内容: {text_content[:100]}...")
 
+        if not (image_paths or image_urls) and fallback_texts:
+            appended = await self._append_images_from_texts(
+                fallback_texts, image_urls, image_paths
+            )
+            if appended and not text_content:
+                text_content = (
+                    " ".join(t.strip() for t in fallback_texts if t and t.strip())
+                    or text_content
+                )
+
         if image_paths or image_urls:
             parse_end = asyncio.get_event_loop().time()
             logger.debug(f"🎉 API响应解析完成，总耗时: {parse_end - parse_start:.2f}秒")
@@ -1359,6 +1383,7 @@ class GeminiAPIClient:
         text_content = None
         thought_signature = None
         fail_reasons: list[str] = []
+        fallback_texts = self._collect_fallback_texts(response_data)
 
         message: dict[str, Any] | None = None
         if "choices" in response_data and response_data["choices"]:
@@ -1512,6 +1537,16 @@ class GeminiAPIClient:
                 "[FLOW_DEBUG][openai] 响应缺少可用的 message 字段，尝试 data/b64 解析"
             )
 
+        if not (image_urls or image_paths) and fallback_texts:
+            fallback_added = await self._append_images_from_texts(
+                fallback_texts, image_urls, image_paths
+            )
+            if fallback_added and not text_content:
+                text_content = (
+                    " ".join(t.strip() for t in fallback_texts if t and t.strip())
+                    or text_content
+                )
+
         # OpenAI 格式
         if not image_urls and not image_paths and response_data.get("data"):
             for image_item in response_data["data"]:
@@ -1626,6 +1661,93 @@ class GeminiAPIClient:
                     return normalized
 
         return None
+
+    def _collect_fallback_texts(self, payload: dict[str, Any]) -> list[str]:
+        """收集常见字段中的文本响应，用于兜底提取 Markdown 链接"""
+        if not isinstance(payload, dict):
+            return []
+
+        candidate_keys = (
+            "content",
+            "text",
+            "output",
+            "result",
+            "response",
+            "message",
+        )
+        container_keys = (
+            "body",
+            "response_body",
+            "modelOutput",
+            "model_output",
+            "modelOutputs",
+            "model_outputs",
+        )
+
+        texts: list[str] = []
+
+        def push(value: Any):
+            if value is None:
+                return
+            if isinstance(value, str):
+                cleaned = value.strip()
+                if cleaned:
+                    texts.append(cleaned)
+                return
+            if isinstance(value, list):
+                for item in value:
+                    push(item)
+                return
+            if isinstance(value, dict):
+                for key in candidate_keys:
+                    if key in value:
+                        push(value.get(key))
+
+        for key in candidate_keys:
+            push(payload.get(key))
+
+        for key in container_keys:
+            push(payload.get(key))
+
+        # 去重但保持顺序
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for text in texts:
+            if text not in seen:
+                seen.add(text)
+                ordered.append(text)
+        return ordered
+
+    async def _append_images_from_texts(
+        self,
+        texts: list[str],
+        image_urls: list[str],
+        image_paths: list[str],
+    ) -> bool:
+        """从额外的文本字段中提取 http(s)/data URI 图像"""
+
+        appended = False
+        for text in texts:
+            if not text:
+                continue
+
+            http_urls = self._find_image_urls_in_text(text)
+            for url in http_urls:
+                if url not in image_urls:
+                    image_urls.append(url)
+                    appended = True
+
+            extra_urls, extra_paths = await self._extract_from_content(text)
+            for url in extra_urls:
+                if url not in image_urls:
+                    image_urls.append(url)
+                    appended = True
+            for path in extra_paths:
+                if path not in image_paths:
+                    image_paths.append(path)
+                    appended = True
+
+        return appended
 
     async def _parse_data_uri(self, data_uri: str) -> tuple[str | None, str | None]:
         """解析 data URI 格式的图像"""
