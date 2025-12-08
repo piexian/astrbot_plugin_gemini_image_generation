@@ -29,8 +29,27 @@ _font_download_lock = asyncio.Lock()
 _font_downloaded = False
 
 
+def _find_existing_font_in_tl() -> Path | None:
+    """检查 tl 目录下是否已存在字体文件（支持 ttf/otf/ttc）"""
+    tl_dir = Path(__file__).parent
+    font_extensions = (".ttf", ".otf", ".ttc")
+    for file in tl_dir.iterdir():
+        if file.is_file() and file.suffix.lower() in font_extensions:
+            # 验证文件大小（字体文件通常大于 100KB）
+            if file.stat().st_size > 100_000:
+                logger.debug(f"在 tl 目录找到现有字体文件: {file.name}")
+                return file
+    return None
+
+
 def _get_font_path() -> Path:
-    """获取字体文件存放路径（使用插件数据目录）"""
+    """获取字体文件存放路径（优先使用 tl 目录下已有的字体）"""
+    # 先检查 tl 目录下是否已有字体文件
+    existing_font = _find_existing_font_in_tl()
+    if existing_font:
+        return existing_font
+
+    # 使用插件数据目录
     try:
         from astrbot.api.star import StarTools
         data_dir = StarTools.get_data_dir("astrbot_plugin_gemini_image_generation")
@@ -46,6 +65,13 @@ async def ensure_font_downloaded() -> bool:
     返回是否成功获取字体
     """
     global _font_downloaded
+
+    # 先检查 tl 目录下是否已有字体文件
+    existing_font = _find_existing_font_in_tl()
+    if existing_font:
+        logger.debug(f"使用 tl 目录下现有字体: {existing_font.name}")
+        _font_downloaded = True
+        return True
 
     font_path = _get_font_path()
 
@@ -174,16 +200,24 @@ def render_text(template_data: dict) -> str:
 
 def _load_font(size: int):
     """加载字体"""
-    # 优先使用下载的字体
+    # 优先检查 tl 目录下的现有字体
+    existing_font = _find_existing_font_in_tl()
+    font_paths = []
+    if existing_font:
+        font_paths.append(str(existing_font))
+
+    # 添加下载的字体路径
     downloaded_font = _get_font_path()
-    font_paths = [
-        str(downloaded_font),
-        # 系统字体作为回退
+    if str(downloaded_font) not in font_paths:
+        font_paths.append(str(downloaded_font))
+
+    # 系统字体作为回退
+    font_paths.extend([
         "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/System/Library/Fonts/PingFang.ttc",
         "C:/Windows/Fonts/msyh.ttc",
-    ]
+    ])
     for fp in font_paths:
         if os.path.exists(fp):
             try:
