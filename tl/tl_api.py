@@ -1215,7 +1215,9 @@ class GeminiAPIClient:
                 feedback = response_data["promptFeedback"]
                 logger.warning(f"请求被阻止: {feedback}")
             else:
-                logger.error(f"响应中没有 candidates: {response_data}")
+                logger.error(f"响应中没有 candidates，fallback 提取也失败")
+                logger.error(f"[DEBUG] 完整响应: {str(response_data)[:1000]}")
+                logger.error(f"[DEBUG] fallback_texts: {fallback_texts}")
             return [], [], None, None
 
         candidates = response_data["candidates"]
@@ -1362,15 +1364,16 @@ class GeminiAPIClient:
 
         if text_content:
             logger.warning("API只返回了文本响应，未生成图像，将触发重试")
+            logger.debug(f"[DEBUG] Google响应内容: {str(response_data)[:1000]}")
             raise APIError(
-                "图像生成失败：API只返回了文本响应，正在重试...",
+                f"图像生成失败：API只返回了文本响应，正在重试... | 响应预览: {str(response_data)[:300]}",
                 500,
                 "no_image_retry",
             )
 
-        logger.error("未在响应中找到图像数据")
+        logger.error(f"未在响应中找到图像数据，响应内容: {str(response_data)[:500]}")
         raise APIError(
-            "图像生成失败：响应格式异常，未找到有效的图像数据", None, "invalid_response"
+            f"图像生成失败：响应格式异常，未找到有效的图像数据 | 响应: {str(response_data)[:300]}", None, "invalid_response"
         )
 
     async def _parse_openai_response(
@@ -1586,11 +1589,12 @@ class GeminiAPIClient:
                 text_content[:200],
             )
             logger.warning(f"OpenAI只返回了文本响应，未生成图像，将触发重试{detail}")
+            logger.debug(f"[DEBUG] OpenAI响应内容: {str(response_data)[:1000]}")
             raise APIError(
-                "图像生成失败：API只返回了文本响应，正在重试...", 500, "no_image_retry"
+                f"图像生成失败：API只返回了文本响应，正在重试... | 响应预览: {str(response_data)[:300]}", 500, "no_image_retry"
             )
 
-        logger.warning("OpenAI 响应格式不支持或未找到图像数据")
+        logger.warning(f"OpenAI 响应格式不支持或未找到图像数据，响应: {str(response_data)[:500]}")
         return image_urls, image_paths, text_content, thought_signature
 
     def _normalize_message_value(self, raw_value: Any) -> dict[str, Any] | None:
