@@ -381,23 +381,12 @@ async def download_qq_avatar(
 
         avatar_url = await _resolve_avatar_url()
         if not avatar_url:
-            # 回退使用 qlogo 直链
-            avatar_url = f"https://q4.qlogo.cn/headimg_dl?dst_uin={user_id}&spec=640"
+            # 回退使用 qlogo 直链（使用 HTTP 协议，更稳定）
+            avatar_url = f"http://q4.qlogo.cn/headimg_dl?dst_uin={user_id}&spec=640"
             logger.debug(f"未从事件获取头像URL，回退 qlogo: {avatar_url}")
-
-        parsed = aiohttp.helpers.URL(avatar_url)
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36"
-            ),
-            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-            "Connection": "keep-alive",
-        }
-        if parsed.host:
-            headers["Referer"] = f"{parsed.scheme}://{parsed.host}"
-        if "gchat.qpic.cn" in (parsed.host or "") or "qpic.cn" in (parsed.host or ""):
-            headers["Referer"] = "https://qun.qq.com"
+        else:
+            # 将获取到的 URL 转为 HTTP 协议
+            avatar_url = avatar_url.replace("https://", "http://")
 
         timeout = aiohttp.ClientTimeout(total=12, connect=5)
         max_retries = 3
@@ -408,10 +397,9 @@ async def download_qq_avatar(
                     async with session.get(
                         avatar_url,
                         timeout=timeout,
-                        headers=headers,
                     ) as response:
                         if response.status != 200:
-                            logger.error(
+                            logger.warning(
                                 f"下载头像失败: HTTP {response.status} {response.reason} (尝试 {attempt}/{max_retries})"
                             )
                             if attempt < max_retries:
@@ -426,20 +414,14 @@ async def download_qq_avatar(
                             )
                             return None
 
-                        # 尝试从响应头/URL 猜测 mime
+                        # 尝试从响应头猜测 mime
                         mime_type = (
                             (response.headers.get("Content-Type") or "")
                             .split(";")[0]
                             .lower()
                         )
                         if not mime_type or "/" not in mime_type:
-                            suffix = (parsed.suffix or "").lower()
-                            if suffix in {".png"}:
-                                mime_type = "image/png"
-                            elif suffix in {".webp"}:
-                                mime_type = "image/webp"
-                            else:
-                                mime_type = "image/jpeg"
+                            mime_type = "image/jpeg"
 
                         encoded = base64.b64encode(data).decode()
                         base64_data = f"data:{mime_type};base64,{encoded}"
@@ -746,14 +728,14 @@ async def normalize_image_input(
 
         cache_dir = image_cache_dir or IMAGE_CACHE_DIR
         logger.debug(
-            f"[REF_DEBUG] 规范化参考图输入: len={len(image_str)} type={type(image_input)} mode={image_input_mode}"
+            f"规范化参考图输入: len={len(image_str)} type={type(image_input)} mode={image_input_mode}"
         )
 
         # data URI
         if image_str.startswith("data:image/") and ";base64," in image_str:
             header, data = image_str.split(";base64,", 1)
             mime_type = header.replace("data:", "")
-            logger.debug(f"[REF_DEBUG] 检测到 data URI，mime={mime_type}")
+            logger.debug(f"检测到 data URI，mime={mime_type}")
             try:
                 raw = base64.b64decode(data, validate=False)
             except Exception:
@@ -768,7 +750,7 @@ async def normalize_image_input(
             if image_path.exists() and image_path.is_file():
                 suffix = image_path.suffix.lower().lstrip(".") or "png"
                 mime_type = f"image/{suffix}"
-                logger.debug(f"[REF_DEBUG] 使用 file:// 路径: {image_path}")
+                logger.debug(f"使用 file:// 路径: {image_path}")
                 try:
                     data_bytes = image_path.read_bytes()
                     return coerce_supported_image_bytes(mime_type, data_bytes)
@@ -781,7 +763,7 @@ async def normalize_image_input(
         if image_str.startswith("http://") or image_str.startswith("https://"):
             cleaned_url = image_str.replace("&amp;", "&")
             parsed_url = urllib.parse.urlparse(cleaned_url)
-            logger.debug(f"[REF_DEBUG] 下载 http(s) 参考图: {cleaned_url}")
+            logger.debug(f"下载 http(s) 参考图: {cleaned_url}")
 
             # 缓存命中直接读取，避免重复下载和内存占用
             try:
@@ -872,7 +854,7 @@ async def normalize_image_input(
                 logger.warning(f"参考图下载失败，原因: {fallback_reason}")
 
         # 纯 base64（宽松校验），尝试自动补齐/过滤非法字符
-        logger.debug("[REF_DEBUG] 尝试将输入视为纯 base64")
+        logger.debug("尝试将输入视为纯 base64")
         try:
             base64.b64decode(image_str, validate=False)
             return coerce_supported_image(None, image_str)

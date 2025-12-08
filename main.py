@@ -191,16 +191,16 @@ class GeminiImageGenerationPlugin(Star):
 
                 if should_get_group_avatar:
                     if explicit_group_request:
-                        logger.info(
+                        logger.debug(
                             f"检测到明确的群头像关键词，准备获取群 {group_id} 的头像"
                         )
                     else:
-                        logger.info(
+                        logger.debug(
                             f"群聊中生图指令触发，自动获取群 {group_id} 的头像作为参考"
                         )
 
                     # 群头像暂时跳过，因为QQ群头像需要特殊API
-                    logger.info("群头像功能暂未实现，跳过")
+                    logger.debug("群头像功能暂未实现，跳过")
 
             # 获取头像逻辑
             # 获取头像：优先获取@用户头像，如果无@用户则获取发送者头像
@@ -209,7 +209,7 @@ class GeminiImageGenerationPlugin(Star):
             if mentioned_users:
                 # 有@用户：只获取被@用户的头像
                 for user_id in mentioned_users:
-                    logger.info(f"[AVATAR] 获取@用户头像: {user_id}")
+                    logger.debug(f"获取@用户头像: {user_id}")
                     download_tasks.append(
                         download_qq_avatar(
                             str(user_id), f"mentioned_{user_id}", event=event
@@ -223,7 +223,7 @@ class GeminiImageGenerationPlugin(Star):
                     and hasattr(event.message_obj.sender, "user_id")
                 ):
                     sender_id = str(event.message_obj.sender.user_id)
-                    logger.info(f"[AVATAR] 获取发送者头像: {sender_id}")
+                    logger.debug(f"获取发送者头像: {sender_id}")
                     download_tasks.append(
                         download_qq_avatar(
                             sender_id, f"sender_{sender_id}", event=event
@@ -232,9 +232,7 @@ class GeminiImageGenerationPlugin(Star):
 
             # 执行下载任务
             if download_tasks:
-                logger.info(
-                    f"[AVATAR_DEBUG] 开始并发下载 {len(download_tasks)} 个头像..."
-                )
+                logger.debug(f"开始并发下载 {len(download_tasks)} 个头像...")
                 try:
                     # 设置总体超时时间为8秒，避免单个下载拖慢整体
                     results = await asyncio.wait_for(
@@ -249,31 +247,29 @@ class GeminiImageGenerationPlugin(Star):
                         elif isinstance(result, Exception):
                             logger.warning(f"头像下载任务失败: {result}")
 
-                    logger.info(
+                    logger.debug(
                         f"头像下载完成，成功获取 {len(avatar_images)} 个头像，即将返回"
                     )
 
                 except asyncio.TimeoutError:
                     logger.warning("头像下载总体超时，跳过剩余头像下载")
                 except Exception as e:
-                    logger.error(f"并发下载头像时发生错误: {e}")
+                    logger.warning(f"并发下载头像时发生错误: {e}")
 
         except Exception as e:
-            logger.error(f"获取头像参考失败: {e}")
+            logger.warning(f"获取头像参考失败: {e}")
 
         return avatar_images
 
     async def should_use_avatar(self, event: AstrMessageEvent) -> bool:
         """判断是否应该使用头像作为参考（只有在有@用户时才使用）"""
-        logger.info(
-            f"[AVATAR_DEBUG] 检查auto_avatar_reference: {self.auto_avatar_reference}"
-        )
+        logger.debug(f"检查 auto_avatar_reference: {self.auto_avatar_reference}")
         if not self.auto_avatar_reference:
             return False
 
         # 检查是否有@用户
         mentioned_users = await self.parse_mentions(event)
-        logger.info(f"[AVATAR_DEBUG] @用户数量: {len(mentioned_users)}")
+        logger.debug(f"@用户数量: {len(mentioned_users)}")
 
         # 只有当有@用户时才获取头像
         return len(mentioned_users) > 0
@@ -452,8 +448,8 @@ class GeminiImageGenerationPlugin(Star):
                 logger.debug(f"[LLM_CROP] 压缩副本生成失败，使用原图: {e}")
 
             image_urls = [vision_input_path] if vision_input_path else []
-            logger.info(
-                f"[LLM_CROP] 调用视觉模型裁剪: provider={self.vision_provider_id} (使用默认模型)"
+            logger.debug(
+                f"[LLM_CROP] 调用视觉模型裁剪: provider={self.vision_provider_id}"
             )
             resp = await self.context.llm_generate(
                 chat_provider_id=self.vision_provider_id,
@@ -644,24 +640,20 @@ class GeminiImageGenerationPlugin(Star):
         group_id = self._get_group_id_from_event(event)
 
         if not group_id:
-            logger.debug("[FLOW_DEBUG][rate_limit] 无 group_id，跳过限流")
+            logger.debug("无 group_id，跳过限流")
             return True, None
 
         if self.group_limit_mode == "whitelist":
             if self.group_limit_list and group_id not in self.group_limit_list:
-                logger.debug(
-                    "[FLOW_DEBUG][rate_limit] 拒绝（不在白名单） group_id=%s", group_id
-                )
+                logger.debug("拒绝（不在白名单） group_id=%s", group_id)
                 return False, None
         elif self.group_limit_mode == "blacklist":
             if self.group_limit_list and group_id in self.group_limit_list:
-                logger.debug(
-                    "[FLOW_DEBUG][rate_limit] 拒绝（在黑名单） group_id=%s", group_id
-                )
+                logger.debug("拒绝（在黑名单） group_id=%s", group_id)
                 return False, None
 
         if not self.enable_rate_limit:
-            logger.debug("[FLOW_DEBUG][rate_limit] 未启用限流 group_id=%s", group_id)
+            logger.debug("未启用限流 group_id=%s", group_id)
             return True, None
 
         now = time.monotonic()
@@ -679,7 +671,7 @@ class GeminiImageGenerationPlugin(Star):
 
                 self._rate_limit_buckets[group_id] = bucket
                 logger.debug(
-                    "[FLOW_DEBUG][rate_limit] 触发限流 group_id=%s count=%s/%s retry_after=%s",
+                    "触发限流 group_id=%s count=%s/%s retry_after=%s",
                     group_id,
                     len(bucket),
                     self.max_requests_per_group,
@@ -694,7 +686,7 @@ class GeminiImageGenerationPlugin(Star):
             self._rate_limit_buckets[group_id] = bucket
 
         logger.debug(
-            "[FLOW_DEBUG][rate_limit] 通过 group_id=%s 当前计数=%s",
+            "限流检查通过 group_id=%s 当前计数=%s",
             group_id,
             len(self._rate_limit_buckets.get(group_id, [])),
         )
@@ -704,7 +696,7 @@ class GeminiImageGenerationPlugin(Star):
         """插件初始化"""
         # 启动早期 provider_manager 可能尚未就绪，优先等待 on_astrbot_loaded 再初始化
         if self.api_client:
-            logger.debug("[FLOW_DEBUG] initialize 已有 api_client，跳过")
+            logger.debug("initialize 已有 api_client，跳过")
             return
 
         provider_mgr = getattr(self.context, "provider_manager", None)
@@ -716,7 +708,7 @@ class GeminiImageGenerationPlugin(Star):
             logger.debug("启动阶段未检测到可用提供商，等待 AstrBot 完成加载后再初始化")
             return
 
-        logger.debug("[FLOW_DEBUG] initialize 尝试加载提供商配置")
+        logger.debug("尝试加载提供商配置")
         self._load_provider_from_context(quiet=True)
         if self.api_client:
             logger.info("🎨 Gemini 图像生成插件已加载")
@@ -726,7 +718,7 @@ class GeminiImageGenerationPlugin(Star):
     @filter.on_astrbot_loaded()
     async def on_astrbot_loaded(self):
         """AstrBot 完成初始化后再次尝试加载提供商，解决启动顺序导致的配置未读问题"""
-        logger.debug("[FLOW_DEBUG] on_astrbot_loaded 触发，尝试确保 api_client")
+        logger.debug("on_astrbot_loaded 触发，尝试确保 api_client")
         if not self.api_client:
             self._load_provider_from_context()
             if self.api_client:
@@ -739,7 +731,7 @@ class GeminiImageGenerationPlugin(Star):
     def _ensure_api_client(self) -> bool:
         """确保 API 客户端已初始化，启动初期 provider_mgr 可能尚未就绪"""
         if self.api_client:
-            logger.debug("[FLOW_DEBUG] api_client 已就绪")
+            logger.debug("api_client 已就绪")
             return True
         self._load_provider_from_context(quiet=True)
         if not self.api_client:
@@ -750,7 +742,7 @@ class GeminiImageGenerationPlugin(Star):
     def _load_provider_from_context(self, *, quiet: bool = False):
         """从 AstrBot 提供商读取模型/密钥并初始化客户端，可多次调用用于补偿启动时机"""
         if not quiet:
-            logger.debug("[FLOW_DEBUG] 尝试读取 AstrBot 提供商配置")
+            logger.debug("尝试读取 AstrBot 提供商配置")
         api_settings = self.config.get("api_settings", {})
         provider_id = api_settings.get("provider_id") or self.provider_id
         manual_api_type = (api_settings.get("api_type") or "").strip()
@@ -1237,13 +1229,11 @@ class GeminiImageGenerationPlugin(Star):
             avatar_images = avatar_images[:remaining_slots]
 
         if message_images or avatar_images:
-            logger.info(
-                f"📸 已收集图片: 消息 {len(message_images)} 张，头像 {len(avatar_images)} 张"
+            logger.debug(
+                f"已收集图片: 消息 {len(message_images)} 张，头像 {len(avatar_images)} 张"
             )
         else:
-            logger.info(
-                "📸 未收集到有效参考图片，若需参考图可直接发送图片或检查网络权限"
-            )
+            logger.debug("未收集到有效参考图片，若需参考图可直接发送图片或检查网络权限")
 
         return message_images, avatar_images
 
@@ -1327,8 +1317,8 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
             tool_timeout = self.get_tool_timeout(event)
             per_retry_timeout = min(self.total_timeout, tool_timeout)
             max_total_time = tool_timeout
-            logger.info(
-                f"[TIMEOUT] tool_call_timeout={tool_timeout}s, per_retry_timeout={per_retry_timeout}s, max_retries={self.max_attempts_per_key}, max_total_time={max_total_time}s"
+            logger.debug(
+                f"超时配置: tool_call_timeout={tool_timeout}s, per_retry_timeout={per_retry_timeout}s, max_retries={self.max_attempts_per_key}, max_total_time={max_total_time}s"
             )
 
             (
@@ -1363,7 +1353,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
                         self.nap_server_address
                         and self.nap_server_address != "localhost"
                     ):
-                        logger.info(f"📤 开始传输第 {idx + 1} 张图片到远程服务器...")
+                        logger.debug(f"开始传输第 {idx + 1} 张图片到远程服务器...")
                         try:
                             remote_path = await asyncio.wait_for(
                                 send_file(
@@ -1389,8 +1379,8 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
             available_paths = [p for p in image_paths if p]
             available_urls = [u for u in image_urls if u]
             if available_paths or available_urls:
-                logger.info(
-                    f"📨 图像生成完成，准备返回结果，文件路径 {len(available_paths)} 张，URL {len(available_urls)} 张"
+                logger.debug(
+                    f"图像生成完成，准备返回结果，文件路径 {len(available_paths)} 张，URL {len(available_urls)} 张"
                 )
                 return True, (
                     image_urls,
@@ -1568,7 +1558,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
         available_images = self._merge_available_images(image_paths, image_urls)
         total_items = len(available_images) + (1 if text_to_send else 0)
 
-        logger.info(
+        logger.debug(
             f"[SEND] 场景={scene}，图片={len(available_images)}，文本={'1' if text_to_send else '0'}，总计={total_items}"
         )
 
@@ -1600,7 +1590,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
 
         # 单图直发
         if len(available_images) == 1:
-            logger.info("[SEND] 采用单图直发模式")
+            logger.debug("[SEND] 采用单图直发模式")
             if text_to_send:
                 # 富媒体链式发送：文本+图片
                 async for res in self._safe_send(
@@ -1624,7 +1614,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
 
         # 短链顺序发送
         if total_items <= 4:
-            logger.info("[SEND] 采用短链富媒体发送模式")
+            logger.debug("[SEND] 采用短链富媒体发送模式")
             chain: list = []
             if text_to_send:
                 chain.append(Comp.Plain(f"\u200b📝 {text_to_send}"))
@@ -1638,7 +1628,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
             return
 
         # 合并转发
-        logger.info("[SEND] 采用合并转发模式")
+        logger.debug("[SEND] 采用合并转发模式")
         from astrbot.api.message_components import Node, Plain
 
         node_content = []
@@ -2623,7 +2613,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
         avatar_reference = []
 
         avatar_value = str(include_user_avatar).lower()
-        logger.info(f"[AVATAR_DEBUG] include_user_avatar参数: {avatar_value}")
+        logger.debug(f"include_user_avatar 参数: {avatar_value}")
         include_avatar = avatar_value in {"true", "1", "yes", "y", "是"}
         include_reference_images = str(use_reference_images).lower() in {
             "true",

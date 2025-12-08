@@ -245,7 +245,7 @@ class GeminiAPIClient:
     async def _prepare_google_payload(self, config: ApiRequestConfig) -> dict[str, Any]:
         """准备 Google 官方 API 请求负载（遵循官方规范）"""
         logger.debug(
-            "[FLOW_DEBUG][google] 构建 payload: model=%s refs=%s force_b64=%s aspect=%s res=%s",
+            "[google] 构建 payload: model=%s refs=%s force_b64=%s aspect=%s res=%s",
             config.model,
             len(config.reference_images or []),
             config.image_input_mode,
@@ -259,7 +259,7 @@ class GeminiAPIClient:
         if config.reference_images:
             for image_input in config.reference_images[:14]:
                 logger.debug(
-                    "[REF_DEBUG][google] 处理参考图 idx=%s type=%s preview=%s",
+                    "[google] 处理参考图 idx=%s type=%s preview=%s",
                     added_refs,
                     type(image_input),
                     str(image_input)[:120],
@@ -334,7 +334,7 @@ class GeminiAPIClient:
                         f"idx={added_refs} base64校验失败已透传 | {e.message}"
                     )
                 logger.debug(
-                    "[REF_DEBUG][google] 成功处理参考图 idx=%s mime=%s size=%s",
+                    "[google] 成功处理参考图 idx=%s mime=%s size=%s",
                     added_refs,
                     mime_type,
                     len(str(data)) if data else 0,
@@ -449,7 +449,7 @@ class GeminiAPIClient:
     async def _prepare_openai_payload(config: ApiRequestConfig) -> dict[str, Any]:
         """准备 OpenAI API 请求负载"""
         logger.debug(
-            "[FLOW_DEBUG][openai] 构建 payload: model=%s refs=%s force_b64=%s aspect=%s res=%s",
+            "[openai] 构建 payload: model=%s refs=%s force_b64=%s aspect=%s res=%s",
             config.model,
             len(config.reference_images or []),
             True,
@@ -496,7 +496,7 @@ class GeminiAPIClient:
 
             for idx, image_input in enumerate(config.reference_images[:6]):
                 logger.debug(
-                    "[REF_DEBUG][openai] 处理参考图 idx=%s type=%s preview=%s",
+                    "[openai] 处理参考图 idx=%s type=%s preview=%s",
                     idx,
                     type(image_input),
                     str(image_input)[:120],
@@ -739,7 +739,7 @@ class GeminiAPIClient:
                             parsed.scheme or "normalized",
                         )
                         logger.debug(
-                            "[REF_DEBUG][openai] 成功处理参考图 idx=%s mime=%s size=%s",
+                            "[openai] 成功处理参考图 idx=%s mime=%s size=%s",
                             idx,
                             mime_type,
                             len(str(cleaned if "cleaned" in locals() else data))
@@ -924,7 +924,7 @@ class GeminiAPIClient:
         logger.debug(f"使用 {config.model} (通过 {config.api_type}) 生成图像")
         logger.debug(f"API 端点: {url[:80]}...")
         logger.debug(
-            "[FLOW_DEBUG] 请求参数概览: refs=%s prompt_len=%s aspect=%s res=%s",
+            "请求参数概览: refs=%s prompt_len=%s aspect=%s res=%s",
             len(config.reference_images or []),
             len(config.prompt or ""),
             config.aspect_ratio,
@@ -1061,7 +1061,7 @@ class GeminiAPIClient:
     ) -> tuple[list[str], list[str], str | None, str | None]:
         """执行实际的HTTP请求"""
         logger.debug(
-            "[FLOW_DEBUG] 发送请求: url=%s api_type=%s model=%s payload_keys=%s",
+            "发送请求: url=%s api_type=%s model=%s payload_keys=%s",
             url[:100],
             api_type,
             model,
@@ -1198,7 +1198,9 @@ class GeminiAPIClient:
         fallback_texts = self._collect_fallback_texts(response_data)
 
         if "candidates" not in response_data or not response_data["candidates"]:
-            logger.warning("Google 响应缺少 candidates 字段，尝试从 fallback 文本提取图像")
+            logger.warning(
+                "Google 响应缺少 candidates 字段，尝试从 fallback 文本提取图像"
+            )
             appended = False
             if fallback_texts:
                 appended = await self._append_images_from_texts(
@@ -1215,9 +1217,9 @@ class GeminiAPIClient:
                 feedback = response_data["promptFeedback"]
                 logger.warning(f"请求被阻止: {feedback}")
             else:
-                logger.error(f"响应中没有 candidates，fallback 提取也失败")
-                logger.error(f"[DEBUG] 完整响应: {str(response_data)[:1000]}")
-                logger.error(f"[DEBUG] fallback_texts: {fallback_texts}")
+                logger.error("响应中没有 candidates，fallback 提取也失败")
+                logger.debug(f"完整响应: {str(response_data)[:1000]}")
+                logger.debug(f"fallback_texts: {fallback_texts}")
             return [], [], None, None
 
         candidates = response_data["candidates"]
@@ -1364,16 +1366,18 @@ class GeminiAPIClient:
 
         if text_content:
             logger.warning("API只返回了文本响应，未生成图像，将触发重试")
-            logger.debug(f"[DEBUG] Google响应内容: {str(response_data)[:1000]}")
+            logger.debug(f"Google响应内容: {str(response_data)[:1000]}")
             raise APIError(
                 f"图像生成失败：API只返回了文本响应，正在重试... | 响应预览: {str(response_data)[:300]}",
                 500,
                 "no_image_retry",
             )
 
-        logger.error(f"未在响应中找到图像数据，响应内容: {str(response_data)[:500]}")
+        logger.warning(f"未在响应中找到图像数据，响应内容: {str(response_data)[:500]}")
         raise APIError(
-            f"图像生成失败：响应格式异常，未找到有效的图像数据 | 响应: {str(response_data)[:300]}", None, "invalid_response"
+            f"图像生成失败：响应格式异常，未找到有效的图像数据 | 响应: {str(response_data)[:300]}",
+            None,
+            "invalid_response",
         )
 
     async def _parse_openai_response(
@@ -1398,7 +1402,7 @@ class GeminiAPIClient:
         if message:
             if "choices" not in response_data:
                 logger.debug(
-                    "[FLOW_DEBUG][openai] 使用非标准字段构造 message，keys=%s",
+                    "[openai] 使用非标准字段构造 message，keys=%s",
                     list(response_data.keys())[:5],
                 )
             content = message.get("content", "")
@@ -1408,7 +1412,7 @@ class GeminiAPIClient:
             extracted_urls: list[str] = []
 
             logger.debug(
-                "[FLOW_DEBUG][openai] 解析响应 choices，content_type=%s images_field=%s",
+                "[openai] 解析响应 choices，content_type=%s images_field=%s",
                 type(content),
                 bool(message.get("images")),
             )
@@ -1461,9 +1465,7 @@ class GeminiAPIClient:
 
             # 按顺序处理图像候选
             for candidate_url in image_candidates:
-                logger.debug(
-                    "[REF_DEBUG][openai] 处理候选URL: %s", str(candidate_url)[:120]
-                )
+                logger.debug("[openai] 处理候选URL: %s", str(candidate_url)[:120])
                 if isinstance(candidate_url, str) and candidate_url.startswith(
                     "data:image/"
                 ):
@@ -1530,15 +1532,13 @@ class GeminiAPIClient:
                         image_urls.append(image_path)
                         image_paths.append(image_path)
                         logger.debug(
-                            "[FLOW_DEBUG][openai] 松散提取 data URI 成功: fmt=%s len=%s",
+                            "[openai] 松散提取 data URI 成功: fmt=%s len=%s",
                             fmt,
                             len(b64_clean),
                         )
 
         else:
-            logger.debug(
-                "[FLOW_DEBUG][openai] 响应缺少可用的 message 字段，尝试 data/b64 解析"
-            )
+            logger.debug("[openai] 响应缺少可用的 message 字段，尝试 data/b64 解析")
 
         if not (image_urls or image_paths) and fallback_texts:
             fallback_added = await self._append_images_from_texts(
@@ -1584,17 +1584,21 @@ class GeminiAPIClient:
                 else ""
             )
             logger.debug(
-                "[FLOW_DEBUG][openai] 仅返回文本，长度=%s 预览=%s",
+                "[openai] 仅返回文本，长度=%s 预览=%s",
                 len(text_content),
                 text_content[:200],
             )
             logger.warning(f"OpenAI只返回了文本响应，未生成图像，将触发重试{detail}")
-            logger.debug(f"[DEBUG] OpenAI响应内容: {str(response_data)[:1000]}")
+            logger.debug(f"OpenAI响应内容: {str(response_data)[:1000]}")
             raise APIError(
-                f"图像生成失败：API只返回了文本响应，正在重试... | 响应预览: {str(response_data)[:300]}", 500, "no_image_retry"
+                f"图像生成失败：API只返回了文本响应，正在重试... | 响应预览: {str(response_data)[:300]}",
+                500,
+                "no_image_retry",
             )
 
-        logger.warning(f"OpenAI 响应格式不支持或未找到图像数据，响应: {str(response_data)[:500]}")
+        logger.warning(
+            f"OpenAI 响应格式不支持或未找到图像数据，响应: {str(response_data)[:500]}"
+        )
         return image_urls, image_paths, text_content, thought_signature
 
     def _normalize_message_value(self, raw_value: Any) -> dict[str, Any] | None:
