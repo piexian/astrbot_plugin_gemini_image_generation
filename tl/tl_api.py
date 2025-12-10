@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import json
 import os
 import re
@@ -28,7 +29,6 @@ try:
         SUPPORTED_IMAGE_MIME_TYPES,
         coerce_supported_image,
         coerce_supported_image_bytes,
-        download_qq_image,
         encode_file_to_base64,
         get_plugin_data_dir,
         normalize_image_input,
@@ -421,31 +421,27 @@ class GeminiAPIClient:
 
         return payload
 
-    @staticmethod
-    async def _prepare_openai_payload(config: ApiRequestConfig) -> dict[str, Any]:
+    async def _prepare_openai_payload(self, config: ApiRequestConfig) -> dict[str, Any]:
         """准备 OpenAI API 请求负载"""
-        logger.debug(
-            "[openai] 构建 payload: model=%s refs=%s force_b64=%s aspect=%s res=%s",
-            config.model,
-            len(config.reference_images or []),
-            True,
-            config.aspect_ratio,
-            config.resolution,
-        )
         message_content = [
             {"type": "text", "text": f"Generate an image: {config.prompt}"}
         ]
 
-        force_b64 = True
+        force_b64 = (
+            str(getattr(config, "image_input_mode", "auto")).lower() == "force_base64"
+        )
 
-        added_refs = 0
-        fail_reasons: list[str] = []
+        supported_exts = {
+            "jpg", "jpeg", "png", "webp", "gif", "bmp", "tif", "tiff", "heic", "avif",
+        }
+
         if config.reference_images:
             # 本地缓存避免重复处理同一引用图，记录耗时便于性能观察
             processed_cache: dict[str, dict[str, Any]] = {}
             total_start = time.perf_counter()
 
             for idx, image_input in enumerate(config.reference_images[:6]):
+                per_start = time.perf_counter()
                 image_str = str(image_input).strip()
                 if not image_str:
                     logger.warning(f"跳过空白参考图像: idx={idx}")
@@ -454,115 +450,131 @@ class GeminiAPIClient:
                 if "&amp;" in image_str:
                     image_str = image_str.replace("&amp;", "&")
 
-                logger.debug(
-                    "[openai] 处理参考图 idx=%s type=%s preview=%s",
-                    idx,
-                    type(image_input),
-                    image_str[:120],
-                )
-                per_start = time.perf_counter()
-
-                # 命中缓存直接复用
+                # 命中缓存直接复用，避免重复 base64 处理
                 if image_str in processed_cache:
                     logger.debug(f"参考图像命中缓存: idx={idx}")
                     message_content.append(processed_cache[image_str])
-                    added_refs += 1
                     continue
 
+                parsed = urllib.parse.urlparse(image_str)
                 image_payload: dict[str, Any] | None = None
-                is_url = image_str.startswith(("http://", "https://"))
 
                 try:
-                    # 使用统一的参考图处理方法
-                    mime_type, data, _ = await self._process_reference_image(
-                        image_input, idx, config.image_input_mode
-                    )
-
-                    if not data:
-                        if is_url:
-                            # URL 下载失败，直接使用 URL 传输
-                            image_payload = {
-                                "type": "image_url",
-                                "image_url": {"url": image_str},
-                            }
-                            logger.info(
-                                "[openai] URL 下载失败，直接使用 URL 传输 idx=%s url=%s",
-                                idx,
-                                image_str[:80],
+                    # 优先处理 http(s) URL，确保 scheme 和 netloc 合法
+                    if (
+                        parsed.scheme in ("http", "https")
+                        and parsed.netloc
+                        and not force_b64
+                    ):
+                        ext = Path(parsed.path).suffix.lower().lstrip(".")
+                        if ext and ext not in supported_exts:
+                            logger.debug(
+                                "参考图像URL扩展名不在常见列表: idx=%s ext=%s url=%s",
+                                idx, ext, image_str[:80],
                             )
-                        else:
-                            # 非 URL 输入，透传原始数据
-                            data = image_str
-                            mime_type = GeminiAPIClient._ensure_mime_type(mime_type)
 
-                    if data and not image_payload:
-                        mime_type = GeminiAPIClient._ensure_mime_type(mime_type)
-
-                        # 校验 base64
-                        validated_data, is_valid = self._validate_b64_with_fallback(
-                            data, context=f"openai-idx-{idx}"
+                        image_payload = {
+                            "type": "image_url",
+                            "image_url": {"url": image_str},
+                        }
+                        logger.debug(
+                            "OpenAI兼容API使用URL参考图: idx=%s ext=%s url=%s",
+                            idx, ext or "unknown", image_str[:120],
                         )
 
-                        if not is_valid and is_url:
-                            # URL 转换的数据校验失败，直接使用 URL
+                    # data URL：直接校验 base64，有效则不再重复转码
+                    elif image_str.startswith("data:image/") and ";base64," in image_str:
+                        header, _, data_part = image_str.partition(";base64,")
+                        mime_type = header.replace("data:", "").lower()
+                        try:
+                            base64.b64decode(data_part, validate=True)
+                        except (binascii.Error, ValueError) as e:
+                            logger.warning(
+                                "跳过无效的 data URL 参考图: idx=%s 错误=%s", idx, e
+                            )
+                            mime_type = None
+
+                        if mime_type:
+                            ext = mime_type.split("/")[-1]
+                            if ext and ext not in supported_exts:
+                                logger.debug(
+                                    "data URL 图片格式不常见: idx=%s mime=%s", idx, mime_type,
+                                )
                             image_payload = {
                                 "type": "image_url",
                                 "image_url": {"url": image_str},
                             }
-                            logger.info(
-                                "[openai] base64 校验失败，直接使用 URL 传输 idx=%s url=%s",
-                                idx,
-                                image_str[:80],
+                            logger.debug(
+                                "OpenAI兼容API使用data URL参考图: idx=%s mime=%s", idx, mime_type,
                             )
+
+                    # 其他输入交给规范化逻辑，自动转换为 data URL
+                    else:
+                        mime_type, data = await self._normalize_image_input(
+                            image_input, image_input_mode=config.image_input_mode
+                        )
+                        if not data:
+                            if force_b64:
+                                raise APIError(
+                                    f"参考图转 base64 失败（force_base64），idx={idx}, type={type(image_input)}",
+                                    None, "invalid_reference_image",
+                                )
+                            logger.warning(
+                                "跳过无法识别/读取的参考图像: idx=%s type=%s", idx, type(image_input),
+                            )
+                            continue
+
+                        if not mime_type or not mime_type.startswith("image/"):
+                            logger.debug(
+                                "未检测到明确的图片 MIME，默认使用 image/png: idx=%s", idx,
+                            )
+                            mime_type = "image/png"
+
+                        ext = mime_type.split("/")[-1]
+                        if ext and ext not in supported_exts:
+                            logger.debug(
+                                "规范化后图片格式不常见: idx=%s mime=%s", idx, mime_type
+                            )
+
+                        if force_b64:
+                            # force_base64 模式：校验后构建 data URL
+                            cleaned = data.strip().replace("\n", "")
+                            try:
+                                base64.b64decode(cleaned, validate=True)
+                            except Exception:
+                                raise APIError(
+                                    f"参考图 base64 校验失败（force_base64），来源: idx={idx}",
+                                    None, "invalid_reference_image",
+                                )
+                            # OpenAI 兼容 API 需要完整的 data URL 格式
+                            payload_url = f"data:{mime_type};base64,{cleaned}"
                         else:
-                            # 构建 data URL payload
-                            payload_url = (
-                                validated_data
-                                if force_b64
-                                else f"data:{mime_type};base64,{validated_data}"
-                            )
-                            image_payload = {
-                                "type": "image_url",
-                                "image_url": {"url": payload_url},
-                            }
+                            payload_url = f"data:{mime_type};base64,{data}"
+
+                        image_payload = {
+                            "type": "image_url",
+                            "image_url": {"url": payload_url},
+                        }
 
                     if image_payload:
                         message_content.append(image_payload)
                         processed_cache[image_str] = image_payload
-                        added_refs += 1
                         elapsed_ms = (time.perf_counter() - per_start) * 1000
                         logger.debug(
-                            "[openai] 成功处理参考图 idx=%s mime=%s 耗时=%.2fms",
-                            idx,
-                            mime_type,
-                            elapsed_ms,
+                            "参考图像处理完成: idx=%s 耗时=%.2fms 来源=%s",
+                            idx, elapsed_ms, parsed.scheme or "normalized",
                         )
-
-                except APIError as e:
-                    logger.warning(
-                        "处理参考图像时出现异常: idx=%s err=%s", idx, e.message or e
-                    )
-                    fail_reasons.append(f"idx={idx} APIError: {e.message or str(e)}")
                 except Exception as e:
                     logger.warning("处理参考图像时出现异常: idx=%s err=%s", idx, e)
-                    fail_reasons.append(f"idx={idx} Exception: {e}")
+                    continue
 
             total_elapsed_ms = (time.perf_counter() - total_start) * 1000
             if processed_cache:
                 logger.debug(
                     "参考图像处理统计: 总数=%s 总耗时=%.2fms 平均=%.2fms",
-                    len(processed_cache),
-                    total_elapsed_ms,
+                    len(processed_cache), total_elapsed_ms,
                     total_elapsed_ms / len(processed_cache),
                 )
-
-        if config.reference_images and added_refs == 0:
-            raise APIError(
-                "参考图全部无效或下载失败，请重新发送图片后重试。"
-                + (f" 详情: {'; '.join(fail_reasons[:3])}" if fail_reasons else ""),
-                None,
-                "invalid_reference_image",
-            )
 
         # OpenAI 兼容接口下：
         # - 使用 chat/completions
@@ -606,8 +618,8 @@ class GeminiAPIClient:
 
         return payload
 
-    @staticmethod
     async def _normalize_image_input(
+        self,
         image_input: Any,
         image_input_mode: str = "force_base64",
         image_cache_dir=None,
@@ -652,14 +664,15 @@ class GeminiAPIClient:
                 image_input,
                 image_input_mode=image_input_mode,
                 api_client=self,
-                download_qq_image_fn=download_qq_image,
+                download_qq_image_fn=None,
             )
             if local_path and Path(local_path).exists():
                 suffix = Path(local_path).suffix.lower().lstrip(".") or "png"
                 mime_type = f"image/{suffix}"
                 data = encode_file_to_base64(local_path)
-        except Exception:
-            pass
+                logger.debug(f"[_process_reference_image] 从本地文件获取成功: idx={idx}")
+        except Exception as e:
+            logger.debug(f"[_process_reference_image] 本地文件解析失败: idx={idx} err={e}")
 
         # 2. 尝试规范化转换
         if not data:
@@ -672,21 +685,14 @@ class GeminiAPIClient:
                     image_input_mode=image_input_mode,
                     image_cache_dir=temp_cache,
                 )
-            except Exception:
-                pass
+                if data:
+                    logger.debug(f"[_process_reference_image] 规范化转换成功: idx={idx} mime={mime_type}")
+                else:
+                    logger.debug(f"[_process_reference_image] 规范化转换返回空: idx={idx}")
+            except Exception as e:
+                logger.debug(f"[_process_reference_image] 规范化转换失败: idx={idx} err={e}")
 
-        # 3. 尝试 QQ 下载器
-        if not data and isinstance(image_input, str):
-            try:
-                qq_data = await download_qq_image(image_str)
-                if qq_data:
-                    if ";base64," in qq_data:
-                        mime_type = qq_data.split(";", 1)[0].replace("data:", "")
-                        _, _, data = qq_data.partition(";base64,")
-                    else:
-                        data = qq_data
-            except Exception:
-                pass
+        # 3. QQ 下载器逻辑已整合到 normalize_image_input 和 resolve_image_source_to_path 中
 
         return mime_type, data, is_url
 
