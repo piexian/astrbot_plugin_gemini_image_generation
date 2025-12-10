@@ -474,7 +474,7 @@ class GeminiAPIClient:
 
                 try:
                     # 使用统一的参考图处理方法
-                    mime_type, data, _ = await GeminiAPIClient()._process_reference_image(
+                    mime_type, data, _ = await self._process_reference_image(
                         image_input, idx, config.image_input_mode
                     )
 
@@ -499,7 +499,7 @@ class GeminiAPIClient:
                         mime_type = GeminiAPIClient._ensure_mime_type(mime_type)
 
                         # 校验 base64
-                        validated_data, is_valid = GeminiAPIClient()._validate_b64_with_fallback(
+                        validated_data, is_valid = self._validate_b64_with_fallback(
                             data, context=f"openai-idx-{idx}"
                         )
 
