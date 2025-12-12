@@ -594,10 +594,18 @@ class GeminiAPIClient:
         # image_config 与 Gemini 3 Pro Image 模型相关的配置
         image_config: dict[str, Any] = {}
 
-        if config.aspect_ratio:
-            image_config["aspect_ratio"] = config.aspect_ratio
+        # 获取自定义参数名（支持不同 API 的命名差异）
+        # 先 strip 再检查是否为空，避免空格字符串导致空键
+        _res_key = (config.resolution_param_name or "").strip()
+        resolution_key = _res_key if _res_key else "image_size"
+        _aspect_key = (config.aspect_ratio_param_name or "").strip()
+        aspect_ratio_key = _aspect_key if _aspect_key else "aspect_ratio"
 
-        # 仅在 Gemini 3 Pro Image 系列模型下传递 image_size
+        # 设置长宽比（支持任意自定义比例）
+        if config.aspect_ratio:
+            image_config[aspect_ratio_key] = config.aspect_ratio
+
+        # 仅在 Gemini 3 Pro Image 系列模型下传递分辨率到 image_config
         model_name = (config.model or "").lower()
         is_gemini_image_model = (
             "gemini-3-pro-image" in model_name
@@ -607,10 +615,26 @@ class GeminiAPIClient:
 
         if is_gemini_image_model and config.resolution:
             # 前端 router 侧直接传递 "1K"/"2K"/"4K"，这里保持一致
-            image_config["image_size"] = config.resolution
+            image_config[resolution_key] = config.resolution
 
         if image_config:
             payload["image_config"] = image_config
+
+        # 兼容 openai_chat_client.py 风格的顶层与 generation_config 参数
+        # 仅当用户显式将参数名设置为 image_resolution/image_aspect_ratio 时启用，
+        # 避免对其他 OpenAI 官方/兼容服务引入未知字段。
+        generation_config: dict[str, Any] = {}
+
+        if resolution_key == "image_resolution" and config.resolution:
+            generation_config["image_resolution"] = config.resolution
+            payload["image_resolution"] = config.resolution
+
+        if aspect_ratio_key == "image_aspect_ratio" and config.aspect_ratio:
+            generation_config["image_aspect_ratio"] = config.aspect_ratio
+            payload["image_aspect_ratio"] = config.aspect_ratio
+
+        if generation_config:
+            payload["generation_config"] = generation_config
 
         # 与前端 router 一致：启用搜索接地时，通过 tools.google_search 控制
         if is_gemini_image_model and config.enable_grounding:

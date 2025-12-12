@@ -1827,7 +1827,11 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
                 reference_images=all_ref_images if all_ref_images else None,
                 enable_smart_retry=self.enable_smart_retry,
                 enable_text_response=self.enable_text_response,
+                force_resolution=self.force_resolution,
                 verbose_logging=self.verbose_logging,
+                image_input_mode=self.image_input_mode,
+                resolution_param_name=self.resolution_param_name,
+                aspect_ratio_param_name=self.aspect_ratio_param_name,
             )
 
             # 记录改图请求的详细信息
