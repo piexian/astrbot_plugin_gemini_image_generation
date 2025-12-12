@@ -1,4 +1,4 @@
-# AstrBot Gemini 图像生成插件 v1.7.3
+# AstrBot Gemini 图像生成插件 v1.7.4
 
 <div align="center">
 
@@ -115,6 +115,10 @@
 - `force_resolution`：强制传 `image_size` 参数给模型，默认 false。
 - `resolution_param_name`：**自定义分辨率参数名**，不同 API 可能使用不同字段名（如 `image_size`、`size`、`resolution`），默认 `image_size`。
 - `aspect_ratio_param_name`：**自定义长宽比参数名**，不同 API 可能使用不同字段名（如 `aspect_ratio`、`aspectRatio`、`image_aspect_ratio`），默认 `aspect_ratio`。
+
+**quick_mode_settings**
+- 可选：覆盖 `快速` 指令各模式的默认分辨率/长宽比；默认值即内置默认，可直接修改。
+- 覆盖项（每个模式下都有 `resolution` / `aspect_ratio` 两个字段）：`avatar`/`poster`/`wallpaper`/`card`/`mobile`/`figure`/`sticker`。
 
 **retry_settings**
 - `max_attempts_per_key`：每个密钥的最大重试次数，默认 3。

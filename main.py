@@ -393,6 +393,27 @@ class GeminiImageGenerationPlugin(Star):
         # 参考图传输统一使用 base64，移除格式可选项
         self.image_input_mode = "force_base64"
 
+        # 快速模式参数覆盖（可选）
+        quick_mode_settings = self.config.get("quick_mode_settings") or {}
+        self.quick_mode_overrides: dict[str, tuple[str | None, str | None]] = {}
+        for mode_key in (
+            "avatar",
+            "poster",
+            "wallpaper",
+            "card",
+            "mobile",
+            "figure",
+            "sticker",
+        ):
+            mode_settings = quick_mode_settings.get(mode_key) or {}
+            override_res = (mode_settings.get("resolution") or "").strip()
+            override_ar = (mode_settings.get("aspect_ratio") or "").strip()
+            if override_res or override_ar:
+                self.quick_mode_overrides[mode_key] = (
+                    override_res or None,
+                    override_ar or None,
+                )
+
         retry_settings = self.config.get("retry_settings") or {}
         self.max_attempts_per_key = retry_settings.get("max_attempts_per_key") or 3
         self.enable_smart_retry = retry_settings.get(
@@ -1919,6 +1940,24 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
         async for res in self._send_api_duration(event, api_start_time):
             yield res
 
+    def _resolve_quick_mode_params(
+        self, mode_key: str | None, default_resolution: str, default_aspect_ratio: str
+    ) -> tuple[str, str]:
+        """根据 quick_mode_settings 覆盖快速模式默认参数（留空则回落默认）"""
+        if not mode_key:
+            return default_resolution, default_aspect_ratio
+
+        overrides = getattr(self, "quick_mode_overrides", None) or {}
+        override = overrides.get(mode_key)
+        if not override:
+            return default_resolution, default_aspect_ratio
+
+        override_resolution, override_aspect_ratio = override
+        return (
+            override_resolution or default_resolution,
+            override_aspect_ratio or default_aspect_ratio,
+        )
+
     async def _handle_quick_mode(
         self,
         event: AstrMessageEvent,
@@ -1926,6 +1965,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
         resolution: str,
         aspect_ratio: str,
         mode_name: str,
+        mode_key: str | None = None,
         prompt_func: Any = None,
         **kwargs,
     ):
@@ -1935,6 +1975,10 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
             if limit_message:
                 yield event.plain_result(limit_message)
             return
+
+        effective_resolution, effective_aspect_ratio = self._resolve_quick_mode_params(
+            mode_key, resolution, aspect_ratio
+        )
 
         yield event.plain_result(f"🎨 使用{mode_name}模式生成图像...")
         api_start_time = time.perf_counter()
@@ -1953,8 +1997,8 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
                 event,
                 full_prompt,
                 use_avatar,
-                override_resolution=resolution,
-                override_aspect_ratio=aspect_ratio,
+                override_resolution=effective_resolution,
+                override_aspect_ratio=effective_aspect_ratio,
                 **kwargs,
             ):
                 yield result
@@ -1972,7 +2016,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
     async def quick_avatar(self, event: AstrMessageEvent, prompt: str):
         """头像快速模式 - 1K分辨率，1:1比例"""
         async for result in self._handle_quick_mode(
-            event, prompt, "1K", "1:1", "头像", get_avatar_prompt
+            event, prompt, "1K", "1:1", "头像", "avatar", get_avatar_prompt
         ):
             yield result
 
@@ -1980,7 +2024,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
     async def quick_poster(self, event: AstrMessageEvent, prompt: str):
         """海报快速模式 - 2K分辨率，16:9比例"""
         async for result in self._handle_quick_mode(
-            event, prompt, "2K", "16:9", "海报", get_poster_prompt
+            event, prompt, "2K", "16:9", "海报", "poster", get_poster_prompt
         ):
             yield result
 
@@ -1988,7 +2032,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
     async def quick_wallpaper(self, event: AstrMessageEvent, prompt: str):
         """壁纸快速模式 - 4K分辨率，16:9比例"""
         async for result in self._handle_quick_mode(
-            event, prompt, "4K", "16:9", "壁纸", get_wallpaper_prompt
+            event, prompt, "4K", "16:9", "壁纸", "wallpaper", get_wallpaper_prompt
         ):
             yield result
 
@@ -1996,7 +2040,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
     async def quick_card(self, event: AstrMessageEvent, prompt: str):
         """卡片快速模式 - 1K分辨率，3:2比例"""
         async for result in self._handle_quick_mode(
-            event, prompt, "1K", "3:2", "卡片", get_card_prompt
+            event, prompt, "1K", "3:2", "卡片", "card", get_card_prompt
         ):
             yield result
 
@@ -2004,7 +2048,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
     async def quick_mobile(self, event: AstrMessageEvent, prompt: str):
         """手机快速模式 - 2K分辨率，9:16比例"""
         async for result in self._handle_quick_mode(
-            event, prompt, "2K", "9:16", "手机", get_mobile_prompt
+            event, prompt, "2K", "9:16", "手机", "mobile", get_mobile_prompt
         ):
             yield result
 
@@ -2032,6 +2076,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
             "2K",
             "3:2",
             "手办化",
+            "figure",
             None,
             skip_figure_enhance=True,
         ):
@@ -2071,6 +2116,9 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
             return
 
         # 如果没有开启切割功能，直接使用默认逻辑
+        sticker_resolution, sticker_aspect_ratio = self._resolve_quick_mode_params(
+            "sticker", "4K", "16:9"
+        )
         if not self.enable_sticker_split:
             full_prompt = (
                 get_q_version_sticker_prompt(user_prompt)
@@ -2081,8 +2129,8 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
                 event,
                 full_prompt,
                 use_avatar,
-                override_resolution="4K",
-                override_aspect_ratio="16:9",
+                override_resolution=sticker_resolution,
+                override_aspect_ratio=sticker_aspect_ratio,
             ):
                 yield result
             return
@@ -2104,8 +2152,8 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
                 prompt=full_prompt,
                 reference_images=reference_images,
                 avatar_reference=avatar_reference,
-                override_resolution="4K",
-                override_aspect_ratio="16:9",
+                override_resolution=sticker_resolution,
+                override_aspect_ratio=sticker_aspect_ratio,
             )
             api_duration = time.perf_counter() - api_start_time
 

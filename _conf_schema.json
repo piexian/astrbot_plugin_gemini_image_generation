@@ -128,6 +128,229 @@
       }
     }
   },
+  "quick_mode_settings": {
+    "description": "快速模式参数覆盖",
+    "type": "object",
+    "hint": "可选：覆盖“快速”指令各模式的默认分辨率/长宽比；默认值即内置默认，可直接修改。",
+    "items": {
+      "avatar": {
+        "description": "头像模式覆盖",
+        "type": "object",
+        "hint": "对应命令：快速 头像",
+        "items": {
+          "resolution": {
+            "description": "分辨率（覆盖）",
+            "type": "string",
+            "hint": "默认即内置默认，可按需修改",
+            "default": "1K",
+            "options": [
+              "1K",
+              "2K",
+              "4K"
+            ]
+          },
+          "aspect_ratio": {
+            "description": "长宽比（覆盖）",
+            "type": "string",
+            "hint": "默认即内置默认，可按需修改",
+            "default": "1:1",
+            "options": [
+              "1:1",
+              "16:9",
+              "4:3",
+              "3:2",
+              "9:16",
+              "4:5",
+              "5:4",
+              "21:9",
+              "3:4",
+              "2:3"
+            ]
+          }
+        }
+      },
+      "poster": {
+        "description": "海报模式覆盖",
+        "type": "object",
+        "hint": "对应命令：快速 海报",
+        "items": {
+          "resolution": {
+            "description": "分辨率（覆盖）",
+            "type": "string",
+            "hint": "默认即内置默认，可按需修改",
+            "default": "2K",
+            "options": [
+              "1K",
+              "2K",
+              "4K"
+            ]
+          },
+          "aspect_ratio": {
+            "description": "长宽比（覆盖）",
+            "type": "string",
+            "hint": "默认即内置默认，可按需修改",
+            "default": "16:9",
+            "options": [
+              "1:1",
+              "16:9",
+              "4:3",
+              "3:2",
+              "9:16",
+              "4:5",
+              "5:4",
+              "21:9",
+              "3:4",
+              "2:3"
+            ]
+          }
+        }
+      },
+      "wallpaper": {
+        "description": "壁纸模式覆盖",
+        "type": "object",
+        "hint": "对应命令：快速 壁纸",
+        "items": {
+          "resolution": {
+            "description": "分辨率（覆盖）",
+            "type": "string",
+            "hint": "默认即内置默认，可按需修改",
+            "default": "4K",
+            "options": [
+              "1K",
+              "2K",
+              "4K"
+            ]
+          },
+          "aspect_ratio": {
+            "description": "长宽比（覆盖）",
+            "type": "string",
+            "hint": "默认即内置默认，可按需修改",
+            "default": "16:9",
+            "options": [
+              "1:1",
+              "16:9",
+              "4:3",
+              "3:2",
+              "9:16",
+              "4:5",
+              "5:4",
+              "21:9",
+              "3:4",
+              "2:3"
+            ]
+          }
+        }
+      },
+      "card": {
+        "description": "卡片模式覆盖",
+        "type": "object",
+        "hint": "对应命令：快速 卡片",
+        "items": {
+          "resolution": {
+            "description": "分辨率（覆盖）",
+            "type": "string",
+            "hint": "默认即内置默认，可按需修改",
+            "default": "1K",
+            "options": [
+              "1K",
+              "2K",
+              "4K"
+            ]
+          },
+          "aspect_ratio": {
+            "description": "长宽比（覆盖）",
+            "type": "string",
+            "hint": "默认即内置默认，可按需修改",
+            "default": "3:2",
+            "options": [
+              "1:1",
+              "16:9",
+              "4:3",
+              "3:2",
+              "9:16",
+              "4:5",
+              "5:4",
+              "21:9",
+              "3:4",
+              "2:3"
+            ]
+          }
+        }
+      },
+      "mobile": {
+        "description": "手机模式覆盖",
+        "type": "object",
+        "hint": "对应命令：快速 手机",
+        "items": {
+          "resolution": {
+            "description": "分辨率（覆盖）",
+            "type": "string",
+            "hint": "默认即内置默认，可按需修改",
+            "default": "2K",
+            "options": [
+              "1K",
+              "2K",
+              "4K"
+            ]
+          },
+          "aspect_ratio": {
+            "description": "长宽比（覆盖）",
+            "type": "string",
+            "hint": "默认即内置默认，可按需修改",
+            "default": "9:16",
+            "options": [
+              "1:1",
+              "16:9",
+              "4:3",
+              "3:2",
+              "9:16",
+              "4:5",
+              "5:4",
+              "21:9",
+              "3:4",
+              "2:3"
+            ]
+          }
+        }
+      },
+      "figure": {
+        "description": "手办化模式覆盖",
+        "type": "object",
+        "hint": "对应命令：快速 手办化",
+        "items": {
+          "resolution": {
+            "description": "分辨率（覆盖）",
+            "type": "string",
+            "hint": "默认即内置默认，可按需修改",
+            "default": "2K",
+            "options": [
+              "1K",
+              "2K",
+              "4K"
+            ]
+          },
+          "aspect_ratio": {
+            "description": "长宽比（覆盖）",
+            "type": "string",
+            "hint": "默认即内置默认，可按需修改",
+            "default": "3:2",
+            "options": [
+              "1:1",
+              "16:9",
+              "4:3",
+              "3:2",
+              "9:16",
+              "4:5",
+              "5:4",
+              "21:9",
+              "3:4",
+              "2:3"
+            ]
+          }
+        }
+      }
+    }
+  },
   "retry_settings": {
     "description": "重试设置",
     "type": "object",
