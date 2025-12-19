@@ -1,8 +1,8 @@
-# AstrBot Gemini 图像生成插件 v1.7.5
+# AstrBot Gemini 图像生成插件 v2.0.0
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/Version-v1.7.5-blue)
+![Version](https://img.shields.io/badge/Version-v2.0.0-blue)
 ![License](https://img.shields.io/badge/License-MIT-orange)
 
 </div>
@@ -10,6 +10,27 @@
 **🎨 强大的 Gemini 图像生成插件，支持智能头像参考和智能表情包切分**
 
 </div>
+
+## 🆕 v2.0.0 更新内容
+
+### 新增 API 供应商支持
+- **GLM（智谱AI CogView）**: 支持智谱 AI 的 CogView-4 系列图像生成模型
+- **WhatAI**: 支持 WhatAI 图像编辑接口（multipart/form-data 格式）
+
+### 自定义 API 配置
+- 现在可以不选择 AstrBot 提供商，直接手动配置 API
+- 新增 `custom_api_base` 配置项：自定义 API 端点地址
+- 新增 `custom_api_key` 配置项：自定义 API 密钥（支持多个，逗号分隔）
+
+### 支持的 API 类型
+| API 类型 | 说明 |
+|---------|------|
+| `google` | Google Gemini 官方 API |
+| `openai` | OpenAI 兼容格式 API |
+| `zai` | Zai 兼容参数传递 |
+| `grok2api` | Grok2API（支持相对路径图片） |
+| `glm` | 智谱 AI CogView 接口 |
+| `whatai` | WhatAI 图像编辑接口 |
 
 ## ✨ 特性
 
@@ -98,9 +119,17 @@
 ### 配置项详解
 
 **api_settings**
-- `provider_id`：必填，从 AstrBot 提供商中选择生图模型。
-- `api_type`：可选，覆盖提供商类型（google/openai/zai/grok2api）。选择 `zai` 时启用 Zai 兼容参数传递（顶层分辨率/比例 + generation_config）；选择 `grok2api` 时支持相对路径图片与临时缓存图片的自动下载落盘。
+- `provider_id`：可选，从 AstrBot 提供商中选择生图模型。若不选择，可使用下方自定义配置。
+- `api_type`：必选，API 类型（google/openai/zai/grok2api/glm/whatai）。
+  - `google`：Google Gemini 官方 API
+  - `openai`：OpenAI 兼容格式 API
+  - `zai`：启用 Zai 兼容参数传递
+  - `grok2api`：支持相对路径图片与临时缓存图片的自动下载
+  - `glm`：智谱 AI CogView 图像生成接口
+  - `whatai`：WhatAI 图像编辑接口（multipart/form-data）
 - `model`：可选，覆盖提供商模型名称。
+- `custom_api_base`：可选，自定义 API 端点地址（不选择提供商时使用）。
+- `custom_api_key`：可选，自定义 API 密钥，支持多个密钥用逗号分隔（不选择提供商时使用）。
 - `vision_provider_id`：可选，切图前调用视觉模型识别网格行列；留空则跳过 AI 识别。
 
 **image_generation_settings**
