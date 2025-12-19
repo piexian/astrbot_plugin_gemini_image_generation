@@ -352,15 +352,20 @@ class GeminiAPIClient:
 
     async def _get_api_url(
         self, config: ApiRequestConfig
-    ) -> tuple[str, dict[str, str], dict[str, Any]]:
+    ) -> tuple[str, dict[str, str], dict[str, Any], str, aiohttp.FormData | None]:
         """
         根据配置获取 API URL、请求头和负载
 
         智能处理API路径前缀，无需手动输入/v1或/v1beta
+
+        Returns:
+            (url, headers, payload, request_type, form_data)
+            - request_type: "json" 或 "multipart"
+            - form_data: 仅当 request_type == "multipart" 时有效
         """
         provider = get_api_provider(config.api_type)
         req = await provider.build_request(client=self, config=config)
-        return req.url, req.headers, req.payload
+        return req.url, req.headers, req.payload, req.request_type, req.form_data
 
     async def generate_image(
         self,
@@ -388,7 +393,7 @@ class GeminiAPIClient:
             config.api_key = await self.get_next_api_key()
 
         # 获取请求信息
-        url, headers, payload = await self._get_api_url(config)
+        url, headers, payload, request_type, form_data = await self._get_api_url(config)
 
         logger.debug(f"使用 {config.model} (通过 {config.api_type}) 生成图像")
         logger.debug(f"API 端点: {url[:80]}...")
@@ -420,6 +425,8 @@ class GeminiAPIClient:
             max_retries=max_retries,
             total_timeout=total_timeout,
             api_base=config.api_base,
+            request_type=request_type,
+            form_data=form_data,
         )
 
     async def _make_request(
@@ -432,6 +439,8 @@ class GeminiAPIClient:
         max_retries: int,
         total_timeout: int = 120,
         api_base: str = None,
+        request_type: str = "json",
+        form_data: aiohttp.FormData | None = None,
     ) -> tuple[list[str], list[str], str | None, str | None]:
         """执行 API 请求并处理响应，每个重试有独立的超时控制"""
 
@@ -455,6 +464,8 @@ class GeminiAPIClient:
                     model,
                     timeout=timeout_cfg,
                     api_base=api_base,
+                    request_type=request_type,
+                    form_data=form_data,
                 )
 
             except asyncio.CancelledError:
@@ -539,71 +550,100 @@ class GeminiAPIClient:
         *,
         timeout: aiohttp.ClientTimeout | None = None,
         api_base: str = None,
+        request_type: str = "json",
+        form_data: aiohttp.FormData | None = None,
     ) -> tuple[list[str], list[str], str | None, str | None]:
         """执行实际的HTTP请求"""
         logger.debug(
-            "发送请求: url=%s api_type=%s model=%s payload_keys=%s",
+            "发送请求: url=%s api_type=%s model=%s request_type=%s",
             url[:100],
             api_type,
             model,
-            list(payload.keys()),
+            request_type,
         )
 
-        async with session.post(
-            url,
-            json=payload,
-            headers=headers,
-            proxy=self.proxy,
-            timeout=timeout,
-        ) as response:
-            logger.debug(f"响应状态: {response.status}")
-            response_text = await response.text()
-            content_type = response.headers.get("Content-Type", "") or ""
+        # 根据请求类型选择不同的发送方式
+        if request_type == "multipart" and form_data is not None:
+            # multipart/form-data 请求
+            async with session.post(
+                url,
+                data=form_data,
+                headers=headers,
+                proxy=self.proxy,
+                timeout=timeout,
+            ) as response:
+                return await self._handle_response(
+                    response, api_type, api_base, session
+                )
+        else:
+            # JSON 请求（默认）
+            async with session.post(
+                url,
+                json=payload,
+                headers=headers,
+                proxy=self.proxy,
+                timeout=timeout,
+            ) as response:
+                return await self._handle_response(
+                    response, api_type, api_base, session
+                )
 
-            # 解析 JSON 响应，添加错误处理
-            try:
-                response_data = json.loads(response_text) if response_text else {}
-            except json.JSONDecodeError as e:
-                # SSE 响应（text/event-stream）需要额外解析
-                if (
-                    "text/event-stream" in content_type.lower()
-                    or response_text.strip().startswith("data:")
-                ):
-                    try:
-                        response_data = self._parse_sse_payload(response_text)
-                        logger.debug("检测到 SSE 响应，已完成 JSON 转换")
-                    except Exception as sse_error:
-                        logger.error(f"SSE 解析失败: {sse_error}")
-                        logger.error(f"响应内容前500字符: {response_text[:500]}")
-                        raise APIError(
-                            f"API 返回了无效的 JSON/SSE 响应: {sse_error}",
-                            response.status,
-                        ) from None
-                else:
-                    logger.error(f"JSON 解析失败: {e}")
+    async def _handle_response(
+        self,
+        response: aiohttp.ClientResponse,
+        api_type: str,
+        api_base: str | None,
+        session: aiohttp.ClientSession,
+    ) -> tuple[list[str], list[str], str | None, str | None]:
+        """处理 HTTP 响应"""
+        logger.debug(f"响应状态: {response.status}")
+        response_text = await response.text()
+        content_type = response.headers.get("Content-Type", "") or ""
+
+        # 解析 JSON 响应，添加错误处理
+        try:
+            response_data = json.loads(response_text) if response_text else {}
+        except json.JSONDecodeError as e:
+            # SSE 响应（text/event-stream）需要额外解析
+            if (
+                "text/event-stream" in content_type.lower()
+                or response_text.strip().startswith("data:")
+            ):
+                try:
+                    response_data = self._parse_sse_payload(response_text)
+                    logger.debug("检测到 SSE 响应，已完成 JSON 转换")
+                except Exception as sse_error:
+                    logger.error(f"SSE 解析失败: {sse_error}")
                     logger.error(f"响应内容前500字符: {response_text[:500]}")
                     raise APIError(
-                        f"API 返回了无效的 JSON 响应: {e}", response.status
+                        f"API 返回了无效的 JSON/SSE 响应: {sse_error}",
+                        response.status,
                     ) from None
-
-            if response.status == 200:
-                logger.debug("API 调用成功")
-                if api_type == "google":
-                    return await self._parse_gresponse(response_data, session)
-                else:  # openai 兼容格式
-                    return await self._parse_openai_response(response_data, session, api_base)
-            elif response.status in [429, 402, 403]:
-                error_msg = response_data.get("error", {}).get(
-                    "message", f"HTTP {response.status}"
-                )
-                logger.warning(f"API 配额/权限问题: {error_msg}")
-                raise APIError(error_msg, response.status, "quota")
             else:
-                error_msg = response_data.get("error", {}).get(
-                    "message", f"HTTP {response.status}"
-                )
-                logger.warning(f"API 错误: {error_msg}")
-                raise APIError(error_msg, response.status)
+                logger.error(f"JSON 解析失败: {e}")
+                logger.error(f"响应内容前500字符: {response_text[:500]}")
+                raise APIError(
+                    f"API 返回了无效的 JSON 响应: {e}", response.status
+                ) from None
+
+        if response.status == 200:
+            logger.debug("API 调用成功")
+            if api_type == "google":
+                return await self._parse_gresponse(response_data, session)
+            else:  # openai 兼容格式或其他供应商
+                return await self._parse_openai_response(response_data, session, api_base)
+        elif response.status in [429, 402, 403]:
+            error_msg = response_data.get("error", {}).get(
+                "message", f"HTTP {response.status}"
+            )
+            logger.warning(f"API 配额/权限问题: {error_msg}")
+            raise APIError(error_msg, response.status, "quota")
+        else:
+            error_msg = response_data.get("error", {}).get(
+                "message", f"HTTP {response.status}"
+            )
+            logger.warning(f"API 错误: {error_msg}")
+            raise APIError(error_msg, response.status)
 
     def _parse_sse_payload(self, raw_text: str) -> dict[str, Any]:
         """解析 text/event-stream 响应，提取最后一个包含有效 payload 的 data 包"""

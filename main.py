@@ -888,6 +888,7 @@ class GeminiImageGenerationPlugin(Star):
         provider_id = api_settings.get("provider_id") or self.provider_id
         manual_api_type = (api_settings.get("api_type") or "").strip()
         manual_api_base = (api_settings.get("custom_api_base") or "").strip()
+        manual_api_key = (api_settings.get("custom_api_key") or "").strip()
         manual_model = (api_settings.get("model") or "").strip()
 
         # 只按配置文件决定 API 类型
@@ -896,7 +897,7 @@ class GeminiImageGenerationPlugin(Star):
         elif not self.api_type:
             if not quiet:
                 logger.error(
-                    "✗ 未配置 api_settings.api_type（google/openai/zai/grok2api），无法初始化 API 客户端"
+                    "✗ 未配置 api_settings.api_type（google/openai/zai/grok2api/glm/whatai），无法初始化 API 客户端"
                 )
             return
 
@@ -904,6 +905,25 @@ class GeminiImageGenerationPlugin(Star):
             self.api_base = manual_api_base
         if manual_model and not self.model:
             self.model = manual_model
+
+        # 处理自定义 API Key（支持逗号分隔的多个密钥）
+        if manual_api_key and not self.api_keys:
+            self.api_keys = [k.strip() for k in manual_api_key.split(",") if k.strip()]
+            if self.api_keys:
+                logger.info(f"✓ 已读取自定义 API Key: {len(self.api_keys)} 个密钥")
+
+        # 如果已有自定义配置且足够（有 api_key），可以跳过从提供商读取
+        if self.api_keys and not provider_id:
+            logger.info("✓ 使用自定义 API 配置（未选择提供商）")
+            if self.api_keys:
+                self.api_client = get_api_client(self.api_keys)
+                logger.info("✓ API 客户端已初始化（自定义配置）")
+                logger.info(f"  - 类型: {self.api_type}")
+                logger.info(f"  - 模型: {self.model or '默认'}")
+                logger.info(f"  - 密钥数量: {len(self.api_keys)}")
+                if self.api_base:
+                    logger.info(f"  - 自定义 API Base: {self.api_base}")
+            return
 
         try:
             provider_mgr = getattr(self.context, "provider_manager", None)

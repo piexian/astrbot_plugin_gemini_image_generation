@@ -8,14 +8,18 @@ from __future__ import annotations
 from typing import Final
 
 from .base import ApiProvider
+from .glm import GLMProvider
 from .google import GoogleProvider
 from .grok2api import Grok2ApiProvider
 from .openai_compat import OpenAICompatProvider
+from .whatai import WhatAIProvider
 from .zai import ZaiProvider
 
+_GLM: Final[GLMProvider] = GLMProvider()
 _GOOGLE: Final[GoogleProvider] = GoogleProvider()
 _GROK2API: Final[Grok2ApiProvider] = Grok2ApiProvider()
 _OPENAI: Final[OpenAICompatProvider] = OpenAICompatProvider()
+_WHATAI: Final[WhatAIProvider] = WhatAIProvider()
 _ZAI: Final[ZaiProvider] = ZaiProvider()
 
 
@@ -30,6 +34,14 @@ def get_api_provider(api_type: str | None) -> ApiProvider:
     """
     normalized_raw = (api_type or "").strip().lower()
     normalized = normalized_raw.replace("-", "_")
+
+    # GLM（智谱AI）供应商
+    if normalized in {"glm", "zhipu", "cogview", "bigmodel"}:
+        return _GLM
+
+    # WhatAI 供应商
+    if normalized in {"whatai", "what_ai"}:
+        return _WHATAI
 
     # Zai 独立供应商
     if normalized == "zai" or normalized.startswith("zai_"):

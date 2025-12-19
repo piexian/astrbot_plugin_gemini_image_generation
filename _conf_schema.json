@@ -5,28 +5,42 @@
     "hint": "配置 API 端点和相关设置",
     "items": {
       "provider_id": {
-        "description": "生图模型提供商（必选）",
+        "description": "生图模型提供商（可选）",
         "type": "string",
-        "hint": "从 AstrBot 提供商列表中选择，插件自动读取模型/密钥/端点；不选将无法调用",
+        "hint": "从 AstrBot 提供商列表中选择，插件自动读取模型/密钥/端点；若不选择，可在下方手动配置自定义 API",
         "_special": "select_provider",
         "default": ""
       },
       "api_type": {
         "description": "API 类型（必选）",
         "type": "string",
-        "hint": "必须选择 API 类型（google/openai/zai/grok2api）。选择 zai 时使用 Zai 兼容参数传递；选择 grok2api 时启用图片相对路径/临时缓存兼容",
+        "hint": "必须选择 API 类型（google/openai/zai/grok2api/glm/whatai）。选择 zai 时使用 Zai 兼容参数传递；选择 grok2api 时启用图片相对路径/临时缓存兼容；选择 glm 时使用智谱 AI CogView 接口；选择 whatai 时使用 WhatAI 图像编辑接口",
         "default": "openai",
         "options": [
           "google",
           "openai",
           "zai",
-          "grok2api"
+          "grok2api",
+          "glm",
+          "whatai"
         ]
       },
       "model": {
         "description": "模型名称（可选）",
         "type": "string",
         "hint": "如需覆盖 AstrBot 提供商的模型，可在此填写。例如 gemini-3-pro-image-preview 或 OpenAI 兼容模型名。留空使用提供商默认模型",
+        "default": ""
+      },
+      "custom_api_base": {
+        "description": "自定义 API Base URL（可选）",
+        "type": "string",
+        "hint": "当不选择提供商时，需手动填写 API 端点地址。例如 https://api.openai.com/v1 或 https://open.bigmodel.cn/api/paas/v4 或 https://api.whatai.cc/v1（无需填写完整路径，插件会自动补全）",
+        "default": ""
+      },
+      "custom_api_key": {
+        "description": "自定义 API Key（可选）",
+        "type": "string",
+        "hint": "当不选择提供商时，需手动填写 API 密钥。支持填写多个密钥，用英文逗号分隔",
         "default": ""
       },
       "vision_provider_id": {

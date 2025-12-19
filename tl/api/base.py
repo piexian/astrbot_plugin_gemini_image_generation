@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 import aiohttp
@@ -18,6 +18,10 @@ class ProviderRequest:
     url: str
     headers: dict[str, str]
     payload: dict[str, Any]
+    # 请求类型：json（默认）或 multipart
+    request_type: str = "json"
+    # multipart 请求时使用的 FormData（仅当 request_type == "multipart" 时有效）
+    form_data: aiohttp.FormData | None = None
 
 
 class ApiProvider(Protocol):
