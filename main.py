@@ -1672,8 +1672,12 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
 
         return None
 
-    def _build_forward_image_component(self, image: str):
-        """根据来源构造合并转发图片组件，优先使用本地文件"""
+    def _build_forward_image_component(self, image: str, *, force_base64: bool = False):
+        """根据来源构造合并转发图片组件，优先使用本地文件。
+
+        force_base64=True 时，若图片来源为本地文件/data URL，会强制转换为 base64:// 以适配
+        NapCat/OneBotv11 等无法直接访问 AstrBot 宿主文件系统的场景。
+        """
         from astrbot.api.message_components import Image as AstrImage
         from astrbot.api.message_components import Plain
 
@@ -1681,8 +1685,13 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
             if not image:
                 raise ValueError("空的图片地址")
 
-            # 处理 base64 数据
+
             if image.startswith("data:image/") and ";base64," in image:
+                if force_base64:
+                    _, _, b64_part = image.partition(";base64,")
+                    cleaned = "".join(b64_part.split())
+                    if cleaned:
+                        return AstrImage(file=f"base64://{cleaned}")
                 return AstrImage(file=image)
             if self._is_valid_base64_image_str(image):
                 return AstrImage(file=f"base64://{image}")
@@ -1692,6 +1701,9 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
                 fs_candidate = image[8:]
 
             if os.path.exists(fs_candidate):
+                if force_base64:
+                    b64_data = encode_file_to_base64(fs_candidate)
+                    return AstrImage(file=f"base64://{b64_data}")
                 return AstrImage.fromFileSystem(fs_candidate)
             if image.startswith(("http://", "https://")):
                 return AstrImage.fromURL(image)
@@ -1724,6 +1736,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
 
         available_images = self._merge_available_images(image_paths, image_urls)
         total_items = len(available_images) + (1 if text_to_send else 0)
+        is_aioqhttp = self._is_aioqhttp_event(event)
 
         logger.debug(
             f"[SEND] 场景={scene}，图片={len(available_images)}，文本={'1' if text_to_send else '0'}，总计={total_items}"
@@ -1759,27 +1772,68 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
         if len(available_images) == 1:
             logger.debug("[SEND] 采用单图直发模式")
             if text_to_send:
-                # 富媒体链式发送：文本+图片
+            
                 async for res in self._safe_send(
                     event,
                     event.chain_result(
                         [
                             Comp.Plain(f"\u200b📝 {text_to_send}"),
-                            self._build_forward_image_component(available_images[0]),
+                            self._build_forward_image_component(
+                                available_images[0], force_base64=is_aioqhttp
+                            ),
                         ]
                     ),
                 ):
                     yield res
             else:
-                async for res in self._safe_send(
-                    event, event.image_result(available_images[0])
-                ):
-                    yield res
+                if is_aioqhttp:
+                    img_component = self._build_forward_image_component(
+                        available_images[0], force_base64=True
+                    )
+                    async for res in self._safe_send(
+                        event, event.chain_result([img_component])
+                    ):
+                        yield res
+                else:
+                    async for res in self._safe_send(
+                        event, event.image_result(available_images[0])
+                    ):
+                        yield res
             if thought_signature:
                 logger.debug(f"🧠 思维签名: {thought_signature[:50]}...")
             return
 
-        # 短链顺序发送
+        # AIOCQHTTP 逐图发送（base64）
+        if is_aioqhttp:
+            logger.debug("[SEND] AIOCQHTTP 平台，采用逐图发送（base64）")
+            start_idx = 0
+            if text_to_send:
+                first_img = self._build_forward_image_component(
+                    available_images[0], force_base64=True
+                )
+                async for res in self._safe_send(
+                    event,
+                    event.chain_result(
+                        [Comp.Plain(f"\u200b📝 {text_to_send}"), first_img]
+                    ),
+                ):
+                    yield res
+                start_idx = 1
+
+            for img in available_images[start_idx:]:
+                img_component = self._build_forward_image_component(
+                    img, force_base64=True
+                )
+                async for res in self._safe_send(
+                    event, event.chain_result([img_component])
+                ):
+                    yield res
+
+            if thought_signature:
+                logger.debug(f"🧠 思维签名: {thought_signature[:50]}...")
+            return
+
+        # 短链富媒体发送
         if total_items <= 4:
             logger.debug("[SEND] 采用短链富媒体发送模式")
             chain: list = []
@@ -1804,7 +1858,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
 
         for idx, img in enumerate(available_images, 1):
             node_content.append(Plain(f"图片 {idx}:"))
-            # 直接使用 Image 组件构建群合并转发节点
+            
             try:
                 img_component = self._build_forward_image_component(img)
                 node_content.append(img_component)
@@ -1821,7 +1875,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
             pass
 
         node = Node(uin=sender_id, name=sender_name, content=node_content)
-        # 群合并转发需用 chain_result 包裹 Node
+       
         async for res in self._safe_send(event, event.chain_result([node])):
             yield res
 
@@ -1902,7 +1956,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
                 aspect_ratio_param_name=self.aspect_ratio_param_name,
             )
 
-            # 记录改图请求的详细信息
+            
             self.log_debug("[MODIFY_DEBUG] API请求配置:")
             self.log_debug(f"  - 提示词: {enhanced_prompt[:100]}...")
             self.log_debug(
@@ -2024,13 +2078,13 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
         api_start_time = time.perf_counter()
 
         try:
-            # 使用新提示词函数
+           
             if prompt_func:
                 full_prompt = prompt_func(prompt)
             else:
                 full_prompt = prompt
 
-            # 只有提示词包含头像关键词或有@用户时才获取头像
+            
             use_avatar = await self.should_use_avatar_for_prompt(event, prompt)
 
             async for result in self._quick_generate_image(
@@ -2095,7 +2149,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
     @quick_mode_group.command("手办化")
     async def quick_figure(self, event: AstrMessageEvent, prompt: str):
         """手办化快速模式 - 树脂收藏级手办效果"""
-        # 参数解析：1/PVC -> 风格1；2/GK -> 风格2
+        
         style_type = 1
         clean_prompt = prompt
 
@@ -2155,7 +2209,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
             )
             return
 
-        # 如果没有开启切割功能，直接使用默认逻辑
+        
         sticker_resolution, sticker_aspect_ratio = self._resolve_quick_mode_params(
             "sticker", "4K", "16:9"
         )
@@ -2183,7 +2237,6 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
                 yield result
             return
 
-        # 开启了切割功能，执行自定义逻辑
         full_prompt = (
             get_q_version_sticker_prompt(
                 user_prompt,
@@ -2199,7 +2252,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
         )
         api_start_time = time.perf_counter()
         try:
-            # 调用生图核心逻辑，但截获结果不直接发送
+            yield event.plain_result("🎨  生成中...")
             sent_success = False
             split_files: list[str] = []
 
@@ -2214,7 +2267,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
             api_duration = time.perf_counter() - api_start_time
 
             if not success or not isinstance(result_data, tuple):
-                # 如果上游已经返回了带原因的错误字符串，直接透传以避免重复提示
+                
                 if isinstance(result_data, str):
                     yield event.plain_result(result_data)
                 else:
@@ -2240,7 +2293,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
                 )
                 return
 
-            # 表情包切割依赖本地文件路径：如果上游只返回了 URL，先下载到本地
+            
             primary_source = primary_image_path
             if primary_image_path.startswith(("http://", "https://")):
                 try:
@@ -2279,7 +2332,6 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
             yield event.plain_result("✂️ 正在切割图片...")
             split_start_time = time.perf_counter()
             try:
-                # 优先尝试视觉识别裁剪，失败则回退网格裁剪
                 split_files: list[str] = []
                 if self.enable_llm_crop:
                     split_files = await self._llm_detect_and_split(primary_image_path)
@@ -2334,7 +2386,8 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
 
             # 2. 准备发送逻辑
 
-            # 如果开启了ZIP，优先尝试发送ZIP
+            sent_success = False
+            # 2a. 如果开启ZIP，尝试打包发送
             if self.enable_sticker_zip:
                 zip_path = await asyncio.to_thread(create_zip, split_files)
                 if zip_path:
@@ -2377,9 +2430,9 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
                 from astrbot.api.message_components import Image as AstrImage
                 from astrbot.api.message_components import Node, Plain
 
-                # 构造节点内容：原图 + 所有小图
+                
                 node_content = []
-                # 原图预览
+                
                 node_content.append(Plain("原图预览："))
                 try:
                     node_content.append(AstrImage.fromFileSystem(primary_image_path))
@@ -2396,7 +2449,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
                     except Exception:
                         node_content.append(Plain(f"[切片发送失败]: {file_path}"))
 
-                # 构造单个节点，包含所有图片
+                
                 sender_id = "0"
                 try:
                     if hasattr(event, "message_obj") and event.message_obj:
@@ -2428,7 +2481,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
         use_sticker_cutter = False
         grid_text = grid or ""
 
-        # 兼容部分调用场景，若参数为空则尝试从原始消息提取命令后的文本
+        
         if not grid_text:
             try:
                 raw_msg = getattr(
@@ -2461,7 +2514,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
                     return c, r
             return None, None
 
-        # 检测是否要求主体吸附分割
+
         if "吸附" in grid_text:
             use_sticker_cutter = True
             logger.info("检测到吸附关键词，启用主体吸附分割")
@@ -2637,7 +2690,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
         except Exception:
             version = "v1.3.0"
 
-        # 准备模板数据
+        
         template_data = {
             "title": f"Gemini 图像生成插件 {version}",
             "model": self.model,
@@ -2658,18 +2711,18 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
         service_settings = self.config.get("service_settings", {})
         theme_settings = service_settings.get("theme_settings", {})
 
-        # 纯文本模式
+        
         if self.help_render_mode == "text":
             yield event.plain_result(render_text(template_data))
             return
 
-        # 本地 Pillow 渲染模式
+        
         if self.help_render_mode == "local":
             try:
                 img_bytes = render_local_pillow(
                     templates_dir, theme_settings, template_data
                 )
-                # 保存到临时文件
+                
                 from .tl.tl_utils import _build_image_path
 
                 img_path = _build_image_path("png", "help")
@@ -2683,7 +2736,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
                 yield event.plain_result(render_text(template_data))
                 return
 
-        # HTML (t2i) 渲染模式
+        
         try:
             template_path = get_template_path(templates_dir, theme_settings, ".html")
             with open(template_path, encoding="utf-8") as f:

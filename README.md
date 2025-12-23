@@ -1,8 +1,8 @@
-# AstrBot Gemini 图像生成插件 v1.7.5
+# AstrBot Gemini 图像生成插件 v1.7.6
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/Version-v1.7.5-blue)
+![Version](https://img.shields.io/badge/Version-v1.7.6-blue)
 ![License](https://img.shields.io/badge/License-MIT-orange)
 
 </div>
@@ -449,7 +449,8 @@
 
 ### 🧩 新增 API 供应商
 
-开发者请参考：`docs/新增API供应商.md`
+
+开发者请参考：[新增 API 供应商（适配器开发指南）](docs/新增API供应商.md)
 
 ## 📄 许可证
 
