@@ -898,9 +898,6 @@ class GeminiAPIClient:
                         image_paths.append(image_path)
 
         if image_urls or image_paths:
-            logger.info(f"[grok2api 调试] API 返回图片数量: paths={len(image_paths)}, urls={len(image_urls)}")
-            logger.info(f"[grok2api 调试] image_urls = {image_urls}")
-            logger.info(f"[grok2api 调试] image_paths = {image_paths}")
             logger.debug(
                 f"🖼️ OpenAI 收集到 {len(image_paths) or len(image_urls)} 张图片"
             )
