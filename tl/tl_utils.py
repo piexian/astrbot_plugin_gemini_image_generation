@@ -268,6 +268,10 @@ async def save_image_stream(
         return None
 
 
+# base64 图片去重缓存（base64_hash -> file_path）
+_base64_image_cache: dict[str, str] = {}
+
+
 async def save_base64_image(base64_data: str, image_format: str = "png") -> str | None:
     """
     保存base64图像数据到文件
@@ -277,13 +281,29 @@ async def save_base64_image(base64_data: str, image_format: str = "png") -> str 
         image_format: 图像格式 (png, jpg, jpeg等)
 
     Returns:
-        保存的文件路径，失败返回None
+        保存的文件路径，失败返回None；若已保存过相同数据则返回现有路径
     """
+    import hashlib
+
+    # 去掉空白后计算哈希，用于去重
+    cleaned_data = "".join(base64_data.split())
+    data_hash = hashlib.md5(cleaned_data.encode()).hexdigest()
+
+    # 检查是否已保存过相同的数据
+    if data_hash in _base64_image_cache:
+        existing_path = _base64_image_cache[data_hash]
+        # 检查文件是否还存在
+        if Path(existing_path).exists():
+            logger.debug(f"复用已保存的图片: {existing_path}")
+            return existing_path
+        else:
+            # 文件已被删除，从缓存中移除
+            del _base64_image_cache[data_hash]
+
     try:
         file_path = _build_image_path(image_format)
 
         # 去掉空白并按块解码，避免一次性占用过大内存
-        cleaned_data = "".join(base64_data.split())
         # 一次性解码完整数据，若失败则宽松清洗后再试
         try:
             raw = base64.b64decode(cleaned_data, validate=False)
@@ -298,6 +318,9 @@ async def save_base64_image(base64_data: str, image_format: str = "png") -> str 
 
         with open(file_path, "wb") as f:
             f.write(raw)
+
+        # 加入缓存，避免重复保存相同数据
+        _base64_image_cache[data_hash] = str(file_path)
 
         logger.debug(f"图像已保存: {file_path}")
         return str(file_path)
