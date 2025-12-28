@@ -212,7 +212,14 @@ def _pick_avatar_url(data: dict | None) -> str | None:
 
 
 def _encode_file_to_base64(file_path: Path, chunk_size: int = 65536) -> str:
-    """流式编码文件为base64，避免一次性占用大量内存"""
+    """流式编码文件为base64
+    注意: chunk_size 必须是 3 的倍数，否则 base64 编码会出错
+    """
+    # 确保 chunk_size 是 3 的倍数
+    chunk_size = (chunk_size // 3) * 3
+    if chunk_size == 0:
+        chunk_size = 3
+
     encoded_parts: list[str] = []
     with open(file_path, "rb") as f:
         while True:

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import os
 import re
 import time
@@ -572,8 +573,6 @@ class GeminiImageGenerationPlugin(Star):
                 return []
 
             # 尝试解析 JSON 数组
-            import json
-            import re
 
             match = re.search(r"\[.*\]", text, re.S)
             json_str = match.group(0) if match else text
@@ -609,6 +608,15 @@ class GeminiImageGenerationPlugin(Star):
         except Exception as e:
             logger.debug(f"视觉识别裁剪失败: {e}")
             return []
+
+    def _is_aioqhttp_event(self, event: AstrMessageEvent) -> bool:
+        """判断事件是否来自aiocqhttp平台"""
+        try:
+            platform_name = event.get_platform_name()
+            return platform_name == "aiocqhttp"
+        except AttributeError as e:
+            logger.debug(f"判断平台类型失败: {e}")
+            return False
 
     async def _inject_vision_system_prompt(
         self, event: AstrMessageEvent, req: ProviderRequest
@@ -666,8 +674,6 @@ class GeminiImageGenerationPlugin(Star):
         """清理文本内容，移除 markdown 图片链接等不可发送的内容"""
         if not text:
             return text
-
-        import re
 
         text = re.sub(r"!\[.*?\]\(.*?\)", "", text)
         text = text.strip()
@@ -1021,7 +1027,9 @@ class GeminiImageGenerationPlugin(Star):
                 # 再尝试通过 context 拿到平台实例调用
                 if not bot_client and event:
                     try:
-                        from astrbot.api.platform import PlatformAdapterType
+                        from astrbot.core.star.filter.platform_adapter_type import (
+                            PlatformAdapterType,
+                        )
 
                         platform = self.context.get_platform(
                             PlatformAdapterType.AIOCQHTTP
@@ -1647,12 +1655,10 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
             text = self._extract_llm_text(resp)
             if not text:
                 return None
-            import json as _json
-            import re as _re
 
-            match = _re.search(r"\{.*\}", text, _re.S)
+            match = re.search(r"\{.*\}", text, re.S)
             json_str = match.group(0) if match else text
-            data = _json.loads(json_str)
+            data = json.loads(json_str)
             rows = int(data.get("rows", 0))
             cols = int(data.get("cols", 0))
             if (rows == 0 and cols == 0) or rows < 0 or cols < 0:
@@ -1660,7 +1666,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
                 return None
             # 兼容 AI 返回字符串如 \"4x4\"
             if rows <= 0 or cols <= 0:
-                num_match = _re.search(r"(\\d{1,2})\\s*[xX]\\s*(\\d{1,2})", text)
+                num_match = re.search(r"(\\d{1,2})\\s*[xX]\\s*(\\d{1,2})", text)
                 if num_match:
                     cols = int(num_match.group(1))
                     rows = int(num_match.group(2))
@@ -1684,8 +1690,6 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
         try:
             if not image:
                 raise ValueError("空的图片地址")
-
-
             if image.startswith("data:image/") and ";base64," in image:
                 if force_base64:
                     _, _, b64_part = image.partition(";base64,")
@@ -1772,7 +1776,6 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
         if len(available_images) == 1:
             logger.debug("[SEND] 采用单图直发模式")
             if text_to_send:
-            
                 async for res in self._safe_send(
                     event,
                     event.chain_result(
@@ -1858,7 +1861,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
 
         for idx, img in enumerate(available_images, 1):
             node_content.append(Plain(f"图片 {idx}:"))
-            
+
             try:
                 img_component = self._build_forward_image_component(img)
                 node_content.append(img_component)
@@ -1875,7 +1878,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
             pass
 
         node = Node(uin=sender_id, name=sender_name, content=node_content)
-       
+
         async for res in self._safe_send(event, event.chain_result([node])):
             yield res
 
@@ -1956,7 +1959,6 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
                 aspect_ratio_param_name=self.aspect_ratio_param_name,
             )
 
-            
             self.log_debug("[MODIFY_DEBUG] API请求配置:")
             self.log_debug(f"  - 提示词: {enhanced_prompt[:100]}...")
             self.log_debug(
@@ -2078,13 +2080,11 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
         api_start_time = time.perf_counter()
 
         try:
-           
             if prompt_func:
                 full_prompt = prompt_func(prompt)
             else:
                 full_prompt = prompt
 
-            
             use_avatar = await self.should_use_avatar_for_prompt(event, prompt)
 
             async for result in self._quick_generate_image(
@@ -2149,7 +2149,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
     @quick_mode_group.command("手办化")
     async def quick_figure(self, event: AstrMessageEvent, prompt: str):
         """手办化快速模式 - 树脂收藏级手办效果"""
-        
+
         style_type = 1
         clean_prompt = prompt
 
@@ -2209,7 +2209,6 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
             )
             return
 
-        
         sticker_resolution, sticker_aspect_ratio = self._resolve_quick_mode_params(
             "sticker", "4K", "16:9"
         )
@@ -2267,7 +2266,6 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
             api_duration = time.perf_counter() - api_start_time
 
             if not success or not isinstance(result_data, tuple):
-                
                 if isinstance(result_data, str):
                     yield event.plain_result(result_data)
                 else:
@@ -2293,7 +2291,6 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
                 )
                 return
 
-            
             primary_source = primary_image_path
             if primary_image_path.startswith(("http://", "https://")):
                 try:
@@ -2430,9 +2427,8 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
                 from astrbot.api.message_components import Image as AstrImage
                 from astrbot.api.message_components import Node, Plain
 
-                
                 node_content = []
-                
+
                 node_content.append(Plain("原图预览："))
                 try:
                     node_content.append(AstrImage.fromFileSystem(primary_image_path))
@@ -2449,7 +2445,6 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
                     except Exception:
                         node_content.append(Plain(f"[切片发送失败]: {file_path}"))
 
-                
                 sender_id = "0"
                 try:
                     if hasattr(event, "message_obj") and event.message_obj:
@@ -2481,7 +2476,6 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
         use_sticker_cutter = False
         grid_text = grid or ""
 
-        
         if not grid_text:
             try:
                 raw_msg = getattr(
@@ -2513,7 +2507,6 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
                 if c > 0 and r > 0:
                     return c, r
             return None, None
-
 
         if "吸附" in grid_text:
             use_sticker_cutter = True
@@ -2690,7 +2683,6 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
         except Exception:
             version = "v1.3.0"
 
-        
         template_data = {
             "title": f"Gemini 图像生成插件 {version}",
             "model": self.model,
@@ -2711,18 +2703,16 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
         service_settings = self.config.get("service_settings", {})
         theme_settings = service_settings.get("theme_settings", {})
 
-        
         if self.help_render_mode == "text":
             yield event.plain_result(render_text(template_data))
             return
 
-        
         if self.help_render_mode == "local":
             try:
                 img_bytes = render_local_pillow(
                     templates_dir, theme_settings, template_data
                 )
-                
+
                 from .tl.tl_utils import _build_image_path
 
                 img_path = _build_image_path("png", "help")
@@ -2736,7 +2726,6 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
                 yield event.plain_result(render_text(template_data))
                 return
 
-        
         try:
             template_path = get_template_path(templates_dir, theme_settings, ".html")
             with open(template_path, encoding="utf-8") as f:
