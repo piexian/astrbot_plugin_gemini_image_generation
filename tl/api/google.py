@@ -85,7 +85,7 @@ class GoogleProvider:
         fail_reasons: list[str] = []
         total_ref_count = len(config.reference_images or [])
         # 实际处理的参考图数量受 [:14] 限制
-        processed_ref_count = len((config.reference_images or [])[:14])
+        processed_ref_count = min(total_ref_count, 14)
         if total_ref_count > 0:
             if total_ref_count > processed_ref_count:
                 logger.info(

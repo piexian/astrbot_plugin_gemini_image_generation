@@ -118,8 +118,14 @@ class OpenAICompatProvider:
         if config.reference_images:
             processed_cache: dict[str, dict[str, Any]] = {}
             total_start = time.perf_counter()
-            ref_count = len(config.reference_images)
-            logger.info(f"📎 开始处理 {ref_count} 张参考图片...")
+            total_ref_count = len(config.reference_images)
+            processed_ref_count = min(total_ref_count, 6)
+            if total_ref_count > processed_ref_count:
+                logger.info(
+                    f"📎 开始处理 {processed_ref_count} 张参考图片 (共配置 {total_ref_count} 张，最多处理 6 张)..."
+                )
+            else:
+                logger.info(f"📎 开始处理 {processed_ref_count} 张参考图片...")
 
             for idx, image_input in enumerate(config.reference_images[:6]):
                 per_start = time.perf_counter()
@@ -158,7 +164,7 @@ class OpenAICompatProvider:
                             "type": "image_url",
                             "image_url": {"url": image_str},
                         }
-                        logger.info(f"📎 图片 {idx + 1}/{ref_count} 已加入发送请求 (URL)")
+                        logger.info(f"📎 图片 {idx + 1}/{processed_ref_count} 已加入发送请求 (URL)")
                         logger.debug(
                             "OpenAI兼容API使用URL参考图: idx=%s ext=%s url=%s",
                             idx,
@@ -191,7 +197,7 @@ class OpenAICompatProvider:
                                 "type": "image_url",
                                 "image_url": {"url": image_str},
                             }
-                            logger.info(f"📎 图片 {idx + 1}/{ref_count} 已加入发送请求 (data URL)")
+                            logger.info(f"📎 图片 {idx + 1}/{processed_ref_count} 已加入发送请求 (data URL)")
                             logger.debug(
                                 "OpenAI兼容API使用data URL参考图: idx=%s mime=%s",
                                 idx,
@@ -209,7 +215,7 @@ class OpenAICompatProvider:
                                     None,
                                     "invalid_reference_image",
                                 )
-                            logger.warning(f"📎 图片 {idx + 1}/{ref_count} 未能加入发送请求 - 无法转换")
+                            logger.warning(f"📎 图片 {idx + 1}/{processed_ref_count} 未能加入发送请求 - 无法转换")
                             logger.debug(
                                 "跳过无法识别/读取的参考图像: idx=%s type=%s",
                                 idx,
@@ -237,7 +243,7 @@ class OpenAICompatProvider:
                             try:
                                 base64.b64decode(cleaned, validate=True)
                                 b64_kb = len(cleaned) * 3 // 4 // 1024
-                                logger.info(f"📎 图片 {idx + 1}/{ref_count} 已加入发送请求 (base64, {b64_kb}KB)")
+                                logger.info(f"📎 图片 {idx + 1}/{processed_ref_count} 已加入发送请求 (base64, {b64_kb}KB)")
                             except Exception:
                                 raise APIError(
                                     f"参考图 base64 校验失败（force_base64），来源: idx={idx}",
@@ -265,22 +271,21 @@ class OpenAICompatProvider:
                         )
 
                 except Exception as e:
-                    logger.warning(f"📎 图片 {idx + 1}/{ref_count} 未能加入发送请求 - {str(e)[:30]}")
+                    logger.warning(f"📎 图片 {idx + 1}/{processed_ref_count} 未能加入发送请求 - {str(e)[:30]}")
                     logger.debug("处理参考图像时出现异常: idx=%s err=%s", idx, e)
                     continue
 
             total_elapsed_ms = (time.perf_counter() - total_start) * 1000
             success_count = len(processed_cache)
             if success_count > 0:
-                logger.info(f"📎 参考图片处理完成：{success_count}/{ref_count} 张已成功加入发送请求")
+                logger.info(f"📎 参考图片处理完成：{success_count}/{processed_ref_count} 张已成功加入发送请求")
             else:
-                # 如果原本有参考图但全部处理失败，抛出错误
-                if config.reference_images:
-                    raise APIError(
-                        "参考图全部处理失败，可能是网络问题或格式不支持。建议：1) 检查图片链接是否可访问；2) 尝试重新发送图片；3) 使用 Google API 格式可能有更好的错误提示。",
-                        None,
-                        "invalid_reference_image",
-                    )
+                # 参考图全部处理失败，抛出错误
+                raise APIError(
+                    "参考图全部处理失败，可能是网络问题或格式不支持。建议：1) 检查图片链接是否可访问；2) 尝试重新发送图片；3) 使用 Google API 格式可能有更好的错误提示。",
+                    None,
+                    "invalid_reference_image",
+                )
 
         payload: dict[str, Any] = {
             "model": config.model,
