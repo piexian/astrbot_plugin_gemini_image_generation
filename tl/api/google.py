@@ -83,6 +83,17 @@ class GoogleProvider:
 
         added_refs = 0
         fail_reasons: list[str] = []
+        total_ref_count = len(config.reference_images or [])
+        # 实际处理的参考图数量受 [:14] 限制
+        processed_ref_count = len((config.reference_images or [])[:14])
+        if total_ref_count > 0:
+            if total_ref_count > processed_ref_count:
+                logger.info(
+                    f"📎 开始处理 {processed_ref_count} 张参考图片 (共配置 {total_ref_count} 张，最多处理 14 张)..."
+                )
+            else:
+                logger.info(f"📎 开始处理 {processed_ref_count} 张参考图片...")
+
         if config.reference_images:
             for idx, image_input in enumerate(config.reference_images[:14]):
                 image_str = str(image_input).strip()
@@ -139,6 +150,10 @@ class GoogleProvider:
                     continue
 
                 mime_type = client._ensure_mime_type(mime_type)
+                size_kb = len(validated_data) // 1024 if validated_data else 0
+                logger.info(
+                    f"📎 图片 {idx + 1}/{processed_ref_count} 已加入发送请求 ({mime_type}, {size_kb}KB)"
+                )
                 logger.debug(
                     "[google] 成功处理参考图 idx=%s mime=%s size=%s",
                     idx,
@@ -150,6 +165,17 @@ class GoogleProvider:
                     {"inlineData": {"mimeType": mime_type, "data": validated_data}}
                 )
                 added_refs += 1
+
+        # 输出最终统计
+        if processed_ref_count > 0:
+            if added_refs > 0:
+                logger.info(
+                    f"📎 参考图片处理完成：{added_refs}/{processed_ref_count} 张已成功加入发送请求"
+                )
+            else:
+                logger.info(
+                    f"📎 参考图片处理完成：0/{processed_ref_count} 张成功，全部未能加入发送请求"
+                )
 
         if config.reference_images and added_refs == 0:
             raise APIError(
@@ -337,8 +363,10 @@ class GoogleProvider:
                             )
 
                             if saved_path:
-                                image_paths.append(saved_path)
-                                image_urls.append(saved_path)
+                                if saved_path not in image_paths:
+                                    image_paths.append(saved_path)
+                                if saved_path not in image_urls:
+                                    pass  # 本地路径不加到urls
                             else:
                                 try:
                                     with tempfile.NamedTemporaryFile(
@@ -354,8 +382,11 @@ class GoogleProvider:
                                             )
                                         raw = base64.b64decode(cleaned, validate=False)
                                         tmp_file.write(raw)
-                                    image_paths.append(str(tmp_path))
-                                    image_urls.append(str(tmp_path))
+                                    tmp_path_str = str(tmp_path)
+                                    if tmp_path_str not in image_paths:
+                                        image_paths.append(tmp_path_str)
+                                    if tmp_path_str not in image_urls:
+                                        pass  # 本地路径不加到urls
                                     logger.debug(
                                         "⚠️ save_base64_image 失败，已使用宽松解码写入临时文件: %s",
                                         tmp_path,
@@ -382,7 +413,8 @@ class GoogleProvider:
                         f"处理候选 {idx} 的第 {i} 个part时出错: {e}", exc_info=True
                     )
 
-        logger.debug(f"🖼️ 共找到 {len(image_paths)} 张图片")
+        unique_count = len(set(image_urls) | set(image_paths))
+        logger.debug(f"🖼️ 共找到 {unique_count} 张图片 (urls={len(image_urls)}, paths={len(image_paths)})")
 
         if text_chunks:
             extracted_urls: list[str] = []
@@ -394,8 +426,12 @@ class GoogleProvider:
                 extracted_paths.extend(paths2)
 
             if extracted_urls or extracted_paths:
-                image_urls.extend(extracted_urls)
-                image_paths.extend(extracted_paths)
+                for url in extracted_urls:
+                    if url and url not in image_urls:
+                        image_urls.append(url)
+                for path in extracted_paths:
+                    if path and path not in image_paths:
+                        image_paths.append(path)
 
         text_content = (
             " ".join(chunk for chunk in text_chunks if chunk).strip()

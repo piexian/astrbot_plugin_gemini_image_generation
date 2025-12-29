@@ -118,6 +118,8 @@ class OpenAICompatProvider:
         if config.reference_images:
             processed_cache: dict[str, dict[str, Any]] = {}
             total_start = time.perf_counter()
+            ref_count = len(config.reference_images)
+            logger.info(f"📎 开始处理 {ref_count} 张参考图片...")
 
             for idx, image_input in enumerate(config.reference_images[:6]):
                 per_start = time.perf_counter()
@@ -156,6 +158,9 @@ class OpenAICompatProvider:
                             "type": "image_url",
                             "image_url": {"url": image_str},
                         }
+                        logger.info(
+                            f"📎 图片 {idx + 1}/{ref_count} 已加入发送请求 (URL)"
+                        )
                         logger.debug(
                             "OpenAI兼容API使用URL参考图: idx=%s ext=%s url=%s",
                             idx,
@@ -188,6 +193,9 @@ class OpenAICompatProvider:
                                 "type": "image_url",
                                 "image_url": {"url": image_str},
                             }
+                            logger.info(
+                                f"📎 图片 {idx + 1}/{ref_count} 已加入发送请求 (data URL, {len(data_part)//1024}KB)"
+                            )
                             logger.debug(
                                 "OpenAI兼容API使用data URL参考图: idx=%s mime=%s",
                                 idx,
@@ -206,6 +214,9 @@ class OpenAICompatProvider:
                                     "invalid_reference_image",
                                 )
                             logger.warning(
+                                f"📎 图片 {idx + 1}/{ref_count} 未能加入发送请求 - 无法转换"
+                            )
+                            logger.debug(
                                 "跳过无法识别/读取的参考图像: idx=%s type=%s",
                                 idx,
                                 type(image_input),
@@ -231,6 +242,10 @@ class OpenAICompatProvider:
                             cleaned = data.strip().replace("\n", "")
                             try:
                                 base64.b64decode(cleaned, validate=True)
+                                b64_kb = len(cleaned) * 3 // 4 // 1024
+                                logger.info(
+                                    f"📎 图片 {idx + 1}/{ref_count} 已加入发送请求 (base64, {b64_kb}KB)"
+                                )
                             except Exception:
                                 raise APIError(
                                     f"参考图 base64 校验失败（force_base64），来源: idx={idx}",
@@ -258,17 +273,27 @@ class OpenAICompatProvider:
                         )
 
                 except Exception as e:
-                    logger.warning("处理参考图像时出现异常: idx=%s err=%s", idx, e)
+                    logger.warning(
+                        f"📎 图片 {idx + 1}/{ref_count} 未能加入发送请求 - {str(e)[:30]}"
+                    )
+                    logger.debug("处理参考图像时出现异常: idx=%s err=%s", idx, e)
                     continue
 
             total_elapsed_ms = (time.perf_counter() - total_start) * 1000
-            if processed_cache:
-                logger.debug(
-                    "参考图像处理统计: 总数=%s 总耗时=%.2fms 平均=%.2fms",
-                    len(processed_cache),
-                    total_elapsed_ms,
-                    total_elapsed_ms / len(processed_cache),
+            # 输出最终统计
+            success_count = len(processed_cache)
+            if success_count > 0:
+                logger.info(
+                    f"📎 参考图片处理完成：{success_count}/{ref_count} 张已成功加入发送请求"
                 )
+            else:
+                # 如果原本有参考图但全部处理失败，抛出错误
+                if config.reference_images:
+                    raise APIError(
+                        "参考图全部处理失败，可能是网络问题或格式不支持。建议：1) 检查图片链接是否可访问；2) 尝试重新发送图片；3) 使用 Google API 格式可能有更好的错误提示。",
+                        None,
+                        "invalid_reference_image",
+                    )
 
         payload: dict[str, Any] = {
             "model": config.model,
@@ -279,6 +304,7 @@ class OpenAICompatProvider:
             else 0.7,
             "modalities": ["image", "text"],
             "stream": False,
+            "n": 1,  # 确保只返回1张图片
         }
 
         _res_key = (config.resolution_param_name or "").strip()
@@ -419,7 +445,8 @@ class OpenAICompatProvider:
                     if cleaned_candidate.startswith(
                         "http://"
                     ) or cleaned_candidate.startswith("https://"):
-                        image_urls.append(cleaned_candidate)
+                        if cleaned_candidate not in image_urls:
+                            image_urls.append(cleaned_candidate)
                         logger.debug(
                             f"🖼️ OpenAI 返回可直接访问的图像链接: {cleaned_candidate}"
                         )
@@ -432,9 +459,11 @@ class OpenAICompatProvider:
                     continue
 
                 if image_url or image_path:
-                    if image_url:
-                        image_urls.append(image_url)
-                    if image_path:
+                    # image_url 可能是下载后的本地路径，只添加 http/https/data: URL
+                    if image_url and image_url not in image_urls:
+                        if image_url.startswith(("http://", "https://", "data:")):
+                            image_urls.append(image_url)
+                    if image_path and image_path not in image_paths:
                         image_paths.append(image_path)
 
             extracted_urls2: list[str] = []
@@ -512,8 +541,8 @@ class OpenAICompatProvider:
                     b64_raw = m.group(2)
                     b64_clean = re.sub(r"\\s+", "", b64_raw)
                     image_path = await save_base64_image(b64_clean, fmt.lower())
-                    if image_path:
-                        image_urls.append(image_path)
+                    if image_path and image_path not in image_paths:
+                        # image_urls.append(image_path)  # 本地路径不加到urls
                         image_paths.append(image_path)
                         logger.debug(
                             "[openai] 松散提取 data URI 成功: fmt=%s len=%s",
@@ -540,19 +569,27 @@ class OpenAICompatProvider:
                     image_url, image_path = await client._download_image(
                         image_item["url"], session, use_cache=False
                     )
-                    if image_url:
-                        image_urls.append(image_url)
-                    if image_path:
+                    # image_url 可能是下载后的本地路径，只添加 http/https/data: URL
+                    if image_url and image_url not in image_urls:
+                        if image_url.startswith(("http://", "https://", "data:")):
+                            image_urls.append(image_url)
+                    if image_path and image_path not in image_paths:
                         image_paths.append(image_path)
                 elif "b64_json" in image_item:
                     image_path = await save_base64_image(image_item["b64_json"], "png")
-                    if image_path:
-                        image_urls.append(image_path)
+                    if image_path and image_path not in image_paths:
+                        # image_urls.append(image_path)  # 本地路径不加到urls
                         image_paths.append(image_path)
-
         if image_urls or image_paths:
+            # Info-level: 只输出数量统计，避免泄露敏感 URL
+            logger.info(f"🔍 收集的URLs数量: {len(image_urls)}")
+            logger.info(f"🔍 收集的Paths数量: {len(image_paths)}")
+            # Debug-level: 详细的 URL 来源信息用于调试
+            sources_preview = ", ".join([u[:50] + "..." if len(u) > 50 else u for u in image_urls])
+            logger.debug(f"🔍 image_urls来源(截断预览): {sources_preview}")
+            unique_count = len(set(image_urls) | set(image_paths))
             logger.debug(
-                f"🖼️ OpenAI 收集到 {len(image_paths) or len(image_urls)} 张图片"
+                f"🖼️ OpenAI 收集到 {unique_count} 张图片 (urls={len(image_urls)}, paths={len(image_paths)})"
             )
             return image_urls, image_paths, text_content, thought_signature
 
