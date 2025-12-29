@@ -687,7 +687,7 @@ def is_valid_base64_image_str(value: str) -> bool:
             return True
         if raw.startswith(b"RIFF") and len(raw) >= 12 and raw[8:12] == b"WEBP":
             return True
-        if raw.startswith(b"GIF87a") or raw.startswith(b"GIF89a"):  # GIF
+        if raw.startswith((b"GIF87a", b"GIF89a")):  # GIF
             return True
         if len(raw) >= 12 and raw[4:12] in {
             b"ftypheic",
