@@ -1,8 +1,8 @@
-# AstrBot Gemini 图像生成插件 v1.7.8
+# AstrBot Gemini 图像生成插件 v1.7.9
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/Version-v1.7.8-blue)
+![Version](https://img.shields.io/badge/Version-v1.7.9-blue)
 ![License](https://img.shields.io/badge/License-MIT-orange)
 
 </div>
@@ -483,6 +483,7 @@
   - [PR#39](https://github.com/piexian/astrbot_plugin_gemini_image_generation/pull/39)：清理无效参数和调试日志
   - [PR#40](https://github.com/piexian/astrbot_plugin_gemini_image_generation/pull/40)：添加 GIF 图片格式支持
   - [PR#41](https://github.com/piexian/astrbot_plugin_gemini_image_generation/pull/41)：修复 base64 图片重复保存问题
+  - [PR#45](https://github.com/piexian/astrbot_plugin_gemini_image_generation/pull/45)：改进参考图片处理日志，增加失败检测
 ## 🤝 关联支持
 
 - **项目地址**: [GitHub Repository](https://github.com/piexian/astrbot_plugin_gemini_image_generation)
