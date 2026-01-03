@@ -484,7 +484,7 @@
 
 ```
 astrbot_plugin_gemini_image_generation/
-├── main.py                 # 插件主入口
+├── main.py                 # 插件主入口（业务流程编排）
 ├── metadata.yaml           # 插件元数据
 ├── _conf_schema.json       # 配置 Schema
 ├── requirements.txt        # 依赖列表
@@ -499,13 +499,20 @@ astrbot_plugin_gemini_image_generation/
 └── tl/                     # 核心模块
     ├── __init__.py
     ├── api_types.py        # API 类型定义
+    ├── avatar_handler.py   # 头像获取和管理
     ├── enhanced_prompts.py # 提示词增强
     ├── help_renderer.py    # 帮助页渲染
+    ├── image_generator.py  # 图像生成核心逻辑
+    ├── image_handler.py    # 图像处理、过滤、下载
     ├── image_splitter.py   # 图像切分（SmartMemeSplitter）
     ├── llm_tools.py        # LLM 工具定义
+    ├── message_sender.py   # 消息格式化和发送
+    ├── plugin_config.py    # 配置加载和管理
+    ├── rate_limiter.py     # 限流和群限制
     ├── sticker_cutter.py   # 主体+附件吸附分割
     ├── tl_api.py           # API 客户端
     ├── tl_utils.py         # 工具函数
+    ├── vision_handler.py   # 视觉 LLM 操作
     └── api/                # API 供应商适配器
         ├── __init__.py
         ├── base.py         # 基类
@@ -513,7 +520,7 @@ astrbot_plugin_gemini_image_generation/
         ├── grok2api.py     # grok2api 适配
         ├── openai_compat.py # OpenAI 兼容
         ├── registry.py     # 供应商注册表
-        └── zai.py          # Zai 适配
+        └── zai.py          # Zai.is 适配
 ```
 
 ## 📄 许可证
@@ -553,8 +560,10 @@ astrbot_plugin_gemini_image_generation/
 
 - **项目地址**: [GitHub Repository](https://github.com/piexian/astrbot_plugin_gemini_image_generation)
 - **问题反馈**: [Issues](https://github.com/piexian/astrbot_plugin_gemini_image_generation/issues)
-- **AstrBot 文档**: [docs.astrbot.app](https://docs.astrbot.app/)
-
+- **AstrBot 文档**: [docs.astrbot.app](https://docs.astrbot.app)
+- [grok2api](https://github.com/chenyme/grok2api)
+- [zaiis2api](https://github.com/Futureppo/zaiis2api) 
+- [zaiis](https://zai.is) 
 ---
 
 <div align="center">
