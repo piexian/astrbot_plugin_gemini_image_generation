@@ -1,5 +1,3 @@
-aiohttp
 PyYAML
-Pillow
 opencv-python-headless
 numpy

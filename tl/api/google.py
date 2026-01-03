@@ -5,11 +5,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
 import aiohttp
-
 from astrbot.api import logger
 
 from ..api_types import APIError, ApiRequestConfig
@@ -86,6 +86,7 @@ class GoogleProvider:
         total_ref_count = len(config.reference_images or [])
         # 实际处理的参考图数量受 [:14] 限制
         processed_ref_count = min(total_ref_count, 14)
+        total_start = time.perf_counter()
         if total_ref_count > 0:
             if total_ref_count > processed_ref_count:
                 logger.info(
@@ -168,13 +169,14 @@ class GoogleProvider:
 
         # 输出最终统计
         if processed_ref_count > 0:
+            total_elapsed_ms = (time.perf_counter() - total_start) * 1000
             if added_refs > 0:
                 logger.info(
-                    f"📎 参考图片处理完成：{added_refs}/{processed_ref_count} 张已成功加入发送请求"
+                    f"📎 参考图片处理完成：{added_refs}/{processed_ref_count} 张已成功加入发送请求，耗时 {total_elapsed_ms:.0f}ms"
                 )
             else:
                 logger.info(
-                    f"📎 参考图片处理完成：0/{processed_ref_count} 张成功，全部未能加入发送请求"
+                    f"📎 参考图片处理完成：0/{processed_ref_count} 张成功，全部未能加入发送请求，耗时 {total_elapsed_ms:.0f}ms"
                 )
 
         if config.reference_images and added_refs == 0:

@@ -15,7 +15,6 @@ import urllib.parse
 from typing import Any
 
 import aiohttp
-
 from astrbot.api import logger
 
 from .openai_compat import OpenAICompatProvider

@@ -12,13 +12,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import mcp.types
-from pydantic import Field
-from pydantic.dataclasses import dataclass
-
 from astrbot.api import logger
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import FunctionTool, ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
+from pydantic import Field
+from pydantic.dataclasses import dataclass
 
 if TYPE_CHECKING:
     from ..main import GeminiImageGenerationPlugin

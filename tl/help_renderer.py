@@ -9,9 +9,8 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
-
 from astrbot.api import logger
+from PIL import Image, ImageDraw, ImageFont
 
 # 字体下载配置
 FONT_FILENAME = "NotoSansSC-Regular.ttf"

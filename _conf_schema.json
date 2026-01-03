@@ -623,5 +623,30 @@
         "default": 5
       }
     }
+  },
+  "cache_settings": {
+    "description": "缓存设置",
+    "type": "object",
+    "hint": "配置图片缓存清理策略，包括缓存保留时间和清理周期",
+    "items": {
+      "cache_ttl_minutes": {
+        "description": "缓存保留时间（分钟）",
+        "type": "int",
+        "hint": "生成的图片、下载缓存、切图等文件保留多少分钟后自动清理，设为 0 表示不自动清理",
+        "default": 5
+      },
+      "cleanup_interval_minutes": {
+        "description": "清理间隔（分钟）",
+        "type": "int",
+        "hint": "定时清理任务的执行间隔，设为 0 表示禁用定时清理",
+        "default": 30
+      },
+      "max_cache_files": {
+        "description": "缓存文件数量上限",
+        "type": "int",
+        "hint": "各缓存目录的文件数量上限，超过时会按时间清理最旧的文件，设为 0 表示不限制数量",
+        "default": 100
+      }
+    }
   }
 }

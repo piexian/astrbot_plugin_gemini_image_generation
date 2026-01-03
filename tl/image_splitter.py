@@ -4,7 +4,6 @@ from typing import Any
 
 import cv2
 import numpy as np
-
 from astrbot.api import logger
 
 from .tl_utils import (
