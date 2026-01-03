@@ -143,21 +143,26 @@ class VisionHandler:
             # 若图过大，先生成压缩副本以提升识别成功率
             image_urls: list[str] = []
             vision_input_path = image_path
+            scale_ratio = 1.0  # 缩放比例，用于将坐标还原到原始尺寸
             try:
                 max_side = max(width, height)
                 if max_side > 1200:
-                    ratio = 1200 / max_side
-                    new_w = int(width * ratio)
-                    new_h = int(height * ratio)
-                    img = img.resize((new_w, new_h))
-                    tmp_path = Path("/tmp") / f"vision_crop_{Path(image_path).stem}.png"
-                    img.save(tmp_path, format="PNG")
+                    scale_ratio = max_side / 1200  # 还原时需要乘以这个比例
+                    new_w = int(width / scale_ratio)
+                    new_h = int(height / scale_ratio)
+                    with PILImage.open(image_path) as img_to_resize:
+                        resized_img = img_to_resize.resize((new_w, new_h))
+                        tmp_path = (
+                            Path("/tmp") / f"vision_crop_{Path(image_path).stem}.png"
+                        )
+                        resized_img.save(tmp_path, format="PNG")
                     vision_input_path = str(tmp_path)
                     logger.debug(
-                        f"[LLM_CROP] 生成压缩副本用于识别: {vision_input_path} ({new_w}x{new_h})"
+                        f"[LLM_CROP] 生成压缩副本用于识别: {vision_input_path} ({new_w}x{new_h}), scale_ratio={scale_ratio:.2f}"
                     )
             except Exception as e:
                 logger.debug(f"[LLM_CROP] 压缩副本生成失败，使用原图: {e}")
+                scale_ratio = 1.0
 
             image_urls = [vision_input_path] if vision_input_path else []
             logger.debug(
