@@ -132,7 +132,7 @@
 
 **quick_mode_settings**
 - 可选：覆盖 `快速` 指令各模式的默认分辨率/长宽比；默认值即内置默认，可直接修改。
-- 覆盖项（每个模式下都有 `resolution` / `aspect_ratio` 两个字段）：`avatar`/`poster`/`wallpaper`/`card`/`mobile`/`figure`。
+- 覆盖项（每个模式下都有 `resolution` / `aspect_ratio` 两个字段）：`avatar`/`poster`/`wallpaper`/`card`/`mobile`/`figure`/`sticker`。
 
 **retry_settings**
 - `max_attempts_per_key`：每个密钥的最大重试次数，默认 3。
