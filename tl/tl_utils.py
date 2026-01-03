@@ -284,7 +284,6 @@ async def save_base64_image(base64_data: str, image_format: str = "png") -> str 
         保存的文件路径，失败返回None；若已保存过相同数据则返回现有路径
     """
 
-
     # 去掉空白后计算哈希，用于去重
     cleaned_data = "".join(base64_data.split())
     data_hash = hashlib.md5(cleaned_data.encode()).hexdigest()
@@ -354,20 +353,28 @@ async def save_image_data(image_data: bytes, image_format: str = "png") -> str |
         return None
 
 
-async def cleanup_old_images(images_dir: Path | None = None):
+async def cleanup_old_images(
+    images_dir: Path | None = None, ttl_minutes: int = 5, max_files: int = 100
+):
     """
-    清理超过5分钟的图像文件和缓存
+    清理超过指定时间的图像文件和缓存，并限制文件数量
 
     Args:
         images_dir (Path): images 目录路径，如果为None则使用默认路径
+        ttl_minutes (int): 缓存保留时间（分钟），默认 5 分钟，设为 0 表示不按时间清理
+        max_files (int): 各目录文件数量上限，默认 100，设为 0 表示不限制数量
     """
+    # 如果 TTL 和数量限制都为 0，不执行清理
+    if ttl_minutes <= 0 and max_files <= 0:
+        return
+
     try:
         plugin_data_dir = get_plugin_data_dir()
         if images_dir is None:
             images_dir = plugin_data_dir / "images"
 
         current_time = datetime.now()
-        cutoff_time = current_time - timedelta(minutes=5)
+        cutoff_time = current_time - timedelta(minutes=ttl_minutes)
         cleaned_count = 0
 
         # 清理 images 目录
@@ -377,17 +384,32 @@ async def cleanup_old_images(images_dir: Path | None = None):
                 "gemini_advanced_image_*.*",
                 "help_*.png",
             ]
+            all_files: list[Path] = []
             for pattern in image_patterns:
-                for file_path in images_dir.glob(pattern):
-                    try:
+                all_files.extend(images_dir.glob(pattern))
+
+            # 按修改时间排序（最旧的在前面）
+            all_files.sort(key=lambda f: f.stat().st_mtime)
+
+            for idx, file_path in enumerate(all_files):
+                try:
+                    should_delete = False
+                    # 按时间清理
+                    if ttl_minutes > 0:
                         if (
                             datetime.fromtimestamp(file_path.stat().st_mtime)
                             < cutoff_time
                         ):
-                            file_path.unlink()
-                            cleaned_count += 1
-                    except Exception as e:
-                        logger.warning(f"清理文件 {file_path} 时出错: {e}")
+                            should_delete = True
+                    # 按数量清理（保留最新的 max_files 个）
+                    if max_files > 0 and len(all_files) - idx > max_files:
+                        should_delete = True
+
+                    if should_delete:
+                        file_path.unlink()
+                        cleaned_count += 1
+                except Exception as e:
+                    logger.warning(f"清理文件 {file_path} 时出错: {e}")
 
         # 清理 download_cache 目录
         cache_dir = (
@@ -396,32 +418,50 @@ async def cleanup_old_images(images_dir: Path | None = None):
             else plugin_data_dir / "images" / "download_cache"
         )
         if cache_dir.exists():
-            for file_path in cache_dir.glob("*"):
-                if file_path.is_file():
-                    try:
+            cache_files = [f for f in cache_dir.glob("*") if f.is_file()]
+            cache_files.sort(key=lambda f: f.stat().st_mtime)
+
+            for idx, file_path in enumerate(cache_files):
+                try:
+                    should_delete = False
+                    if ttl_minutes > 0:
                         if (
                             datetime.fromtimestamp(file_path.stat().st_mtime)
                             < cutoff_time
                         ):
-                            file_path.unlink()
-                            cleaned_count += 1
-                    except Exception as e:
-                        logger.warning(f"清理缓存 {file_path} 时出错: {e}")
+                            should_delete = True
+                    if max_files > 0 and len(cache_files) - idx > max_files:
+                        should_delete = True
+
+                    if should_delete:
+                        file_path.unlink()
+                        cleaned_count += 1
+                except Exception as e:
+                    logger.warning(f"清理缓存 {file_path} 时出错: {e}")
 
         # 清理 split_output 目录
         split_dir = plugin_data_dir / "split_output"
         if split_dir.exists():
-            for file_path in split_dir.glob("*"):
-                if file_path.is_file():
-                    try:
+            split_files = [f for f in split_dir.glob("*") if f.is_file()]
+            split_files.sort(key=lambda f: f.stat().st_mtime)
+
+            for idx, file_path in enumerate(split_files):
+                try:
+                    should_delete = False
+                    if ttl_minutes > 0:
                         if (
                             datetime.fromtimestamp(file_path.stat().st_mtime)
                             < cutoff_time
                         ):
-                            file_path.unlink()
-                            cleaned_count += 1
-                    except Exception as e:
-                        logger.warning(f"清理切图 {file_path} 时出错: {e}")
+                            should_delete = True
+                    if max_files > 0 and len(split_files) - idx > max_files:
+                        should_delete = True
+
+                    if should_delete:
+                        file_path.unlink()
+                        cleaned_count += 1
+                except Exception as e:
+                    logger.warning(f"清理切图 {file_path} 时出错: {e}")
 
         if cleaned_count > 0:
             logger.debug(f"共清理 {cleaned_count} 个过期文件")

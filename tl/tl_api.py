@@ -591,7 +591,9 @@ class GeminiAPIClient:
                 if api_type == "google":
                     return await self._parse_gresponse(response_data, session)
                 else:  # openai 兼容格式
-                    return await self._parse_openai_response(response_data, session, api_base)
+                    return await self._parse_openai_response(
+                        response_data, session, api_base
+                    )
             elif response.status in [429, 402, 403]:
                 error_msg = response_data.get("error", {}).get(
                     "message", f"HTTP {response.status}"
@@ -768,21 +770,29 @@ class GeminiAPIClient:
                     image_url, image_path = await self._parse_data_uri(candidate_url)
                 elif isinstance(candidate_url, str):
                     # grok2api 适配：处理相对路径（如 /images/xxx）
-                    if candidate_url.startswith("/") and not candidate_url.startswith("//"):
+                    if candidate_url.startswith("/") and not candidate_url.startswith(
+                        "//"
+                    ):
                         if api_base:
                             # 从 api_base 提取 scheme 和 netloc
                             parsed_base = urllib.parse.urlparse(api_base)
                             base_url = f"{parsed_base.scheme}://{parsed_base.netloc}"
                             full_url = urllib.parse.urljoin(base_url, candidate_url)
                             # grok2api 适配：立即下载临时缓存的图片（避免被清理）
-                            logger.debug(f"[grok2api 适配] 相对路径转换并下载: {candidate_url} -> {full_url}")
-                            image_url, image_path = await self._download_image(full_url, session, use_cache=False)
+                            logger.debug(
+                                f"[grok2api 适配] 相对路径转换并下载: {candidate_url} -> {full_url}"
+                            )
+                            image_url, image_path = await self._download_image(
+                                full_url, session, use_cache=False
+                            )
                             # 只保留本地路径（_download_image 返回的两个值相同，避免重复）
                             if image_path:
                                 image_paths.append(image_path)
                             continue
                         else:
-                            logger.warning(f"发现相对路径 URL 但未提供 api_base，跳过: {candidate_url}")
+                            logger.warning(
+                                f"发现相对路径 URL 但未提供 api_base，跳过: {candidate_url}"
+                            )
                             continue
                     # 对于可访问的 http(s) 链接，直接返回 URL，避免重复下载占用带宽
                     if candidate_url.startswith("http://") or candidate_url.startswith(
@@ -790,10 +800,17 @@ class GeminiAPIClient:
                     ):
                         # grok2api 适配：检测临时缓存 URL 并强制下载（避免被清理）
                         # 临时缓存 URL 特征：包含 /images/users- 或 /temp/image/
-                        is_temp_cache = "/images/users-" in candidate_url or "/temp/image/" in candidate_url
+                        is_temp_cache = (
+                            "/images/users-" in candidate_url
+                            or "/temp/image/" in candidate_url
+                        )
                         if is_temp_cache:
-                            logger.debug(f"[grok2api 适配] 检测到临时缓存 URL，强制下载: {candidate_url}")
-                            image_url, image_path = await self._download_image(candidate_url, session, use_cache=False)
+                            logger.debug(
+                                f"[grok2api 适配] 检测到临时缓存 URL，强制下载: {candidate_url}"
+                            )
+                            image_url, image_path = await self._download_image(
+                                candidate_url, session, use_cache=False
+                            )
                             # 只保留本地路径（_download_image 返回的两个值相同，避免重复）
                             if image_path:
                                 image_paths.append(image_path)
@@ -841,7 +858,9 @@ class GeminiAPIClient:
                     # grok2api 适配：跳过临时缓存 URL（已在上面下载并添加到 image_paths）
                     is_temp_cache = "/images/users-" in url or "/temp/image/" in url
                     if is_temp_cache:
-                        logger.debug(f"[grok2api 适配] 跳过文本中的临时缓存 URL（已下载）: {url}")
+                        logger.debug(
+                            f"[grok2api 适配] 跳过文本中的临时缓存 URL（已下载）: {url}"
+                        )
                         continue
                     if url not in image_urls:
                         image_urls.append(url)
@@ -1155,7 +1174,7 @@ class GeminiAPIClient:
         def _push(candidate: str):
             cleaned = candidate.strip().replace("&amp;", "&").rstrip(").,;")
             # grok2api 适配：移除 URL 两端的引号（单引号或双引号）
-            cleaned = cleaned.strip('\'"')
+            cleaned = cleaned.strip("'\"")
             if cleaned and cleaned not in seen:
                 seen.add(cleaned)
                 urls.append(cleaned)
