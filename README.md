@@ -61,8 +61,6 @@
 - `opencv-python`：图像处理
 - `numpy`：数值计算
 - `Pillow`：图像操作
-- `aiohttp`：异步 HTTP 请求
-- `pyyaml`：配置文件解析
 
 ### 安装指南
 
