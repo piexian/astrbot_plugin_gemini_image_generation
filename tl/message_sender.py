@@ -303,8 +303,8 @@ class MessageSender:
         try:
             if hasattr(event, "message_obj") and getattr(event, "message_obj", None):
                 sender_id = getattr(event.message_obj, "self_id", "0")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"获取 sender_id 失败，使用默认值 '0'：{e}")
 
         node = Node(uin=sender_id, name=sender_name, content=node_content)
 
