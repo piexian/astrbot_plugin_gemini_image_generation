@@ -112,13 +112,14 @@ class MessageSender:
 
     @staticmethod
     def merge_available_images(
-        image_paths: list[str] | None, image_urls: list[str] | None
+        image_urls: list[str] | None, image_paths: list[str] | None
     ) -> list[str]:
-        """合并路径与URL，保持顺序并去重，避免同一图重复发送"""
+        """合并 URL 与路径，URL 优先，保持顺序并去重"""
         merged: list[str] = []
         seen: set[str] = set()
 
-        for img in (image_paths or []) + (image_urls or []):
+        # URL 优先，paths 作为补充
+        for img in (image_urls or []) + (image_paths or []):
             if not img:
                 continue
             if img in seen:
@@ -196,9 +197,8 @@ class MessageSender:
             cleaned_text if (self.enable_text_response and cleaned_text) else ""
         )
 
-        preferred_urls = [url for url in (image_urls or []) if url]
-        source_list = preferred_urls or [path for path in (image_paths or []) if path]
-        available_images = self.merge_available_images(source_list, [])
+        # 优先 URL，paths 作为补充（URL 在前，去重）
+        available_images = self.merge_available_images(image_urls, image_paths)
         total_items = len(available_images) + (1 if text_to_send else 0)
         is_aioqhttp = self.is_aioqhttp_event(event)
 
