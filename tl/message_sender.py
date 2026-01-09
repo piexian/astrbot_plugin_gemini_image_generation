@@ -136,10 +136,11 @@ class MessageSender:
                 fs_candidate = image[8:]
 
             if os.path.exists(fs_candidate):
-                if force_base64:
-                    b64_data = encode_file_to_base64(fs_candidate)
-                    return AstrImage(file=f"base64://{b64_data}")
-                return AstrImage.fromFileSystem(fs_candidate)
+                file_size = os.path.getsize(fs_candidate)
+                if file_size > 2 * 1024 * 1024:
+                    return AstrImage.fromFileSystem(fs_candidate)
+                b64_data = encode_file_to_base64(fs_candidate)
+                return AstrImage(file=f"base64://{b64_data}")
             if image.startswith(("http://", "https://")):
                 return AstrImage.fromURL(image)
 
@@ -169,7 +170,12 @@ class MessageSender:
             cleaned_text if (self.enable_text_response and cleaned_text) else ""
         )
 
-        available_images = self.merge_available_images(image_paths, image_urls)
+        preferred_urls = [url for url in (image_urls or []) if url]
+        preferred_paths = [path for path in (image_paths or []) if path]
+        if preferred_urls:
+            available_images = self.merge_available_images(preferred_urls, [])
+        else:
+            available_images = self.merge_available_images(preferred_paths, [])
         total_items = len(available_images) + (1 if text_to_send else 0)
         is_aioqhttp = self.is_aioqhttp_event(event)
 
