@@ -16,6 +16,11 @@ from .tl_utils import is_valid_base64_image_str as util_is_valid_base64_image_st
 if TYPE_CHECKING:
     from astrbot.api.event import AstrMessageEvent
 
+# 本地图片 base64 编码的默认大小阈值（2MB）
+DEFAULT_MAX_INLINE_IMAGE_SIZE_BYTES = 2 * 1024 * 1024
+# 超大文件警告阈值（10MB）
+LARGE_FILE_WARNING_THRESHOLD_BYTES = 10 * 1024 * 1024
+
 
 class MessageSender:
     """消息格式化和发送处理器"""
@@ -23,20 +28,31 @@ class MessageSender:
     def __init__(
         self,
         enable_text_response: bool = False,
+        max_inline_image_size_mb: float = 2.0,
         log_debug_fn=None,
     ):
         """
         Args:
             enable_text_response: 是否启用文本响应
+            max_inline_image_size_mb: 本地图片 base64 编码阈值（MB）
             log_debug_fn: 可选的日志函数
         """
         self.enable_text_response = enable_text_response
+        self.max_inline_image_size_bytes = int(max_inline_image_size_mb * 1024 * 1024)
         self._log_debug = log_debug_fn or logger.debug
 
-    def update_config(self, enable_text_response: bool | None = None):
+    def update_config(
+        self,
+        enable_text_response: bool | None = None,
+        max_inline_image_size_mb: float | None = None,
+    ):
         """更新配置"""
         if enable_text_response is not None:
             self.enable_text_response = enable_text_response
+        if max_inline_image_size_mb is not None:
+            self.max_inline_image_size_bytes = int(
+                max_inline_image_size_mb * 1024 * 1024
+            )
 
     @staticmethod
     def is_aioqhttp_event(event: AstrMessageEvent) -> bool:
@@ -136,8 +152,18 @@ class MessageSender:
                 fs_candidate = image[8:]
 
             if os.path.exists(fs_candidate):
+                # force_base64 时始终编码，支持无法访问本地文件系统的平台
+                if force_base64:
+                    file_size = os.path.getsize(fs_candidate)
+                    if file_size > LARGE_FILE_WARNING_THRESHOLD_BYTES:
+                        logger.warning(
+                            f"强制 base64 编码超大文件 ({file_size / 1024 / 1024:.1f}MB)，"
+                            "可能导致内存压力"
+                        )
+                    b64_data = encode_file_to_base64(fs_candidate)
+                    return AstrImage(file=f"base64://{b64_data}")
                 file_size = os.path.getsize(fs_candidate)
-                if file_size > 2 * 1024 * 1024:
+                if file_size > self.max_inline_image_size_bytes:
                     return AstrImage.fromFileSystem(fs_candidate)
                 b64_data = encode_file_to_base64(fs_candidate)
                 return AstrImage(file=f"base64://{b64_data}")
@@ -171,11 +197,8 @@ class MessageSender:
         )
 
         preferred_urls = [url for url in (image_urls or []) if url]
-        preferred_paths = [path for path in (image_paths or []) if path]
-        if preferred_urls:
-            available_images = self.merge_available_images(preferred_urls, [])
-        else:
-            available_images = self.merge_available_images(preferred_paths, [])
+        source_list = preferred_urls or [path for path in (image_paths or []) if path]
+        available_images = self.merge_available_images(source_list, [])
         total_items = len(available_images) + (1 if text_to_send else 0)
         is_aioqhttp = self.is_aioqhttp_event(event)
 

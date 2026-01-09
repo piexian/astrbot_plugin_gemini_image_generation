@@ -36,6 +36,7 @@ class PluginConfig:
     resolution_param_name: str = "image_size"
     aspect_ratio_param_name: str = "aspect_ratio"
     image_input_mode: str = "force_base64"
+    max_inline_image_size_mb: float = 2.0  # 本地图片 base64 编码阈值（MB）
 
     # 表情包设置
     sticker_grid_rows: int = 4
@@ -134,6 +135,12 @@ class ConfigLoader:
         )
         config.enable_llm_crop = image_settings.get("enable_llm_crop", True)
         config.force_resolution = image_settings.get("force_resolution") or False
+        max_size = image_settings.get("max_inline_image_size_mb")
+        if max_size is not None:
+            try:
+                config.max_inline_image_size_mb = max(float(max_size), 0.1)
+            except (TypeError, ValueError):
+                config.max_inline_image_size_mb = 2.0
 
         # 自定义参数名
         _res_param = (image_settings.get("resolution_param_name") or "").strip()
