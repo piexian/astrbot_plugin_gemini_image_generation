@@ -11,6 +11,7 @@ import io
 import os
 import re
 import struct
+import tempfile
 import time
 import urllib.parse
 from datetime import datetime, timedelta
@@ -145,7 +146,13 @@ def _decode_base64_to_temp_file(
         if ";base64," in data:
             _, _, data = data.partition(";base64,")
         raw_bytes = base64.b64decode(data)
-        tmp_path = Path("/tmp") / f"cut_{int(time.time() * 1000)}.png"
+        tmp_file = tempfile.NamedTemporaryFile(
+            prefix=f"cut_{int(time.time() * 1000)}_",
+            suffix=".png",
+            delete=False,
+        )
+        tmp_path = Path(tmp_file.name)
+        tmp_file.close()
         tmp_path.write_bytes(raw_bytes)
 
         if verify_image and cv2.imread(str(tmp_path)) is None:

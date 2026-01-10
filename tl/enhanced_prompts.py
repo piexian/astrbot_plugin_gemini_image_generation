@@ -170,6 +170,14 @@ def get_sticker_bbox_prompt(rows: int = 6, cols: int = 4) -> str:
 """
 
 
+def get_vision_crop_system_prompt() -> str:
+    """视觉裁剪 system_prompt（要求只输出 JSON 数组）"""
+    return (
+        "你是视觉裁剪助手，只需按要求返回 JSON 数组，每个元素包含 x,y,width,height（像素）。"
+        "禁止输出除 JSON 之外的任何内容。"
+    )
+
+
 def enhance_prompt_for_figure(prompt: str) -> str:
     """兼容旧接口"""
     return get_figure_prompt(prompt, style_type=1)

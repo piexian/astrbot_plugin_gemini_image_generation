@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -12,7 +13,11 @@ from astrbot.api import logger
 from astrbot.api.provider import ProviderRequest
 from PIL import Image as PILImage
 
-from .enhanced_prompts import get_grid_detect_prompt, get_sticker_bbox_prompt
+from .enhanced_prompts import (
+    get_grid_detect_prompt,
+    get_sticker_bbox_prompt,
+    get_vision_crop_system_prompt,
+)
 from .image_splitter import split_image
 
 if TYPE_CHECKING:
@@ -107,10 +112,7 @@ class VisionHandler:
         self, event: AstrMessageEvent, req: ProviderRequest
     ):
         """为视觉裁剪请求注入 system_prompt，提示返回 JSON 裁剪框"""
-        extra = (
-            "你是视觉裁剪助手，只需按要求返回 JSON 数组，每个元素包含 x,y,width,height（像素）。"
-            "禁止输出除 JSON 之外的任何内容。"
-        )
+        extra = get_vision_crop_system_prompt()
         try:
             if req.system_prompt:
                 req.system_prompt += "\n" + extra
@@ -131,6 +133,7 @@ class VisionHandler:
             logger.debug("[LLM_CROP] 未配置 vision_provider_id，跳过视觉裁剪")
             return []
 
+        tmp_path: Path | None = None
         try:
             # 读取图片尺寸用于提示
             with PILImage.open(image_path) as img:
@@ -152,9 +155,13 @@ class VisionHandler:
                     new_h = int(height / scale_ratio)
                     with PILImage.open(image_path) as img_to_resize:
                         resized_img = img_to_resize.resize((new_w, new_h))
-                        tmp_path = (
-                            Path("/tmp") / f"vision_crop_{Path(image_path).stem}.png"
+                        tmp_file = tempfile.NamedTemporaryFile(
+                            prefix=f"vision_crop_{Path(image_path).stem}_",
+                            suffix=".png",
+                            delete=False,
                         )
+                        tmp_path = Path(tmp_file.name)
+                        tmp_file.close()
                         resized_img.save(tmp_path, format="PNG")
                     vision_input_path = str(tmp_path)
                     logger.debug(
@@ -174,7 +181,7 @@ class VisionHandler:
                 image_urls=image_urls,
                 max_output_tokens=600,
                 timeout=120,
-                on_llm_request=self.inject_vision_system_prompt,
+                system_prompt=get_vision_crop_system_prompt(),
             )
             text = self.extract_llm_text(resp)
             if not text:
@@ -227,6 +234,12 @@ class VisionHandler:
         except Exception as e:
             logger.debug(f"视觉识别裁剪失败: {e}")
             return []
+        finally:
+            if tmp_path:
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
     async def detect_grid_rows_cols(self, image_path: str) -> tuple[int, int] | None:
         """使用视觉提供商识别网格行列数；失败返回 None"""
@@ -249,6 +262,7 @@ class VisionHandler:
             except Exception as e:
                 logger.debug(f"[GRID_DETECT] 下载图片失败，回退使用原始URL: {e}")
 
+        tmp_path: Path | None = None
         try:
             with PILImage.open(local_path) as img:
                 width, height = img.size
@@ -259,7 +273,13 @@ class VisionHandler:
                     new_w = int(width * ratio)
                     new_h = int(height * ratio)
                     img = img.resize((new_w, new_h))
-                    tmp_path = Path("/tmp") / f"grid_detect_{Path(local_path).stem}.png"
+                    tmp_file = tempfile.NamedTemporaryFile(
+                        prefix=f"grid_detect_{Path(local_path).stem}_",
+                        suffix=".png",
+                        delete=False,
+                    )
+                    tmp_path = Path(tmp_file.name)
+                    tmp_file.close()
                     img.save(tmp_path, format="PNG")
                     vision_input_path = str(tmp_path)
         except Exception as e:
@@ -299,5 +319,12 @@ class VisionHandler:
                 return rows, cols
         except Exception as e:
             logger.debug(f"[GRID_DETECT] 视觉识别失败: {e}")
+
+        finally:
+            if tmp_path:
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
         return None

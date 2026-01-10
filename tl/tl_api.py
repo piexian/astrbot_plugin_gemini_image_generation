@@ -296,14 +296,13 @@ class GeminiAPIClient:
         # 2. 尝试规范化转换
         if not data:
             try:
-                temp_cache = Path(
-                    tempfile.mkdtemp(prefix="gemini_ref_tmp_", dir="/tmp")
-                )
-                mime_type, data = await self._normalize_image_input(
-                    image_input,
-                    image_input_mode=image_input_mode,
-                    image_cache_dir=temp_cache,
-                )
+                with tempfile.TemporaryDirectory(prefix="gemini_ref_tmp_") as tmp_dir:
+                    temp_cache = Path(tmp_dir)
+                    mime_type, data = await self._normalize_image_input(
+                        image_input,
+                        image_input_mode=image_input_mode,
+                        image_cache_dir=temp_cache,
+                    )
                 if data:
                     logger.debug(
                         f"[_process_reference_image] 规范化转换成功: idx={idx} mime={mime_type}"
@@ -386,6 +385,8 @@ class GeminiAPIClient:
         if not config.api_key:
             config.api_key = await self.get_next_api_key()
 
+        enable_smart_retry = bool(getattr(config, "enable_smart_retry", True))
+
         # 获取请求信息
         url, headers, payload = await self._get_api_url(config)
 
@@ -419,6 +420,9 @@ class GeminiAPIClient:
             max_retries=max_retries,
             total_timeout=total_timeout,
             api_base=config.api_base,
+            enable_smart_retry=enable_smart_retry,
+            per_retry_timeout=per_retry_timeout,
+            max_total_time=max_total_time,
         )
 
     async def _make_request(
@@ -431,20 +435,119 @@ class GeminiAPIClient:
         max_retries: int,
         total_timeout: int = 120,
         api_base: str = None,
+        enable_smart_retry: bool = True,
+        per_retry_timeout: int | None = None,
+        max_total_time: int | None = None,
     ) -> tuple[list[str], list[str], str | None, str | None]:
-        """执行 API 请求并处理响应，每个重试有独立的超时控制"""
+        """执行 API 请求并处理响应（支持重试、总耗时上限与多 Key 轮换）"""
 
-        current_retry = 0
-        last_error = None
+        def coerce_int(value: Any, default: int) -> int:
+            try:
+                return int(value)
+            except Exception:
+                return default
+
+        effective_max_retries = max(coerce_int(max_retries, 1), 1)
+        enable_smart_retry = bool(enable_smart_retry)
+        if not enable_smart_retry:
+            effective_max_retries = 1
+
+        base_timeout = per_retry_timeout if per_retry_timeout is not None else total_timeout
+        base_timeout_int = max(coerce_int(base_timeout, total_timeout), 1)
+
+        max_total_time_int = None
+        if max_total_time is not None:
+            mt = coerce_int(max_total_time, 0)
+            if mt > 0:
+                max_total_time_int = mt
 
         session = await self._get_session()
-        timeout_cfg = aiohttp.ClientTimeout(
-            total=total_timeout, sock_read=total_timeout
-        )
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
+        last_error: APIError | None = None
 
-        while current_retry < max_retries:
+        async def rotate_key_if_possible(err: APIError) -> str | None:
+            """在可用多 Key 且错误可能与 Key 相关时轮换，并更新 headers。"""
+            if not enable_smart_retry or len(self.api_keys) <= 1:
+                return None
+
+            status = err.status_code
+            if status not in {401, 402, 403, 429} and err.error_type != "quota":
+                return None
+
             try:
-                logger.debug(f"发送请求（重试 {current_retry}/{max_retries - 1}）")
+                await self.rotate_api_key()
+                new_key = await self.get_next_api_key()
+            except Exception as e:
+                logger.debug(f"轮换 API Key 失败，将继续使用当前 Key: {e}")
+                return None
+
+            updated = False
+            if "Authorization" in headers:
+                auth = str(headers.get("Authorization") or "")
+                if auth.lower().startswith("bearer "):
+                    headers["Authorization"] = f"Bearer {new_key}"
+                    updated = True
+            if "x-goog-api-key" in headers:
+                headers["x-goog-api-key"] = new_key
+                updated = True
+            for k in ("X-Api-Key", "X-API-Key", "x-api-key"):
+                if k in headers:
+                    headers[k] = new_key
+                    updated = True
+
+            if not updated:
+                logger.debug("已轮换 API Key，但未能识别需要更新的请求头字段")
+            else:
+                logger.debug(f"已轮换到新的 API Key: {new_key[:12]}...")
+
+            return new_key
+
+        def is_retryable(err: APIError) -> bool:
+            """根据错误类型/状态码判断是否值得重试。"""
+            if err.error_type == "no_image_retry":
+                return True
+            if err.error_type in {"timeout", "network"}:
+                return True
+
+            status = err.status_code
+            if status is None:
+                return True
+            if 500 <= status < 600:
+                return True
+            if status in {408, 500, 502, 503, 504}:
+                return True
+            if status == 429:
+                return True
+            if status in {401, 402, 403}:
+                return len(self.api_keys) > 1
+            return False
+
+        for attempt in range(effective_max_retries):
+            if max_total_time_int is not None:
+                elapsed = loop.time() - started_at
+                remaining = max_total_time_int - elapsed
+                if remaining <= 0:
+                    timeout_msg = (
+                        "图像生成时间过长，超出了框架限制。请尝试简化图像描述或在框架配置中增加 tool_call_timeout 到 90-120 秒。"
+                    )
+                    raise APIError(timeout_msg, None, "timeout") from None
+
+                attempt_timeout_int = max(min(base_timeout_int, int(remaining)), 1)
+            else:
+                attempt_timeout_int = base_timeout_int
+
+            timeout_cfg = aiohttp.ClientTimeout(
+                total=attempt_timeout_int, sock_read=attempt_timeout_int
+            )
+
+            try:
+                logger.debug(
+                    "发送请求（尝试 %s/%s, timeout=%ss）",
+                    attempt + 1,
+                    effective_max_retries,
+                    attempt_timeout_int,
+                )
                 return await self._perform_request(
                     session,
                     url,
@@ -462,33 +565,36 @@ class GeminiAPIClient:
                 timeout_msg = "图像生成时间过长，超出了框架限制。请尝试简化图像描述或在框架配置中增加 tool_call_timeout 到 90-120 秒。"
                 raise APIError(timeout_msg, None, "cancelled") from None
             except Exception as e:
-                error_msg = str(e)
-                error_type = self._classify_error(e, error_msg)
-
-                # 判断是否可重试的错误
-                if self._is_retryable_error(error_type, e):
-                    last_error = APIError(error_msg, None, error_type)
-                    logger.warning(
-                        f"可重试错误 (重试 {current_retry + 1}/{max_retries}): {error_msg}"
-                    )
-
-                    current_retry += 1
-                    if current_retry < max_retries:
-                        # 指数退避延迟：2秒、4秒、8秒……最大10秒
-                        delay = min(2 ** (current_retry + 1), 10)
-                        logger.debug(f"等待 {delay} 秒后重试...")
-                        await asyncio.sleep(delay)
-                        continue  # 继续下一次重试
-                    else:
-                        logger.error(f"达到最大重试次数 ({max_retries})，生成失败")
+                if isinstance(e, APIError):
+                    err = e
+                    if not err.error_type:
+                        err.error_type = self._classify_error(e, err.message)
                 else:
-                    # 不可重试的错误，立即抛出
-                    logger.error(f"不可重试错误: {error_msg}")
-                    raise APIError(error_msg, None, error_type) from None
+                    err_msg = str(e)
+                    err_type = self._classify_error(e, err_msg)
+                    status_code = getattr(e, "status", None)
+                    err = APIError(err_msg, status_code, err_type)
 
-        # 如果都失败了，返回最后一次错误
+                if attempt >= effective_max_retries - 1 or not is_retryable(err):
+                    logger.error(f"不可重试错误: {err.message}")
+                    raise err from None
+
+                last_error = err
+                logger.warning(
+                    "可重试错误 (尝试 %s/%s): %s",
+                    attempt + 1,
+                    effective_max_retries,
+                    err.message,
+                )
+
+                await rotate_key_if_possible(err)
+
+                delay = min(2 ** (attempt + 2), 10)
+                logger.debug(f"等待 {delay} 秒后重试...")
+                await asyncio.sleep(delay)
+
         if last_error:
-            raise last_error
+            raise last_error from None
 
         return [], [], None, None
 
