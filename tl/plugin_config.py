@@ -203,6 +203,19 @@ class ConfigLoader:
             or {}
         )
 
+        # 设置默认值以确保图片清晰度
+        # scale: "device" 使用设备像素比，生成更清晰的图片
+        # full_page: True 截取整个页面
+        # type: "png" 无损格式
+        defaults = {
+            "scale": "device",
+            "full_page": True,
+            "type": "png",
+        }
+        for key, default_val in defaults.items():
+            if key not in html_render_options:
+                html_render_options[key] = default_val
+
         try:
             quality_val = html_render_options.get("quality")
             if quality_val is not None:

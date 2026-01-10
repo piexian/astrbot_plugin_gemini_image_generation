@@ -13,14 +13,13 @@ from astrbot.api import logger
 from PIL import Image, ImageDraw, ImageFont
 
 # 字体下载配置
-FONT_FILENAME = "NotoSansSC-Regular.ttf"
+# 注意：如果自动下载失败，可手动将字体文件放入 tl 目录（支持 .ttf/.otf/.ttc 格式）
+FONT_FILENAME = "NotoSerifCJKsc-SemiBold.otf"
 FONT_DOWNLOAD_URLS = [
-    # Google Fonts CDN (国内可能较慢)
-    "https://github.com/googlefonts/noto-cjk/raw/main/Sans/OTF/SimplifiedChinese/NotoSansSC-Regular.otf",
-    # jsDelivr CDN (国内友好)
-    "https://cdn.jsdelivr.net/gh/googlefonts/noto-cjk@main/Sans/OTF/SimplifiedChinese/NotoSansSC-Regular.otf",
-    # 备用：使用思源黑体
-    "https://cdn.jsdelivr.net/gh/ArtalkJS/Artalk@main/public/fonts/NotoSansSC-Regular.ttf",
+    # GitHub 加速镜像
+    "https://run.pieixan.icu/https://github.com/notofonts/noto-cjk/raw/main/Serif/OTF/SimplifiedChinese/NotoSerifCJKsc-SemiBold.otf",
+    # GitHub 原始链接（备用）
+    "https://github.com/notofonts/noto-cjk/raw/main/Serif/OTF/SimplifiedChinese/NotoSerifCJKsc-SemiBold.otf",
 ]
 
 # 全局字体下载状态
