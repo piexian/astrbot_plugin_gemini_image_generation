@@ -175,6 +175,9 @@ class VisionHandler:
             logger.debug(
                 f"[LLM_CROP] 调用视觉模型裁剪: provider={self.vision_provider_id}"
             )
+            # 注意：这里直接设置 system_prompt 而非增强调用方可能已有的 prompt，
+            # 因为这是独立的视觉识别请求，需要精确控制提示词以确保返回 JSON 格式的裁剪框数据。
+            # 如需增强而非覆盖，可使用 inject_vision_system_prompt 方法。
             resp = await self.context.llm_generate(
                 chat_provider_id=self.vision_provider_id,
                 prompt=prompt,

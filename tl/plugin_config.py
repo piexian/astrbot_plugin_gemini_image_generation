@@ -213,8 +213,7 @@ class ConfigLoader:
             "type": "png",
         }
         for key, default_val in defaults.items():
-            if key not in html_render_options:
-                html_render_options[key] = default_val
+            html_render_options.setdefault(key, default_val)
 
         try:
             quality_val = html_render_options.get("quality")

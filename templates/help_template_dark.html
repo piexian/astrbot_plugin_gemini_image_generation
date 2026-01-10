@@ -23,7 +23,11 @@
 
         body {
             background-color: var(--bg-color);
-            font-family: "Noto Serif SC", "Source Han Serif SC", "Source Han Serif CN", -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+            /* 字体回退链：Google Fonts -> 思源宋体别名 -> 系统中文字体 -> 系统UI字体 -> 通用衬线体 */
+            font-family: "Noto Serif SC", "Source Han Serif SC", "Source Han Serif CN",
+                         "SimSun", "宋体", "Microsoft YaHei", "微软雅黑", "WenQuanYi Micro Hei",
+                         -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans",
+                         Helvetica, Arial, sans-serif, serif, "Apple Color Emoji", "Segoe UI Emoji";
             margin: 0;
             padding: 20px;
             display: flex;

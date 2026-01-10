@@ -441,6 +441,9 @@ class GeminiAPIClient:
     ) -> tuple[list[str], list[str], str | None, str | None]:
         """执行 API 请求并处理响应（支持重试、总耗时上限与多 Key 轮换）"""
 
+        # 防御性复制 headers，避免并发请求间因 Key 轮换导致的相互影响
+        headers = dict(headers)
+
         def coerce_int(value: Any, default: int) -> int:
             try:
                 return int(value)
@@ -575,8 +578,16 @@ class GeminiAPIClient:
                     status_code = getattr(e, "status", None)
                     err = APIError(err_msg, status_code, err_type)
 
-                if attempt >= effective_max_retries - 1 or not is_retryable(err):
+                # 首先检查是否为不可重试错误
+                if not is_retryable(err):
                     logger.error(f"不可重试错误: {err.message}")
+                    raise err from None
+
+                # 可重试错误，但已用尽重试次数
+                if attempt >= effective_max_retries - 1:
+                    logger.error(
+                        f"达到最大重试次数 ({effective_max_retries})，生成失败: {err.message}"
+                    )
                     raise err from None
 
                 last_error = err
