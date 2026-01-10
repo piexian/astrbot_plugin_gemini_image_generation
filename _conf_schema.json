@@ -131,6 +131,12 @@
         "type": "string",
         "hint": "API 请求中长宽比参数的字段名，不同 API 可能使用不同名称（如 aspect_ratio、aspectRatio、image_aspect_ratio 等）。留空使用默认值 aspect_ratio",
         "default": "aspect_ratio"
+      },
+      "max_inline_image_size_mb": {
+        "description": "本地图片 base64 编码阈值（MB）",
+        "type": "float",
+        "hint": "超过此大小的本地图片将使用文件系统引用而非 base64 编码，减少内存占用。默认 2MB",
+        "default": 2.0
       }
     }
   },

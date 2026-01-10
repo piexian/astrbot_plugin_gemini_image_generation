@@ -121,6 +121,7 @@ class GeminiImageGenerationPlugin(Star):
         # 消息发送器
         self.message_sender = MessageSender(
             enable_text_response=self.cfg.enable_text_response,
+            max_inline_image_size_mb=self.cfg.max_inline_image_size_mb,
             log_debug_fn=self.log_debug,
         )
 

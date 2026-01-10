@@ -211,12 +211,14 @@ class VisionHandler:
                     continue
                 if w > 0 and h > 0:
                     # 将坐标按比例还原到原始图片尺寸
-                    clean_boxes.append({
-                        "x": int(x * scale_ratio),
-                        "y": int(y * scale_ratio),
-                        "width": int(w * scale_ratio),
-                        "height": int(h * scale_ratio),
-                    })
+                    clean_boxes.append(
+                        {
+                            "x": int(x * scale_ratio),
+                            "y": int(y * scale_ratio),
+                            "width": int(w * scale_ratio),
+                            "height": int(h * scale_ratio),
+                        }
+                    )
 
             if not clean_boxes:
                 return []
