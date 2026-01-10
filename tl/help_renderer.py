@@ -17,9 +17,10 @@ from PIL import Image, ImageDraw, ImageFont
 FONT_FILENAME = "NotoSerifCJKsc-SemiBold.otf"
 FONT_DOWNLOAD_URLS = [
     # GitHub 加速镜像
-    "https://run.pieixan.icu/https://github.com/notofonts/noto-cjk/raw/main/Serif/OTF/SimplifiedChinese/NotoSerifCJKsc-SemiBold.otf",
+    "https://run.pieixan.icu/https://raw.githubusercontent.com/notofonts/noto-cjk/main/Serif/OTF/SimplifiedChinese/NotoSerifCJKsc-SemiBold.otf",
+    "https://gh-proxy.piexian.workers.dev/https://raw.githubusercontent.com/notofonts/noto-cjk/main/Serif/OTF/SimplifiedChinese/NotoSerifCJKsc-SemiBold.otf",
     # GitHub 原始链接（备用）
-    "https://github.com/notofonts/noto-cjk/raw/main/Serif/OTF/SimplifiedChinese/NotoSerifCJKsc-SemiBold.otf",
+    "https://raw.githubusercontent.com/notofonts/noto-cjk/main/Serif/OTF/SimplifiedChinese/NotoSerifCJKsc-SemiBold.otf",
 ]
 
 # 全局字体下载状态
