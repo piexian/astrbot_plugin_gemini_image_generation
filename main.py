@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import shlex
 import time
 from pathlib import Path
 from typing import Any
@@ -667,13 +668,19 @@ class GeminiImageGenerationPlugin(Star):
         clean_prompt = prompt
 
         if prompt:
-            p_lower = prompt.lower()
-            if p_lower.startswith("1") or "pvc" in p_lower:
-                style_type = 1
-                clean_prompt = prompt.replace("1", "", 1).replace("pvc", "", 1).strip()
-            elif p_lower.startswith("2") or "gk" in p_lower:
-                style_type = 2
-                clean_prompt = prompt.replace("2", "", 1).replace("gk", "", 1).strip()
+            try:
+                tokens = shlex.split(prompt)
+            except ValueError:
+                tokens = prompt.split()
+            if tokens:
+                style_token = tokens[0].rstrip(",，").lower()
+                if style_token in ("1", "pvc"):
+                    style_type = 1
+                    tokens = tokens[1:]
+                elif style_token in ("2", "gk"):
+                    style_type = 2
+                    tokens = tokens[1:]
+                clean_prompt = " ".join(tokens).strip() if tokens else ""
 
         full_prompt = get_figure_prompt(clean_prompt, style_type)
 
@@ -1234,7 +1241,13 @@ class GeminiImageGenerationPlugin(Star):
             return
 
         tail = self._extract_prompt_from_message(event, "", ("换风格",))
-        tail_tokens = tail.split() if tail else []
+        if tail:
+            try:
+                tail_tokens = shlex.split(tail)
+            except ValueError:
+                tail_tokens = tail.split()
+        else:
+            tail_tokens = []
         if tail_tokens:
             style = tail_tokens[0]
             prompt = " ".join(tail_tokens[1:]).strip()
