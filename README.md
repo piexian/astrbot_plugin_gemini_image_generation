@@ -1,8 +1,8 @@
-# AstrBot Gemini 图像生成插件 v1.8.2
+# AstrBot Gemini 图像生成插件 v1.8.3
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/Version-v1.8.2-blue)
+![Version](https://img.shields.io/badge/Version-v1.8.3-blue)
 ![License](https://img.shields.io/badge/License-MIT-orange)
 
 **🎨 强大的 Gemini 图像生成插件，支持智能头像参考和智能表情包切分**
@@ -20,6 +20,7 @@
 - **多格式支持**: 支持 PNG、JPEG、WEBP、HEIC/HEIF、GIF 等多种图片格式
 - **智能表情包切分**: 使用 SmartMemeSplitter 算法自动将生成的表情包网格切割为独立图片，支持合并转发和ZIP打包
 - **LLM 工具集成**: 支持 AstrBot LLM 工具调用，通过自然语言智能触发图像生成
+- **智能内存管理**: 自动对大图片使用文件引用而非 base64，减少内存占用
 
 ### 🛡️ **限制/限流**
 - **群限制模式**: 支持不限制/白名单/黑名单三种模式
@@ -48,6 +49,7 @@
 - **强制分辨率参数**: 支持强制传递分辨率参数，兼容各类非官方模型
 - **智能表情包切分**: 使用 SmartMemeSplitter v4 算法，支持颜色边缘突变检测、能量图分析、网格候选微调
 - **定时清理**: 自动清理过期临时文件，支持配置缓存保留时间和清理间隔
+- **缓存优化**: 对 base64 图像数据实现 LRU 缓存，避免重复保存相同图片
 
 ## 📦 安装
 
@@ -129,6 +131,7 @@
 - `force_resolution`：强制传 `image_size` 参数给模型，默认 false。
 - `resolution_param_name`：**自定义分辨率参数名**，不同 API 可能使用不同字段名（如 `image_size`、`size`、`resolution`），默认 `image_size`。
 - `aspect_ratio_param_name`：**自定义长宽比参数名**，不同 API 可能使用不同字段名（如 `aspect_ratio`、`aspectRatio`、`image_aspect_ratio`），默认 `aspect_ratio`。
+- `max_inline_image_size_mb`：**本地图片 base64 编码阈值**（MB），超过此大小的本地图片将使用文件系统引用而非 base64 编码，减少内存占用，默认 2.0。
 
 **quick_mode_settings**
 - 可选：覆盖 `快速` 指令各模式的默认分辨率/长宽比；默认值即内置默认，可直接修改。

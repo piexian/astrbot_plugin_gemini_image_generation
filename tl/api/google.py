@@ -276,7 +276,7 @@ class GoogleProvider:
         response_data: dict[str, Any],
         session: aiohttp.ClientSession,
     ) -> tuple[list[str], list[str], str | None, str | None]:  # noqa: ANN401
-        parse_start = asyncio.get_event_loop().time()
+        parse_start = asyncio.get_running_loop().time()
         logger.debug("🔍 开始解析API响应数据...")
 
         image_urls: list[str] = []
@@ -353,13 +353,13 @@ class GoogleProvider:
                             )
 
                             logger.debug("💾 开始保存图像文件...")
-                            save_start = asyncio.get_event_loop().time()
+                            save_start = asyncio.get_running_loop().time()
 
                             saved_path = await save_base64_image(
                                 base64_data, image_format
                             )
 
-                            save_end = asyncio.get_event_loop().time()
+                            save_end = asyncio.get_running_loop().time()
                             logger.debug(
                                 f"✅ 图像保存完成，耗时: {save_end - save_start:.2f}秒"
                             )
@@ -444,7 +444,7 @@ class GoogleProvider:
                 )
 
         if image_paths or image_urls:
-            parse_end = asyncio.get_event_loop().time()
+            parse_end = asyncio.get_running_loop().time()
             logger.debug(f"🎉 API响应解析完成，总耗时: {parse_end - parse_start:.2f}秒")
             return image_urls, image_paths, text_content, thought_signature
 

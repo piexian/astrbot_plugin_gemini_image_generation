@@ -140,7 +140,9 @@ class ConfigLoader:
             try:
                 config.max_inline_image_size_mb = max(float(max_size), 0.1)
             except (TypeError, ValueError):
-                config.max_inline_image_size_mb = PluginConfig().max_inline_image_size_mb
+                config.max_inline_image_size_mb = (
+                    PluginConfig().max_inline_image_size_mb
+                )
 
         # 自定义参数名
         _res_param = (image_settings.get("resolution_param_name") or "").strip()

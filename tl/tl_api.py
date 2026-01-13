@@ -455,7 +455,9 @@ class GeminiAPIClient:
         if not enable_smart_retry:
             effective_max_retries = 1
 
-        base_timeout = per_retry_timeout if per_retry_timeout is not None else total_timeout
+        base_timeout = (
+            per_retry_timeout if per_retry_timeout is not None else total_timeout
+        )
         base_timeout_int = max(coerce_int(base_timeout, total_timeout), 1)
 
         max_total_time_int = None
@@ -502,7 +504,7 @@ class GeminiAPIClient:
             if not updated:
                 logger.debug("已轮换 API Key，但未能识别需要更新的请求头字段")
             else:
-                logger.debug(f"已轮换到新的 API Key: {new_key[:12]}...")
+                logger.debug(f"已轮换到新的 API Key: ***{new_key[-4:]}")
 
             return new_key
 
@@ -531,9 +533,7 @@ class GeminiAPIClient:
                 elapsed = loop.time() - started_at
                 remaining = max_total_time_int - elapsed
                 if remaining <= 0:
-                    timeout_msg = (
-                        "图像生成时间过长，超出了框架限制。请尝试简化图像描述或在框架配置中增加 tool_call_timeout 到 90-120 秒。"
-                    )
+                    timeout_msg = "图像生成时间过长，超出了框架限制。请尝试简化图像描述或在框架配置中增加 tool_call_timeout 到 90-120 秒。"
                     raise APIError(timeout_msg, None, "timeout") from None
 
                 attempt_timeout_int = max(min(base_timeout_int, int(remaining)), 1)
@@ -1063,6 +1063,7 @@ class GeminiAPIClient:
         logger.warning(
             f"OpenAI 响应格式不支持或未找到图像数据，响应: {str(response_data)[:500]}"
         )
+        return [], [], None, None
 
     def _normalize_message_value(self, raw_value: Any) -> dict[str, Any] | None:
         """归一化任意常见字段为标准 message 结构"""
