@@ -502,7 +502,7 @@ class GeminiAPIClient:
             if not updated:
                 logger.debug("已轮换 API Key，但未能识别需要更新的请求头字段")
             else:
-                logger.debug(f"已轮换到新的 API Key: {new_key[:12]}...")
+                logger.debug(f"已轮换到新的 API Key: ***{new_key[-4:]}")
 
             return new_key
 
@@ -1063,6 +1063,7 @@ class GeminiAPIClient:
         logger.warning(
             f"OpenAI 响应格式不支持或未找到图像数据，响应: {str(response_data)[:500]}"
         )
+        return [], [], None, None
 
     def _normalize_message_value(self, raw_value: Any) -> dict[str, Any] | None:
         """归一化任意常见字段为标准 message 结构"""

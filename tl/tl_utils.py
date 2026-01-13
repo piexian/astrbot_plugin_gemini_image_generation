@@ -14,8 +14,10 @@ import struct
 import tempfile
 import time
 import urllib.parse
+from collections import OrderedDict
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import aiohttp
@@ -278,8 +280,35 @@ async def save_image_stream(
         return None
 
 
-# base64 图片去重缓存（base64_hash -> file_path）
-_base64_image_cache: dict[str, str] = {}
+# base64 图片去重缓存（base64_hash -> file_path），使用 LRU 策略限制大小
+_BASE64_CACHE_MAX_SIZE = 128  # 最大缓存条目数
+
+
+class _LRUCache(OrderedDict):
+    """简单的 LRU 缓存实现，继承 OrderedDict"""
+
+    def __init__(self, maxsize: int = 128):
+        super().__init__()
+        self.maxsize = maxsize
+
+    def get(self, key: str, default: str | None = None) -> str | None:
+        if key in self:
+            self.move_to_end(key)
+            return self[key]
+        return default
+
+    def set(self, key: str, value: str) -> None:
+        if key in self:
+            self.move_to_end(key)
+        self[key] = value
+        while len(self) > self.maxsize:
+            self.popitem(last=False)
+
+    def __contains__(self, key: object) -> bool:
+        return super().__contains__(key)
+
+
+_base64_image_cache: _LRUCache = _LRUCache(maxsize=_BASE64_CACHE_MAX_SIZE)
 
 
 async def save_base64_image(base64_data: str, image_format: str = "png") -> str | None:
@@ -299,15 +328,16 @@ async def save_base64_image(base64_data: str, image_format: str = "png") -> str 
     data_hash = hashlib.md5(cleaned_data.encode()).hexdigest()
 
     # 检查是否已保存过相同的数据
-    if data_hash in _base64_image_cache:
-        existing_path = _base64_image_cache[data_hash]
+    existing_path = _base64_image_cache.get(data_hash)
+    if existing_path:
         # 检查文件是否还存在
         if Path(existing_path).exists():
             logger.debug(f"复用已保存的图片: {existing_path}")
             return existing_path
         else:
             # 文件已被删除，从缓存中移除
-            del _base64_image_cache[data_hash]
+            if data_hash in _base64_image_cache:
+                del _base64_image_cache[data_hash]
 
     try:
         file_path = _build_image_path(image_format)
@@ -328,8 +358,8 @@ async def save_base64_image(base64_data: str, image_format: str = "png") -> str 
         with open(file_path, "wb") as f:
             f.write(raw)
 
-        # 加入缓存，避免重复保存相同数据
-        _base64_image_cache[data_hash] = str(file_path)
+        # 加入缓存，避免重复保存相同数据（使用 LRU 策略）
+        _base64_image_cache.set(data_hash, str(file_path))
 
         logger.debug(f"图像已保存: {file_path}")
         return str(file_path)
@@ -914,7 +944,7 @@ def coerce_supported_image(
 
 
 async def normalize_image_input(
-    image_input: any,
+    image_input: Any,
     *,
     image_cache_dir: Path | None = None,
     image_input_mode: str = "force_base64",
@@ -1226,12 +1256,5 @@ def download_qq_avatar_legacy(user_id: str, cache_name: str, event=None) -> str 
     Returns:
         base64格式的头像数据，失败返回None
     """
-    # 使用asyncio运行同步调用
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(
-            download_qq_avatar(user_id, cache_name, event=event)
-        )
-    finally:
-        loop.close()
+    # 使用 asyncio.run() 简化异步调用
+    return asyncio.run(download_qq_avatar(user_id, cache_name, event=event))

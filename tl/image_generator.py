@@ -198,7 +198,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
 
         try:
             logger.info("🚀 开始调用API生成图像...")
-            start_time = asyncio.get_event_loop().time()
+            start_time = asyncio.get_running_loop().time()
 
             tool_timeout = self._get_tool_timeout(event)
             per_retry_timeout = min(self.total_timeout, tool_timeout)
@@ -219,7 +219,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
                 max_total_time=max_total_time,
             )
 
-            end_time = asyncio.get_event_loop().time()
+            end_time = asyncio.get_running_loop().time()
             api_duration = end_time - start_time
             logger.info(f"✅ API调用完成，耗时: {api_duration:.2f}秒")
             logger.info(
