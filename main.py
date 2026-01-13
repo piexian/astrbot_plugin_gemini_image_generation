@@ -530,7 +530,10 @@ class GeminiImageGenerationPlugin(Star):
         if not full:
             return base
 
-        tokens = full.split()
+        try:
+            tokens = shlex.split(full)
+        except ValueError:
+            tokens = full.split()
         for idx, token in enumerate(tokens):
             normalized = token.lstrip("/").lstrip("!")
             if normalized in command_keywords:
