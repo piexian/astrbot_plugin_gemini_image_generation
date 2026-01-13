@@ -289,6 +289,8 @@ class _LRUCache(OrderedDict):
 
     def __init__(self, maxsize: int = 128):
         super().__init__()
+        if maxsize < 0:
+            raise ValueError(f"maxsize 必须为非负整数，当前值为: {maxsize}")
         self.maxsize = maxsize
 
     def get(self, key: str, default: str | None = None) -> str | None:

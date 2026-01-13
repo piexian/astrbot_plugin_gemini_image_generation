@@ -665,7 +665,9 @@ class GeminiImageGenerationPlugin(Star):
     @quick_mode_group.command("手办化")
     async def quick_figure(self, event: AstrMessageEvent, prompt: str):
         """手办化快速模式 - 树脂收藏级手办效果"""
-        prompt = self._extract_prompt_from_message(event, prompt, ("快速",), ("手办化",))
+        prompt = self._extract_prompt_from_message(
+            event, prompt, ("快速",), ("手办化",)
+        )
         # 参数解析：1/PVC -> 风格1；2/GK -> 风格2
         style_type = 1
         clean_prompt = prompt
@@ -707,7 +709,9 @@ class GeminiImageGenerationPlugin(Star):
         - enable_sticker_split: 是否自动切割图片
         - enable_sticker_zip: 是否打包发送（如果发送失败则使用合并转发）
         """
-        prompt = self._extract_prompt_from_message(event, prompt, ("快速",), ("表情包",))
+        prompt = self._extract_prompt_from_message(
+            event, prompt, ("快速",), ("表情包",)
+        )
         allowed, limit_message = await self.rate_limiter.check_and_consume(event)
         if not allowed:
             if limit_message:
