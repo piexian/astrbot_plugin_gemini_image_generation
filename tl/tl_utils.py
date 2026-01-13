@@ -336,8 +336,7 @@ async def save_base64_image(base64_data: str, image_format: str = "png") -> str 
             return existing_path
         else:
             # 文件已被删除，从缓存中移除
-            if data_hash in _base64_image_cache:
-                del _base64_image_cache[data_hash]
+            del _base64_image_cache[data_hash]
 
     try:
         file_path = _build_image_path(image_format)
