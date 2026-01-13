@@ -597,6 +597,7 @@ class GeminiImageGenerationPlugin(Star):
                 yield event.plain_result(limit_message)
             return
 
+        prompt = self._extract_prompt_from_message(event, prompt, ("生图",))
         use_avatar = await self.avatar_handler.should_use_avatar(event)
         generation_prompt = get_generation_prompt(prompt)
 
