@@ -515,6 +515,34 @@ class GeminiImageGenerationPlugin(Star):
             override_aspect_ratio or default_aspect_ratio,
         )
 
+    @staticmethod
+    def _extract_prompt_from_message(
+        event: AstrMessageEvent,
+        raw_prompt: str,
+        command_keywords: tuple[str, ...],
+        sub_command_keywords: tuple[str, ...] | None = None,
+    ) -> str:
+        """从原始消息还原提示词，避免参数解析截断空格"""
+        full = (event.message_str or "").strip()
+        base = (raw_prompt or "").strip()
+
+        if not full:
+            return base
+
+        tokens = full.split()
+        for idx, token in enumerate(tokens):
+            normalized = token.lstrip("/").lstrip("!")
+            if normalized in command_keywords:
+                start = idx + 1
+                if sub_command_keywords and start < len(tokens):
+                    next_token = tokens[start].lstrip("/").lstrip("!")
+                    if next_token in sub_command_keywords:
+                        start += 1
+                fallback = " ".join(tokens[start:]).strip()
+                return fallback or base
+
+        return base
+
     async def _handle_quick_mode(
         self,
         event: AstrMessageEvent,
@@ -587,6 +615,7 @@ class GeminiImageGenerationPlugin(Star):
     @quick_mode_group.command("头像")
     async def quick_avatar(self, event: AstrMessageEvent, prompt: str):
         """头像快速模式 - 1K分辨率，1:1比例"""
+        prompt = self._extract_prompt_from_message(event, prompt, ("快速",), ("头像",))
         async for result in self._handle_quick_mode(
             event, prompt, "1K", "1:1", "头像", "avatar", get_avatar_prompt
         ):
@@ -595,6 +624,7 @@ class GeminiImageGenerationPlugin(Star):
     @quick_mode_group.command("海报")
     async def quick_poster(self, event: AstrMessageEvent, prompt: str):
         """海报快速模式 - 2K分辨率，16:9比例"""
+        prompt = self._extract_prompt_from_message(event, prompt, ("快速",), ("海报",))
         async for result in self._handle_quick_mode(
             event, prompt, "2K", "16:9", "海报", "poster", get_poster_prompt
         ):
@@ -603,6 +633,7 @@ class GeminiImageGenerationPlugin(Star):
     @quick_mode_group.command("壁纸")
     async def quick_wallpaper(self, event: AstrMessageEvent, prompt: str):
         """壁纸快速模式 - 4K分辨率，16:9比例"""
+        prompt = self._extract_prompt_from_message(event, prompt, ("快速",), ("壁纸",))
         async for result in self._handle_quick_mode(
             event, prompt, "4K", "16:9", "壁纸", "wallpaper", get_wallpaper_prompt
         ):
@@ -611,6 +642,7 @@ class GeminiImageGenerationPlugin(Star):
     @quick_mode_group.command("卡片")
     async def quick_card(self, event: AstrMessageEvent, prompt: str):
         """卡片快速模式 - 1K分辨率，3:2比例"""
+        prompt = self._extract_prompt_from_message(event, prompt, ("快速",), ("卡片",))
         async for result in self._handle_quick_mode(
             event, prompt, "1K", "3:2", "卡片", "card", get_card_prompt
         ):
@@ -619,6 +651,7 @@ class GeminiImageGenerationPlugin(Star):
     @quick_mode_group.command("手机")
     async def quick_mobile(self, event: AstrMessageEvent, prompt: str):
         """手机快速模式 - 2K分辨率，9:16比例"""
+        prompt = self._extract_prompt_from_message(event, prompt, ("快速",), ("手机",))
         async for result in self._handle_quick_mode(
             event, prompt, "2K", "9:16", "手机", "mobile", get_mobile_prompt
         ):
@@ -627,6 +660,8 @@ class GeminiImageGenerationPlugin(Star):
     @quick_mode_group.command("手办化")
     async def quick_figure(self, event: AstrMessageEvent, prompt: str):
         """手办化快速模式 - 树脂收藏级手办效果"""
+        prompt = self._extract_prompt_from_message(event, prompt, ("快速",), ("手办化",))
+        # 参数解析：1/PVC -> 风格1；2/GK -> 风格2
         style_type = 1
         clean_prompt = prompt
 
@@ -655,7 +690,13 @@ class GeminiImageGenerationPlugin(Star):
 
     @quick_mode_group.command("表情包")
     async def quick_sticker(self, event: AstrMessageEvent, prompt: str = ""):
-        """表情包快速模式"""
+        """表情包快速模式 - 4K分辨率，16:9比例，Q版LINE风格
+
+        功能受配置文件控制：
+        - enable_sticker_split: 是否自动切割图片
+        - enable_sticker_zip: 是否打包发送（如果发送失败则使用合并转发）
+        """
+        prompt = self._extract_prompt_from_message(event, prompt, ("快速",), ("表情包",))
         allowed, limit_message = await self.rate_limiter.check_and_consume(event)
         if not allowed:
             if limit_message:
@@ -1168,7 +1209,9 @@ class GeminiImageGenerationPlugin(Star):
             if limit_message:
                 yield event.plain_result(limit_message)
             return
+        prompt = self._extract_prompt_from_message(event, prompt, ("改图",))
 
+        # 构造改图专用提示词，确保修改意图明确
         modification_prompt = get_modification_prompt(prompt)
 
         yield event.plain_result("🎨 开始修改图像...")
@@ -1188,6 +1231,12 @@ class GeminiImageGenerationPlugin(Star):
             if limit_message:
                 yield event.plain_result(limit_message)
             return
+
+        tail = self._extract_prompt_from_message(event, "", ("换风格",))
+        tail_tokens = tail.split() if tail else []
+        if tail_tokens:
+            style = tail_tokens[0]
+            prompt = " ".join(tail_tokens[1:]).strip()
 
         full_prompt = get_style_change_prompt(style, prompt)
 
