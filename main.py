@@ -683,7 +683,7 @@ class GeminiImageGenerationPlugin(Star):
                 elif style_token in ("2", "gk"):
                     style_type = 2
                     tokens = tokens[1:]
-                clean_prompt = " ".join(tokens).strip() if tokens else ""
+                clean_prompt = " ".join(tokens).strip()
 
         full_prompt = get_figure_prompt(clean_prompt, style_type)
 
