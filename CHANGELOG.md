@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.5] - 2026-01-21
+
+### Added
+
+#### LLM 工具参数增强
+
+- `GeminiImageGenerationTool` 新增 `resolution` (1K/2K/4K) 和 `aspect_ratio` 参数支持
+- AI 现在可以根据用户指令精确控制生成图片的分辨率和长宽比
+- 支持的比例包括 1:1, 16:9, 4:3, 3:2, 9:16, 4:5, 5:4, 21:9, 3:4, 2:3
+
+### Removed
+
+#### 配置项清理
+
+- 移除 `verbose_logging` 配置项，默认使用标准日志级别
+
 ## [1.8.4] - 2026-01-14
 
 ### Added
