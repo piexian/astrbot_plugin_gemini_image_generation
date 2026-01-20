@@ -114,21 +114,21 @@ class GeminiImageGenerationPlugin(Star):
         # 头像处理器
         self.avatar_handler = AvatarHandler(
             auto_avatar_reference=self.cfg.auto_avatar_reference,
-            log_debug_fn=self.log_debug,
+            log_debug_fn=logger.debug,
         )
 
         # 图片处理器
         self.image_handler = ImageHandler(
             api_client=self.api_client,
             max_reference_images=self.cfg.max_reference_images,
-            log_debug_fn=self.log_debug,
+            log_debug_fn=logger.debug,
         )
 
         # 消息发送器
         self.message_sender = MessageSender(
             enable_text_response=self.cfg.enable_text_response,
             max_inline_image_size_mb=self.cfg.max_inline_image_size_mb,
-            log_debug_fn=self.log_debug,
+            log_debug_fn=logger.debug,
         )
 
         # 视觉处理器
@@ -434,7 +434,7 @@ class GeminiImageGenerationPlugin(Star):
             ):
                 effective_resolution = None
                 effective_aspect_ratio = None
-                self.log_debug("[MODIFY_DEBUG] 保留参考图尺寸，不覆盖分辨率/比例")
+                logger.debug("[MODIFY_DEBUG] 保留参考图尺寸，不覆盖分辨率/比例")
 
             config = ApiRequestConfig(
                 model=self.cfg.model,
