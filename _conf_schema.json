@@ -411,12 +411,6 @@
         "hint": "启用后，当消息包含头像相关关键词时，自动获取群头像和用户头像作为参考图像。仅支持 NapCat 平台",
         "default": false
       },
-      "verbose_logging": {
-        "description": "详细的日志输出",
-        "type": "bool",
-        "hint": "启用后显示详细的运行日志，包括API调用时间、文件传输状态等。关闭后只有开启debug档才显示",
-        "default": false
-      },
       "theme_settings": {
         "description": "主题设置",
         "type": "object",

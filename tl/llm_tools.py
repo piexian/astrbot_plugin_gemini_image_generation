@@ -24,6 +24,22 @@ if TYPE_CHECKING:
     from ..main import GeminiImageGenerationPlugin
 
 
+# 参数枚举常量（工具定义和验证共用）
+VALID_RESOLUTIONS = {"1K", "2K", "4K"}
+VALID_ASPECT_RATIOS = {
+    "1:1",
+    "16:9",
+    "4:3",
+    "3:2",
+    "9:16",
+    "4:5",
+    "5:4",
+    "21:9",
+    "3:4",
+    "2:3",
+}
+
+
 @dataclass
 class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
     """
@@ -41,6 +57,8 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         "判断逻辑：用户说'改成'、'变成'、'基于'、'修改'、'改图'等词时，"
         "设置 use_reference_images=true；用户说'根据我'、'我的头像'或@某人时，"
         "设置 use_reference_images=true 和 include_user_avatar=true。"
+        "用户指定分辨率时设置 resolution（仅限 1K/2K/4K 大写）；"
+        "用户指定比例时设置 aspect_ratio（仅限 1:1/16:9/4:3/3:2/9:16/4:5/5:4/21:9/3:4/2:3）。"
     )
     parameters: dict = Field(
         default_factory=lambda: {
@@ -51,20 +69,36 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                     "description": "图像生成或修改的详细描述",
                 },
                 "use_reference_images": {
-                    "type": "string",
+                    "type": "boolean",
                     "description": (
-                        "是否使用上下文中的参考图片，true或false。"
+                        "是否使用上下文中的参考图片。"
                         "当用户意图是修改、变换或基于现有图片时设置为true"
                     ),
-                    "default": "false",
+                    "default": False,
                 },
                 "include_user_avatar": {
-                    "type": "string",
+                    "type": "boolean",
                     "description": (
-                        "是否包含用户头像作为参考图像，true或false。"
+                        "是否包含用户头像作为参考图像。"
                         "当用户说'根据我'、'我的头像'或@某人时设置为true"
                     ),
-                    "default": "false",
+                    "default": False,
+                },
+                "resolution": {
+                    "type": "string",
+                    "description": (
+                        "图像分辨率，可选参数，留空使用默认配置。"
+                        "仅支持：1K、2K、4K（必须大写英文）"
+                    ),
+                    "enum": sorted(VALID_RESOLUTIONS),
+                },
+                "aspect_ratio": {
+                    "type": "string",
+                    "description": (
+                        "图像长宽比，可选参数，留空使用默认配置。"
+                        "仅支持：1:1、16:9、4:3、3:2、9:16、4:5、5:4、21:9、3:4、2:3"
+                    ),
+                    "enum": sorted(VALID_ASPECT_RATIOS),
                 },
             },
             "required": ["prompt"],
@@ -82,39 +116,44 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
 
         立即返回确认信息，图片生成在后台异步执行
         """
-        prompt = kwargs.get("prompt", "")
-        use_reference_images = kwargs.get("use_reference_images", "false")
-        include_user_avatar = kwargs.get("include_user_avatar", "false")
+        prompt = kwargs.get("prompt") or ""
+        if not prompt.strip():
+            return "❌ 缺少必填参数：图像描述不能为空"
+
+        use_reference_images = kwargs.get("use_reference_images", False)
+        include_user_avatar = kwargs.get("include_user_avatar", False)
+        resolution = kwargs.get("resolution") or None
+        aspect_ratio = kwargs.get("aspect_ratio") or None
 
         # 获取事件上下文
         event = context.context.event
         plugin = self.plugin
 
         if not plugin:
-            return "❌ 工具未正确初始化，缺少插件实例引用。"
+            return "❌ 工具未正确初始化，缺少插件实例引用"
 
         # 检查限流
         allowed, limit_message = await plugin._check_and_consume_limit(event)
         if not allowed:
-            return limit_message or "请求过于频繁，请稍后再试。"
+            return limit_message or "请求过于频繁，请稍后再试"
 
         if not plugin.api_client:
             return (
-                "❌ 无法生成图像：API 客户端尚未初始化。\n"
-                "🧐 可能原因：API 密钥未配置或加载失败。\n"
-                "✅ 建议：在插件配置中填写有效密钥并重启服务。"
+                "❌ 无法生成图像：API 客户端尚未初始化\n"
+                "🧐 可能原因：API 密钥未配置或加载失败\n"
+                "✅ 建议：在插件配置中填写有效密钥并重启服务"
             )
 
-        # 解析参数
-        avatar_value = str(include_user_avatar).lower()
-        include_avatar = avatar_value in {"true", "1", "yes", "y", "是"}
-        include_ref_images = str(use_reference_images).lower() in {
-            "true",
-            "1",
-            "yes",
-            "y",
-            "是",
-        }
+        # 布尔参数已在工具定义中声明为 boolean 类型，直接使用
+        include_avatar = bool(include_user_avatar)
+        include_ref_images = bool(use_reference_images)
+
+        # 验证分辨率和比例参数，无效值回退到默认配置
+        # 大小写兼容：LLM 有时会输出小写（如 "1k"），统一转换为大写后验证
+        if resolution:
+            resolution = resolution.upper()
+        resolution = resolution if resolution in VALID_RESOLUTIONS else None
+        aspect_ratio = aspect_ratio if aspect_ratio in VALID_ASPECT_RATIOS else None
 
         # 获取参考图片（需要在启动后台任务前获取，因为 event 可能在之后失效）
         reference_images, avatar_reference = await plugin._fetch_images_from_event(
@@ -129,20 +168,30 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         ref_count = len(reference_images)
         avatar_count = len(avatar_reference)
 
+        # 日志记录（仅记录长度和参数摘要，避免记录用户原始内容）
+        prompt_len = len(prompt)
         logger.info(
             f"[TOOL-TRIGGER] 启动后台图像生成任务: "
-            f"prompt={prompt[:50]}... refs={ref_count} avatars={avatar_count}"
+            f"prompt_len={prompt_len} refs={ref_count} avatars={avatar_count} "
+            f"resolution={resolution} aspect_ratio={aspect_ratio}"
         )
 
         # 启动后台任务执行图像生成
-        asyncio.create_task(
+        gen_task = asyncio.create_task(
             _background_generate_and_send(
                 plugin=plugin,
                 event=event,
                 prompt=prompt,
                 reference_images=reference_images,
                 avatar_reference=avatar_reference,
+                override_resolution=resolution,
+                override_aspect_ratio=aspect_ratio,
             )
+        )
+        # 捕获任务异常，防止静默失败
+        gen_task.add_done_callback(
+            lambda t: t.exception()
+            and logger.error(f"图像生成后台任务异常终止: {t.exception()}")
         )
 
         # 立即返回确认信息给 AI，提示 AI 告知用户需要等待
@@ -153,9 +202,19 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                 ref_info += f"，{avatar_count} 张头像"
             ref_info += "）"
 
+        # 分辨率和比例信息
+        param_info = ""
+        if resolution or aspect_ratio:
+            parts = []
+            if resolution:
+                parts.append(f"分辨率 {resolution}")
+            if aspect_ratio:
+                parts.append(f"比例 {aspect_ratio}")
+            param_info = f"（{', '.join(parts)}）"
+
         # 返回给 AI 的提示信息，引导 AI 用自己的人格告知用户
         return (
-            f"[图像生成任务已启动]{ref_info}\n"
+            f"[图像生成任务已启动]{ref_info}{param_info}\n"
             "图片正在后台生成中，通常需要 10-30 秒，高质量生成可能长达几百秒，生成完成后会自动发送给用户。\n"
             "请用你维持原有的人设告诉用户：图片正在生成，请稍等片刻，完成后会自动发送。"
         )
@@ -167,6 +226,8 @@ async def _background_generate_and_send(
     prompt: str,
     reference_images: list[str],
     avatar_reference: list[str],
+    override_resolution: str | None = None,
+    override_aspect_ratio: str | None = None,
 ) -> None:
     """
     后台执行图像生成并发送结果
@@ -182,6 +243,8 @@ async def _background_generate_and_send(
             prompt=prompt,
             reference_images=reference_images,
             avatar_reference=avatar_reference,
+            override_resolution=override_resolution,
+            override_aspect_ratio=override_aspect_ratio,
         )
 
         if success and isinstance(result_data, tuple):

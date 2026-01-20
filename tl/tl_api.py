@@ -119,7 +119,6 @@ class GeminiAPIClient:
         if self.proxy:
             logger.debug(f"检测到代理配置，使用代理: {self.proxy}")
         logger.debug(f"API 客户端已初始化，支持 {len(self.api_keys)} 个 API 密钥")
-        self.verbose_logging: bool = False
         self._session: aiohttp.ClientSession | None = None
         self._session_lock = asyncio.Lock()
 
@@ -408,9 +407,6 @@ class GeminiAPIClient:
 
         if config.api_base:
             logger.debug(f"使用自定义 API Base: {config.api_base}")
-
-        # 同步详细日志开关，便于在内部网络请求中控制输出粒度
-        self.verbose_logging = bool(getattr(config, "verbose_logging", False))
 
         return await self._make_request(
             url=url,
@@ -1430,33 +1426,32 @@ class GeminiAPIClient:
                             "；".join(dict.fromkeys(suggestions)),
                         )
 
-                        if self.verbose_logging:
-                            logger.debug(
-                                "HTTP 400 参数检查结果: %s",
-                                "; ".join(param_issues)
-                                if param_issues
-                                else "未发现明显异常",
-                            )
-                            logger.debug("完整请求头: %s", headers or {})
-                            logger.debug(
-                                "User-Agent: %s", (headers or {}).get("User-Agent", "")
-                            )
-                            logger.debug(
-                                "Content-Type: %s, Accept: %s",
-                                (headers or {}).get("Content-Type", "未设置"),
-                                (headers or {}).get("Accept", "未设置"),
-                            )
-                            logger.debug(
-                                "服务器响应详情: status=%s, reason=%s, phrase=%s, content-type=%s",
-                                response.status,
-                                response_reason,
-                                getattr(response, "reason", ""),
-                                response_content_type,
-                            )
-                            logger.debug(
-                                "服务器响应体预览: %s",
-                                err_text[:1000] if err_text else "<empty>",
-                            )
+                        logger.debug(
+                            "HTTP 400 参数检查结果: %s",
+                            "; ".join(param_issues)
+                            if param_issues
+                            else "未发现明显异常",
+                        )
+                        logger.debug("完整请求头: %s", headers or {})
+                        logger.debug(
+                            "User-Agent: %s", (headers or {}).get("User-Agent", "")
+                        )
+                        logger.debug(
+                            "Content-Type: %s, Accept: %s",
+                            (headers or {}).get("Content-Type", "未设置"),
+                            (headers or {}).get("Accept", "未设置"),
+                        )
+                        logger.debug(
+                            "服务器响应详情: status=%s, reason=%s, phrase=%s, content-type=%s",
+                            response.status,
+                            response_reason,
+                            getattr(response, "reason", ""),
+                            response_content_type,
+                        )
+                        logger.debug(
+                            "服务器响应体预览: %s",
+                            err_text[:1000] if err_text else "<empty>",
+                        )
 
                         if response.status == 400 and attempt < max_retries:
                             await asyncio.sleep(retry_interval * attempt)

@@ -58,7 +58,6 @@ class PluginConfig:
     nap_server_address: str = "localhost"
     nap_server_port: int = 3658
     auto_avatar_reference: bool = False
-    verbose_logging: bool = False
 
     # 帮助页渲染
     help_render_mode: str = "html"
@@ -75,17 +74,6 @@ class PluginConfig:
     cache_ttl_minutes: int = 5
     cleanup_interval_minutes: int = 30
     max_cache_files: int = 100
-
-    def log_info(self, message: str):
-        """根据配置输出 info 或 debug 级别日志"""
-        if self.verbose_logging:
-            logger.info(message)
-        else:
-            logger.debug(message)
-
-    def log_debug(self, message: str):
-        """输出 debug 级别日志"""
-        logger.debug(message)
 
 
 # 快速模式键列表
@@ -188,7 +176,6 @@ class ConfigLoader:
         config.auto_avatar_reference = (
             service_settings.get("auto_avatar_reference") or False
         )
-        config.verbose_logging = service_settings.get("verbose_logging") or False
 
         # 帮助页渲染
         config.help_render_mode = self.raw_config.get("help_render_mode") or "html"

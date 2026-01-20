@@ -27,7 +27,6 @@ class ApiRequestConfig:
     enable_smart_retry: bool = True  # 智能重试开关
     enable_text_response: bool = False  # 文本响应开关
     force_resolution: bool = False  # 强制传递分辨率参数
-    verbose_logging: bool = False  # 详细日志开关
     image_input_mode: str = "force_base64"  # 参考图统一转 base64
 
     # 官方文档推荐参数

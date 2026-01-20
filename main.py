@@ -155,7 +155,6 @@ class GeminiImageGenerationPlugin(Star):
             enable_smart_retry=self.cfg.enable_smart_retry,
             enable_text_response=self.cfg.enable_text_response,
             force_resolution=self.cfg.force_resolution,
-            verbose_logging=self.cfg.verbose_logging,
             resolution_param_name=self.cfg.resolution_param_name,
             aspect_ratio_param_name=self.cfg.aspect_ratio_param_name,
             max_reference_images=self.cfg.max_reference_images,
@@ -350,19 +349,6 @@ class GeminiImageGenerationPlugin(Star):
             if not quiet:
                 logger.debug("启动阶段未读取到 API 密钥，等待 AstrBot 加载完成后再尝试")
 
-    # ===== 日志工具 =====
-
-    def log_info(self, message: str):
-        """根据配置输出info或debug级别日志"""
-        if self.cfg.verbose_logging:
-            logger.info(message)
-        else:
-            logger.debug(message)
-
-    def log_debug(self, message: str):
-        """输出debug级别日志"""
-        logger.debug(message)
-
     # ===== 事件处理 =====
 
     @filter.on_astrbot_loaded()
@@ -462,7 +448,6 @@ class GeminiImageGenerationPlugin(Star):
                 enable_smart_retry=self.cfg.enable_smart_retry,
                 enable_text_response=self.cfg.enable_text_response,
                 force_resolution=self.cfg.force_resolution,
-                verbose_logging=self.cfg.verbose_logging,
                 image_input_mode="force_base64",
                 resolution_param_name=self.cfg.resolution_param_name,
                 aspect_ratio_param_name=self.cfg.aspect_ratio_param_name,
@@ -1416,10 +1401,6 @@ class GeminiImageGenerationPlugin(Star):
     @property
     def auto_avatar_reference(self) -> bool:
         return self.cfg.auto_avatar_reference
-
-    @property
-    def verbose_logging(self) -> bool:
-        return self.cfg.verbose_logging
 
     @property
     def max_reference_images(self) -> int:

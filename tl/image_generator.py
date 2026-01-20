@@ -34,7 +34,6 @@ class ImageGenerator:
         enable_smart_retry: bool = True,
         enable_text_response: bool = False,
         force_resolution: bool = False,
-        verbose_logging: bool = False,
         resolution_param_name: str = "image_size",
         aspect_ratio_param_name: str = "aspect_ratio",
         max_reference_images: int = 6,
@@ -58,7 +57,6 @@ class ImageGenerator:
             enable_smart_retry: 是否启用智能重试
             enable_text_response: 是否启用文本响应
             force_resolution: 是否强制分辨率
-            verbose_logging: 是否详细日志
             resolution_param_name: 分辨率参数名
             aspect_ratio_param_name: 宽高比参数名
             max_reference_images: 最大参考图片数
@@ -80,7 +78,6 @@ class ImageGenerator:
         self.enable_smart_retry = enable_smart_retry
         self.enable_text_response = enable_text_response
         self.force_resolution = force_resolution
-        self.verbose_logging = verbose_logging
         self.resolution_param_name = resolution_param_name
         self.aspect_ratio_param_name = aspect_ratio_param_name
         self.max_reference_images = max_reference_images
@@ -183,7 +180,6 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
             enable_smart_retry=self.enable_smart_retry,
             enable_text_response=self.enable_text_response,
             force_resolution=self.force_resolution,
-            verbose_logging=self.verbose_logging,
             image_input_mode="force_base64",
             resolution_param_name=self.resolution_param_name,
             aspect_ratio_param_name=self.aspect_ratio_param_name,
