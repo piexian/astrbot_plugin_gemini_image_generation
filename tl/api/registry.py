@@ -8,13 +8,11 @@ from __future__ import annotations
 from typing import Final
 
 from .base import ApiProvider
-from .doubao import DoubaoProvider
 from .google import GoogleProvider
 from .grok2api import Grok2ApiProvider
 from .openai_compat import OpenAICompatProvider
 from .zai import ZaiProvider
 
-_DOUBAO: Final[DoubaoProvider] = DoubaoProvider()
 _GOOGLE: Final[GoogleProvider] = GoogleProvider()
 _GROK2API: Final[Grok2ApiProvider] = Grok2ApiProvider()
 _OPENAI: Final[OpenAICompatProvider] = OpenAICompatProvider()
@@ -28,15 +26,10 @@ def get_api_provider(api_type: str | None) -> ApiProvider:
     - `google/gemini/...` -> GoogleProvider
     - `grok2api` -> Grok2ApiProvider
     - `zai` -> ZaiProvider
-    - `doubao/volcengine/ark/seedream` -> DoubaoProvider
     - 其他 -> OpenAICompatProvider（用于各类 OpenAI 兼容服务）
     """
     normalized_raw = (api_type or "").strip().lower()
     normalized = normalized_raw.replace("-", "_")
-
-    # Doubao/Volcengine Ark
-    if normalized in {"doubao", "volcengine", "ark", "seedream"}:
-        return _DOUBAO
 
     # Zai 独立供应商
     if normalized == "zai" or normalized.startswith("zai_"):

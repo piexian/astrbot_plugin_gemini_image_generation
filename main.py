@@ -281,7 +281,7 @@ class GeminiImageGenerationPlugin(Star):
         elif not self.cfg.api_type:
             if not quiet:
                 logger.error(
-                    "✗ 未配置 api_settings.api_type（google/openai/zai/grok2api/doubao），无法初始化 API 客户端"
+                    "✗ 未配置 api_settings.api_type（google/openai/zai/grok2api），无法初始化 API 客户端"
                 )
             return
 
@@ -336,33 +336,8 @@ class GeminiImageGenerationPlugin(Star):
         except Exception as e:
             logger.error(f"读取 AstrBot 提供商配置失败: {e}")
 
-        # doubao: 允许不依赖 AstrBot provider，直接用 doubao_settings 初始化
-        api_type_norm = (self.cfg.api_type or "").strip().lower().replace("-", "_")
-        if api_type_norm == "doubao":
-            ds = getattr(self.cfg, "doubao_settings", None) or {}
-            if isinstance(ds, dict):
-                api_key = str(ds.get("api_key") or "").strip()
-                if api_key and not self.cfg.api_keys:
-                    self.cfg.api_keys = [api_key]
-
-                endpoint_id = str(ds.get("endpoint_id") or "").strip()
-                if endpoint_id and not self.cfg.model:
-                    self.cfg.model = endpoint_id
-
-                api_base = str(ds.get("api_base") or "").strip()
-                if api_base and not self.cfg.api_base:
-                    self.cfg.api_base = api_base
-
         if self.cfg.api_keys:
             self.api_client = get_api_client(self.cfg.api_keys)
-            # 绑定 doubao_settings 到 API client，供 DoubaoProvider 读取
-            if api_type_norm == "doubao":
-                try:
-                    self.api_client.doubao_settings = (
-                        getattr(self.cfg, "doubao_settings", None) or {}
-                    )
-                except Exception as e:
-                    logger.debug(f"绑定 doubao_settings 到 API client 失败: {e}")
             self._update_modules_api_client()
             logger.info("✓ API 客户端已初始化")
             logger.info(f"  - 类型: {self.cfg.api_type}")
