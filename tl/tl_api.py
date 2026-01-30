@@ -522,8 +522,18 @@ class GeminiAPIClient:
                 return None
 
             try:
-                await self.rotate_api_key()
-                new_key = await self.get_next_api_key()
+                # 使用 KeyManager 轮换（支持每日限额，会预扣除额度）
+                if self._key_manager and self._key_manager.has_provider(api_type):
+                    new_key = await self._key_manager.rotate_key(api_type)
+                    if not new_key:
+                        logger.warning(
+                            f"[KeyManager] {api_type} 轮换失败，所有 Key 今日额度已用尽"
+                        )
+                        return None
+                else:
+                    # 无 KeyManager 配置时使用默认轮换
+                    await self.rotate_api_key()
+                    new_key = await self.get_next_api_key()
             except Exception as e:
                 logger.debug(f"轮换 API Key 失败，将继续使用当前 Key: {e}")
                 return None
