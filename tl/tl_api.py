@@ -714,16 +714,34 @@ class GeminiAPIClient:
                 if api_type == "google":
                     return await self._parse_gresponse(response_data, session)
                 else:  # openai 兼容格式
+                    # 豆包使用专门的解析方法
+                    normalized_type = (api_type or "").strip().lower().replace("-", "_")
+                    if normalized_type in {"doubao", "volcengine", "ark", "seedream"}:
+                        return await self._parse_doubao_response(
+                            response_data, session, api_base, response.status
+                        )
                     return await self._parse_openai_response(
                         response_data, session, api_base
                     )
             elif response.status in [429, 402, 403]:
+                # 豆包 API 使用专门的错误处理
+                normalized_type = (api_type or "").strip().lower().replace("-", "_")
+                if normalized_type in {"doubao", "volcengine", "ark", "seedream"}:
+                    return await self._parse_doubao_response(
+                        response_data, session, api_base, response.status
+                    )
                 error_msg = response_data.get("error", {}).get(
                     "message", f"HTTP {response.status}"
                 )
                 logger.warning(f"API 配额/权限问题: {error_msg}")
                 raise APIError(error_msg, response.status, "quota")
             else:
+                # 豆包 API 使用专门的错误处理
+                normalized_type = (api_type or "").strip().lower().replace("-", "_")
+                if normalized_type in {"doubao", "volcengine", "ark", "seedream"}:
+                    return await self._parse_doubao_response(
+                        response_data, session, api_base, response.status
+                    )
                 error_msg = response_data.get("error", {}).get(
                     "message", f"HTTP {response.status}"
                 )
@@ -799,6 +817,23 @@ class GeminiAPIClient:
         provider = get_api_provider("google")
         return await provider.parse_response(
             client=self, response_data=response_data, session=session
+        )
+
+    async def _parse_doubao_response(
+        self,
+        response_data: dict,
+        session: aiohttp.ClientSession,
+        api_base: str | None = None,
+        http_status: int | None = None,
+    ) -> tuple[list[str], list[str], str | None, str | None]:
+        """解析豆包 API 响应"""
+        provider = get_api_provider("doubao")
+        return await provider.parse_response(
+            client=self,
+            response_data=response_data,
+            session=session,
+            api_base=api_base,
+            http_status=http_status,
         )
 
     async def _parse_openai_response(

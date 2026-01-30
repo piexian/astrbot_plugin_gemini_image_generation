@@ -42,8 +42,19 @@ class ApiRequestConfig:
 class APIError(Exception):
     """API 错误基类"""
 
-    def __init__(self, message: str, status_code: int = None, error_type: str = None):
+    def __init__(
+        self,
+        message: str,
+        status_code: int | None = None,
+        error_type: str | None = None,
+        error_code: str | None = None,
+        retryable: bool = False,
+    ):
         super().__init__(message)
         self.message = message
         self.status_code = status_code
         self.error_type = error_type
+        self.error_code = (
+            error_code  # 具体错误码，如 "RateLimitExceeded.EndpointRPMExceeded"
+        )
+        self.retryable = retryable  # 是否可重试

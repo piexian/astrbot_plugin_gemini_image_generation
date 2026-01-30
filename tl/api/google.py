@@ -63,6 +63,7 @@ class GoogleProvider:
         response_data: dict[str, Any],
         session: aiohttp.ClientSession,
         api_base: str | None = None,
+        http_status: int | None = None,
     ) -> tuple[list[str], list[str], str | None, str | None]:  # noqa: ANN401
         # 解析逻辑在本文件内实现，但会复用 client 上的通用能力。
         return await self._parse_gresponse(

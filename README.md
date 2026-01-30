@@ -123,9 +123,10 @@ git clone https://github.com/piexian/astrbot_plugin_gemini_image_generation
 |--------|--------|------|
 | `group_limit_mode` | `none` | 群限制模式：none/whitelist/blacklist |
 | `group_limit_list` | `[]` | 群号列表 |
-| `enable_rate_limit` | `false` | 群内限流开关 |
-| `rate_limit_period` | `60` | 限流周期（秒） |
-| `max_requests_per_group` | `5` | 单群周期内最大请求数 |
+| `rate_limit_rules` | `[]` | 限流规则列表（template_list），支持多规则配置 |
+| `default_rate_limit.enabled` | `false` | 默认限流开关（未匹配规则时使用） |
+| `default_rate_limit.period_seconds` | `60` | 默认限流周期（秒） |
+| `default_rate_limit.max_requests` | `5` | 默认单群周期内最大请求数 |
 
 **cache_settings**
 | 配置项 | 默认值 | 说明 |
