@@ -21,7 +21,7 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import Image as AstrImage
 from astrbot.api.message_components import Node, Plain
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star
 from astrbot.core.provider.entities import ProviderType
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
@@ -103,12 +103,6 @@ def _check_astrbot_version() -> None:
         )
 
 
-@register(
-    "astrbot_plugin_gemini_image_generation",
-    "piexian",
-    "Gemini图像生成插件，支持生图和改图，可以自动获取头像作为参考",
-    "",
-)
 class GeminiImageGenerationPlugin(Star):
     """Gemini 图像生成插件主类 - 仅负责业务流程编排"""
 
