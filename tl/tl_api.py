@@ -20,7 +20,7 @@ import aiohttp
 
 from astrbot.api import logger
 
-from .api import get_api_provider
+from .api import get_api_provider, is_doubao_api_type
 from .api_types import APIError, ApiRequestConfig
 
 try:
@@ -506,7 +506,21 @@ class GeminiAPIClient:
             return new_key
 
         def is_retryable(err: APIError) -> bool:
-            """根据错误类型/状态码判断是否值得重试。"""
+            """根据错误类型/状态码判断是否值得重试。
+
+            优先使用 err.retryable 字段（由供应商适配器设置），
+            回退到基于状态码和错误类型的通用判断逻辑。
+            """
+            # 优先检查供应商适配器设置的 retryable 字段
+            if hasattr(err, "retryable") and err.retryable is not None:
+                # 如果供应商明确标记为不可重试，直接返回
+                if err.retryable is False:
+                    return False
+                # 如果供应商明确标记为可重试，直接返回
+                if err.retryable is True:
+                    return True
+
+            # 以下为通用的回退逻辑
             if err.error_type == "no_image_retry":
                 return True
             if err.error_type in {"timeout", "network"}:
@@ -544,8 +558,7 @@ class GeminiAPIClient:
             # doubao: 重试时降级 response_format 从 url 到 b64_json
             current_payload = payload
             if attempt > 0:
-                normalized_type = (api_type or "").strip().lower().replace("-", "_")
-                if normalized_type in {"doubao", "volcengine", "ark", "seedream"}:
+                if is_doubao_api_type(api_type):
                     if isinstance(payload, dict):
                         current_payload = dict(payload)
                         current_payload["response_format"] = "b64_json"
@@ -715,8 +728,7 @@ class GeminiAPIClient:
                     return await self._parse_gresponse(response_data, session)
                 else:  # openai 兼容格式
                     # 豆包使用专门的解析方法
-                    normalized_type = (api_type or "").strip().lower().replace("-", "_")
-                    if normalized_type in {"doubao", "volcengine", "ark", "seedream"}:
+                    if is_doubao_api_type(api_type):
                         return await self._parse_doubao_response(
                             response_data, session, api_base, response.status
                         )
@@ -725,8 +737,7 @@ class GeminiAPIClient:
                     )
             elif response.status in [429, 402, 403]:
                 # 豆包 API 使用专门的错误处理
-                normalized_type = (api_type or "").strip().lower().replace("-", "_")
-                if normalized_type in {"doubao", "volcengine", "ark", "seedream"}:
+                if is_doubao_api_type(api_type):
                     return await self._parse_doubao_response(
                         response_data, session, api_base, response.status
                     )
@@ -737,8 +748,7 @@ class GeminiAPIClient:
                 raise APIError(error_msg, response.status, "quota")
             else:
                 # 豆包 API 使用专门的错误处理
-                normalized_type = (api_type or "").strip().lower().replace("-", "_")
-                if normalized_type in {"doubao", "volcengine", "ark", "seedream"}:
+                if is_doubao_api_type(api_type):
                     return await self._parse_doubao_response(
                         response_data, session, api_base, response.status
                     )

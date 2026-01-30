@@ -157,6 +157,16 @@ class DoubaoProvider:
         # Use config.api_key which should already be rotated by the client
         api_key = config.api_key or (api_keys[0] if api_keys else "")
 
+        # 检查 API key 是否配置
+        if not api_key:
+            raise APIError(
+                "豆包 API 密钥未配置，请在插件设置里面配置至少一个密钥。",
+                None,
+                "ConfigurationError",
+                "MissingApiKey",
+                retryable=False,
+            )
+
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -479,6 +489,20 @@ class DoubaoProvider:
         api_base: str | None = None,
         http_status: int | None = None,
     ) -> tuple[list[str], list[str], str | None, str | None]:  # noqa: ANN401
+        # 防御性检查：response_data 必须是 dict
+        if not isinstance(response_data, dict):
+            logger.warning(
+                "[doubao] 响应格式异常，期望 dict，实际: %s",
+                type(response_data).__name__,
+            )
+            raise APIError(
+                "豆包 API 返回了非预期格式的响应，请稍后重试。",
+                http_status,
+                "MalformedResponse",
+                "InvalidResponseType",
+                retryable=True,
+            )
+
         image_urls: list[str] = []
         image_paths: list[str] = []
         text_content = None
@@ -542,6 +566,51 @@ class DoubaoProvider:
                 usage.get("output_tokens"),
                 usage.get("total_tokens"),
             )
+
+        # 如果既没有错误也没有有效数据，抛出错误以便调试
+        if not image_urls and not image_paths:
+            # 检查顶层错误字段（已在上面处理过 dict 格式的错误）
+            error_obj = response_data.get("error")
+            # 如果错误字段存在但格式异常（非预期的 dict），也应该报错
+            if error_obj is not None and not isinstance(error_obj, dict):
+                logger.warning(
+                    "[doubao] 错误字段格式异常，期望 dict，实际: %s 值: %s",
+                    type(error_obj).__name__,
+                    repr(error_obj)[:200],
+                )
+                raise APIError(
+                    f"豆包 API 返回了格式异常的错误信息：{str(error_obj)[:100]}",
+                    http_status,
+                    "MalformedError",
+                    "InvalidErrorFormat",
+                    retryable=True,
+                )
+            # error 是 dict 但缺少 message，也视为异常响应
+            if isinstance(error_obj, dict) and not error_obj.get("message"):
+                logger.warning(
+                    "[doubao] 错误字段缺少 message: %s",
+                    repr(error_obj)[:200],
+                )
+                raise APIError(
+                    "豆包 API 返回了不完整的错误信息，请稍后重试。",
+                    http_status,
+                    "IncompleteError",
+                    "MissingErrorMessage",
+                    retryable=True,
+                )
+            # 无错误字段但也无有效数据
+            if not error_obj:
+                logger.warning(
+                    "[doubao] 响应中既无错误也无有效图像数据: %s",
+                    repr(response_data)[:500],
+                )
+                raise APIError(
+                    "豆包 API 返回了空响应，未生成图像也未返回错误信息。请稍后重试或检查请求参数。",
+                    http_status,
+                    "EmptyResponse",
+                    "NoDataReturned",
+                    retryable=True,
+                )
 
         return image_urls, image_paths, text_content, thought_signature
 

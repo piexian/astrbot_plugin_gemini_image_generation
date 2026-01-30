@@ -48,7 +48,7 @@ class APIError(Exception):
         status_code: int | None = None,
         error_type: str | None = None,
         error_code: str | None = None,
-        retryable: bool = False,
+        retryable: bool | None = None,
     ):
         super().__init__(message)
         self.message = message
@@ -57,4 +57,5 @@ class APIError(Exception):
         self.error_code = (
             error_code  # 具体错误码，如 "RateLimitExceeded.EndpointRPMExceeded"
         )
-        self.retryable = retryable  # 是否可重试
+        # 三态重试标志：None=使用通用逻辑判断，True/False=供应商显式指定
+        self.retryable = retryable
