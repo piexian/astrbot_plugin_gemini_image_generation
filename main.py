@@ -384,9 +384,10 @@ class GeminiImageGenerationPlugin(Star):
         if api_type_norm == "doubao":
             ds = getattr(self.cfg, "doubao_settings", None) or {}
             if isinstance(ds, dict):
-                api_key = str(ds.get("api_key") or "").strip()
-                if api_key and not self.cfg.api_keys:
-                    self.cfg.api_keys = [api_key]
+                # 读取 api_keys 列表（ConfigLoader 已将旧版 api_key 转换为 api_keys）
+                api_keys = ds.get("api_keys") or []
+                if api_keys and not self.cfg.api_keys:
+                    self.cfg.api_keys = api_keys
 
                 endpoint_id = str(ds.get("endpoint_id") or "").strip()
                 if endpoint_id and not self.cfg.model:

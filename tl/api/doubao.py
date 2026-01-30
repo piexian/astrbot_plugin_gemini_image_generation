@@ -208,10 +208,10 @@ class DoubaoProvider:
         # Response format: url by default, fallback to b64_json on retry
         response_format = "b64_json" if is_retry else "url"
 
-        # Watermark: default to true per API docs
+        # Watermark: default to false per plugin docs (schema default is false)
         watermark = doubao_settings.get("watermark")
         if watermark is None:
-            watermark = True  # API default is true
+            watermark = False  # Plugin default is false
 
         payload: dict[str, Any] = {
             "model": model,
