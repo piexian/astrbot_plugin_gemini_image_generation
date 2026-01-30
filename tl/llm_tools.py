@@ -178,7 +178,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
 
         # 启动后台任务执行图像生成
         gen_task = asyncio.create_task(
-            _background_generate_and_send(
+            background_generate_and_send(
                 plugin=plugin,
                 event=event,
                 prompt=prompt,
@@ -220,7 +220,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         )
 
 
-async def _background_generate_and_send(
+async def background_generate_and_send(
     plugin: GeminiImageGenerationPlugin,
     event: Any,
     prompt: str,
@@ -296,6 +296,10 @@ async def _background_generate_and_send(
             await plugin.avatar_manager.cleanup_used_avatars()
         except Exception as e:
             logger.debug(f"[TOOL-BG] 清理头像缓存: {e}")
+
+
+# 向后兼容别名（避免外部引用断裂）
+_background_generate_and_send = background_generate_and_send
 
 
 # 保留旧的辅助函数以保持向后兼容（已弃用）

@@ -59,7 +59,7 @@ from .tl.llm_tools import (
     GeminiImageGenerationTool,
     VALID_ASPECT_RATIOS,
     VALID_RESOLUTIONS,
-    _background_generate_and_send,
+    background_generate_and_send,
 )
 from .tl.tl_api import APIClient, ApiRequestConfig, get_api_client
 from .tl.tl_utils import AvatarManager, cleanup_old_images, format_error_message
@@ -690,7 +690,7 @@ class GeminiImageGenerationPlugin(Star):
         )
 
         gen_task = asyncio.create_task(
-            _background_generate_and_send(
+            background_generate_and_send(
                 plugin=self,
                 event=event,
                 prompt=prompt,
