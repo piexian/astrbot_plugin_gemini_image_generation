@@ -168,16 +168,6 @@ class GeminiAPIClient:
         # 回退到默认 Key
         return await self.get_next_api_key()
 
-    async def consume_key_usage(self, api_type: str, key: str) -> None:
-        """记录 Key 使用一次（用于每日限额追踪）
-
-        Args:
-            api_type: API 类型
-            key: 使用的 Key
-        """
-        if self._key_manager and self._key_manager.has_provider(api_type):
-            await self._key_manager.consume_key(api_type, key)
-
     @staticmethod
     def _coerce_supported_image_bytes(
         mime_type: str | None, raw_bytes: bytes
@@ -642,11 +632,7 @@ class GeminiAPIClient:
                     current_payload = dict(payload)
                     current_payload["_is_retry"] = True
 
-            # 从最终要发送的 headers 解析 key 并计入使用
-            current_key = self._extract_api_key_from_headers(current_headers)
-
-            if current_key:
-                await self.consume_key_usage(api_type, current_key)
+            # 注意: KeyManager.get_available_key() 已预扣除额度，无需再做额外扣除
 
             try:
                 logger.debug(

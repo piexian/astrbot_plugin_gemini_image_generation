@@ -184,8 +184,7 @@ class KeyManager:
             可用的 API Key，如果没有可用 Key 则返回 None
 
         Note:
-            此方法会预扣除额度。如果请求失败，应调用 release_key 释放额度。
-            如果请求成功，无需再调用 consume_key（额度已在此处扣除）。
+            此方法会预扣除额度（额度已在此处扣除）。
         """
         if api_type not in self._providers:
             return None
@@ -235,41 +234,6 @@ class KeyManager:
             # 所有 Key 都已耗尽
             logger.warning(f"[KeyManager] 供应商 {api_type} 的所有 Key 今日额度已用尽")
             return None
-
-    async def release_key(self, api_type: str, key: str) -> bool:
-        """释放预扣除的 Key 额度（请求失败时调用）
-
-        Args:
-            api_type: API 类型
-            key: 要释放的 Key
-
-        Returns:
-            是否释放成功
-        """
-        if api_type not in self._providers:
-            return False
-
-        async with self._lock:
-            provider = self._providers[api_type]
-
-            if key not in provider.key_records:
-                return False
-
-            # 仅在有每日限额时才需要释放
-            if provider.daily_limit_per_key <= 0:
-                return True
-
-            record = provider.key_records[key]
-            if record.usage_count > 0:
-                record.usage_count -= 1
-                record.is_exhausted = False
-                logger.debug(
-                    f"[KeyManager] Key ***{key[-4:]} 额度已释放 "
-                    f"({record.usage_count}/{provider.daily_limit_per_key})"
-                )
-                await self._save_to_kv()
-
-            return True
 
     async def rotate_key(self, api_type: str) -> str | None:
         """轮换到下一个可用 Key
