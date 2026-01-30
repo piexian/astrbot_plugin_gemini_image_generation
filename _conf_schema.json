@@ -101,7 +101,7 @@
               "sequential_max_images": {
                 "description": "组图最大数量",
                 "type": "int",
-                "hint": "组图最多包含的图片数量（1-15）",
+                "hint": "组图最多包含的图片数量（2-15），超出范围将报错",
                 "default": 4
               }
             }
@@ -825,7 +825,7 @@
       "sequential_max_images": {
         "description": "组图最大数量",
         "type": "int",
-        "hint": "仅当组图模式为 auto 时生效，指定组图最多包含的图片数量（1-15）",
+        "hint": "仅当组图模式为 auto 时生效，指定组图最多包含的图片数量（2-15），超出范围将报错",
         "default": 4
       }
     }

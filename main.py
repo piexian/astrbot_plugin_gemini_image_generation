@@ -30,6 +30,7 @@ from .tl import (
     ConfigLoader,
     ImageGenerator,
     ImageHandler,
+    KeyManager,
     MessageSender,
     RateLimiter,
     VisionHandler,
@@ -61,11 +62,13 @@ from .tl.tl_utils import AvatarManager, cleanup_old_images, format_error_message
 
 # 版本检查
 MIN_ASTRBOT_VERSION = "4.10.4"  # template_list 功能所需最低版本
+_ASTRBOT_VERSION_UNKNOWN = False  # 标记是否无法检测版本
 
 try:
     from astrbot.core.config.default import VERSION as ASTRBOT_VERSION
 except ImportError:
     ASTRBOT_VERSION = "0.0.0"
+    _ASTRBOT_VERSION_UNKNOWN = True
 
 
 def _parse_version(version_str: str) -> tuple[int, ...]:
@@ -80,6 +83,14 @@ def _parse_version(version_str: str) -> tuple[int, ...]:
 
 def _check_astrbot_version() -> None:
     """检查 AstrBot 版本是否满足要求"""
+    # 无法检测版本时只记录警告，不阻止插件加载
+    if _ASTRBOT_VERSION_UNKNOWN:
+        logger.warning(
+            f"⚠️ 无法检测 AstrBot 版本，插件需要 v{MIN_ASTRBOT_VERSION} 以上版本。"
+            "如遇问题请检查 AstrBot 版本。"
+        )
+        return
+
     current = _parse_version(ASTRBOT_VERSION)
     required = _parse_version(MIN_ASTRBOT_VERSION)
 
@@ -149,6 +160,13 @@ class GeminiImageGenerationPlugin(Star):
         """初始化各功能处理模块"""
         # 限流器（使用 KV 存储持久化）
         self.rate_limiter = RateLimiter(
+            self.cfg,
+            get_kv=self.get_kv_data,
+            put_kv=self.put_kv_data,
+        )
+
+        # Key 管理器（多 Key 轮换和每日限额）
+        self.key_manager = KeyManager(
             self.cfg,
             get_kv=self.get_kv_data,
             put_kv=self.put_kv_data,
@@ -407,6 +425,9 @@ class GeminiImageGenerationPlugin(Star):
                     )
                 except Exception as e:
                     logger.debug(f"绑定 doubao_settings 到 API client 失败: {e}")
+            # 绑定 KeyManager 到 API client（支持多 Key 轮换和每日限额）
+            if hasattr(self, "key_manager") and self.key_manager:
+                self.api_client.set_key_manager(self.key_manager)
             self._update_modules_api_client()
             logger.info("✓ API 客户端已初始化")
             logger.info(f"  - 类型: {self.cfg.api_type}")

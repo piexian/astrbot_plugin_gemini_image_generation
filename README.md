@@ -145,7 +145,7 @@ git clone https://github.com/piexian/astrbot_plugin_gemini_image_generation
 | `watermark` | `false` | 是否添加水印 |
 | `optimize_prompt_mode` | `standard` | 提示词优化模式（standard/fast） |
 | `sequential_image_generation` | `disabled` | 组图生成模式（disabled/auto），[官方文档](https://www.volcengine.com/docs/82379/1824121?lang=zh#fc9f85e4) |
-| `sequential_max_images` | `4` | 组图最大数量（1-9） |
+| `sequential_max_images` | `4` | 组图最大数量（2-15） |
 
 ## 🎯 使用指南
 

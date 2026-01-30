@@ -11,6 +11,7 @@ import aiohttp
 from astrbot.api import logger
 
 from ..api_types import APIError, ApiRequestConfig
+from ..plugin_config import DOUBAO_SEQUENTIAL_IMAGES_MAX, DOUBAO_SEQUENTIAL_IMAGES_MIN
 from ..tl_utils import save_base64_image
 from .base import ProviderRequest
 
@@ -253,7 +254,13 @@ class DoubaoProvider:
         if seq_mode == "auto":
             payload["sequential_image_generation"] = "auto"
             max_images = doubao_settings.get("sequential_max_images")
-            if max_images and isinstance(max_images, int) and 1 <= max_images <= 15:
+            if (
+                max_images
+                and isinstance(max_images, int)
+                and DOUBAO_SEQUENTIAL_IMAGES_MIN
+                <= max_images
+                <= DOUBAO_SEQUENTIAL_IMAGES_MAX
+            ):
                 payload["sequential_image_generation_options"] = {
                     "max_images": max_images
                 }
@@ -488,12 +495,14 @@ class DoubaoProvider:
         session: aiohttp.ClientSession,
         api_base: str | None = None,
         http_status: int | None = None,
+        is_retry: bool = False,
     ) -> tuple[list[str], list[str], str | None, str | None]:  # noqa: ANN401
         # 防御性检查：response_data 必须是 dict
         if not isinstance(response_data, dict):
             logger.warning(
-                "[doubao] 响应格式异常，期望 dict，实际: %s",
+                "[doubao] 响应格式异常，期望 dict，实际: %s, 内容: %s",
                 type(response_data).__name__,
+                repr(response_data)[:100],
             )
             raise APIError(
                 "豆包 API 返回了非预期格式的响应，请稍后重试。",
@@ -502,6 +511,10 @@ class DoubaoProvider:
                 "InvalidResponseType",
                 retryable=True,
             )
+
+        # 重试时检测 response_format 是否需要降级（由 tl_api._make_request 标记）
+        if is_retry:
+            logger.debug("[doubao] 重试请求，response_format 降级为 b64_json")
 
         image_urls: list[str] = []
         image_paths: list[str] = []

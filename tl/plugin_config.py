@@ -8,6 +8,10 @@ from typing import Any
 
 from astrbot.api import logger
 
+# 豆包组图数量限制常量
+DOUBAO_SEQUENTIAL_IMAGES_MIN = 2
+DOUBAO_SEQUENTIAL_IMAGES_MAX = 15
+
 
 @dataclass
 class PluginConfig:
@@ -132,14 +136,41 @@ class ConfigLoader:
             if has_old_fields and not has_new_rules:
                 migrations_needed.append("limit_settings")
 
-        # 检查 quick_mode_settings 是否使用旧版 object 格式
-        quick_mode_settings = self.raw_config.get("quick_mode_settings")
-        if isinstance(quick_mode_settings, dict) and quick_mode_settings:
-            first_key = next(iter(quick_mode_settings), None)
-            if first_key and isinstance(quick_mode_settings.get(first_key), dict):
-                migrations_needed.append("quick_mode_settings")
+        # 注意：quick_mode_settings 保持 object 格式，不再迁移到 template_list
+        # schema 中 quick_mode_settings 仍是 object 类型
 
         return migrations_needed
+
+    def _get_migration_marker_path(self) -> str | None:
+        """获取迁移标记文件路径"""
+        import os
+
+        if not self._data_dir:
+            return None
+        return os.path.join(self._data_dir, ".migration_v1.9.0.done")
+
+    def _is_migration_done(self) -> bool:
+        """检查迁移是否已完成"""
+        import os
+
+        marker_path = self._get_migration_marker_path()
+        if not marker_path:
+            return False
+        return os.path.exists(marker_path)
+
+    def _mark_migration_done(self) -> None:
+        """标记迁移已完成"""
+        import os
+
+        marker_path = self._get_migration_marker_path()
+        if not marker_path:
+            return
+        try:
+            os.makedirs(self._data_dir, exist_ok=True)
+            with open(marker_path, "w", encoding="utf-8") as f:
+                f.write("migration completed\n")
+        except Exception as e:
+            logger.debug(f"无法写入迁移标记文件: {e}")
 
     def _backup_config(self, migration_items: list[str]) -> str | None:
         """备份旧配置到插件持久化存储目录
@@ -162,9 +193,11 @@ class ConfigLoader:
             # 确保目录存在
             os.makedirs(self._data_dir, exist_ok=True)
 
-            # 生成备份文件名
+            # 生成备份文件名（包含迁移前版本信息）
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_filename = f"config_backup_{timestamp}.json"
+            # 获取迁移前版本号（从 marker 文件名推断上一个版本）
+            from_version = "pre_v1.9.0"
+            backup_filename = f"config_backup_{from_version}_{timestamp}.json"
             backup_path = os.path.join(self._data_dir, backup_filename)
 
             # 写入备份
@@ -180,11 +213,10 @@ class ConfigLoader:
             return None
 
     def _migrate_config(self) -> bool:
-        """迁移旧版配置到新版 template_list 格式
+        """迁移旧版配置到新版格式
 
         迁移内容：
         1. limit_settings 旧版字段 -> rate_limit_rules
-        2. quick_mode_settings 旧版 object -> template_list
 
         Returns:
             bool: 是否进行了迁移
@@ -192,6 +224,10 @@ class ConfigLoader:
         if self._migrated:
             return False
         self._migrated = True
+
+        # 检查是否已经完成迁移（持久化标记）
+        if self._is_migration_done():
+            return False
 
         # 检测需要迁移的项目
         migrations_needed = self._needs_migration()
@@ -204,7 +240,7 @@ class ConfigLoader:
 
         migrated = False
 
-        # 1. 迁移旧版限流配置到 rate_limit_rules
+        # 迁移旧版限流配置到 rate_limit_rules
         # 旧版格式：enable_rate_limit, rate_limit_period, max_requests_per_group
         # 新版格式：rate_limit_rules (template_list)
         limit_settings = self.raw_config.get("limit_settings")
@@ -232,24 +268,9 @@ class ConfigLoader:
                     logger.info("配置迁移: 旧版限流未启用，设置空规则列表")
                 migrated = True
 
-        # 2. 迁移 quick_mode_settings 从 object 到 template_list
-        quick_mode_settings = self.raw_config.get("quick_mode_settings")
-        if isinstance(quick_mode_settings, dict) and quick_mode_settings:
-            # 检查是否是旧格式（dict 而非 list）
-            # 新格式应该是 list
-            first_key = next(iter(quick_mode_settings), None)
-            if first_key and isinstance(quick_mode_settings.get(first_key), dict):
-                # 这是旧格式，转换为 list
-                new_list = []
-                for mode_key, mode_settings in quick_mode_settings.items():
-                    if isinstance(mode_settings, dict):
-                        new_entry = mode_settings.copy()
-                        new_entry["__template_key"] = mode_key
-                        new_list.append(new_entry)
-                if new_list:
-                    self.raw_config["quick_mode_settings"] = new_list
-                    logger.info("配置迁移: quick_mode_settings object -> template_list")
-                    migrated = True
+        # 标记迁移完成
+        if migrated:
+            self._mark_migration_done()
 
         return migrated
 
@@ -343,11 +364,20 @@ class ConfigLoader:
         max_images = doubao_settings.get("sequential_max_images")
         if max_images is not None:
             try:
-                doubao_settings["sequential_max_images"] = min(
-                    max(int(max_images), 1), 9
-                )
-            except (TypeError, ValueError):
-                doubao_settings["sequential_max_images"] = 4
+                max_images_int = int(max_images)
+                if (
+                    max_images_int < DOUBAO_SEQUENTIAL_IMAGES_MIN
+                    or max_images_int > DOUBAO_SEQUENTIAL_IMAGES_MAX
+                ):
+                    raise ValueError(
+                        f"sequential_max_images 必须在 {DOUBAO_SEQUENTIAL_IMAGES_MIN}-"
+                        f"{DOUBAO_SEQUENTIAL_IMAGES_MAX} 之间，当前值: {max_images_int}"
+                    )
+                doubao_settings["sequential_max_images"] = max_images_int
+            except (TypeError, ValueError) as e:
+                if isinstance(e, ValueError) and "必须在" in str(e):
+                    raise
+                raise ValueError(f"sequential_max_images 配置无效: {max_images}") from e
 
         config.doubao_settings = doubao_settings
 

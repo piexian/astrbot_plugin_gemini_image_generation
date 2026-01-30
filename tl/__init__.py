@@ -9,6 +9,7 @@ from .image_handler import ImageHandler as ImageHandler
 from .image_splitter import create_zip as create_zip
 from .image_splitter import resolve_split_source_to_path as resolve_split_source_to_path
 from .image_splitter import split_image as split_image
+from .key_manager import KeyManager as KeyManager
 from .llm_tools import GeminiImageGenerationTool as GeminiImageGenerationTool
 from .llm_tools import execute_image_generation_tool as execute_image_generation_tool
 from .message_sender import MessageSender as MessageSender
