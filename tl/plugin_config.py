@@ -22,6 +22,9 @@ class PluginConfig:
     model: str = ""
     api_keys: list[str] = field(default_factory=list)
 
+    # 豆包（Volcengine Ark）专用配置（api_type == doubao 时使用）
+    doubao_settings: dict[str, Any] = field(default_factory=dict)
+
     # 图像生成设置
     resolution: str = "1K"
     aspect_ratio: str = "1:1"
@@ -106,6 +109,32 @@ class ConfigLoader:
         config.api_type = (api_settings.get("api_type") or "").strip()
         config.api_base = (api_settings.get("custom_api_base") or "").strip()
         config.model = (api_settings.get("model") or "").strip()
+
+        # Doubao settings（独立配置节）
+        doubao_settings = self.raw_config.get("doubao_settings") or {}
+        if not isinstance(doubao_settings, dict):
+            doubao_settings = {}
+        # 清理字符串类型的配置项
+        for key in (
+            "api_key",
+            "endpoint_id",
+            "api_base",
+            "default_size",
+            "optimize_prompt_mode",
+            "sequential_image_generation",
+        ):
+            if isinstance(doubao_settings.get(key), str):
+                doubao_settings[key] = doubao_settings[key].strip()
+        # 处理 sequential_max_images 类型容错
+        max_images = doubao_settings.get("sequential_max_images")
+        if max_images is not None:
+            try:
+                doubao_settings["sequential_max_images"] = min(
+                    max(int(max_images), 1), 9
+                )
+            except (TypeError, ValueError):
+                doubao_settings["sequential_max_images"] = 4
+        config.doubao_settings = doubao_settings
 
         # 图像生成设置
         image_settings = self.raw_config.get("image_generation_settings") or {}

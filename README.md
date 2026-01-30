@@ -1,8 +1,8 @@
-# AstrBot Gemini 图像生成插件 v1.8.5
+# AstrBot Gemini 图像生成插件 v1.9.0
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/Version-v1.8.5-blue)
+![Version](https://img.shields.io/badge/Version-v1.9.0-blue)
 ![License](https://img.shields.io/badge/License-MIT-orange)
 
 **🎨 强大的 Gemini 图像生成插件，支持智能头像参考和智能表情包切分**
@@ -17,7 +17,7 @@
 - **智能头像**: 自动获取用户头像和@对象头像作为参考
 - **表情包切分**: SmartMemeSplitter v4 算法自动切割表情包网格
 - **LLM 工具**: 支持自然语言触发图像生成（触发器模式，避免超时）
-- **多 API 支持**: Google 官方、OpenAI 兼容、Zai、grok2api
+- **多 API 支持**: Google 官方、OpenAI 兼容、Zai、grok2api、豆包（Doubao）
 - **多格式支持**: PNG、JPEG、WEBP、HEIC/HEIF、GIF
 
 ### 🛡️ 限制/限流
@@ -64,8 +64,8 @@ git clone https://github.com/piexian/astrbot_plugin_gemini_image_generation
 
 | 配置项 | 说明 |
 |--------|------|
-| `api_settings.provider_id` | 生图模型提供商（从 AstrBot 提供商列表选择） |
-| `api_settings.api_type` | API 类型：`google`/`openai`/`zai`/`grok2api` |
+| `api_settings.provider_id` | 生图模型提供商（从 AstrBot 提供商列表选择；doubao 无需填写） |
+| `api_settings.api_type` | API 类型：`google`/`openai`/`zai`/`grok2api`/`doubao` |
 
 ### 配置项详解
 
@@ -133,6 +133,18 @@ git clone https://github.com/piexian/astrbot_plugin_gemini_image_generation
 | `cache_ttl_minutes` | `5` | 缓存保留时间（分钟） |
 | `cleanup_interval_minutes` | `30` | 清理间隔（分钟） |
 | `max_cache_files` | `100` | 缓存文件数量上限 |
+
+**doubao_settings**（豆包生图专用配置）
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `api_key` | - | 火山引擎 API Key（必填） |
+| `endpoint_id` | `doubao-seedream-4.5` | Endpoint/Model ID（ep-xxxx 或 doubao-seedream-4.5/4.0） |
+| `api_base` | `https://ark.cn-beijing.volces.com` | API 端点地址 |
+| `default_size` | `2K` | 默认尺寸（2K/4K 或具体尺寸） |
+| `watermark` | `false` | 是否添加水印 |
+| `optimize_prompt_mode` | `standard` | 提示词优化模式（standard/fast） |
+| `sequential_image_generation` | `disabled` | 组图生成模式（disabled/auto），[官方文档](https://www.volcengine.com/docs/82379/1824121?lang=zh#fc9f85e4) |
+| `sequential_max_images` | `4` | 组图最大数量（1-9） |
 
 ## 🎯 使用指南
 
@@ -246,6 +258,7 @@ astrbot_plugin_gemini_image_generation/
     └── api/                # API 供应商适配器
         ├── __init__.py
         ├── base.py         # 适配器基类
+        ├── doubao.py       # 豆包（Volcengine Ark）适配
         ├── google.py       # Google/Gemini 官方 API
         ├── grok2api.py     # grok2api 适配
         ├── openai_compat.py # OpenAI 兼容格式

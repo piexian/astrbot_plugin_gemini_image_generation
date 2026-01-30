@@ -14,13 +14,14 @@
       "api_type": {
         "description": "API 类型（必选）",
         "type": "string",
-        "hint": "必须选择 API 类型（google/openai/zai/grok2api）。选择 zai 时使用 Zai 兼容参数传递；选择 grok2api 时启用图片相对路径/临时缓存兼容",
+        "hint": "必须选择 API 类型（google/openai/zai/grok2api/doubao）。 不同提供商支持的类型不同，请参考提供商说明",
         "default": "openai",
         "options": [
           "google",
           "openai",
           "zai",
-          "grok2api"
+          "grok2api",
+          "doubao"
         ]
       },
       "model": {
@@ -646,6 +647,64 @@
         "type": "int",
         "hint": "各缓存目录的文件数量上限，超过时会按时间清理最旧的文件，设为 0 表示不限制数量",
         "default": 100
+      }
+    }
+  },
+  "doubao_settings": {
+    "description": "豆包生图 API 配置",
+    "type": "object",
+    "hint": "配置字节跳动火山引擎 Ark 平台的豆包生图 API（需要先在 api_type 中选择 doubao）。注意：豆包模式下不使用上方 api_settings 中的 model 配置，请在此处单独配置",
+    "items": {
+      "api_key": {
+        "description": "API Key",
+        "type": "string",
+        "hint": "从火山引擎控制台获取的 API Key（必填）",
+        "default": ""
+      },
+      "endpoint_id": {
+        "description": "Endpoint/Model ID",
+        "type": "string",
+        "hint": "Ark Images API 的 model 字段：可填推理接入点 ID（ep-xxxx）或模型 ID（doubao-seedream-4.5/4.0）",
+        "default": "doubao-seedream-4.5"
+      },
+      "api_base": {
+        "description": "API 端点地址",
+        "type": "string",
+        "hint": "火山引擎 Ark API 地址，通常无需修改",
+        "default": "https://ark.cn-beijing.volces.com"
+      },
+      "default_size": {
+        "description": "默认尺寸",
+        "type": "string",
+        "hint": "默认生成图片尺寸（2K/4K 或具体尺寸如 2048x2048）",
+        "default": "2K",
+        "options": ["2K", "4K", "1024x1024", "2048x2048", "2304x1728", "1728x2304", "2560x1440", "1440x2560"]
+      },
+      "watermark": {
+        "description": "添加水印",
+        "type": "bool",
+        "hint": "是否在图片右下角添加'AI生成'水印",
+        "default": false
+      },
+      "optimize_prompt_mode": {
+        "description": "提示词优化模式",
+        "type": "string",
+        "hint": "standard：标准模式，生成内容质量更高，耗时较长；fast：快速模式，耗时更短，质量一般",
+        "default": "standard",
+        "options": ["standard", "fast"]
+      },
+      "sequential_image_generation": {
+        "description": "组图生成模式",
+        "type": "string",
+        "hint": "控制组图功能（生成一组内容关联的图片）。auto：模型根据提示词自主判断是否返回组图及数量；disabled：关闭组图，只生成一张图片",
+        "default": "disabled",
+        "options": ["disabled", "auto"]
+      },
+      "sequential_max_images": {
+        "description": "组图最大数量",
+        "type": "int",
+        "hint": "仅当组图模式为 auto 时生效，指定组图最多包含的图片数量（1-9）",
+        "default": 4
       }
     }
   }

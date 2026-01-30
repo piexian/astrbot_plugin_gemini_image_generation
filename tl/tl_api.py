@@ -541,6 +541,16 @@ class GeminiAPIClient:
                 total=attempt_timeout_int, sock_read=attempt_timeout_int
             )
 
+            # doubao: 重试时降级 response_format 从 url 到 b64_json
+            current_payload = payload
+            if attempt > 0:
+                normalized_type = (api_type or "").strip().lower().replace("-", "_")
+                if normalized_type in {"doubao", "volcengine", "ark", "seedream"}:
+                    if isinstance(payload, dict):
+                        current_payload = dict(payload)
+                        current_payload["response_format"] = "b64_json"
+                        logger.debug("[doubao] 重试降级: response_format -> b64_json")
+
             try:
                 logger.debug(
                     "发送请求（尝试 %s/%s, timeout=%ss）",
@@ -551,7 +561,7 @@ class GeminiAPIClient:
                 return await self._perform_request(
                     session,
                     url,
-                    payload,
+                    current_payload,
                     headers,
                     api_type,
                     model,
