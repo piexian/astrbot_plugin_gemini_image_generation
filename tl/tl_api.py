@@ -434,17 +434,20 @@ class GeminiAPIClient:
 
         logger.debug(f"使用 {config.model} (通过 {config.api_type}) 生成图像")
         logger.debug(f"API 端点: {url[:80]}...")
+
+        # 从 payload 中获取实际使用的 size（provider_overrides 可能已覆盖）
+        actual_size = payload.get("size") or config.resolution or "默认"
         logger.debug(
             "请求参数概览: refs=%s prompt_len=%s aspect=%s res=%s",
             len(config.reference_images or []),
             len(config.prompt or ""),
             config.aspect_ratio,
-            config.resolution,
+            actual_size,
         )
 
-        if config.resolution or config.aspect_ratio:
+        if actual_size != "默认" or config.aspect_ratio:
             logger.debug(
-                f"分辨率: {config.resolution or '默认'}, 长宽比: {config.aspect_ratio or '默认'}"
+                f"分辨率: {actual_size}, 长宽比: {config.aspect_ratio or '默认'}"
             )
 
         if config.api_base:

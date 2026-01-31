@@ -181,12 +181,13 @@ class DoubaoProvider:
         )
 
         logger.debug(
-            "[doubao] build_request: url=%s model=%s size=%s has_image=%s is_retry=%s",
+            "[doubao] build_request: url=%s model=%s size=%s has_image=%s is_retry=%s payload=%s",
             url,
             payload.get("model"),
             payload.get("size"),
             bool(payload.get("image")),
             is_retry,
+            {k: v for k, v in payload.items() if k != "image"},  
         )
         return ProviderRequest(url=url, headers=headers, payload=payload)
 
@@ -200,6 +201,12 @@ class DoubaoProvider:
     ) -> dict[str, Any]:  # noqa: ANN401
         if doubao_settings is None:
             doubao_settings = getattr(client, "doubao_settings", None) or {}
+
+        logger.debug(
+            "[doubao] _prepare_payload: doubao_settings keys=%s default_size=%s",
+            list(doubao_settings.keys()) if doubao_settings else [],
+            doubao_settings.get("default_size"),
+        )
 
         # Model: doubao_settings.endpoint_id > config.model > default
         model = (
@@ -221,10 +228,14 @@ class DoubaoProvider:
             "watermark": bool(watermark),
         }
 
-        # Size: config.resolution > doubao_settings.default_size
-        size = self._map_resolution(config.resolution, model)
-        if not size and doubao_settings.get("default_size"):
+        # Size: doubao_settings.default_size > config.resolution > default 2K
+        # provider_overrides 条目配置优先级最高
+        if doubao_settings.get("default_size"):
             size = self._map_resolution(doubao_settings["default_size"], model)
+        elif config.resolution:
+            size = self._map_resolution(config.resolution, model)
+        else:
+            size = "2K"  # Default for 4.5/4.0 models
         if size:
             payload["size"] = size
 
@@ -272,9 +283,8 @@ class DoubaoProvider:
         """Map plugin resolution to Doubao `size`.
 
         Supported by Doubao:
-        - doubao-seedream-4.5: "2K"/"4K" or WxH (min 2560x1440=3686400 px)
-        - doubao-seedream-4.0: "1K"/"2K"/"4K" or WxH (min 1280x720=921600 px)
-        - doubao-seedream-3.0-t2i: WxH only (512x512 ~ 2048x2048)
+        - doubao-seedream-4.5: "2K"/"4K" only (min 2560x1440=3686400 px)
+        - doubao-seedream-4.0: "1K"/"2K"/"4K" (min 1280x720=921600 px)
         """
         if not resolution:
             return None
@@ -290,46 +300,44 @@ class DoubaoProvider:
         if re.match(r"^\d{3,5}x\d{3,5}$", normalized):
             return normalized
 
+        # Normalize model name: 4-5 -> 4.5, 4_5 -> 4.5, etc.
+        model_normalized = model_lower.replace("-", ".").replace("_", ".")
+
         # For doubao-seedream-4.5, only 2K/4K are valid shortcuts
-        # 1K is NOT supported - must use WxH format
-        if "4.5" in model_lower or "seedream-4.5" in model_lower:
+        # 1K is NOT supported - auto upgrade to 2K
+        if "4.5" in model_normalized or "seedream.4.5" in model_normalized:
             if normalized in {"2k", "2048"}:
                 return "2K"
             if normalized in {"4k", "4096"}:
                 return "4K"
             if normalized in {"1k", "1024"}:
-                # 4.5 does not support 1K shortcut, use minimum valid WxH
-                return "2048x2048"
-            return raw
+                # 4.5 does not support 1K, auto upgrade to 2K
+                return "2K"
+            # Unknown resolution, default to 2K
+            return "2K"
 
         # For doubao-seedream-4.0, 1K/2K/4K are all valid
-        if "4.0" in model_lower or "seedream-4.0" in model_lower:
+        if "4.0" in model_normalized or "seedream.4.0" in model_normalized:
             if normalized in {"1k", "1024"}:
                 return "1K"
             if normalized in {"2k", "2048"}:
                 return "2K"
             if normalized in {"4k", "4096"}:
                 return "4K"
-            return raw
+            # Unknown resolution, default to 2K
+            return "2K"
 
-        # For 3.0 models (t2i/i2i), only WxH format
-        if "3.0" in model_lower:
-            if normalized in {"1k", "1024"}:
-                return "1024x1024"
-            if normalized in {"2k", "2048"}:
-                return "2048x2048"
-            return raw
-
-        # Default mapping for unknown models
-        if normalized in {"1k", "1024"}:
-            return "1024x1024"
+        # Default: assume 4.5 compatible (most common case)
         if normalized in {"2k", "2048"}:
             return "2K"
         if normalized in {"4k", "4096"}:
             return "4K"
+        if normalized in {"1k", "1024"}:
+            # Auto upgrade to 2K for safety
+            return "2K"
 
-        # Allow advanced users to pass provider-native values directly
-        return raw
+        # Unknown, default to 2K
+        return "2K"
 
     @staticmethod
     def _format_base64_data_uri(b64_data: str, mime_type: str | None = None) -> str:

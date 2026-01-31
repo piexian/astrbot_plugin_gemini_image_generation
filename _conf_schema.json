@@ -5,7 +5,7 @@
     "hint": "配置 API 端点和相关设置",
     "items": {
       "provider_id": {
-        "description": "生图模型提供商（必选）",
+        "description": "生图模型提供商（可选）",
         "type": "string",
         "hint": "从 AstrBot 提供商列表中选择，插件自动读取模型/密钥/端点；不选将无法调用",
         "_special": "select_provider",
@@ -38,7 +38,7 @@
         "default": ""
       },
       "provider_overrides": {
-        "description": "供应商配置覆盖",
+        "description": "供应商配置覆盖（和上面的供应商2选一）",
         "type": "template_list",
         "hint": "覆盖特定 API 类型的配置（多 Key 轮换、每日限额等），优先于 AstrBot 提供商配置",
         "default": [],
@@ -196,7 +196,7 @@
                 "type": "string",
                 "hint": "默认生成图片尺寸",
                 "default": "2K",
-                "options": ["2K", "4K", "1024x1024", "2048x2048"]
+                "options": ["2K", "4K"]
               },
               "watermark": {
                 "description": "添加水印",
@@ -662,8 +662,8 @@
       "quality": {
         "description": "截图质量（1-100）",
         "type": "int",
-        "hint": "留空使用 AstrBot 默认值",
-        "default": null
+        "hint": "JPEG 格式的截图质量，1-100 之间。PNG 格式忽略此设置",
+        "default": 80
       },
       "type": {
         "description": "截图格式",
