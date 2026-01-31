@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+### ⚠️ 配置迁移说明
+
+**v1.9.0 以后的配置文件格式不兼容旧版本**。升级时插件会自动迁移配置，但如果遇到配置模板显示错误（如字段类型不匹配、选项无法选择等），请按以下步骤处理：
+
+1. **查找备份文件**：旧配置已自动备份到插件数据目录
+   - 路径：`AstrBot/data/plugins/astrbot_plugin_gemini_image_generation/config_backup_pre_v1.9.x_<时间戳>.json`
+   - 示例：`config_backup_pre_v1.9.0_20260130_143052.json`
+
+2. **删除当前配置**：在根目录AstrBot/data删除本插件的配置文件
+
+3. **重新配置**：然后webui重载插件，再对照备份文件手动重新配置各项参数
+
+**主要变更**：
+- `limit_settings` 中的 `rate_limit_enabled`、`rate_limit_period_seconds`、`rate_limit_max_requests` 已迁移到 `rate_limit_rules`（template_list 格式）
+- `quick_mode_settings` 从 object 格式迁移到 template_list 格式
+
 ## [1.9.1] - 2026-01-31
 
 ### Fixed
