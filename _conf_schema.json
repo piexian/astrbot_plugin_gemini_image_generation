@@ -40,9 +40,129 @@
       "provider_overrides": {
         "description": "供应商配置覆盖",
         "type": "template_list",
-        "hint": "覆盖特定 API 类型的配置（多 Key 轮换、每日限额等），仅 doubao 类型当前支持",
+        "hint": "覆盖特定 API 类型的配置（多 Key 轮换、每日限额等），优先于 AstrBot 提供商配置",
         "default": [],
         "templates": {
+          "google": {
+            "description": "Google/Gemini API 覆盖配置",
+            "hint": "配置 Google Gemini 官方 API 的密钥和端点",
+            "items": {
+              "api_keys": {
+                "description": "API Key 列表",
+                "type": "list",
+                "hint": "多个 API Key，支持轮换使用",
+                "default": []
+              },
+              "daily_limit_per_key": {
+                "description": "每个 Key 每日限额",
+                "type": "int",
+                "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
+                "default": 0
+              },
+              "model": {
+                "description": "模型名称",
+                "type": "string",
+                "hint": "Gemini 图像生成模型名称",
+                "default": "gemini-3-pro-image-preview"
+              },
+              "api_base": {
+                "description": "API 端点地址",
+                "type": "string",
+                "hint": "Google AI API 地址，留空使用默认值",
+                "default": ""
+              }
+            }
+          },
+          "openai": {
+            "description": "OpenAI 兼容 API 覆盖配置",
+            "hint": "配置 OpenAI 兼容格式的 API 密钥和端点",
+            "items": {
+              "api_keys": {
+                "description": "API Key 列表",
+                "type": "list",
+                "hint": "多个 API Key，支持轮换使用",
+                "default": []
+              },
+              "daily_limit_per_key": {
+                "description": "每个 Key 每日限额",
+                "type": "int",
+                "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
+                "default": 0
+              },
+              "model": {
+                "description": "模型名称",
+                "type": "string",
+                "hint": "OpenAI 兼容格式的模型名称",
+                "default": "gemini-3-pro-image-preview"
+              },
+              "api_base": {
+                "description": "API 端点地址",
+                "type": "string",
+                "hint": "OpenAI 兼容 API 地址",
+                "default": ""
+              }
+            }
+          },
+          "zai": {
+            "description": "Zai API 覆盖配置",
+            "hint": "配置 Zai.is 的 API 密钥和端点",
+            "items": {
+              "api_keys": {
+                "description": "API Key 列表",
+                "type": "list",
+                "hint": "多个 API Key，支持轮换使用",
+                "default": []
+              },
+              "daily_limit_per_key": {
+                "description": "每个 Key 每日限额",
+                "type": "int",
+                "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
+                "default": 0
+              },
+              "model": {
+                "description": "模型名称",
+                "type": "string",
+                "hint": "Zai 模型名称",
+                "default": "gemini-3-pro-image-preview"
+              },
+              "api_base": {
+                "description": "API 端点地址",
+                "type": "string",
+                "hint": "Zai API 地址",
+                "default": ""
+              }
+            }
+          },
+          "grok2api": {
+            "description": "grok2api 覆盖配置",
+            "hint": "配置 grok2api 的 API 密钥和端点",
+            "items": {
+              "api_keys": {
+                "description": "API Key 列表",
+                "type": "list",
+                "hint": "多个 API Key，支持轮换使用",
+                "default": []
+              },
+              "daily_limit_per_key": {
+                "description": "每个 Key 每日限额",
+                "type": "int",
+                "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
+                "default": 0
+              },
+              "model": {
+                "description": "模型名称",
+                "type": "string",
+                "hint": "grok2api 模型名称",
+                "default": "gemini-3-pro-image-preview"
+              },
+              "api_base": {
+                "description": "API 端点地址",
+                "type": "string",
+                "hint": "grok2api API 地址",
+                "default": ""
+              }
+            }
+          },
           "doubao": {
             "description": "豆包 API 覆盖配置",
             "hint": "配置豆包专用的多 Key 轮换和每日限额",

@@ -390,23 +390,37 @@ class GeminiImageGenerationPlugin(Star):
         except Exception as e:
             logger.error(f"读取 AstrBot 提供商配置失败: {e}")
 
-        # doubao: 允许不依赖 AstrBot provider，直接用 doubao_settings 初始化
+        # provider_overrides 中的配置优先于 AstrBot 提供商配置
         api_type_norm = (self.cfg.api_type or "").strip().lower().replace("-", "_")
-        if api_type_norm == "doubao":
-            ds = getattr(self.cfg, "doubao_settings", None) or {}
-            if isinstance(ds, dict):
-                # 读取 api_keys 列表（ConfigLoader 已将旧版 api_key 转换为 api_keys）
-                api_keys = ds.get("api_keys") or []
-                if api_keys and not self.cfg.api_keys:
-                    self.cfg.api_keys = api_keys
+        overrides = getattr(self.cfg, "provider_overrides", None) or {}
+        override_settings = overrides.get(api_type_norm, {})
 
-                endpoint_id = str(ds.get("endpoint_id") or "").strip()
-                if endpoint_id and not self.cfg.model:
-                    self.cfg.model = endpoint_id
+        if override_settings:
+            # 通用字段：api_keys, model, api_base
+            api_keys = override_settings.get("api_keys") or []
+            if api_keys:
+                self.cfg.api_keys = api_keys
 
-                api_base = str(ds.get("api_base") or "").strip()
-                if api_base and not self.cfg.api_base:
-                    self.cfg.api_base = api_base
+            # doubao 使用 endpoint_id 作为模型名，其他类型使用 model
+            if api_type_norm == "doubao":
+                model_field = str(override_settings.get("endpoint_id") or "").strip()
+            else:
+                model_field = str(override_settings.get("model") or "").strip()
+            if model_field:
+                self.cfg.model = model_field
+
+            api_base = str(override_settings.get("api_base") or "").strip()
+            if api_base:
+                self.cfg.api_base = api_base
+
+            # doubao 特殊：绑定完整 settings 供适配器使用
+            if api_type_norm == "doubao":
+                self.cfg.doubao_settings = override_settings
+
+            # 日志显示覆盖来源
+            logger.info(
+                f"✓ 已从 provider_overrides[{api_type_norm}] 读取配置，模型={self.cfg.model} 密钥={len(self.cfg.api_keys)}"
+            )
 
         if self.cfg.api_keys:
             self.api_client = get_api_client(self.cfg.api_keys)
