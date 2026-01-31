@@ -17,4 +17,5 @@ from .plugin_config import QUICK_MODES as QUICK_MODES
 from .plugin_config import ConfigLoader as ConfigLoader
 from .plugin_config import PluginConfig as PluginConfig
 from .rate_limiter import RateLimiter as RateLimiter
+from .tl_utils import get_temp_dir as get_temp_dir
 from .vision_handler import VisionHandler as VisionHandler
