@@ -23,7 +23,7 @@ from astrbot.api.message_components import Image as AstrImage
 from astrbot.api.message_components import Node, Plain
 from astrbot.api.star import Context, Star
 from astrbot.core.provider.entities import ProviderType
-from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
 from .tl import (
     AvatarHandler,
@@ -121,10 +121,9 @@ class GeminiImageGenerationPlugin(Star):
         self._cleanup_task: asyncio.Task | None = None
 
         # 获取插件数据目录
-        self._plugin_data_dir = str(
-            get_astrbot_data_path()
-            / "plugin_data"
-            / "astrbot_plugin_gemini_image_generation"
+        self._plugin_data_dir = os.path.join(
+            get_astrbot_plugin_data_path(),
+            "astrbot_plugin_gemini_image_generation",
         )
 
         # 加载配置（传入数据目录用于备份）
