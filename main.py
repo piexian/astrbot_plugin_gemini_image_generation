@@ -21,14 +21,16 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import Image as AstrImage
 from astrbot.api.message_components import Node, Plain
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star
 from astrbot.core.provider.entities import ProviderType
+from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
 from .tl import (
     AvatarHandler,
     ConfigLoader,
     ImageGenerator,
     ImageHandler,
+    KeyManager,
     MessageSender,
     RateLimiter,
     VisionHandler,
@@ -58,19 +60,58 @@ from .tl.llm_tools import GeminiImageGenerationTool
 from .tl.tl_api import APIClient, ApiRequestConfig, get_api_client
 from .tl.tl_utils import AvatarManager, cleanup_old_images, format_error_message
 
+# 版本检查
+MIN_ASTRBOT_VERSION = "4.10.4"  # template_list 功能所需最低版本
+_ASTRBOT_VERSION_UNKNOWN = False  # 标记是否无法检测版本
 
-@register(
-    "astrbot_plugin_gemini_image_generation",
-    "piexian",
-    "Gemini图像生成插件，支持生图和改图，可以自动获取头像作为参考",
-    "",
-)
+try:
+    from astrbot.core.config.default import VERSION as ASTRBOT_VERSION
+except ImportError:
+    ASTRBOT_VERSION = "0.0.0"
+    _ASTRBOT_VERSION_UNKNOWN = True
+
+
+def _parse_version(version_str: str) -> tuple[int, ...]:
+    """解析版本号为元组以便比较"""
+    # 移除 v 前缀并提取数字部分
+    version_str = version_str.lstrip("v").strip()
+    match = re.match(r"(\d+(?:\.\d+)*)", version_str)
+    if match:
+        return tuple(int(x) for x in match.group(1).split("."))
+    return (0, 0, 0)
+
+
+def _check_astrbot_version() -> None:
+    """检查 AstrBot 版本是否满足要求"""
+    # 无法检测版本时只记录警告，不阻止插件加载
+    if _ASTRBOT_VERSION_UNKNOWN:
+        logger.warning(
+            f"⚠️ 无法检测 AstrBot 版本，插件需要 v{MIN_ASTRBOT_VERSION} 以上版本。"
+            "如遇问题请检查 AstrBot 版本。"
+        )
+        return
+
+    current = _parse_version(ASTRBOT_VERSION)
+    required = _parse_version(MIN_ASTRBOT_VERSION)
+
+    if current < required:
+        raise RuntimeError(
+            f"❌ AstrBot 版本过低！\n"
+            f"当前版本: v{ASTRBOT_VERSION}\n"
+            f"所需最低版本: v{MIN_ASTRBOT_VERSION}\n"
+            f"请升级 AstrBot 后重试。"
+        )
+
+
 class GeminiImageGenerationPlugin(Star):
     """Gemini 图像生成插件主类 - 仅负责业务流程编排"""
 
     def __init__(self, context: Context, config: dict[str, Any]):
         super().__init__(context)
         self.raw_config = config
+
+        # 检查 AstrBot 版本
+        _check_astrbot_version()
 
         # 读取版本号
         self.version = self._load_version()
@@ -79,8 +120,14 @@ class GeminiImageGenerationPlugin(Star):
         self.api_client: APIClient | None = None
         self._cleanup_task: asyncio.Task | None = None
 
-        # 加载配置
-        self.cfg = ConfigLoader(config or {}).load()
+        # 获取插件数据目录
+        self._plugin_data_dir = os.path.join(
+            get_astrbot_plugin_data_path(),
+            "astrbot_plugin_gemini_image_generation",
+        )
+
+        # 加载配置（传入数据目录用于备份）
+        self.cfg = ConfigLoader(config or {}, data_dir=self._plugin_data_dir).load()
 
         # 初始化各功能模块
         self._init_modules()
@@ -106,6 +153,13 @@ class GeminiImageGenerationPlugin(Star):
         """初始化各功能处理模块"""
         # 限流器（使用 KV 存储持久化）
         self.rate_limiter = RateLimiter(
+            self.cfg,
+            get_kv=self.get_kv_data,
+            put_kv=self.put_kv_data,
+        )
+
+        # Key 管理器（多 Key 轮换和每日限额）
+        self.key_manager = KeyManager(
             self.cfg,
             get_kv=self.get_kv_data,
             put_kv=self.put_kv_data,
@@ -281,7 +335,7 @@ class GeminiImageGenerationPlugin(Star):
         elif not self.cfg.api_type:
             if not quiet:
                 logger.error(
-                    "✗ 未配置 api_settings.api_type（google/openai/zai/grok2api），无法初始化 API 客户端"
+                    "✗ 未配置 api_settings.api_type（google/openai/zai/grok2api/doubao），无法初始化 API 客户端"
                 )
             return
 
@@ -336,8 +390,51 @@ class GeminiImageGenerationPlugin(Star):
         except Exception as e:
             logger.error(f"读取 AstrBot 提供商配置失败: {e}")
 
+        # provider_overrides 中的配置优先于 AstrBot 提供商配置
+        api_type_norm = (self.cfg.api_type or "").strip().lower().replace("-", "_")
+        overrides = getattr(self.cfg, "provider_overrides", None) or {}
+        override_settings = overrides.get(api_type_norm, {})
+
+        if override_settings:
+            # 通用字段：api_keys, model, api_base
+            api_keys = override_settings.get("api_keys") or []
+            if api_keys:
+                self.cfg.api_keys = api_keys
+
+            # doubao 使用 endpoint_id 作为模型名，其他类型使用 model
+            if api_type_norm == "doubao":
+                model_field = str(override_settings.get("endpoint_id") or "").strip()
+            else:
+                model_field = str(override_settings.get("model") or "").strip()
+            if model_field:
+                self.cfg.model = model_field
+
+            api_base = str(override_settings.get("api_base") or "").strip()
+            if api_base:
+                self.cfg.api_base = api_base
+
+            # doubao 特殊：绑定完整 settings 供适配器使用
+            if api_type_norm == "doubao":
+                self.cfg.doubao_settings = override_settings
+
+            # 日志显示覆盖来源
+            logger.info(
+                f"✓ 已从 provider_overrides[{api_type_norm}] 读取配置，模型={self.cfg.model} 密钥={len(self.cfg.api_keys)}"
+            )
+
         if self.cfg.api_keys:
             self.api_client = get_api_client(self.cfg.api_keys)
+            # 绑定 doubao_settings 到 API client，供 DoubaoProvider 读取
+            if api_type_norm == "doubao":
+                try:
+                    self.api_client.doubao_settings = (
+                        getattr(self.cfg, "doubao_settings", None) or {}
+                    )
+                except Exception as e:
+                    logger.debug(f"绑定 doubao_settings 到 API client 失败: {e}")
+            # 绑定 KeyManager 到 API client（支持多 Key 轮换和每日限额）
+            if hasattr(self, "key_manager") and self.key_manager:
+                self.api_client.set_key_manager(self.key_manager)
             self._update_modules_api_client()
             logger.info("✓ API 客户端已初始化")
             logger.info(f"  - 类型: {self.cfg.api_type}")
@@ -1120,15 +1217,18 @@ class GeminiImageGenerationPlugin(Star):
         smart_retry_status = "✓ 启用" if self.cfg.enable_smart_retry else "✗ 禁用"
         avatar_status = "✓ 启用" if self.cfg.auto_avatar_reference else "✗ 禁用"
 
-        limit_settings = self.raw_config.get("limit_settings", {})
-        enable_rate_limit = limit_settings.get("enable_rate_limit", False)
-        rate_limit_period = limit_settings.get("rate_limit_period", 60)
-        max_requests = limit_settings.get("max_requests_per_group", 5)
-        rate_limit_status = (
-            f"✓ {max_requests}次/{rate_limit_period}秒"
-            if enable_rate_limit
-            else "✗ 禁用"
-        )
+        # 限流状态显示：优先显示规则数量，其次显示默认限流设置
+        rate_limit_rules = self.cfg.rate_limit_rules
+        default_rate_limit = self.cfg.default_rate_limit
+        if rate_limit_rules:
+            enabled_rules = [r for r in rate_limit_rules if r.get("enabled", True)]
+            rate_limit_status = f"✓ {len(enabled_rules)} 条规则"
+        elif default_rate_limit.get("enabled", False):
+            period = default_rate_limit.get("period_seconds", 60)
+            max_requests = default_rate_limit.get("max_requests", 5)
+            rate_limit_status = f"✓ 默认 {max_requests}次/{period}秒"
+        else:
+            rate_limit_status = "✗ 禁用"
 
         tool_timeout = self.get_tool_timeout(event)
         timeout_warning = ""

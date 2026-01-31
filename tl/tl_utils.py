@@ -11,7 +11,6 @@ import io
 import os
 import re
 import struct
-import tempfile
 import time
 import urllib.parse
 from collections import OrderedDict
@@ -153,13 +152,9 @@ def _decode_base64_to_temp_file(
         if ";base64," in data:
             _, _, data = data.partition(";base64,")
         raw_bytes = base64.b64decode(data)
-        tmp_file = tempfile.NamedTemporaryFile(
-            prefix=f"cut_{int(time.time() * 1000)}_",
-            suffix=".png",
-            delete=False,
-        )
-        tmp_path = Path(tmp_file.name)
-        tmp_file.close()
+        # 使用插件临时目录而非系统临时目录，便于统一清理
+        temp_dir = get_temp_dir()
+        tmp_path = temp_dir / f"cut_{int(time.time() * 1000)}_{os.getpid()}.png"
         tmp_path.write_bytes(raw_bytes)
 
         if verify_image and cv2.imread(str(tmp_path)) is None:
@@ -179,6 +174,13 @@ def get_plugin_data_dir() -> Path:
     from astrbot.api.star import StarTools
 
     return StarTools.get_data_dir("astrbot_plugin_gemini_image_generation")
+
+
+def get_temp_dir() -> Path:
+    """获取插件临时文件目录，用于存放需要定时清理的临时文件"""
+    temp_dir = get_plugin_data_dir() / "temp"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    return temp_dir
 
 
 # 下载缓存目录
@@ -481,13 +483,14 @@ async def cleanup_old_images(
                 except Exception as e:
                     logger.warning(f"清理缓存 {file_path} 时出错: {e}")
 
-        # 清理 split_output 目录
+        # 清理 split_output 目录（包括子目录）
         split_dir = plugin_data_dir / "split_output"
         if split_dir.exists():
-            split_files = [f for f in split_dir.glob("*") if f.is_file()]
-            split_files.sort(key=lambda f: f.stat().st_mtime)
+            # 收集所有文件（包括子目录中的文件）
+            all_split_files = [f for f in split_dir.rglob("*") if f.is_file()]
+            all_split_files.sort(key=lambda f: f.stat().st_mtime)
 
-            for idx, file_path in enumerate(split_files):
+            for idx, file_path in enumerate(all_split_files):
                 try:
                     should_delete = False
                     if ttl_minutes > 0:
@@ -496,7 +499,7 @@ async def cleanup_old_images(
                             < cutoff_time
                         ):
                             should_delete = True
-                    if max_files > 0 and len(split_files) - idx > max_files:
+                    if max_files > 0 and len(all_split_files) - idx > max_files:
                         should_delete = True
 
                     if should_delete:
@@ -504,6 +507,38 @@ async def cleanup_old_images(
                         cleaned_count += 1
                 except Exception as e:
                     logger.warning(f"清理切图 {file_path} 时出错: {e}")
+
+            # 清理空的子目录
+            for subdir in sorted(split_dir.rglob("*"), reverse=True):
+                if subdir.is_dir():
+                    try:
+                        subdir.rmdir()  # 只能删除空目录
+                    except OSError:
+                        pass  # 目录非空，跳过
+
+        # 清理 temp 目录
+        temp_dir = plugin_data_dir / "temp"
+        if temp_dir.exists():
+            temp_files = [f for f in temp_dir.glob("*") if f.is_file()]
+            temp_files.sort(key=lambda f: f.stat().st_mtime)
+
+            for idx, file_path in enumerate(temp_files):
+                try:
+                    should_delete = False
+                    if ttl_minutes > 0:
+                        if (
+                            datetime.fromtimestamp(file_path.stat().st_mtime)
+                            < cutoff_time
+                        ):
+                            should_delete = True
+                    if max_files > 0 and len(temp_files) - idx > max_files:
+                        should_delete = True
+
+                    if should_delete:
+                        file_path.unlink()
+                        cleaned_count += 1
+                except Exception as e:
+                    logger.warning(f"清理临时文件 {file_path} 时出错: {e}")
 
         if cleaned_count > 0:
             logger.debug(f"共清理 {cleaned_count} 个过期文件")

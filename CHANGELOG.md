@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] - 2026-01-30
+
+### Added
+
+#### 豆包（Volcengine Ark）API 支持
+
+- 新增 `doubao` API 类型，支持字节跳动火山引擎 Ark 平台的豆包生图 API
+- 支持 `doubao-seedream-4.5` 和 `doubao-seedream-4.0` 两个全功能模型
+- 文生图（t2i）和图生图（i2i）完整支持
+- 尺寸映射：支持 1K/2K/4K 和 WxH 格式
+- 提示词优化模式：`standard`（标准，质量更高）/ `fast`（快速）
+- 组图生成模式：`sequential_image_generation` 参数支持生成一组内容关联的图片
+- 水印控制：可选在图片右下角添加"AI生成"水印
+- 智能降级：首次使用 URL 格式返回，重试时自动降级为 base64 格式
+
+#### 新增配置项
+
+- `doubao_settings.api_key` - 火山引擎 API Key
+- `doubao_settings.endpoint_id` - 模型名称（默认 doubao-seedream-4.5）
+- `doubao_settings.api_base` - API 端点地址
+- `doubao_settings.default_size` - 默认尺寸（2K/4K 或具体尺寸）
+- `doubao_settings.watermark` - 是否添加水印
+- `doubao_settings.optimize_prompt_mode` - 提示词优化模式
+- `doubao_settings.sequential_image_generation` - 组图生成模式
+- `doubao_settings.sequential_max_images` - 组图最大数量
+
+### Technical Details
+
+#### New Files
+
+- `tl/api/doubao.py` - 豆包 API 适配器实现
+
+#### Modified Files
+
+- `tl/api/registry.py` - 注册 DoubaoProvider
+- `_conf_schema.json` - 新增 doubao 到 api_type 选项，新增 doubao_settings 配置节
+
 ## [1.8.5] - 2026-01-21
 
 ### Added

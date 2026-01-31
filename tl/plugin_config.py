@@ -8,6 +8,10 @@ from typing import Any
 
 from astrbot.api import logger
 
+# 豆包组图数量限制常量
+DOUBAO_SEQUENTIAL_IMAGES_MIN = 2
+DOUBAO_SEQUENTIAL_IMAGES_MAX = 15
+
 
 @dataclass
 class PluginConfig:
@@ -21,6 +25,13 @@ class PluginConfig:
     api_base: str = ""
     model: str = ""
     api_keys: list[str] = field(default_factory=list)
+
+    # 豆包（Volcengine Ark）专用配置（api_type == doubao 时使用）
+    doubao_settings: dict[str, Any] = field(default_factory=dict)
+
+    # 供应商配置覆盖（支持所有 API 类型的多 Key 轮换和限流）
+    # 结构：{api_type: {api_keys: [...], daily_limit_per_key: int, ...}}
+    provider_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     # 图像生成设置
     resolution: str = "1K"
@@ -66,9 +77,16 @@ class PluginConfig:
     # 限制设置
     group_limit_mode: str = "none"
     group_limit_list: set[str] = field(default_factory=set)
-    enable_rate_limit: bool = False
-    rate_limit_period: int = 60
-    max_requests_per_group: int = 5
+    # 限流规则列表
+    rate_limit_rules: list[dict[str, Any]] = field(default_factory=list)
+    # 默认限流设置（未匹配规则时使用）
+    default_rate_limit: dict[str, Any] = field(
+        default_factory=lambda: {
+            "enabled": False,
+            "period_seconds": 60,
+            "max_requests": 5,
+        }
+    )
 
     # 缓存设置
     cache_ttl_minutes: int = 5
@@ -91,11 +109,202 @@ QUICK_MODES = (
 class ConfigLoader:
     """配置加载器"""
 
-    def __init__(self, raw_config: dict[str, Any]):
+    def __init__(
+        self,
+        raw_config: dict[str, Any],
+        *,
+        data_dir: str | None = None,
+    ):
         self.raw_config = raw_config
+        self._migrated = False
+        self._data_dir = data_dir  # 插件持久化存储目录
+
+    def _needs_migration(self) -> list[str]:
+        """检测哪些配置需要迁移
+
+        Returns:
+            需要迁移的配置项列表
+        """
+        migrations_needed = []
+
+        # 检查 limit_settings 是否使用旧版格式
+        # 旧版格式特征：存在 enable_rate_limit 字段，且不存在 rate_limit_rules
+        limit_settings = self.raw_config.get("limit_settings")
+        if isinstance(limit_settings, dict):
+            has_old_fields = "enable_rate_limit" in limit_settings
+            has_new_rules = "rate_limit_rules" in limit_settings
+            if has_old_fields and not has_new_rules:
+                migrations_needed.append("limit_settings")
+
+        # 检查 quick_mode_settings 是否使用旧版 object 格式
+        # 旧版格式特征：是 dict 类型；新版是 list 类型（template_list）
+        quick_mode_settings = self.raw_config.get("quick_mode_settings")
+        if isinstance(quick_mode_settings, dict):
+            migrations_needed.append("quick_mode_settings")
+
+        return migrations_needed
+
+    def _get_migration_marker_path(self) -> str | None:
+        """获取迁移标记文件路径"""
+        import os
+
+        if not self._data_dir:
+            return None
+        return os.path.join(self._data_dir, ".migration_v1.9.0.done")
+
+    def _is_migration_done(self) -> bool:
+        """检查迁移是否已完成"""
+        import os
+
+        marker_path = self._get_migration_marker_path()
+        if not marker_path:
+            return False
+        return os.path.exists(marker_path)
+
+    def _mark_migration_done(self) -> None:
+        """标记迁移已完成"""
+        import os
+
+        marker_path = self._get_migration_marker_path()
+        if not marker_path:
+            return
+        try:
+            os.makedirs(self._data_dir, exist_ok=True)
+            with open(marker_path, "w", encoding="utf-8") as f:
+                f.write("migration completed\n")
+        except Exception as e:
+            logger.debug(f"无法写入迁移标记文件: {e}")
+
+    def _backup_config(self, migration_items: list[str]) -> str | None:
+        """备份旧配置到插件持久化存储目录
+
+        Args:
+            migration_items: 需要迁移的配置项列表
+
+        Returns:
+            备份文件路径，失败返回 None
+        """
+        import json
+        import os
+        from datetime import datetime
+
+        if not self._data_dir:
+            logger.warning("未提供插件数据目录，跳过配置备份")
+            return None
+
+        try:
+            # 确保目录存在
+            os.makedirs(self._data_dir, exist_ok=True)
+
+            # 生成备份文件名（包含迁移前版本信息）
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            # 获取迁移前版本号（从 marker 文件名推断上一个版本）
+            from_version = "pre_v1.9.0"
+            backup_filename = f"config_backup_{from_version}_{timestamp}.json"
+            backup_path = os.path.join(self._data_dir, backup_filename)
+
+            # 写入备份
+            with open(backup_path, "w", encoding="utf-8") as f:
+                json.dump(self.raw_config, f, ensure_ascii=False, indent=2)
+
+            items_str = ", ".join(migration_items)
+            logger.info(f"📦 配置已备份到: {backup_path}")
+            logger.info(f"📦 将迁移以下配置项: {items_str}")
+            return backup_path
+        except Exception as e:
+            logger.warning(f"配置备份失败: {e}")
+            return None
+
+    def _migrate_config(self) -> bool:
+        """迁移旧版配置到新版格式
+
+        迁移内容：
+        1. limit_settings 旧版字段 -> rate_limit_rules
+        2. quick_mode_settings 从 object 格式迁移到 template_list 格式
+
+        Returns:
+            bool: 是否进行了迁移
+        """
+        if self._migrated:
+            return False
+        self._migrated = True
+
+        # 检查是否已经完成迁移（持久化标记）
+        if self._is_migration_done():
+            return False
+
+        # 检测需要迁移的项目
+        migrations_needed = self._needs_migration()
+        if not migrations_needed:
+            return False
+
+        # 备份旧配置
+        logger.info("🔄 检测到旧版配置格式，开始迁移...")
+        self._backup_config(migrations_needed)
+
+        migrated = False
+
+        # 迁移旧版限流配置到 rate_limit_rules
+        # 旧版格式：enable_rate_limit, rate_limit_period, max_requests_per_group
+        # 新版格式：rate_limit_rules (template_list)
+        limit_settings = self.raw_config.get("limit_settings")
+        if isinstance(limit_settings, dict):
+            has_old_fields = "enable_rate_limit" in limit_settings
+            has_new_rules = "rate_limit_rules" in limit_settings
+
+            if has_old_fields and not has_new_rules:
+                # 旧版启用了限流，迁移为一条规则
+                old_enabled = limit_settings.get("enable_rate_limit", False)
+                if old_enabled:
+                    new_rule = {
+                        "__template_key": "rule",
+                        "rule_name": "默认规则（迁移）",
+                        "group_ids": [],  # 空表示匹配所有
+                        "enabled": True,
+                        "period_seconds": limit_settings.get("rate_limit_period", 60),
+                        "max_requests": limit_settings.get("max_requests_per_group", 5),
+                    }
+                    limit_settings["rate_limit_rules"] = [new_rule]
+                    logger.info("配置迁移: 旧版限流配置 -> rate_limit_rules")
+                else:
+                    # 旧版未启用限流，设置空规则列表
+                    limit_settings["rate_limit_rules"] = []
+                    logger.info("配置迁移: 旧版限流未启用，设置空规则列表")
+                migrated = True
+
+        # 迁移旧版 quick_mode_settings 从 object 格式到 template_list 格式
+        # 旧版格式：{avatar: {resolution: "1K", aspect_ratio: "1:1"}, ...}
+        # 新版格式：[{__template_key: "avatar", resolution: "1K", aspect_ratio: "1:1"}, ...]
+        quick_mode_settings = self.raw_config.get("quick_mode_settings")
+        if isinstance(quick_mode_settings, dict):
+            new_quick_mode_list = []
+            for mode_key in QUICK_MODES:
+                mode_settings = quick_mode_settings.get(mode_key)
+                if isinstance(mode_settings, dict):
+                    resolution = (mode_settings.get("resolution") or "").strip()
+                    aspect_ratio = (mode_settings.get("aspect_ratio") or "").strip()
+                    if resolution or aspect_ratio:
+                        new_entry = {"__template_key": mode_key}
+                        if resolution:
+                            new_entry["resolution"] = resolution
+                        if aspect_ratio:
+                            new_entry["aspect_ratio"] = aspect_ratio
+                        new_quick_mode_list.append(new_entry)
+            self.raw_config["quick_mode_settings"] = new_quick_mode_list
+            logger.info("配置迁移: quick_mode_settings object -> template_list")
+            migrated = True
+
+        # 标记迁移完成
+        if migrated:
+            self._mark_migration_done()
+
+        return migrated
 
     def load(self) -> PluginConfig:
         """加载配置并返回 PluginConfig 实例"""
+        # 先执行配置迁移
+        self._migrate_config()
+
         config = PluginConfig()
 
         # API 设置
@@ -106,6 +315,130 @@ class ConfigLoader:
         config.api_type = (api_settings.get("api_type") or "").strip()
         config.api_base = (api_settings.get("custom_api_base") or "").strip()
         config.model = (api_settings.get("model") or "").strip()
+
+        # Provider overrides（从 api_settings.provider_overrides 读取）
+        # 新结构：api_settings.provider_overrides 是 template_list，每个条目有 __template_key 标识类型
+        provider_overrides = api_settings.get("provider_overrides") or []
+        doubao_settings = {}
+
+        # 从 provider_overrides 中查找 doubao 配置
+        if isinstance(provider_overrides, list):
+            for override in provider_overrides:
+                if (
+                    isinstance(override, dict)
+                    and override.get("__template_key") == "doubao"
+                ):
+                    doubao_settings = override.copy()
+                    doubao_settings.pop("__template_key", None)
+                    break
+
+        # 兼容旧的 doubao_settings 配置（如果存在）
+        if not doubao_settings:
+            doubao_settings_raw = self.raw_config.get("doubao_settings")
+            if isinstance(doubao_settings_raw, list) and len(doubao_settings_raw) > 0:
+                doubao_settings = doubao_settings_raw[0].copy()
+                doubao_settings.pop("__template_key", None)
+            elif isinstance(doubao_settings_raw, dict):
+                doubao_settings = doubao_settings_raw.copy()
+
+        # 处理 api_keys（新格式：列表）
+        if "api_keys" in doubao_settings:
+            api_keys = doubao_settings.get("api_keys") or []
+            if isinstance(api_keys, list):
+                # 清理并过滤空字符串
+                doubao_settings["api_keys"] = [
+                    k.strip() for k in api_keys if isinstance(k, str) and k.strip()
+                ]
+            else:
+                doubao_settings["api_keys"] = []
+        # 兼容旧的 api_key（单个 key）
+        elif "api_key" in doubao_settings and isinstance(
+            doubao_settings["api_key"], str
+        ):
+            key = doubao_settings["api_key"].strip()
+            doubao_settings["api_keys"] = [key] if key else []
+            doubao_settings.pop("api_key", None)
+        else:
+            doubao_settings["api_keys"] = []
+
+        # 处理 daily_limit_per_key
+        daily_limit = doubao_settings.get("daily_limit_per_key")
+        if daily_limit is not None:
+            try:
+                doubao_settings["daily_limit_per_key"] = max(int(daily_limit), 0)
+            except (TypeError, ValueError):
+                doubao_settings["daily_limit_per_key"] = 0
+        else:
+            doubao_settings["daily_limit_per_key"] = 0
+
+        # 清理字符串类型的配置项
+        for key in (
+            "endpoint_id",
+            "api_base",
+            "default_size",
+            "optimize_prompt_mode",
+            "sequential_image_generation",
+        ):
+            if isinstance(doubao_settings.get(key), str):
+                doubao_settings[key] = doubao_settings[key].strip()
+
+        # 确保 optimize_prompt_mode 默认为 standard
+        if not doubao_settings.get("optimize_prompt_mode"):
+            doubao_settings["optimize_prompt_mode"] = "standard"
+
+        # 处理 sequential_max_images 类型容错
+        max_images = doubao_settings.get("sequential_max_images")
+        if max_images is not None:
+            try:
+                max_images_int = int(max_images)
+                if (
+                    max_images_int < DOUBAO_SEQUENTIAL_IMAGES_MIN
+                    or max_images_int > DOUBAO_SEQUENTIAL_IMAGES_MAX
+                ):
+                    raise ValueError(
+                        f"sequential_max_images 必须在 {DOUBAO_SEQUENTIAL_IMAGES_MIN}-"
+                        f"{DOUBAO_SEQUENTIAL_IMAGES_MAX} 之间，当前值: {max_images_int}"
+                    )
+                doubao_settings["sequential_max_images"] = max_images_int
+            except (TypeError, ValueError) as e:
+                if isinstance(e, ValueError) and "必须在" in str(e):
+                    raise
+                raise ValueError(f"sequential_max_images 配置无效: {max_images}") from e
+
+        config.doubao_settings = doubao_settings
+
+        # 解析所有 provider_overrides 并存入 config.provider_overrides
+        # 结构：{api_type: {api_keys: [...], daily_limit_per_key: int, ...}}
+        all_overrides: dict[str, dict[str, Any]] = {}
+        if isinstance(provider_overrides, list):
+            for override in provider_overrides:
+                if isinstance(override, dict):
+                    template_key = override.get("__template_key")
+                    if template_key:
+                        override_copy = override.copy()
+                        override_copy.pop("__template_key", None)
+                        # 统一处理 api_keys
+                        if "api_keys" in override_copy:
+                            api_keys = override_copy.get("api_keys") or []
+                            if isinstance(api_keys, list):
+                                override_copy["api_keys"] = [
+                                    k.strip()
+                                    for k in api_keys
+                                    if isinstance(k, str) and k.strip()
+                                ]
+                            else:
+                                override_copy["api_keys"] = []
+                        # 统一处理 daily_limit_per_key
+                        daily_limit = override_copy.get("daily_limit_per_key")
+                        if daily_limit is not None:
+                            try:
+                                override_copy["daily_limit_per_key"] = max(
+                                    int(daily_limit), 0
+                                )
+                            except (TypeError, ValueError):
+                                override_copy["daily_limit_per_key"] = 0
+                        all_overrides[template_key] = override_copy
+        config.provider_overrides = all_overrides
 
         # 图像生成设置
         image_settings = self.raw_config.get("image_generation_settings") or {}
@@ -149,17 +482,20 @@ class ConfigLoader:
         config.sticker_grid_rows = min(max(config.sticker_grid_rows, 1), 20)
         config.sticker_grid_cols = min(max(config.sticker_grid_cols, 1), 20)
 
-        # 快速模式覆盖
-        quick_mode_settings = self.raw_config.get("quick_mode_settings") or {}
-        for mode_key in QUICK_MODES:
-            mode_settings = quick_mode_settings.get(mode_key) or {}
-            override_res = (mode_settings.get("resolution") or "").strip()
-            override_ar = (mode_settings.get("aspect_ratio") or "").strip()
-            if override_res or override_ar:
-                config.quick_mode_overrides[mode_key] = (
-                    override_res or None,
-                    override_ar or None,
-                )
+        # 快速模式覆盖 - template_list 格式
+        quick_mode_settings = self.raw_config.get("quick_mode_settings") or []
+        if isinstance(quick_mode_settings, list):
+            for mode_entry in quick_mode_settings:
+                if isinstance(mode_entry, dict):
+                    mode_key = mode_entry.get("__template_key")
+                    if mode_key and mode_key in QUICK_MODES:
+                        override_res = (mode_entry.get("resolution") or "").strip()
+                        override_ar = (mode_entry.get("aspect_ratio") or "").strip()
+                        if override_res or override_ar:
+                            config.quick_mode_overrides[mode_key] = (
+                                override_res or None,
+                                override_ar or None,
+                            )
 
         # 重试设置
         retry_settings = self.raw_config.get("retry_settings") or {}
@@ -254,20 +590,58 @@ class ConfigLoader:
             if str(group_id).strip()
         }
 
-        config.enable_rate_limit = bool(
-            limit_settings.get("enable_rate_limit") or False
-        )
+        # 新版限流规则列表
+        rate_limit_rules_raw = limit_settings.get("rate_limit_rules") or []
+        config.rate_limit_rules = []
+        if isinstance(rate_limit_rules_raw, list):
+            for rule in rate_limit_rules_raw:
+                if isinstance(rule, dict):
+                    rule_copy = rule.copy()
+                    rule_copy.pop("__template_key", None)
+                    # 处理 group_ids 列表
+                    group_ids = rule_copy.get("group_ids") or []
+                    if isinstance(group_ids, list):
+                        rule_copy["group_ids"] = [
+                            str(gid).strip() for gid in group_ids if str(gid).strip()
+                        ]
+                    else:
+                        rule_copy["group_ids"] = []
+                    # 确保数值类型正确
+                    try:
+                        rule_copy["period_seconds"] = max(
+                            int(rule_copy.get("period_seconds", 60)), 1
+                        )
+                    except (TypeError, ValueError):
+                        rule_copy["period_seconds"] = 60
+                    try:
+                        rule_copy["max_requests"] = max(
+                            int(rule_copy.get("max_requests", 5)), 1
+                        )
+                    except (TypeError, ValueError):
+                        rule_copy["max_requests"] = 5
+                    rule_copy["enabled"] = bool(rule_copy.get("enabled", True))
+                    config.rate_limit_rules.append(rule_copy)
 
-        period = limit_settings.get("rate_limit_period") or 60
-        max_requests = limit_settings.get("max_requests_per_group") or 5
-        try:
-            config.rate_limit_period = max(int(period), 1)
-        except (TypeError, ValueError):
-            config.rate_limit_period = 60
-        try:
-            config.max_requests_per_group = max(int(max_requests), 1)
-        except (TypeError, ValueError):
-            config.max_requests_per_group = 5
+        # 默认限流设置
+        default_rate_limit = limit_settings.get("default_rate_limit") or {}
+        if isinstance(default_rate_limit, dict):
+            config.default_rate_limit = {
+                "enabled": bool(default_rate_limit.get("enabled", False)),
+                "period_seconds": 60,
+                "max_requests": 5,
+            }
+            try:
+                config.default_rate_limit["period_seconds"] = max(
+                    int(default_rate_limit.get("period_seconds", 60)), 1
+                )
+            except (TypeError, ValueError):
+                pass
+            try:
+                config.default_rate_limit["max_requests"] = max(
+                    int(default_rate_limit.get("max_requests", 5)), 1
+                )
+            except (TypeError, ValueError):
+                pass
 
     def _load_cache_settings(self, config: PluginConfig):
         """加载缓存设置"""

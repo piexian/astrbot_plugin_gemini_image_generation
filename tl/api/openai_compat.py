@@ -65,6 +65,7 @@ class OpenAICompatProvider:
         response_data: dict[str, Any],
         session: aiohttp.ClientSession,
         api_base: str | None = None,
+        http_status: int | None = None,
     ) -> tuple[list[str], list[str], str | None, str | None]:  # noqa: ANN401
         return await self._parse_openai_response(
             client=client,

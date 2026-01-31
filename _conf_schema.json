@@ -5,7 +5,7 @@
     "hint": "配置 API 端点和相关设置",
     "items": {
       "provider_id": {
-        "description": "生图模型提供商（必选）",
+        "description": "生图模型提供商（可选）",
         "type": "string",
         "hint": "从 AstrBot 提供商列表中选择，插件自动读取模型/密钥/端点；不选将无法调用",
         "_special": "select_provider",
@@ -14,13 +14,14 @@
       "api_type": {
         "description": "API 类型（必选）",
         "type": "string",
-        "hint": "必须选择 API 类型（google/openai/zai/grok2api）。选择 zai 时使用 Zai 兼容参数传递；选择 grok2api 时启用图片相对路径/临时缓存兼容",
+        "hint": "必须选择 API 类型（google/openai/zai/grok2api/doubao）。 不同提供商支持的类型不同，请参考提供商说明",
         "default": "openai",
         "options": [
           "google",
           "openai",
           "zai",
-          "grok2api"
+          "grok2api",
+          "doubao"
         ]
       },
       "model": {
@@ -35,6 +36,197 @@
         "hint": "用于切图前 AI 识别网格行列数，留空则不调用",
         "_special": "select_provider",
         "default": ""
+      },
+      "provider_overrides": {
+        "description": "供应商配置覆盖（和上面的供应商2选一）",
+        "type": "template_list",
+        "hint": "覆盖特定 API 类型的配置（多 Key 轮换、每日限额等），优先于 AstrBot 提供商配置",
+        "default": [],
+        "templates": {
+          "google": {
+            "description": "Google/Gemini API 覆盖配置",
+            "hint": "配置 Google Gemini 官方 API 的密钥和端点",
+            "items": {
+              "api_keys": {
+                "description": "API Key 列表",
+                "type": "list",
+                "hint": "多个 API Key，支持轮换使用",
+                "default": []
+              },
+              "daily_limit_per_key": {
+                "description": "每个 Key 每日限额",
+                "type": "int",
+                "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
+                "default": 0
+              },
+              "model": {
+                "description": "模型名称",
+                "type": "string",
+                "hint": "Gemini 图像生成模型名称",
+                "default": "gemini-3-pro-image-preview"
+              },
+              "api_base": {
+                "description": "API 端点地址",
+                "type": "string",
+                "hint": "Google AI API 地址，留空使用默认值",
+                "default": ""
+              }
+            }
+          },
+          "openai": {
+            "description": "OpenAI 兼容 API 覆盖配置",
+            "hint": "配置 OpenAI 兼容格式的 API 密钥和端点",
+            "items": {
+              "api_keys": {
+                "description": "API Key 列表",
+                "type": "list",
+                "hint": "多个 API Key，支持轮换使用",
+                "default": []
+              },
+              "daily_limit_per_key": {
+                "description": "每个 Key 每日限额",
+                "type": "int",
+                "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
+                "default": 0
+              },
+              "model": {
+                "description": "模型名称",
+                "type": "string",
+                "hint": "OpenAI 兼容格式的模型名称",
+                "default": "gemini-3-pro-image-preview"
+              },
+              "api_base": {
+                "description": "API 端点地址",
+                "type": "string",
+                "hint": "OpenAI 兼容 API 地址",
+                "default": ""
+              }
+            }
+          },
+          "zai": {
+            "description": "Zai API 覆盖配置",
+            "hint": "配置 Zai.is 的 API 密钥和端点",
+            "items": {
+              "api_keys": {
+                "description": "API Key 列表",
+                "type": "list",
+                "hint": "多个 API Key，支持轮换使用",
+                "default": []
+              },
+              "daily_limit_per_key": {
+                "description": "每个 Key 每日限额",
+                "type": "int",
+                "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
+                "default": 0
+              },
+              "model": {
+                "description": "模型名称",
+                "type": "string",
+                "hint": "Zai 模型名称",
+                "default": "gemini-3-pro-image-preview"
+              },
+              "api_base": {
+                "description": "API 端点地址",
+                "type": "string",
+                "hint": "Zai API 地址",
+                "default": ""
+              }
+            }
+          },
+          "grok2api": {
+            "description": "grok2api 覆盖配置",
+            "hint": "配置 grok2api 的 API 密钥和端点",
+            "items": {
+              "api_keys": {
+                "description": "API Key 列表",
+                "type": "list",
+                "hint": "多个 API Key，支持轮换使用",
+                "default": []
+              },
+              "daily_limit_per_key": {
+                "description": "每个 Key 每日限额",
+                "type": "int",
+                "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
+                "default": 0
+              },
+              "model": {
+                "description": "模型名称",
+                "type": "string",
+                "hint": "grok2api 模型名称",
+                "default": "gemini-3-pro-image-preview"
+              },
+              "api_base": {
+                "description": "API 端点地址",
+                "type": "string",
+                "hint": "grok2api API 地址",
+                "default": ""
+              }
+            }
+          },
+          "doubao": {
+            "description": "豆包 API 覆盖配置",
+            "hint": "配置豆包专用的多 Key 轮换和每日限额",
+            "items": {
+              "api_keys": {
+                "description": "API Key 列表",
+                "type": "list",
+                "hint": "多个 API Key，支持轮换使用",
+                "default": []
+              },
+              "daily_limit_per_key": {
+                "description": "每个 Key 每日限额",
+                "type": "int",
+                "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
+                "default": 0
+              },
+              "endpoint_id": {
+                "description": "Endpoint/Model ID",
+                "type": "string",
+                "hint": "Ark Images API 的 model 字段",
+                "default": "doubao-seedream-4-5-251128"
+              },
+              "api_base": {
+                "description": "API 端点地址",
+                "type": "string",
+                "hint": "火山引擎 Ark API 地址",
+                "default": "https://ark.cn-beijing.volces.com"
+              },
+              "default_size": {
+                "description": "默认尺寸",
+                "type": "string",
+                "hint": "默认生成图片尺寸",
+                "default": "2K",
+                "options": ["2K", "4K"]
+              },
+              "watermark": {
+                "description": "添加水印",
+                "type": "bool",
+                "hint": "是否在图片右下角添加'AI生成'水印",
+                "default": false
+              },
+              "optimize_prompt_mode": {
+                "description": "提示词优化模式",
+                "type": "string",
+                "hint": "standard：质量更高；fast：速度更快",
+                "default": "standard",
+                "options": ["standard", "fast"]
+              },
+              "sequential_image_generation": {
+                "description": "组图生成模式",
+                "type": "string",
+                "hint": "auto：模型自主判断；disabled：只生成一张",
+                "default": "disabled",
+                "options": ["disabled", "auto"]
+              },
+              "sequential_max_images": {
+                "description": "组图最大数量",
+                "type": "int",
+                "hint": "组图最多包含的图片数量（2-15），超出范围将报错",
+                "default": 4
+              }
+            }
+          }
+        }
       }
     }
   },
@@ -142,222 +334,147 @@
   },
   "quick_mode_settings": {
     "description": "快速模式参数覆盖",
-    "type": "object",
-    "hint": "可选：覆盖“快速”指令各模式的默认分辨率/长宽比；默认值即内置默认，可直接修改。",
-    "items": {
+    "type": "template_list",
+    "hint": "可选：覆盖「快速」指令各模式的默认分辨率/长宽比。选择模式后可配置对应参数。",
+    "default": [],
+    "templates": {
       "avatar": {
         "description": "头像模式覆盖",
-        "type": "object",
-        "hint": "对应命令：快速 头像",
+        "hint": "对应命令：快速 头像（默认 1K, 1:1）",
         "items": {
           "resolution": {
-            "description": "分辨率（覆盖）",
+            "description": "分辨率",
             "type": "string",
-            "hint": "默认即内置默认，可按需修改",
+            "hint": "覆盖头像模式的分辨率",
             "default": "1K",
-            "options": [
-              "1K",
-              "2K",
-              "4K"
-            ]
+            "options": ["1K", "2K", "4K"]
           },
           "aspect_ratio": {
-            "description": "长宽比（覆盖）",
+            "description": "长宽比",
             "type": "string",
-            "hint": "默认即内置默认，可按需修改",
+            "hint": "覆盖头像模式的长宽比",
             "default": "1:1",
-            "options": [
-              "1:1",
-              "16:9",
-              "4:3",
-              "3:2",
-              "9:16",
-              "4:5",
-              "5:4",
-              "21:9",
-              "3:4",
-              "2:3"
-            ]
+            "options": ["1:1", "16:9", "4:3", "3:2", "9:16", "4:5", "5:4", "21:9", "3:4", "2:3"]
           }
         }
       },
       "poster": {
         "description": "海报模式覆盖",
-        "type": "object",
-        "hint": "对应命令：快速 海报",
+        "hint": "对应命令：快速 海报（默认 2K, 16:9）",
         "items": {
           "resolution": {
-            "description": "分辨率（覆盖）",
+            "description": "分辨率",
             "type": "string",
-            "hint": "默认即内置默认，可按需修改",
+            "hint": "覆盖海报模式的分辨率",
             "default": "2K",
-            "options": [
-              "1K",
-              "2K",
-              "4K"
-            ]
+            "options": ["1K", "2K", "4K"]
           },
           "aspect_ratio": {
-            "description": "长宽比（覆盖）",
+            "description": "长宽比",
             "type": "string",
-            "hint": "默认即内置默认，可按需修改",
+            "hint": "覆盖海报模式的长宽比",
             "default": "16:9",
-            "options": [
-              "1:1",
-              "16:9",
-              "4:3",
-              "3:2",
-              "9:16",
-              "4:5",
-              "5:4",
-              "21:9",
-              "3:4",
-              "2:3"
-            ]
+            "options": ["1:1", "16:9", "4:3", "3:2", "9:16", "4:5", "5:4", "21:9", "3:4", "2:3"]
           }
         }
       },
       "wallpaper": {
         "description": "壁纸模式覆盖",
-        "type": "object",
-        "hint": "对应命令：快速 壁纸",
+        "hint": "对应命令：快速 壁纸（默认 4K, 16:9）",
         "items": {
           "resolution": {
-            "description": "分辨率（覆盖）",
+            "description": "分辨率",
             "type": "string",
-            "hint": "默认即内置默认，可按需修改",
+            "hint": "覆盖壁纸模式的分辨率",
             "default": "4K",
-            "options": [
-              "1K",
-              "2K",
-              "4K"
-            ]
+            "options": ["1K", "2K", "4K"]
           },
           "aspect_ratio": {
-            "description": "长宽比（覆盖）",
+            "description": "长宽比",
             "type": "string",
-            "hint": "默认即内置默认，可按需修改",
+            "hint": "覆盖壁纸模式的长宽比",
             "default": "16:9",
-            "options": [
-              "1:1",
-              "16:9",
-              "4:3",
-              "3:2",
-              "9:16",
-              "4:5",
-              "5:4",
-              "21:9",
-              "3:4",
-              "2:3"
-            ]
+            "options": ["1:1", "16:9", "4:3", "3:2", "9:16", "4:5", "5:4", "21:9", "3:4", "2:3"]
           }
         }
       },
       "card": {
         "description": "卡片模式覆盖",
-        "type": "object",
-        "hint": "对应命令：快速 卡片",
+        "hint": "对应命令：快速 卡片（默认 1K, 3:2）",
         "items": {
           "resolution": {
-            "description": "分辨率（覆盖）",
+            "description": "分辨率",
             "type": "string",
-            "hint": "默认即内置默认，可按需修改",
+            "hint": "覆盖卡片模式的分辨率",
             "default": "1K",
-            "options": [
-              "1K",
-              "2K",
-              "4K"
-            ]
+            "options": ["1K", "2K", "4K"]
           },
           "aspect_ratio": {
-            "description": "长宽比（覆盖）",
+            "description": "长宽比",
             "type": "string",
-            "hint": "默认即内置默认，可按需修改",
+            "hint": "覆盖卡片模式的长宽比",
             "default": "3:2",
-            "options": [
-              "1:1",
-              "16:9",
-              "4:3",
-              "3:2",
-              "9:16",
-              "4:5",
-              "5:4",
-              "21:9",
-              "3:4",
-              "2:3"
-            ]
+            "options": ["1:1", "16:9", "4:3", "3:2", "9:16", "4:5", "5:4", "21:9", "3:4", "2:3"]
           }
         }
       },
       "mobile": {
         "description": "手机模式覆盖",
-        "type": "object",
-        "hint": "对应命令：快速 手机",
+        "hint": "对应命令：快速 手机（默认 2K, 9:16）",
         "items": {
           "resolution": {
-            "description": "分辨率（覆盖）",
+            "description": "分辨率",
             "type": "string",
-            "hint": "默认即内置默认，可按需修改",
+            "hint": "覆盖手机模式的分辨率",
             "default": "2K",
-            "options": [
-              "1K",
-              "2K",
-              "4K"
-            ]
+            "options": ["1K", "2K", "4K"]
           },
           "aspect_ratio": {
-            "description": "长宽比（覆盖）",
+            "description": "长宽比",
             "type": "string",
-            "hint": "默认即内置默认，可按需修改",
+            "hint": "覆盖手机模式的长宽比",
             "default": "9:16",
-            "options": [
-              "1:1",
-              "16:9",
-              "4:3",
-              "3:2",
-              "9:16",
-              "4:5",
-              "5:4",
-              "21:9",
-              "3:4",
-              "2:3"
-            ]
+            "options": ["1:1", "16:9", "4:3", "3:2", "9:16", "4:5", "5:4", "21:9", "3:4", "2:3"]
           }
         }
       },
       "figure": {
         "description": "手办化模式覆盖",
-        "type": "object",
-        "hint": "对应命令：快速 手办化",
+        "hint": "对应命令：快速 手办化（默认 2K, 3:2）",
         "items": {
           "resolution": {
-            "description": "分辨率（覆盖）",
+            "description": "分辨率",
             "type": "string",
-            "hint": "默认即内置默认，可按需修改",
+            "hint": "覆盖手办化模式的分辨率",
             "default": "2K",
-            "options": [
-              "1K",
-              "2K",
-              "4K"
-            ]
+            "options": ["1K", "2K", "4K"]
           },
           "aspect_ratio": {
-            "description": "长宽比（覆盖）",
+            "description": "长宽比",
             "type": "string",
-            "hint": "默认即内置默认，可按需修改",
+            "hint": "覆盖手办化模式的长宽比",
             "default": "3:2",
-            "options": [
-              "1:1",
-              "16:9",
-              "4:3",
-              "3:2",
-              "9:16",
-              "4:5",
-              "5:4",
-              "21:9",
-              "3:4",
-              "2:3"
-            ]
+            "options": ["1:1", "16:9", "4:3", "3:2", "9:16", "4:5", "5:4", "21:9", "3:4", "2:3"]
+          }
+        }
+      },
+      "sticker": {
+        "description": "表情包模式覆盖",
+        "hint": "对应命令：快速 表情包（默认 2K, 1:1）",
+        "items": {
+          "resolution": {
+            "description": "分辨率",
+            "type": "string",
+            "hint": "覆盖表情包模式的分辨率",
+            "default": "2K",
+            "options": ["1K", "2K", "4K"]
+          },
+          "aspect_ratio": {
+            "description": "长宽比",
+            "type": "string",
+            "hint": "覆盖表情包模式的长宽比",
+            "default": "1:1",
+            "options": ["1:1", "16:9", "4:3", "3:2", "9:16", "4:5", "5:4", "21:9", "3:4", "2:3"]
           }
         }
       }
@@ -545,8 +662,8 @@
       "quality": {
         "description": "截图质量（1-100）",
         "type": "int",
-        "hint": "留空使用 AstrBot 默认值",
-        "default": null
+        "hint": "JPEG 格式的截图质量，1-100 之间。PNG 格式忽略此设置",
+        "default": 80
       },
       "type": {
         "description": "截图格式",
@@ -604,23 +721,74 @@
         "hint": "根据上方的群限制模式配置需要生效的群号。群号请填写字符串形式，在 None 模式下此配置不生效。",
         "default": []
       },
-      "enable_rate_limit": {
-        "description": "启用群内限流",
-        "type": "bool",
-        "hint": "开启后会对每个群在指定周期内的图像生成/改图请求次数进行限制",
-        "default": false
+      "rate_limit_rules": {
+        "description": "限流规则列表",
+        "type": "template_list",
+        "hint": "配置多个限流规则，按顺序匹配。空 group_ids 表示匹配所有群",
+        "default": [],
+        "templates": {
+          "rule": {
+            "description": "限流规则",
+            "hint": "单条限流规则配置",
+            "items": {
+              "rule_name": {
+                "description": "规则名称",
+                "type": "string",
+                "hint": "规则的描述性名称，方便识别",
+                "default": "默认规则"
+              },
+              "group_ids": {
+                "description": "适用群号列表",
+                "type": "list",
+                "hint": "此规则适用的群号列表，留空表示匹配所有群",
+                "default": []
+              },
+              "enabled": {
+                "description": "启用此规则",
+                "type": "bool",
+                "hint": "是否启用此限流规则",
+                "default": true
+              },
+              "period_seconds": {
+                "description": "限流周期（秒）",
+                "type": "int",
+                "hint": "统计周期长度",
+                "default": 60
+              },
+              "max_requests": {
+                "description": "最大请求数",
+                "type": "int",
+                "hint": "周期内最大请求次数",
+                "default": 5
+              }
+            }
+          }
+        }
       },
-      "rate_limit_period": {
-        "description": "限流周期（秒）",
-        "type": "int",
-        "hint": "每个群的统计周期长度（单位：秒），在此时间窗口内超过最大次数将被拒绝",
-        "default": 60
-      },
-      "max_requests_per_group": {
-        "description": "单群每周期最大请求数",
-        "type": "int",
-        "hint": "在一个周期内，每个群最多允许触发几次图像生成/改图/风格转换等请求。",
-        "default": 5
+      "default_rate_limit": {
+        "description": "默认限流设置",
+        "type": "object",
+        "hint": "当没有规则匹配时使用的默认限流设置",
+        "items": {
+          "enabled": {
+            "description": "启用默认限流",
+            "type": "bool",
+            "hint": "未匹配任何规则时是否启用限流",
+            "default": false
+          },
+          "period_seconds": {
+            "description": "限流周期（秒）",
+            "type": "int",
+            "hint": "默认统计周期",
+            "default": 60
+          },
+          "max_requests": {
+            "description": "最大请求数",
+            "type": "int",
+            "hint": "默认最大请求次数",
+            "default": 5
+          }
+        }
       }
     }
   },

@@ -20,7 +20,7 @@ import aiohttp
 
 from astrbot.api import logger
 
-from .api import get_api_provider
+from .api import get_api_provider, is_doubao_api_type
 from .api_types import APIError, ApiRequestConfig
 
 try:
@@ -92,6 +92,7 @@ class GeminiAPIClient:
     - 支持自定义 API Base URL（反代）
     - 支持任意模型名称
     - 遵循官方 Gemini API 规范
+    - 支持多 Key 轮换和每日限额（通过 KeyManager）
     """
 
     # Google 官方 API 默认地址
@@ -122,6 +123,9 @@ class GeminiAPIClient:
         self._session: aiohttp.ClientSession | None = None
         self._session_lock = asyncio.Lock()
 
+        # KeyManager 实例（由主插件注入，用于多 Key 轮换和每日限额）
+        self._key_manager = None
+
     async def _get_session(self) -> aiohttp.ClientSession:
         """获取或创建可复用的 aiohttp 会话"""
         if self._session and not self._session.closed:
@@ -137,6 +141,32 @@ class GeminiAPIClient:
         if self._session and not self._session.closed:
             await self._session.close()
         self._session = None
+
+    def set_key_manager(self, key_manager) -> None:
+        """设置 KeyManager 实例（用于多 Key 轮换和每日限额）"""
+        self._key_manager = key_manager
+
+    async def get_key_for_api_type(self, api_type: str) -> str | None:
+        """从 KeyManager 获取指定 API 类型的可用 Key
+
+        如果 KeyManager 有该 API 类型的配置，使用 KeyManager 管理的 Key；
+        否则回退到默认的 api_keys 列表。
+
+        Args:
+            api_type: API 类型（如 "doubao"）
+
+        Returns:
+            可用的 API Key
+        """
+        if self._key_manager and self._key_manager.has_provider(api_type):
+            key = await self._key_manager.get_available_key(api_type)
+            if key:
+                return key
+            # KeyManager 返回 None 表示所有 Key 已耗尽
+            logger.warning(f"[KeyManager] {api_type} 所有 Key 今日额度已用尽")
+            return None
+        # 回退到默认 Key
+        return await self.get_next_api_key()
 
     @staticmethod
     def _coerce_supported_image_bytes(
@@ -382,8 +412,20 @@ class GeminiAPIClient:
         if not self.api_keys:
             raise ValueError("未配置 API 密钥")
 
+        # 使用 KeyManager 获取 Key（支持多 Key 轮换和每日限额）
         if not config.api_key:
-            config.api_key = await self.get_next_api_key()
+            key = await self.get_key_for_api_type(config.api_type)
+            if key is None:
+                # 所有 Key 今日额度已用尽
+                from .api_types import APIError
+
+                raise APIError(
+                    "所有 API Key 今日额度已用尽，请明天再试或添加更多 Key。",
+                    None,
+                    "quota_exhausted",
+                    retryable=False,
+                )
+            config.api_key = key
 
         enable_smart_retry = bool(getattr(config, "enable_smart_retry", True))
 
@@ -392,17 +434,20 @@ class GeminiAPIClient:
 
         logger.debug(f"使用 {config.model} (通过 {config.api_type}) 生成图像")
         logger.debug(f"API 端点: {url[:80]}...")
+
+        # 从 payload 中获取实际使用的 size（provider_overrides 可能已覆盖）
+        actual_size = payload.get("size") or config.resolution or "默认"
         logger.debug(
             "请求参数概览: refs=%s prompt_len=%s aspect=%s res=%s",
             len(config.reference_images or []),
             len(config.prompt or ""),
             config.aspect_ratio,
-            config.resolution,
+            actual_size,
         )
 
-        if config.resolution or config.aspect_ratio:
+        if actual_size != "默认" or config.aspect_ratio:
             logger.debug(
-                f"分辨率: {config.resolution or '默认'}, 长宽比: {config.aspect_ratio or '默认'}"
+                f"分辨率: {actual_size}, 长宽比: {config.aspect_ratio or '默认'}"
             )
 
         if config.api_base:
@@ -420,6 +465,7 @@ class GeminiAPIClient:
             enable_smart_retry=enable_smart_retry,
             per_retry_timeout=per_retry_timeout,
             max_total_time=max_total_time,
+            config=config,
         )
 
     async def _make_request(
@@ -435,6 +481,7 @@ class GeminiAPIClient:
         enable_smart_retry: bool = True,
         per_retry_timeout: int | None = None,
         max_total_time: int | None = None,
+        config: ApiRequestConfig | None = None,
     ) -> tuple[list[str], list[str], str | None, str | None]:
         """执行 API 请求并处理响应（支持重试、总耗时上限与多 Key 轮换）"""
 
@@ -478,8 +525,18 @@ class GeminiAPIClient:
                 return None
 
             try:
-                await self.rotate_api_key()
-                new_key = await self.get_next_api_key()
+                # 使用 KeyManager 轮换（支持每日限额，会预扣除额度）
+                if self._key_manager and self._key_manager.has_provider(api_type):
+                    new_key = await self._key_manager.rotate_key(api_type)
+                    if not new_key:
+                        logger.warning(
+                            f"[KeyManager] {api_type} 轮换失败，所有 Key 今日额度已用尽"
+                        )
+                        return None
+                else:
+                    # 无 KeyManager 配置时使用默认轮换
+                    await self.rotate_api_key()
+                    new_key = await self.get_next_api_key()
             except Exception as e:
                 logger.debug(f"轮换 API Key 失败，将继续使用当前 Key: {e}")
                 return None
@@ -506,7 +563,21 @@ class GeminiAPIClient:
             return new_key
 
         def is_retryable(err: APIError) -> bool:
-            """根据错误类型/状态码判断是否值得重试。"""
+            """根据错误类型/状态码判断是否值得重试。
+
+            优先使用 err.retryable 字段（由供应商适配器设置），
+            回退到基于状态码和错误类型的通用判断逻辑。
+            """
+            # 优先检查供应商适配器设置的 retryable 字段
+            if hasattr(err, "retryable") and err.retryable is not None:
+                # 如果供应商明确标记为不可重试，直接返回
+                if err.retryable is False:
+                    return False
+                # 如果供应商明确标记为可重试，直接返回
+                if err.retryable is True:
+                    return True
+
+            # 以下为通用的回退逻辑
             if err.error_type == "no_image_retry":
                 return True
             if err.error_type in {"timeout", "network"}:
@@ -541,6 +612,41 @@ class GeminiAPIClient:
                 total=attempt_timeout_int, sock_read=attempt_timeout_int
             )
 
+            # 重试时重新构建请求（允许 Provider 进行降级处理，如 response_format 降级）
+            current_url = url
+            current_payload = payload
+            current_headers = dict(headers)  # 始终使用外层 headers（已含轮换后的 key）
+            is_retry = attempt > 0
+            if is_retry and config is not None:
+                try:
+                    # 重建前同步 config.api_key 为当前选中的 key（保持轮换一致性）
+                    current_key_from_headers = self._extract_api_key_from_headers(
+                        headers
+                    )
+                    if current_key_from_headers:
+                        config.api_key = current_key_from_headers
+
+                    provider = get_api_provider(api_type)
+                    req = await provider.build_request(
+                        client=self, config=config, is_retry=True
+                    )
+                    current_url = req.url
+                    current_payload = req.payload
+                    # 重建后用外层 headers 的 key 覆盖，确保轮换结果不被覆盖
+                    current_headers = dict(req.headers)
+                    if current_key_from_headers:
+                        self._apply_api_key_to_headers(
+                            current_headers, current_key_from_headers
+                        )
+                    logger.debug("[retry] 已重新构建请求（is_retry=True）")
+                except Exception as e:
+                    logger.debug("[retry] 重新构建请求失败，使用原 payload: %s", e)
+                    # 回退到原 payload 并设置标记
+                    current_payload = dict(payload)
+                    current_payload["_is_retry"] = True
+
+            # 注意: KeyManager.get_available_key() 已预扣除额度，无需再做额外扣除
+
             try:
                 logger.debug(
                     "发送请求（尝试 %s/%s, timeout=%ss）",
@@ -550,9 +656,9 @@ class GeminiAPIClient:
                 )
                 return await self._perform_request(
                     session,
-                    url,
-                    payload,
-                    headers,
+                    current_url,
+                    current_payload,
+                    current_headers,
                     api_type,
                     model,
                     timeout=timeout_cfg,
@@ -606,6 +712,49 @@ class GeminiAPIClient:
 
         return [], [], None, None
 
+    @staticmethod
+    def _extract_api_key_from_headers(headers: dict[str, str]) -> str | None:
+        """从请求头中提取 API Key
+
+        支持的头格式：
+        - Authorization: Bearer <key>
+        - x-goog-api-key: <key> (Google API)
+        - X-Api-Key / X-API-Key / x-api-key: <key> (通用格式)
+        - Api-Key / api-key: <key> (部分反代使用)
+        """
+        # Bearer Token 格式（最常见）
+        if "Authorization" in headers:
+            auth = str(headers.get("Authorization") or "")
+            if auth.lower().startswith("bearer "):
+                return auth[7:]
+        # Google API 格式
+        if "x-goog-api-key" in headers:
+            return headers.get("x-goog-api-key")
+        # 通用 X-Api-Key 格式（大小写变体）
+        for k in ("X-Api-Key", "X-API-Key", "x-api-key"):
+            if k in headers:
+                return headers.get(k)
+        # 部分反代使用的 Api-Key 格式
+        for k in ("Api-Key", "api-key", "API-Key"):
+            if k in headers:
+                return headers.get(k)
+        return None
+
+    @staticmethod
+    def _apply_api_key_to_headers(headers: dict[str, str], api_key: str) -> None:
+        """将 API Key 应用到请求头中（覆盖现有的 key 相关头）"""
+        if "Authorization" in headers:
+            headers["Authorization"] = f"Bearer {api_key}"
+        if "x-goog-api-key" in headers:
+            headers["x-goog-api-key"] = api_key
+        for k in ("X-Api-Key", "X-API-Key", "x-api-key"):
+            if k in headers:
+                headers[k] = api_key
+        # 部分反代使用的 Api-Key 格式
+        for k in ("Api-Key", "api-key", "API-Key"):
+            if k in headers:
+                headers[k] = api_key
+
     def _classify_error(self, exception: Exception, error_msg: str) -> str:
         """分类错误类型"""
         if isinstance(exception, asyncio.TimeoutError):
@@ -654,17 +803,20 @@ class GeminiAPIClient:
         api_base: str = None,
     ) -> tuple[list[str], list[str], str | None, str | None]:
         """执行实际的HTTP请求"""
+        # 移除内部标记字段，不发送给 API
+        send_payload = {k: v for k, v in payload.items() if not k.startswith("_")}
+
         logger.debug(
             "发送请求: url=%s api_type=%s model=%s payload_keys=%s",
             url[:100],
             api_type,
             model,
-            list(payload.keys()),
+            list(send_payload.keys()),
         )
 
         async with session.post(
             url,
-            json=payload,
+            json=send_payload,
             headers=headers,
             proxy=self.proxy,
             timeout=timeout,
@@ -704,16 +856,47 @@ class GeminiAPIClient:
                 if api_type == "google":
                     return await self._parse_gresponse(response_data, session)
                 else:  # openai 兼容格式
+                    # 豆包使用专门的解析方法
+                    if is_doubao_api_type(api_type):
+                        # 传递重试标记用于降级处理
+                        is_retry = payload.get("_is_retry", False)
+                        return await self._parse_doubao_response(
+                            response_data,
+                            session,
+                            api_base,
+                            response.status,
+                            is_retry=is_retry,
+                        )
                     return await self._parse_openai_response(
                         response_data, session, api_base
                     )
             elif response.status in [429, 402, 403]:
+                # 豆包 API 使用专门的错误处理
+                if is_doubao_api_type(api_type):
+                    is_retry = payload.get("_is_retry", False)
+                    return await self._parse_doubao_response(
+                        response_data,
+                        session,
+                        api_base,
+                        response.status,
+                        is_retry=is_retry,
+                    )
                 error_msg = response_data.get("error", {}).get(
                     "message", f"HTTP {response.status}"
                 )
                 logger.warning(f"API 配额/权限问题: {error_msg}")
                 raise APIError(error_msg, response.status, "quota")
             else:
+                # 豆包 API 使用专门的错误处理
+                if is_doubao_api_type(api_type):
+                    is_retry = payload.get("_is_retry", False)
+                    return await self._parse_doubao_response(
+                        response_data,
+                        session,
+                        api_base,
+                        response.status,
+                        is_retry=is_retry,
+                    )
                 error_msg = response_data.get("error", {}).get(
                     "message", f"HTTP {response.status}"
                 )
@@ -789,6 +972,25 @@ class GeminiAPIClient:
         provider = get_api_provider("google")
         return await provider.parse_response(
             client=self, response_data=response_data, session=session
+        )
+
+    async def _parse_doubao_response(
+        self,
+        response_data: dict,
+        session: aiohttp.ClientSession,
+        api_base: str | None = None,
+        http_status: int | None = None,
+        is_retry: bool = False,
+    ) -> tuple[list[str], list[str], str | None, str | None]:
+        """解析豆包 API 响应"""
+        provider = get_api_provider("doubao")
+        return await provider.parse_response(
+            client=self,
+            response_data=response_data,
+            session=session,
+            api_base=api_base,
+            http_status=http_status,
+            is_retry=is_retry,
         )
 
     async def _parse_openai_response(

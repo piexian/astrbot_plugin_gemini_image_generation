@@ -9,6 +9,7 @@ from .image_handler import ImageHandler as ImageHandler
 from .image_splitter import create_zip as create_zip
 from .image_splitter import resolve_split_source_to_path as resolve_split_source_to_path
 from .image_splitter import split_image as split_image
+from .key_manager import KeyManager as KeyManager
 from .llm_tools import GeminiImageGenerationTool as GeminiImageGenerationTool
 from .llm_tools import execute_image_generation_tool as execute_image_generation_tool
 from .message_sender import MessageSender as MessageSender
@@ -16,4 +17,5 @@ from .plugin_config import QUICK_MODES as QUICK_MODES
 from .plugin_config import ConfigLoader as ConfigLoader
 from .plugin_config import PluginConfig as PluginConfig
 from .rate_limiter import RateLimiter as RateLimiter
+from .tl_utils import get_temp_dir as get_temp_dir
 from .vision_handler import VisionHandler as VisionHandler
