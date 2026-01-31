@@ -50,6 +50,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
     """
 
     name: str = "gemini_image_generation"
+    handler_module_path: str = "astrbot_plugin_gemini_image_generation"
     description: str = (
         "使用 Gemini 模型生成或修改图像。"
         "当用户请求图像生成、绘画、改图、换风格或手办化时调用此函数。"
