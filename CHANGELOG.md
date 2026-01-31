@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
    - 路径：`AstrBot/data/plugins/astrbot_plugin_gemini_image_generation/config_backup_pre_v1.9.x_<时间戳>.json`
    - 示例：`config_backup_pre_v1.9.0_20260130_143052.json`
 
-2. **删除当前配置**：在根目录AstrBot/data删除本插件的配置文件
+2. **删除当前配置**：在根目录中删除本插件的配置文件，`AstrBot\data\config\astrbot_plugin_gemini_image_generation_config.json`
 
 3. **重新配置**：然后webui重载插件，再对照备份文件手动重新配置各项参数
 
