@@ -136,8 +136,11 @@ class ConfigLoader:
             if has_old_fields and not has_new_rules:
                 migrations_needed.append("limit_settings")
 
-        # 注意：quick_mode_settings 保持 object 格式，不再迁移到 template_list
-        # schema 中 quick_mode_settings 仍是 object 类型
+        # 检查 quick_mode_settings 是否使用旧版 object 格式
+        # 旧版格式特征：是 dict 类型；新版是 list 类型（template_list）
+        quick_mode_settings = self.raw_config.get("quick_mode_settings")
+        if isinstance(quick_mode_settings, dict):
+            migrations_needed.append("quick_mode_settings")
 
         return migrations_needed
 
@@ -217,6 +220,7 @@ class ConfigLoader:
 
         迁移内容：
         1. limit_settings 旧版字段 -> rate_limit_rules
+        2. quick_mode_settings 从 object 格式迁移到 template_list 格式
 
         Returns:
             bool: 是否进行了迁移
@@ -267,6 +271,28 @@ class ConfigLoader:
                     limit_settings["rate_limit_rules"] = []
                     logger.info("配置迁移: 旧版限流未启用，设置空规则列表")
                 migrated = True
+
+        # 迁移旧版 quick_mode_settings 从 object 格式到 template_list 格式
+        # 旧版格式：{avatar: {resolution: "1K", aspect_ratio: "1:1"}, ...}
+        # 新版格式：[{__template_key: "avatar", resolution: "1K", aspect_ratio: "1:1"}, ...]
+        quick_mode_settings = self.raw_config.get("quick_mode_settings")
+        if isinstance(quick_mode_settings, dict):
+            new_quick_mode_list = []
+            for mode_key in QUICK_MODES:
+                mode_settings = quick_mode_settings.get(mode_key)
+                if isinstance(mode_settings, dict):
+                    resolution = (mode_settings.get("resolution") or "").strip()
+                    aspect_ratio = (mode_settings.get("aspect_ratio") or "").strip()
+                    if resolution or aspect_ratio:
+                        new_entry = {"__template_key": mode_key}
+                        if resolution:
+                            new_entry["resolution"] = resolution
+                        if aspect_ratio:
+                            new_entry["aspect_ratio"] = aspect_ratio
+                        new_quick_mode_list.append(new_entry)
+            self.raw_config["quick_mode_settings"] = new_quick_mode_list
+            logger.info("配置迁移: quick_mode_settings object -> template_list")
+            migrated = True
 
         # 标记迁移完成
         if migrated:
@@ -456,9 +482,8 @@ class ConfigLoader:
         config.sticker_grid_rows = min(max(config.sticker_grid_rows, 1), 20)
         config.sticker_grid_cols = min(max(config.sticker_grid_cols, 1), 20)
 
-        # 快速模式覆盖 - 支持新版 template_list 格式和旧版 object 格式
-        quick_mode_settings = self.raw_config.get("quick_mode_settings") or {}
-        # 新版 template_list 格式：列表，每个条目有 __template_key 标识模式类型
+        # 快速模式覆盖 - template_list 格式
+        quick_mode_settings = self.raw_config.get("quick_mode_settings") or []
         if isinstance(quick_mode_settings, list):
             for mode_entry in quick_mode_settings:
                 if isinstance(mode_entry, dict):
@@ -471,17 +496,6 @@ class ConfigLoader:
                                 override_res or None,
                                 override_ar or None,
                             )
-        # 兼容旧版 object 格式
-        elif isinstance(quick_mode_settings, dict):
-            for mode_key in QUICK_MODES:
-                mode_settings = quick_mode_settings.get(mode_key) or {}
-                override_res = (mode_settings.get("resolution") or "").strip()
-                override_ar = (mode_settings.get("aspect_ratio") or "").strip()
-                if override_res or override_ar:
-                    config.quick_mode_overrides[mode_key] = (
-                        override_res or None,
-                        override_ar or None,
-                    )
 
         # 重试设置
         retry_settings = self.raw_config.get("retry_settings") or {}
