@@ -1,8 +1,8 @@
-# AstrBot Gemini 图像生成插件 v1.9.1
+# AstrBot Gemini 图像生成插件 v1.9.2
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/Version-v1.9.1-blue)
+![Version](https://img.shields.io/badge/Version-v1.9.2-blue)
 ![License](https://img.shields.io/badge/License-MIT-orange)
 
 **🎨 强大的 Gemini 图像生成插件，支持智能头像参考和智能表情包切分**
@@ -203,6 +203,8 @@ git clone https://github.com/piexian/astrbot_plugin_gemini_image_generation
 - "基于这张图生成一个海报"
 
 **触发器模式**：AI 返回确认后图片在后台生成，完成后自动发送，避免超时。
+
+**论坛发帖模式**：当用户要求将图片发到论坛/AstrBook 时，AI 会设置 `for_forum=true`，此时工具同步等待生成完成并返回图片路径/URL，AI 可自动调用 `upload_image` 上传图床后完成全自动发帖流程。
 
 ### 表情包切分算法
 

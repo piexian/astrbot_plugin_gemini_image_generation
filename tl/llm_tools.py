@@ -60,6 +60,9 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         "设置 use_reference_images=true 和 include_user_avatar=true。"
         "用户指定分辨率时设置 resolution（仅限 1K/2K/4K 大写）；"
         "用户指定比例时设置 aspect_ratio（仅限 1:1/16:9/4:3/3:2/9:16/4:5/5:4/21:9/3:4/2:3）。"
+        "【重要】当用户明确表示要将生成的图片发到论坛/AstrBook时，设置 for_forum=true。"
+        "此时工具会等待图片生成完成后返回图片路径，你需要使用 upload_image 工具将图片上传到论坛图床获取URL，"
+        "然后在发帖或回复时使用 Markdown 格式 ![描述](URL) 插入图片。"
     )
     parameters: dict = Field(
         default_factory=lambda: {
@@ -101,6 +104,15 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                     ),
                     "enum": sorted(VALID_ASPECT_RATIOS),
                 },
+                "for_forum": {
+                    "type": "boolean",
+                    "description": (
+                        "是否用于论坛发帖。当用户明确表示要将生成的图片发到论坛/AstrBook时设置为true。"
+                        "设置为true时，工具会等待图片生成完成并返回图片路径，不会自动发送给用户。"
+                        "你需要使用返回的路径调用 upload_image 上传到论坛图床。"
+                    ),
+                    "default": False,
+                },
             },
             "required": ["prompt"],
         }
@@ -116,6 +128,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         执行图像生成工具（触发器模式）
 
         立即返回确认信息，图片生成在后台异步执行
+        当 for_forum=True 时，同步等待生成完成并返回图片路径
         """
         prompt = kwargs.get("prompt") or ""
         if not prompt.strip():
@@ -125,6 +138,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         include_user_avatar = kwargs.get("include_user_avatar", False)
         resolution = kwargs.get("resolution") or None
         aspect_ratio = kwargs.get("aspect_ratio") or None
+        for_forum = kwargs.get("for_forum", False)
 
         # 获取事件上下文
         event = context.context.event
@@ -172,11 +186,106 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         # 日志记录（仅记录长度和参数摘要，避免记录用户原始内容）
         prompt_len = len(prompt)
         logger.info(
-            f"[TOOL-TRIGGER] 启动后台图像生成任务: "
+            f"[TOOL-TRIGGER] 启动图像生成任务: "
             f"prompt_len={prompt_len} refs={ref_count} avatars={avatar_count} "
-            f"resolution={resolution} aspect_ratio={aspect_ratio}"
+            f"resolution={resolution} aspect_ratio={aspect_ratio} for_forum={for_forum}"
         )
 
+        # ========== for_forum 模式：同步等待生成完成 ==========
+        if for_forum:
+            logger.info("[TOOL-FORUM] 论坛模式：同步等待图片生成完成...")
+
+            try:
+                # 直接调用核心生成逻辑，同步等待
+                success, result_data = await plugin._generate_image_core_internal(
+                    event=event,
+                    prompt=prompt,
+                    reference_images=reference_images,
+                    avatar_reference=avatar_reference,
+                    override_resolution=resolution,
+                    override_aspect_ratio=aspect_ratio,
+                )
+
+                if not success:
+                    error_msg = (
+                        result_data if isinstance(result_data, str) else "图像生成失败"
+                    )
+                    return f"❌ 图片生成失败：{error_msg}"
+
+                if not isinstance(result_data, tuple):
+                    return "❌ 图片生成返回格式异常"
+
+                image_urls, image_paths, text_content, thought_signature = result_data
+
+                # 优先使用 URL，其次使用本地路径
+                available_images = []
+
+                # 先添加 URL（优先级更高）
+                if image_urls:
+                    for url in image_urls:
+                        if url and url.strip():
+                            available_images.append(("url", url.strip()))
+
+                # 再添加本地路径
+                if image_paths:
+                    from pathlib import Path
+
+                    for path in image_paths:
+                        if path and Path(path).exists():
+                            available_images.append(("path", path))
+
+                if not available_images:
+                    return "❌ 图片生成完成，但未获取到有效的图片路径或URL"
+
+                # 构建返回信息
+                result_lines = [
+                    "[图像生成完成 - 论坛发帖模式]",
+                    "",
+                    "图片已生成成功！以下是图片信息：",
+                    "",
+                ]
+
+                for idx, (img_type, img_value) in enumerate(available_images, 1):
+                    if img_type == "url":
+                        result_lines.append(f"图片{idx} (URL): {img_value}")
+                    else:
+                        result_lines.append(f"图片{idx} (本地路径): {img_value}")
+
+                result_lines.extend(
+                    [
+                        "",
+                        "【下一步操作】",
+                        "1. 使用 upload_image 工具上传图片到论坛图床",
+                        "   - 如果有 URL，可以直接使用 URL",
+                        "   - 如果只有本地路径，使用本地路径",
+                        "2. 获取图床返回的永久 URL",
+                        "3. 在发帖或回复时使用 Markdown 格式插入图片：![图片描述](图床URL)",
+                    ]
+                )
+
+                if text_content:
+                    result_lines.extend(
+                        ["", f"【AI 生成的图片描述】{text_content[:200]}..."]
+                    )
+
+                logger.info(
+                    f"[TOOL-FORUM] 图片生成成功，返回 {len(available_images)} 张图片"
+                )
+                return "\n".join(result_lines)
+
+            except asyncio.TimeoutError:
+                return "❌ 图片生成超时，请稍后重试"
+            except Exception as e:
+                logger.error(f"[TOOL-FORUM] 图片生成异常: {e}", exc_info=True)
+                return f"❌ 图片生成过程中出错：{str(e)}"
+            finally:
+                # 清理缓存
+                try:
+                    await plugin.avatar_manager.cleanup_used_avatars()
+                except Exception as e:
+                    logger.debug(f"[TOOL-FORUM] 清理头像缓存: {e}")
+
+        # ========== 普通模式：后台异步生成 ==========
         # 启动后台任务执行图像生成
         gen_task = asyncio.create_task(
             _background_generate_and_send(

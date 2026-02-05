@@ -138,6 +138,9 @@ class GeminiImageGenerationPlugin(Star):
         # 启动定时清理任务
         self._start_cleanup_task()
 
+        # 尝试加载 API 客户端（支持插件重载场景）
+        self._load_provider_from_context(quiet=True)
+
     def _load_version(self) -> str:
         """从 metadata.yaml 读取版本号"""
         try:

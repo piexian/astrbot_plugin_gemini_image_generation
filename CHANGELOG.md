@@ -21,6 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `limit_settings` 中的 `rate_limit_enabled`、`rate_limit_period_seconds`、`rate_limit_max_requests` 已迁移到 `rate_limit_rules`（template_list 格式）
 - `quick_mode_settings` 从 object 格式迁移到 template_list 格式
 
+## [1.9.2] - 2026-02-05
+
+### Added
+
+- 新增 `for_forum` 论坛发帖模式：LLM 工具调用时设置 `for_forum=true`，工具将同步等待图片生成完成并返回图片路径/URL，便于后续上传到论坛图床
+
+### Fixed
+
+- 修复插件重载时 API 客户端未正确加载的问题（在初始化时调用 `_load_provider_from_context`）
+
 ## [1.9.1] - 2026-01-31
 
 ### Fixed
