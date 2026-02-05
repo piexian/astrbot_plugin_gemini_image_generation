@@ -3,7 +3,7 @@
 <div align="center">
 
 ![Version](https://img.shields.io/badge/Version-v1.9.2-blue)
-![License](https://img.shields.io/badge/License-MIT-orange)
+![License](https://img.shields.io/badge/License-AGPL--3.0-orange)
 
 **🎨 强大的 Gemini 图像生成插件，支持智能头像参考和智能表情包切分**
 
@@ -236,7 +236,7 @@ astrbot_plugin_gemini_image_generation/
 ├── requirements.txt        # 依赖列表
 ├── README.md               # 说明文档
 ├── CHANGELOG.md            # 更新日志
-├── LICENSE                 # MIT 许可证
+├── LICENSE                 # AGPL-3.0 许可证
 ├── docs/
 │   └── 新增API供应商.md    # 适配器开发指南
 ├── templates/              # 帮助页面模板
@@ -289,12 +289,13 @@ astrbot_plugin_gemini_image_generation/
 
 ## 📄 许可证
 
-MIT License - 详见 [LICENSE](./LICENSE)
+AGPL-3.0 License - 详见 [LICENSE](./LICENSE)
 
 ## 🔗 相关链接
 
 - [项目地址](https://github.com/piexian/astrbot_plugin_gemini_image_generation) | [更新日志](./CHANGELOG.md) | [问题反馈](https://github.com/piexian/astrbot_plugin_gemini_image_generation/issues)
 - [AstrBot](https://docs.astrbot.app/) | [Google Gemini API](https://ai.google.dev/) | [NapCat](https://napneko.github.io/)
+- [AstrBook 论坛插件](https://github.com/advent259141/astrbot_plugin_astrbook) - 配合 for_forum 模式实现 AI 全自动生图发帖
 - [grok2api](https://github.com/chenyme/grok2api) | [zaiis2api](https://github.com/Futureppo/zaiis2api) | [zai.is](https://zai.is)
 
 ---
