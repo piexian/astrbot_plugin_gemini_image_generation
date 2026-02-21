@@ -1,6 +1,9 @@
 name: astrbot_plugin_gemini_image_generation
 desc: Gemini图像生成插件，支持生图和改图，支持自动获取头像作为参考
 display_name: Gemini 图像生成
-version: v1.9.2
+version: v1.9.3
 author: piexian
 repo: https://github.com/piexian/astrbot_plugin_gemini_image_generation
+astrbot_version: ">=4.10.4"
+support_platforms:
+  - napcat

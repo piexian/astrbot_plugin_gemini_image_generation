@@ -60,48 +60,6 @@ from .tl.llm_tools import GeminiImageGenerationTool
 from .tl.tl_api import APIClient, ApiRequestConfig, get_api_client
 from .tl.tl_utils import AvatarManager, cleanup_old_images, format_error_message
 
-# 版本检查
-MIN_ASTRBOT_VERSION = "4.10.4"  # template_list 功能所需最低版本
-_ASTRBOT_VERSION_UNKNOWN = False  # 标记是否无法检测版本
-
-try:
-    from astrbot.core.config.default import VERSION as ASTRBOT_VERSION
-except ImportError:
-    ASTRBOT_VERSION = "0.0.0"
-    _ASTRBOT_VERSION_UNKNOWN = True
-
-
-def _parse_version(version_str: str) -> tuple[int, ...]:
-    """解析版本号为元组以便比较"""
-    # 移除 v 前缀并提取数字部分
-    version_str = version_str.lstrip("v").strip()
-    match = re.match(r"(\d+(?:\.\d+)*)", version_str)
-    if match:
-        return tuple(int(x) for x in match.group(1).split("."))
-    return (0, 0, 0)
-
-
-def _check_astrbot_version() -> None:
-    """检查 AstrBot 版本是否满足要求"""
-    # 无法检测版本时只记录警告，不阻止插件加载
-    if _ASTRBOT_VERSION_UNKNOWN:
-        logger.warning(
-            f"⚠️ 无法检测 AstrBot 版本，插件需要 v{MIN_ASTRBOT_VERSION} 以上版本。"
-            "如遇问题请检查 AstrBot 版本。"
-        )
-        return
-
-    current = _parse_version(ASTRBOT_VERSION)
-    required = _parse_version(MIN_ASTRBOT_VERSION)
-
-    if current < required:
-        raise RuntimeError(
-            f"❌ AstrBot 版本过低！\n"
-            f"当前版本: v{ASTRBOT_VERSION}\n"
-            f"所需最低版本: v{MIN_ASTRBOT_VERSION}\n"
-            f"请升级 AstrBot 后重试。"
-        )
-
 
 class GeminiImageGenerationPlugin(Star):
     """Gemini 图像生成插件主类 - 仅负责业务流程编排"""
@@ -109,9 +67,6 @@ class GeminiImageGenerationPlugin(Star):
     def __init__(self, context: Context, config: dict[str, Any]):
         super().__init__(context)
         self.raw_config = config
-
-        # 检查 AstrBot 版本
-        _check_astrbot_version()
 
         # 读取版本号
         self.version = self._load_version()

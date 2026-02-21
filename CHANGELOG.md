@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `limit_settings` 中的 `rate_limit_enabled`、`rate_limit_period_seconds`、`rate_limit_max_requests` 已迁移到 `rate_limit_rules`（template_list 格式）
 - `quick_mode_settings` 从 object 格式迁移到 template_list 格式
 
+## [1.9.3] - 2026-02-21
+
+### Changed
+
+- 移除插件内置的 AstrBot 版本检测代码，改用 `metadata.yaml` 中的 `astrbot_version` 字段声明版本要求（需 AstrBot PR #5235 支持）
+- 新增 `support_platforms: [napcat]` 元数据声明支持的平台
+
 ## [1.9.2] - 2026-02-05
 
 ### Added
