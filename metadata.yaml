@@ -6,4 +6,4 @@ author: piexian
 repo: https://github.com/piexian/astrbot_plugin_gemini_image_generation
 astrbot_version: ">=4.10.4"
 support_platforms:
-  - napcat
+  - aiocqhttp
