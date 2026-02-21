@@ -288,7 +288,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         # ========== 普通模式：后台异步生成 ==========
         # 启动后台任务执行图像生成
         gen_task = asyncio.create_task(
-            _background_generate_and_send(
+            background_generate_and_send(
                 plugin=plugin,
                 event=event,
                 prompt=prompt,
@@ -330,7 +330,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         )
 
 
-async def _background_generate_and_send(
+async def background_generate_and_send(
     plugin: GeminiImageGenerationPlugin,
     event: Any,
     prompt: str,
@@ -406,6 +406,111 @@ async def _background_generate_and_send(
             await plugin.avatar_manager.cleanup_used_avatars()
         except Exception as e:
             logger.debug(f"[TOOL-BG] 清理头像缓存: {e}")
+
+
+# 向后兼容别名（避免外部引用断裂）
+_background_generate_and_send = background_generate_and_send
+
+
+async def execute_gemini_generate_image_tool(
+    plugin: GeminiImageGenerationPlugin,
+    event: Any,
+    prompt: str,
+    use_reference_images: bool = False,
+    include_user_avatar: bool = False,
+    resolution: str = "",
+    aspect_ratio: str = "",
+) -> str:
+    """执行 Gemini 生图工具（触发器模式）"""
+    prompt = prompt or ""
+    if not prompt.strip():
+        return "❌ 缺少必填参数：图像描述不能为空"
+
+    allowed, limit_message = await plugin._check_and_consume_limit(event)
+    if not allowed:
+        return limit_message or "请求过于频繁，请稍后再试"
+
+    if not plugin.api_client:
+        return (
+            "❌ 无法生成图像：API 客户端尚未初始化\n"
+            "🧐 可能原因：API 密钥未配置或加载失败\n"
+            "✅ 建议：在插件配置中填写有效密钥并重启服务"
+        )
+
+    def _parse_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        if isinstance(value, (int, float)):
+            return value != 0
+        return str(value).strip().lower() in {"true", "1", "yes", "y", "是"}
+
+    include_ref_images = _parse_bool(use_reference_images)
+    include_avatar = _parse_bool(include_user_avatar)
+
+    resolution = resolution or None
+    aspect_ratio = aspect_ratio or None
+    if resolution:
+        resolution = resolution.upper()
+    resolution = resolution if resolution in VALID_RESOLUTIONS else None
+    aspect_ratio = aspect_ratio if aspect_ratio in VALID_ASPECT_RATIOS else None
+
+    reference_images, avatar_reference = await plugin._fetch_images_from_event(
+        event, include_at_avatars=include_avatar
+    )
+
+    if not include_ref_images:
+        reference_images = []
+    if not include_avatar:
+        avatar_reference = []
+
+    ref_count = len(reference_images)
+    avatar_count = len(avatar_reference)
+
+    logger.info(
+        f"[TOOL-TRIGGER] 启动后台图像生成任务: "
+        f"prompt_len={len(prompt)} refs={ref_count} avatars={avatar_count} "
+        f"resolution={resolution} aspect_ratio={aspect_ratio}"
+    )
+
+    gen_task = asyncio.create_task(
+        background_generate_and_send(
+            plugin=plugin,
+            event=event,
+            prompt=prompt,
+            reference_images=reference_images,
+            avatar_reference=avatar_reference,
+            override_resolution=resolution,
+            override_aspect_ratio=aspect_ratio,
+        )
+    )
+    gen_task.add_done_callback(
+        lambda t: t.exception()
+        and logger.error(f"图像生成后台任务异常终止: {t.exception()}")
+    )
+
+    ref_info = ""
+    if ref_count > 0 or avatar_count > 0:
+        ref_info = f"（使用 {ref_count} 张参考图"
+        if avatar_count > 0:
+            ref_info += f"，{avatar_count} 张头像"
+        ref_info += "）"
+
+    param_info = ""
+    if resolution or aspect_ratio:
+        parts = []
+        if resolution:
+            parts.append(f"分辨率 {resolution}")
+        if aspect_ratio:
+            parts.append(f"比例 {aspect_ratio}")
+        param_info = f"（{', '.join(parts)}）"
+
+    return (
+        f"[图像生成任务已启动]{ref_info}{param_info}\n"
+        "图片正在后台生成中，通常需要 10-30 秒，高质量生成可能长达几百秒，生成完成后会自动发送给用户。\n"
+        "请用你维持原有的人设告诉用户：图片正在生成，请稍等片刻，完成后会自动发送。"
+    )
 
 
 # 保留旧的辅助函数以保持向后兼容（已弃用）
