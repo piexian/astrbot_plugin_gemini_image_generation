@@ -204,6 +204,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                     avatar_reference=avatar_reference,
                     override_resolution=resolution,
                     override_aspect_ratio=aspect_ratio,
+                    is_tool_call=True,
                 )
 
                 if not success:
@@ -355,6 +356,7 @@ async def _background_generate_and_send(
             avatar_reference=avatar_reference,
             override_resolution=override_resolution,
             override_aspect_ratio=override_aspect_ratio,
+            is_tool_call=True,
         )
 
         if success and isinstance(result_data, tuple):
@@ -381,10 +383,9 @@ async def _background_generate_and_send(
 
         else:
             # 生成失败，发送错误消息
+            # result_data 已经是格式化好的错误字符串，直接使用
             error_msg = (
-                format_error_message(result_data)
-                if isinstance(result_data, str)
-                else "❌ 图像生成失败"
+                result_data if isinstance(result_data, str) else "❌ 图像生成失败"
             )
             try:
                 await event.send(event.plain_result(error_msg))
@@ -471,6 +472,7 @@ async def execute_image_generation_tool(
         prompt=prompt,
         reference_images=reference_images,
         avatar_reference=avatar_reference,
+        is_tool_call=True,
     )
 
     # 清理缓存

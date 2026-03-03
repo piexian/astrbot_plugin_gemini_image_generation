@@ -21,6 +21,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `limit_settings` 中的 `rate_limit_enabled`、`rate_limit_period_seconds`、`rate_limit_max_requests` 已迁移到 `rate_limit_rules`（template_list 格式）
 - `quick_mode_settings` 从 object 格式迁移到 template_list 格式
 
+## [1.9.4] - 2026-03-03
+
+### Fixed
+
+- 修复超时/取消错误（`error_type` 为 timeout/cancelled）落入通用 else 分支导致提示"参数异常"与实际超时原因矛盾的问题
+- 修复 `_background_generate_and_send` 中已格式化的错误消息被 `format_error_message` 二次包装导致双层嵌套的问题
+- 移除 `__init__` 中过早的 `_load_provider_from_context(quiet=True)` 调用，避免提供商未注册时触发内部警告
+
+### Changed
+
+- `generate_image_core` 新增 `is_tool_call` 参数，区分指令调用与 LLM 工具调用的超时策略
+  - 工具调用（`is_tool_call=True`）：使用框架 `tool_call_timeout` 作为总超时
+  - 指令调用（默认）：使用插件配置的 `total_timeout` 作为总超时
+- 超时错误提示根据调用来源给出精准建议（工具调用提示调整 `tool_call_timeout`，指令调用提示调整 `total_timeout`）
+- 新增 `network` 错误类型的独立提示分支
+- `tl_api` 中超时消息简化为纯事实描述，具体配置建议由上层按场景生成
+- `on_astrbot_loaded` 去除重复的提供商加载调用，简化为单次调用
+- 移除所有 logger 调用中的 emoji 前缀（7 个文件共 30 处），保持日志输出简洁规范
+
 ## [1.9.3] - 2026-02-21
 
 ### Changed

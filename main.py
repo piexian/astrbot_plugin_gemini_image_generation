@@ -244,7 +244,7 @@ class GeminiImageGenerationPlugin(Star):
                 await self.api_client.close()
             except Exception as e:
                 logger.debug(f"关闭 API 会话失败: {e}")
-        logger.info("🎨 Gemini 图像生成插件已卸载")
+        logger.info("Gemini 图像生成插件已卸载")
 
     # ===== 配置和客户端管理 =====
 
@@ -272,7 +272,7 @@ class GeminiImageGenerationPlugin(Star):
         self._load_provider_from_context(quiet=quiet)
         if not self.api_client:
             if not quiet:
-                logger.error("✗ API 客户端仍未初始化，请检查 AstrBot 提供商配置")
+                logger.error("API 客户端仍未初始化，请检查 AstrBot 提供商配置")
             return False
         return True
 
@@ -418,9 +418,9 @@ class GeminiImageGenerationPlugin(Star):
             self._load_provider_from_context()
 
         if self.api_client:
-            logger.info("🎨 Gemini 图像生成插件已加载")
+            logger.info("Gemini 图像生成插件已加载")
         else:
-            logger.error("✗ API 客户端未初始化，请检查提供商配置")
+            logger.error("API 客户端未初始化，请检查提供商配置")
 
     async def _ensure_font_for_local_mode(self):
         """确保 local 渲染模式所需的字体已下载"""

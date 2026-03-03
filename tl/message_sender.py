@@ -263,7 +263,7 @@ class MessageSender:
                     ):
                         yield res
             if thought_signature:
-                logger.debug(f"🧠 思维签名: {thought_signature[:50]}...")
+                logger.debug(f"思维签名: {thought_signature[:50]}...")
             return
 
         # AIOCQHTTP 逐图发送（base64）
@@ -293,7 +293,7 @@ class MessageSender:
                     yield res
 
             if thought_signature:
-                logger.debug(f"🧠 思维签名: {thought_signature[:50]}...")
+                logger.debug(f"思维签名: {thought_signature[:50]}...")
             return
 
         # 短链富媒体发送
@@ -308,7 +308,7 @@ class MessageSender:
                 async for res in self.safe_send(event, event.chain_result(chain)):
                     yield res
             if thought_signature:
-                logger.debug(f"🧠 思维签名: {thought_signature[:50]}...")
+                logger.debug(f"思维签名: {thought_signature[:50]}...")
             return
 
         # 合并转发
@@ -342,4 +342,4 @@ class MessageSender:
             yield res
 
         if thought_signature:
-            logger.debug(f"🧠 思维签名: {thought_signature[:50]}...")
+            logger.debug(f"思维签名: {thought_signature[:50]}...")

@@ -93,7 +93,7 @@ class GoogleProvider:
                     f"📎 开始处理 {processed_ref_count} 张参考图片 (共配置 {total_ref_count} 张，最多处理 14 张)..."
                 )
             else:
-                logger.info(f"📎 开始处理 {processed_ref_count} 张参考图片...")
+                logger.info(f"开始处理 {processed_ref_count} 张参考图片...")
 
         if config.reference_images:
             for idx, image_input in enumerate(config.reference_images[:14]):
@@ -276,7 +276,7 @@ class GoogleProvider:
         session: aiohttp.ClientSession,
     ) -> tuple[list[str], list[str], str | None, str | None]:  # noqa: ANN401
         parse_start = asyncio.get_running_loop().time()
-        logger.debug("🔍 开始解析API响应数据...")
+        logger.debug("开始解析API响应数据...")
 
         image_urls: list[str] = []
         image_paths: list[str] = []
@@ -310,7 +310,7 @@ class GoogleProvider:
             return [], [], None, None
 
         candidates = response_data["candidates"]
-        logger.debug(f"📝 找到 {len(candidates)} 个候选结果")
+        logger.debug(f"找到 {len(candidates)} 个候选结果")
 
         for idx, candidate in enumerate(candidates):
             finish_reason = candidate.get("finishReason")
@@ -320,7 +320,7 @@ class GoogleProvider:
 
             content = candidate.get("content", {})
             parts = content.get("parts") or []
-            logger.debug(f"📋 候选 {idx} 包含 {len(parts)} 个部分")
+            logger.debug(f"候选 {idx} 包含 {len(parts)} 个部分")
 
             for i, part in enumerate(parts):
                 try:
@@ -328,7 +328,7 @@ class GoogleProvider:
 
                     if "thoughtSignature" in part and not thought_signature:
                         thought_signature = part["thoughtSignature"]
-                        logger.debug(f"🧠 找到思维签名: {thought_signature[:50]}...")
+                        logger.debug(f"找到思维签名: {thought_signature[:50]}...")
 
                     if "text" in part and isinstance(part.get("text"), str):
                         text_chunks.append(part.get("text", ""))
@@ -351,7 +351,7 @@ class GoogleProvider:
                                 mime_type.split("/")[1] if "/" in mime_type else "png"
                             )
 
-                            logger.debug("💾 开始保存图像文件...")
+                            logger.debug("开始保存图像文件...")
                             save_start = asyncio.get_running_loop().time()
 
                             saved_path = await save_base64_image(
@@ -407,7 +407,7 @@ class GoogleProvider:
                         f"处理候选 {idx} 的第 {i} 个part时出错: {e}", exc_info=True
                     )
 
-        logger.debug(f"🖼️ 共找到 {len(image_paths)} 张图片")
+        logger.debug(f"共找到 {len(image_paths)} 张图片")
 
         if text_chunks:
             extracted_urls: list[str] = []
@@ -428,7 +428,7 @@ class GoogleProvider:
             else None
         )
         if text_content:
-            logger.debug(f"🎯 找到文本内容: {text_content[:100]}...")
+            logger.debug(f"找到文本内容: {text_content[:100]}...")
 
         if not (image_paths or image_urls) and fallback_texts:
             appended = await client._append_images_from_texts(
@@ -442,7 +442,7 @@ class GoogleProvider:
 
         if image_paths or image_urls:
             parse_end = asyncio.get_running_loop().time()
-            logger.debug(f"🎉 API响应解析完成，总耗时: {parse_end - parse_start:.2f}秒")
+            logger.debug(f"API响应解析完成，总耗时: {parse_end - parse_start:.2f}秒")
             return image_urls, image_paths, text_content, thought_signature
 
         if text_content:

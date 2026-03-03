@@ -208,8 +208,8 @@ class ConfigLoader:
                 json.dump(self.raw_config, f, ensure_ascii=False, indent=2)
 
             items_str = ", ".join(migration_items)
-            logger.info(f"📦 配置已备份到: {backup_path}")
-            logger.info(f"📦 将迁移以下配置项: {items_str}")
+            logger.info(f"配置已备份到: {backup_path}")
+            logger.info(f"将迁移以下配置项: {items_str}")
             return backup_path
         except Exception as e:
             logger.warning(f"配置备份失败: {e}")
@@ -239,7 +239,7 @@ class ConfigLoader:
             return False
 
         # 备份旧配置
-        logger.info("🔄 检测到旧版配置格式，开始迁移...")
+        logger.info("检测到旧版配置格式，开始迁移...")
         self._backup_config(migrations_needed)
 
         migrated = False

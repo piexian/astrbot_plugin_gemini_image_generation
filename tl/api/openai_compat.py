@@ -126,7 +126,7 @@ class OpenAICompatProvider:
                     f"📎 开始处理 {processed_ref_count} 张参考图片 (共配置 {total_ref_count} 张，最多处理 6 张)..."
                 )
             else:
-                logger.info(f"📎 开始处理 {processed_ref_count} 张参考图片...")
+                logger.info(f"开始处理 {processed_ref_count} 张参考图片...")
 
             for idx, image_input in enumerate(config.reference_images[:6]):
                 per_start = time.perf_counter()
