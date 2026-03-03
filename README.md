@@ -1,8 +1,8 @@
-# AstrBot Gemini 图像生成插件 v1.9.3
+# AstrBot Gemini 图像生成插件 v1.9.4
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/Version-v1.9.3-blue)
+![Version](https://img.shields.io/badge/Version-v1.9.4-blue)
 ![License](https://img.shields.io/badge/License-AGPL--3.0-orange)
 
 **🎨 强大的 Gemini 图像生成插件，支持智能头像参考和智能表情包切分**

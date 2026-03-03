@@ -601,7 +601,7 @@ class GeminiAPIClient:
                 elapsed = loop.time() - started_at
                 remaining = max_total_time_int - elapsed
                 if remaining <= 0:
-                    timeout_msg = "图像生成时间过长，超出了框架限制。请尝试简化图像描述或在框架配置中增加 tool_call_timeout 到 90-120 秒。"
+                    timeout_msg = "图像生成时间过长，已超时。"
                     raise APIError(timeout_msg, None, "timeout") from None
 
                 attempt_timeout_int = max(min(base_timeout_int, int(remaining)), 1)
@@ -668,7 +668,7 @@ class GeminiAPIClient:
             except asyncio.CancelledError:
                 # 只有框架取消才不重试（这是最顶层的超时）
                 logger.debug("请求被框架取消（工具调用总超时），不再重试")
-                timeout_msg = "图像生成时间过长，超出了框架限制。请尝试简化图像描述或在框架配置中增加 tool_call_timeout 到 90-120 秒。"
+                timeout_msg = "图像生成时间过长，请求被取消。"
                 raise APIError(timeout_msg, None, "cancelled") from None
             except Exception as e:
                 if isinstance(e, APIError):

@@ -116,6 +116,7 @@ class ImageGenerator:
         avatar_reference: list[str],
         override_resolution: str | None = None,
         override_aspect_ratio: str | None = None,
+        is_tool_call: bool = False,
     ) -> tuple[bool, tuple[list[str], list[str], str | None, str | None] | str]:
         """
         内部核心图像生成方法，不发送消息，只返回结果
@@ -185,7 +186,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
             aspect_ratio_param_name=self.aspect_ratio_param_name,
         )
 
-        logger.info("🎨 图像生成请求:")
+        logger.info("图像生成请求:")
         logger.info(f"  模型: {self.model}")
         logger.info(f"  API 类型: {self.api_type}")
         logger.info(
@@ -193,14 +194,18 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
         )
 
         try:
-            logger.info("🚀 开始调用API生成图像...")
+            logger.info("开始调用API生成图像...")
             start_time = asyncio.get_running_loop().time()
 
-            tool_timeout = self._get_tool_timeout(event)
-            per_retry_timeout = min(self.total_timeout, tool_timeout)
-            max_total_time = tool_timeout
+            if is_tool_call:
+                tool_timeout = self._get_tool_timeout(event)
+                per_retry_timeout = min(self.total_timeout, tool_timeout)
+                max_total_time = tool_timeout
+            else:
+                per_retry_timeout = self.total_timeout
+                max_total_time = self.total_timeout
             logger.debug(
-                f"超时配置: tool_call_timeout={tool_timeout}s, per_retry_timeout={per_retry_timeout}s, max_retries={self.max_attempts_per_key}, max_total_time={max_total_time}s"
+                f"超时配置: is_tool_call={is_tool_call}, per_retry_timeout={per_retry_timeout}s, max_retries={self.max_attempts_per_key}, max_total_time={max_total_time}s"
             )
 
             (
@@ -217,13 +222,13 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
 
             end_time = asyncio.get_running_loop().time()
             api_duration = end_time - start_time
-            logger.info(f"✅ API调用完成，耗时: {api_duration:.2f}秒")
+            logger.info(f"API调用完成，耗时: {api_duration:.2f}秒")
             logger.info(
                 f"🖼️ API 返回图片数量: {len(image_paths)}, URL 数量: {len(image_urls)}"
             )
 
             if thought_signature:
-                logger.debug(f"🧠 思维签名: {thought_signature[:50]}...")
+                logger.debug(f"思维签名: {thought_signature[:50]}...")
 
             resolved_paths: list[str] = []
             for idx, img_path in enumerate(image_paths):
@@ -248,12 +253,12 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
                             if remote_path:
                                 resolved_path = remote_path
                         except asyncio.TimeoutError:
-                            logger.warning("⚠️ 文件传输超时，使用本地文件")
+                            logger.warning("文件传输超时，使用本地文件")
                         except Exception as e:
-                            logger.warning(f"⚠️ 文件传输失败: {e}，将使用本地文件")
+                            logger.warning(f"文件传输失败: {e}，将使用本地文件")
                     resolved_paths.append(resolved_path)
                 else:
-                    logger.warning(f"⚠️ 图像文件不存在或不可访问: {img_path}")
+                    logger.warning(f"图像文件不存在或不可访问: {img_path}")
                     resolved_paths.append(img_path)
 
             image_paths = resolved_paths
@@ -286,7 +291,17 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
             error_msg = f"❌ 图像生成失败{status_part}：{e.message}"
             message_lower = (e.message or "").lower()
             api_base_lower = (self.api_base or "").lower()
-            if e.status_code == 429:
+            if e.error_type in ("timeout", "cancelled"):
+                if is_tool_call:
+                    error_msg += "\n🧐 可能原因：图像生成耗时超出框架工具调用限制。\n✅ 建议：在框架配置中增加 tool_call_timeout 到 90-120 秒，或简化提示词。"
+                else:
+                    error_msg += (
+                        f"\n🧐 可能原因：图像生成耗时超出插件超时限制（当前 {self.total_timeout} 秒）。"
+                        "\n✅ 建议：在插件配置中增加 total_timeout，或简化提示词/减少参考图。"
+                    )
+            elif e.error_type == "network":
+                error_msg += "\n🧐 可能原因：网络连接异常或上游服务不可达。\n✅ 建议：检查网络连接和 API 地址配置，稍后重试。"
+            elif e.status_code == 429:
                 error_msg += "\n🧐 可能原因：请求过于频繁或额度已用完。\n✅ 建议：稍等片刻再试，或在配置中增加可用额度/开启智能重试。"
             elif e.status_code == 402:
                 error_msg += "\n🧐 可能原因：账户余额不足或套餐到期。\n✅ 建议：充值或更换一组可用的 API 密钥后再试。"

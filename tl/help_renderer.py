@@ -100,7 +100,7 @@ async def ensure_font_downloaded() -> bool:
             _font_downloaded = True
             return True
 
-        logger.info("🔤 local 渲染模式需要中文字体，开始下载...")
+        logger.info("local 渲染模式需要中文字体，开始下载...")
         font_path.parent.mkdir(parents=True, exist_ok=True)
 
         import aiohttp
@@ -133,7 +133,7 @@ async def ensure_font_downloaded() -> bool:
                 logger.debug(f"下载字体失败 ({url}): {e}")
                 continue
 
-        logger.warning("⚠️ 字体下载失败，将使用系统默认字体（中文可能显示异常）")
+        logger.warning("字体下载失败，将使用系统默认字体（中文可能显示异常）")
         return False
 
 
