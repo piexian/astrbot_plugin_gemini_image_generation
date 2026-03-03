@@ -1,0 +1,92 @@
+name: Bug 反馈
+description: 提交一个 Bug
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！请尽量填写以下信息，帮助我们快速定位问题。
+
+  - type: input
+    id: plugin-version
+    attributes:
+      label: 插件版本
+      description: 在 AstrBot 插件列表或 metadata.yaml 中查看
+      placeholder: "v1.9.4"
+    validations:
+      required: true
+
+  - type: input
+    id: astrbot-version
+    attributes:
+      label: AstrBot 版本
+      placeholder: "4.10.4"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: api-type
+    attributes:
+      label: API 类型
+      options:
+        - google
+        - openai
+        - zai
+        - grok2api
+        - doubao
+        - 其他
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 消息平台
+      options:
+        - NapCat
+        - LLOneBot
+        - 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 清晰描述遇到的问题
+      placeholder: 使用 /生图 命令时...
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 如何触发这个问题
+      placeholder: |
+        1. 发送 `/生图 一只猫`
+        2. 等待返回
+        3. 出现错误消息 ...
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志
+      description: 开启 AstrBot debug 模式后的相关日志（请脱敏 API 密钥）
+      render: text
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充信息
+      description: 截图、配置片段或其他有助于排查的信息
+
+  - type: dropdown
+    id: willing-to-pr
+    attributes:
+      label: 是否愿意提交 PR 修复
+      options:
+        - "是"
+        - "否"
+    validations:
+      required: false
