@@ -1400,7 +1400,8 @@ class GeminiImageGenerationPlugin(Star):
         avatar_reference: list[str],
         override_resolution: str | None = None,
         override_aspect_ratio: str | None = None,
-    ):
+        is_tool_call: bool = False,
+    ) -> tuple[bool, tuple[list[str], list[str], str | None, str | None] | str]:
         """兼容旧 API：核心图像生成方法"""
         return await self.image_generator.generate_image_core(
             event=event,
@@ -1409,6 +1410,7 @@ class GeminiImageGenerationPlugin(Star):
             avatar_reference=avatar_reference,
             override_resolution=override_resolution,
             override_aspect_ratio=override_aspect_ratio,
+            is_tool_call=is_tool_call,
         )
 
     async def _dispatch_send_results(

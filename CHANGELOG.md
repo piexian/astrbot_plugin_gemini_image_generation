@@ -21,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `limit_settings` 中的 `rate_limit_enabled`、`rate_limit_period_seconds`、`rate_limit_max_requests` 已迁移到 `rate_limit_rules`（template_list 格式）
 - `quick_mode_settings` 从 object 格式迁移到 template_list 格式
 
+## [1.9.5] - 2026-03-04
+
+### Fixed
+
+- 修复 `_generate_image_core_internal` 兼容层方法缺少 `is_tool_call` 参数导致 LLM 工具调用路径 TypeError 的问题
+  - 错误信息：`GeminiImageGenerationPlugin._generate_image_core_internal() got an unexpected keyword argument 'is_tool_call'`
+  - 影响范围：所有通过 LLM 工具调用触发的图像生成请求
+
 ## [1.9.4] - 2026-03-03
 
 ### Fixed
