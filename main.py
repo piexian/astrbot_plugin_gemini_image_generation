@@ -19,6 +19,7 @@ import yaml
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.event.filter import llm_tool
 from astrbot.api.message_components import Image as AstrImage
 from astrbot.api.message_components import Node, Plain
 from astrbot.api.star import Context, Star
@@ -56,7 +57,10 @@ from .tl.enhanced_prompts import (
     get_style_change_prompt,
     get_wallpaper_prompt,
 )
-from .tl.llm_tools import GeminiImageGenerationTool
+from .tl.llm_tools import (
+    GeminiImageGenerationTool,
+    execute_gemini_generate_image_tool,
+)
 from .tl.tl_api import APIClient, ApiRequestConfig, get_api_client
 from .tl.tl_utils import AvatarManager, cleanup_old_images, format_error_message
 
@@ -662,6 +666,39 @@ class GeminiImageGenerationPlugin(Star):
             event, generation_prompt, use_avatar
         ):
             yield result
+
+    @llm_tool("gemini_generate_image") # LLM可调用的图像生成工具函数
+    async def generate_image_tool(
+        self,
+        event: AstrMessageEvent,
+        prompt: str,
+        use_reference_images: bool = False,
+        include_user_avatar: bool = False,
+        resolution: str = "",
+        aspect_ratio: str = "",
+    ):
+        """Generate images using Gemini based on the given prompt.
+        Call only when the user intent is to generate/draw/modify an image, not for searching.
+        If the user requests modification or based on an image, set use_reference_images=true.
+        If the user refers to their avatar or @someone, set include_user_avatar=true.
+        Omitted resolution/aspect_ratio will use the plugin defaults.
+
+        Args:
+            prompt (string): The prompt or description used for generating images.
+            use_reference_images (boolean): Whether to use images in the current context as references.
+            include_user_avatar (boolean): Whether to include the user's avatar as a reference.
+            resolution (string): Optional resolution, must be 1K, 2K, or 4K (uppercase).
+            aspect_ratio (string): Optional aspect ratio: 1:1/16:9/4:3/3:2/9:16/4:5/5:4/21:9/3:4/2:3.
+        """
+        return await execute_gemini_generate_image_tool(
+            plugin=self,
+            event=event,
+            prompt=prompt,
+            use_reference_images=use_reference_images,
+            include_user_avatar=include_user_avatar,
+            resolution=resolution,
+            aspect_ratio=aspect_ratio,
+        )
 
     @filter.command_group("快速")
     def quick_mode_group(self):
