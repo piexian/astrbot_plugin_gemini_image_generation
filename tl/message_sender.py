@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import TYPE_CHECKING
 
 import astrbot.api.message_components as Comp
@@ -100,8 +101,6 @@ class MessageSender:
     @staticmethod
     def clean_text_content(text: str) -> str:
         """清理文本内容，移除 markdown 图片链接等不可发送的内容"""
-        import re
-
         if not text:
             return text
 
@@ -109,6 +108,36 @@ class MessageSender:
         text = text.strip()
 
         return text
+
+    @staticmethod
+    def strip_known_image_refs(text: str, image_refs: list[str] | None) -> str:
+        """从文本中移除已识别为图片的 URL/路径，避免图文重复发送。"""
+        if not text or not image_refs:
+            return text
+
+        cleaned = text
+        candidates: list[str] = []
+        for ref in image_refs:
+            ref_str = str(ref).strip()
+            if not ref_str:
+                continue
+            candidates.append(ref_str)
+            if "&" in ref_str:
+                candidates.append(ref_str.replace("&", "&amp;"))
+
+        for candidate in sorted(set(candidates), key=len, reverse=True):
+            cleaned = re.sub(re.escape(candidate), "", cleaned)
+
+        cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+        cleaned = re.sub(r"\n\s*\n+", "\n", cleaned)
+        return cleaned.strip(" \t\n\r-—:：")
+
+    def prepare_text_content(
+        self, text: str | None, image_refs: list[str] | None = None
+    ) -> str:
+        """统一清理待发送文本，并按需移除已识别图片引用。"""
+        cleaned_text = self.clean_text_content(text) if text else ""
+        return self.strip_known_image_refs(cleaned_text, image_refs)
 
     @staticmethod
     def merge_available_images(
@@ -184,6 +213,8 @@ class MessageSender:
         text_content: str | None,
         thought_signature: str | None = None,
         scene: str = "默认",
+        force_text_response: bool = False,
+        text_content_prepared: bool = False,
     ):
         """
         根据内容数量选择发送模式：
@@ -192,13 +223,19 @@ class MessageSender:
         - 总数>4：合并转发
         """
 
-        cleaned_text = self.clean_text_content(text_content) if text_content else ""
-        text_to_send = (
-            cleaned_text if (self.enable_text_response and cleaned_text) else ""
-        )
-
         # 优先 URL，paths 作为补充（URL 在前，去重）
         available_images = self.merge_available_images(image_urls, image_paths)
+
+        cleaned_text = (
+            text_content or ""
+            if text_content_prepared
+            else self.prepare_text_content(text_content, available_images)
+        )
+        text_to_send = (
+            cleaned_text
+            if ((self.enable_text_response or force_text_response) and cleaned_text)
+            else ""
+        )
         total_items = len(available_images) + (1 if text_to_send else 0)
         is_aioqhttp = self.is_aioqhttp_event(event)
 

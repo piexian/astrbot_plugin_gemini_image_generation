@@ -8,6 +8,7 @@ LLM 工具定义模块
 from __future__ import annotations
 
 import asyncio
+import math
 from typing import TYPE_CHECKING, Any
 
 from pydantic import Field
@@ -40,13 +41,226 @@ VALID_ASPECT_RATIOS = {
 }
 
 
+def _build_reference_info(ref_count: int, avatar_count: int) -> str:
+    if ref_count <= 0 and avatar_count <= 0:
+        return ""
+    ref_info = f"（使用 {ref_count} 张参考图"
+    if avatar_count > 0:
+        ref_info += f"，{avatar_count} 张头像"
+    ref_info += "）"
+    return ref_info
+
+
+def _build_param_info(
+    resolution: str | None,
+    aspect_ratio: str | None,
+) -> str:
+    parts: list[str] = []
+    if resolution:
+        parts.append(f"分辨率 {resolution}")
+    if aspect_ratio:
+        parts.append(f"比例 {aspect_ratio}")
+    return f"（{', '.join(parts)}）" if parts else ""
+
+
+def _build_background_start_notice(
+    ref_count: int,
+    avatar_count: int,
+    resolution: str | None,
+    aspect_ratio: str | None,
+) -> str:
+    ref_info = _build_reference_info(ref_count, avatar_count)
+    param_info = _build_param_info(resolution, aspect_ratio)
+    return (
+        f"[图像生成任务已启动]{ref_info}{param_info}\n"
+        "图片正在后台生成中，通常需要 10-30 秒，高质量生成可能长达几百秒，生成完成后会自动发送给用户。\n"
+        "请用你维持原有的人设告诉用户：图片正在生成，请稍等片刻，完成后会自动发送。"
+    )
+
+
+def _build_background_fallback_notice(
+    ref_count: int,
+    avatar_count: int,
+    resolution: str | None,
+    aspect_ratio: str | None,
+    waited_seconds: int,
+) -> str:
+    ref_info = _build_reference_info(ref_count, avatar_count)
+    param_info = _build_param_info(resolution, aspect_ratio)
+    return (
+        f"[图像生成任务已转入后台]{ref_info}{param_info}\n"
+        f"前台等待 {waited_seconds} 秒后仍未完成，已切换为后台继续生成。\n"
+        "图片生成完成后会自动发送给用户。\n"
+        "请用你维持原有的人设告诉用户：图片正在生成，请稍等片刻，完成后会自动发送。"
+    )
+
+
+def _resolve_foreground_wait_seconds(plugin: Any, event: Any) -> int:
+    reserve_percent = min(
+        max(int(getattr(plugin.cfg, "llm_tool_timeout_reserve_percent", 50)), 1),
+        100,
+    )
+    tool_timeout = max(int(plugin.get_tool_timeout(event)), 1)
+    session_umo = getattr(event, "unified_msg_origin", None) or "unknown"
+    reserved_seconds = math.ceil(tool_timeout * reserve_percent / 100)
+    foreground_wait_seconds = max(tool_timeout - reserved_seconds, 0)
+    if foreground_wait_seconds <= 0:
+        logger.debug(
+            "[前台等待] 由于超时预算不足，已禁用前台等待。"
+            f"会话={session_umo} 工具超时={tool_timeout}秒 "
+            f"预留比例={reserve_percent}%"
+        )
+        return 0
+
+    logger.debug(
+        "[前台等待] 已根据超时预留比例计算前台等待时长。"
+        f"会话={session_umo} 工具超时={tool_timeout}秒 "
+        f"预留比例={reserve_percent}% 预留时长={reserved_seconds}秒 "
+        f"前台等待={foreground_wait_seconds}秒"
+    )
+    return foreground_wait_seconds
+
+
+def _create_generation_task(
+    plugin: Any,
+    event: Any,
+    prompt: str,
+    reference_images: list[str],
+    avatar_reference: list[str],
+    override_resolution: str | None = None,
+    override_aspect_ratio: str | None = None,
+) -> asyncio.Task:
+    return asyncio.create_task(
+        plugin._generate_image_core_internal(
+            event=event,
+            prompt=prompt,
+            reference_images=reference_images,
+            avatar_reference=avatar_reference,
+            override_resolution=override_resolution,
+            override_aspect_ratio=override_aspect_ratio,
+            is_tool_call=True,
+        )
+    )
+
+
+async def _cleanup_avatar_cache(plugin: Any, log_prefix: str) -> None:
+    try:
+        await plugin.avatar_manager.cleanup_used_avatars()
+    except Exception as exc:
+        logger.debug(f"{log_prefix} 清理头像缓存失败: {exc}")
+
+
+async def _dispatch_generation_result(
+    plugin: Any,
+    event: Any,
+    success: bool,
+    result_data: Any,
+    *,
+    scene: str,
+    fallback_text: str | None = None,
+    force_text_response: bool = False,
+) -> None:
+    if success and isinstance(result_data, tuple):
+        image_urls, image_paths, text_content, thought_signature = result_data
+        available_images = plugin.message_sender.merge_available_images(
+            image_urls,
+            image_paths,
+        )
+        prepared_text = plugin.message_sender.prepare_text_content(
+            text_content,
+            available_images,
+        )
+        content_text = prepared_text or fallback_text
+        if text_content and not prepared_text and fallback_text:
+            logger.info(
+                f"[{scene}] Text content only contained image references; using fallback text."
+            )
+        async for send_res in plugin.message_sender.dispatch_send_results(
+            event=event,
+            image_urls=image_urls,
+            image_paths=image_paths,
+            text_content=content_text,
+            thought_signature=thought_signature,
+            scene=scene,
+            force_text_response=force_text_response,
+            text_content_prepared=True,
+        ):
+            try:
+                await event.send(send_res)
+            except Exception as exc:
+                logger.warning(f"[{scene}] 发送结果失败: {exc}")
+        return
+
+    error_msg = result_data if isinstance(result_data, str) else "❌ 图像生成失败"
+    try:
+        await event.send(event.plain_result(error_msg))
+    except Exception as exc:
+        logger.warning(f"[{scene}] 发送错误消息失败: {exc}")
+
+
+async def _await_generation_task_and_send(
+    plugin: Any,
+    event: Any,
+    generation_task: asyncio.Task,
+    *,
+    scene: str,
+) -> None:
+    try:
+        success, result_data = await generation_task
+        await _dispatch_generation_result(
+            plugin=plugin,
+            event=event,
+            success=success,
+            result_data=result_data,
+            scene=scene,
+        )
+    except Exception as exc:
+        logger.error(f"[{scene}] 后台图像生成异常: {exc}", exc_info=True)
+        try:
+            await event.send(event.plain_result(format_error_message(exc)))
+        except Exception as send_error:
+            logger.warning(f"[{scene}] 发送异常消息失败: {send_error}")
+    finally:
+        await _cleanup_avatar_cache(plugin, f"[{scene}]")
+
+
+def _schedule_generation_delivery(
+    plugin: Any,
+    event: Any,
+    generation_task: asyncio.Task,
+    *,
+    scene: str,
+) -> asyncio.Task:
+    sender_task = asyncio.create_task(
+        _await_generation_task_and_send(
+            plugin=plugin,
+            event=event,
+            generation_task=generation_task,
+            scene=scene,
+        )
+    )
+
+    def _report_background_exception(task: asyncio.Task) -> None:
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc:
+            logger.error(
+                f"[{scene}] 后台发送任务异常终止: {exc}",
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+
+    sender_task.add_done_callback(_report_background_exception)
+    return sender_task
+
+
 @dataclass
 class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
     """
     Gemini 图像生成工具（触发器模式）
 
     当用户请求图像生成、绘画、改图、换风格或手办化时调用此函数。
-    工具会立即返回确认信息，图片在后台生成完成后自动发送。
+    工具会优先在前台短时间等待，快速完成则直接返回结果，超时则转后台继续发送。
     """
 
     name: str = "gemini_image_generation"
@@ -54,7 +268,8 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
     description: str = (
         "使用 Gemini 模型生成或修改图像。"
         "当用户请求图像生成、绘画、改图、换风格或手办化时调用此函数。"
-        "此工具会立即返回确认，图片会在后台生成完成后自动发送给用户。"
+        "此工具会先在前台短时间等待结果，若快速完成则直接返回图片；"
+        "若超出等待时间则自动转为后台生成，完成后自动发送给用户。"
         "判断逻辑：用户说'改成'、'变成'、'基于'、'修改'、'改图'等词时，"
         "设置 use_reference_images=true；用户说'根据我'、'我的头像'或@某人时，"
         "设置 use_reference_images=true 和 include_user_avatar=true。"
@@ -127,8 +342,8 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         """
         执行图像生成工具（触发器模式）
 
-        立即返回确认信息，图片生成在后台异步执行
-        当 for_forum=True 时，同步等待生成完成并返回图片路径
+        Foreground-first hybrid mode for normal chats.
+        When for_forum=True, the tool waits synchronously and returns image paths.
         """
         prompt = kwargs.get("prompt") or ""
         if not prompt.strip():
@@ -186,14 +401,14 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         # 日志记录（仅记录长度和参数摘要，避免记录用户原始内容）
         prompt_len = len(prompt)
         logger.info(
-            f"[TOOL-TRIGGER] 启动图像生成任务: "
-            f"prompt_len={prompt_len} refs={ref_count} avatars={avatar_count} "
-            f"resolution={resolution} aspect_ratio={aspect_ratio} for_forum={for_forum}"
+            f"[工具调用] 启动图像生成任务："
+            f"提示词长度={prompt_len} 参考图={ref_count} 张 头像={avatar_count} 张 "
+            f"分辨率={resolution} 比例={aspect_ratio} 发帖模式={for_forum}"
         )
 
         # ========== for_forum 模式：同步等待生成完成 ==========
         if for_forum:
-            logger.info("[TOOL-FORUM] 论坛模式：同步等待图片生成完成...")
+            logger.info("[后台任务] 论坛模式：同步等待图片生成完成……")
 
             try:
                 # 直接调用核心生成逻辑，同步等待
@@ -270,65 +485,87 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                     )
 
                 logger.info(
-                    f"[TOOL-FORUM] 图片生成成功，返回 {len(available_images)} 张图片"
+                    f"[后台任务] 图片生成成功，返回 {len(available_images)} 张图片"
                 )
                 return "\n".join(result_lines)
 
             except asyncio.TimeoutError:
                 return "❌ 图片生成超时，请稍后重试"
             except Exception as e:
-                logger.error(f"[TOOL-FORUM] 图片生成异常: {e}", exc_info=True)
+                logger.error(f"[后台任务] 图片生成异常：{e}", exc_info=True)
                 return f"❌ 图片生成过程中出错：{str(e)}"
             finally:
                 # 清理缓存
                 try:
                     await plugin.avatar_manager.cleanup_used_avatars()
                 except Exception as e:
-                    logger.debug(f"[TOOL-FORUM] 清理头像缓存: {e}")
+                    logger.debug(f"[后台任务] 清理头像缓存失败：{e}")
 
-        # ========== 普通模式：后台异步生成 ==========
-        # 启动后台任务执行图像生成
-        gen_task = asyncio.create_task(
-            _background_generate_and_send(
+        generation_task = _create_generation_task(
+            plugin=plugin,
+            event=event,
+            prompt=prompt,
+            reference_images=reference_images,
+            avatar_reference=avatar_reference,
+            override_resolution=resolution,
+            override_aspect_ratio=aspect_ratio,
+        )
+        cleanup_now = True
+        foreground_wait_seconds = _resolve_foreground_wait_seconds(plugin, event)
+
+        try:
+            if foreground_wait_seconds <= 0:
+                cleanup_now = False
+                _schedule_generation_delivery(
+                    plugin=plugin,
+                    event=event,
+                    generation_task=generation_task,
+                    scene="后台任务",
+                )
+                return _build_background_start_notice(
+                    ref_count=ref_count,
+                    avatar_count=avatar_count,
+                    resolution=resolution,
+                    aspect_ratio=aspect_ratio,
+                )
+
+            logger.debug(f"[前台等待] 最多等待 {foreground_wait_seconds} 秒。")
+            success, result_data = await asyncio.wait_for(
+                asyncio.shield(generation_task),
+                timeout=foreground_wait_seconds,
+            )
+            await _dispatch_generation_result(
                 plugin=plugin,
                 event=event,
-                prompt=prompt,
-                reference_images=reference_images,
-                avatar_reference=avatar_reference,
-                override_resolution=resolution,
-                override_aspect_ratio=aspect_ratio,
+                success=success,
+                result_data=result_data,
+                scene="前台等待",
+                fallback_text="🎨 图片已生成，请查看",
+                force_text_response=True,
             )
-        )
-        # 捕获任务异常，防止静默失败
-        gen_task.add_done_callback(
-            lambda t: t.exception()
-            and logger.error(f"图像生成后台任务异常终止: {t.exception()}")
-        )
-
-        # 立即返回确认信息给 AI，提示 AI 告知用户需要等待
-        ref_info = ""
-        if ref_count > 0 or avatar_count > 0:
-            ref_info = f"（使用 {ref_count} 张参考图"
-            if avatar_count > 0:
-                ref_info += f"，{avatar_count} 张头像"
-            ref_info += "）"
-
-        # 分辨率和比例信息
-        param_info = ""
-        if resolution or aspect_ratio:
-            parts = []
-            if resolution:
-                parts.append(f"分辨率 {resolution}")
-            if aspect_ratio:
-                parts.append(f"比例 {aspect_ratio}")
-            param_info = f"（{', '.join(parts)}）"
-
-        # 返回给 AI 的提示信息，引导 AI 用自己的人格告知用户
-        return (
-            f"[图像生成任务已启动]{ref_info}{param_info}\n"
-            "图片正在后台生成中，通常需要 10-30 秒，高质量生成可能长达几百秒，生成完成后会自动发送给用户。\n"
-            "请用你维持原有的人设告诉用户：图片正在生成，请稍等片刻，完成后会自动发送。"
-        )
+            return None
+        except asyncio.TimeoutError:
+            cleanup_now = False
+            logger.debug("[前台等待] 等待超时，切换为后台继续生成。")
+            _schedule_generation_delivery(
+                plugin=plugin,
+                event=event,
+                generation_task=generation_task,
+                scene="后台任务",
+            )
+            return _build_background_fallback_notice(
+                ref_count=ref_count,
+                avatar_count=avatar_count,
+                resolution=resolution,
+                aspect_ratio=aspect_ratio,
+                waited_seconds=foreground_wait_seconds,
+            )
+        except Exception as e:
+            logger.error(f"[前台等待] 图像生成异常：{e}", exc_info=True)
+            return f"❌ 图片生成过程中出错：{str(e)}"
+        finally:
+            if cleanup_now:
+                await _cleanup_avatar_cache(plugin, "[工具调用]")
 
 
 async def _background_generate_and_send(
@@ -340,73 +577,21 @@ async def _background_generate_and_send(
     override_resolution: str | None = None,
     override_aspect_ratio: str | None = None,
 ) -> None:
-    """
-    后台执行图像生成并发送结果
-
-    此函数在后台异步执行，不阻塞工具调用
-    """
-    try:
-        logger.debug("[TOOL-BG] 开始后台图像生成...")
-
-        # 调用核心生成逻辑
-        success, result_data = await plugin._generate_image_core_internal(
-            event=event,
-            prompt=prompt,
-            reference_images=reference_images,
-            avatar_reference=avatar_reference,
-            override_resolution=override_resolution,
-            override_aspect_ratio=override_aspect_ratio,
-            is_tool_call=True,
-        )
-
-        if success and isinstance(result_data, tuple):
-            image_urls, image_paths, text_content, thought_signature = result_data
-
-            # 使用 MessageSender 发送结果（和普通指令一样）
-            async for send_res in plugin.message_sender.dispatch_send_results(
-                event=event,
-                image_urls=image_urls,
-                image_paths=image_paths,
-                text_content=text_content,
-                thought_signature=thought_signature,
-                scene="LLM工具",
-            ):
-                # 使用 event 发送结果
-                try:
-                    await event.send(send_res)
-                except Exception as e:
-                    logger.warning(f"[TOOL-BG] 发送结果失败: {e}")
-
-            logger.info(
-                f"[TOOL-BG] 图像生成成功，已发送 {len(image_paths or [])} 张图片"
-            )
-
-        else:
-            # 生成失败，发送错误消息
-            # result_data 已经是格式化好的错误字符串，直接使用
-            error_msg = (
-                result_data if isinstance(result_data, str) else "❌ 图像生成失败"
-            )
-            try:
-                await event.send(event.plain_result(error_msg))
-            except Exception as e:
-                logger.warning(f"[TOOL-BG] 发送错误消息失败: {e}")
-
-            logger.warning(f"[TOOL-BG] 图像生成失败: {error_msg}")
-
-    except Exception as e:
-        logger.error(f"[TOOL-BG] 后台图像生成异常: {e}", exc_info=True)
-        try:
-            await event.send(event.plain_result(format_error_message(e)))
-        except Exception as send_error:
-            logger.warning(f"[TOOL-BG] 发送异常消息失败: {send_error}")
-
-    finally:
-        # 清理缓存
-        try:
-            await plugin.avatar_manager.cleanup_used_avatars()
-        except Exception as e:
-            logger.debug(f"[TOOL-BG] 清理头像缓存: {e}")
+    generation_task = _create_generation_task(
+        plugin=plugin,
+        event=event,
+        prompt=prompt,
+        reference_images=reference_images,
+        avatar_reference=avatar_reference,
+        override_resolution=override_resolution,
+        override_aspect_ratio=override_aspect_ratio,
+    )
+    await _await_generation_task_and_send(
+        plugin=plugin,
+        event=event,
+        generation_task=generation_task,
+        scene="后台任务",
+    )
 
 
 # 保留旧的辅助函数以保持向后兼容（已弃用）
@@ -441,7 +626,7 @@ async def execute_image_generation_tool(
 
     # 解析参数
     avatar_value = str(include_user_avatar).lower()
-    logger.debug(f"include_user_avatar 参数: {avatar_value}")
+    logger.debug(f"include_user_avatar 参数值：{avatar_value}")
     include_avatar = avatar_value in {"true", "1", "yes", "y", "是"}
     include_ref_images = str(use_reference_images).lower() in {
         "true",
@@ -462,7 +647,7 @@ async def execute_image_generation_tool(
         avatar_reference = []
 
     logger.info(
-        f"[TOOL] 收集到参考图: 消息 {len(reference_images)} 张，"
+        f"[工具调用] 收集到参考图：消息 {len(reference_images)} 张，"
         f"头像 {len(avatar_reference)} 张"
     )
 

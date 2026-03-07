@@ -48,6 +48,7 @@ class PluginConfig:
     aspect_ratio_param_name: str = "aspect_ratio"
     image_input_mode: str = "force_base64"
     max_inline_image_size_mb: float = 2.0  # 本地图片 base64 编码阈值（MB）
+    llm_tool_timeout_reserve_percent: int = 50
 
     # 表情包设置
     sticker_grid_rows: int = 4
@@ -463,6 +464,17 @@ class ConfigLoader:
             except (TypeError, ValueError):
                 config.max_inline_image_size_mb = (
                     PluginConfig().max_inline_image_size_mb
+                )
+        timeout_reserve_percent = image_settings.get("llm_tool_timeout_reserve_percent")
+        if timeout_reserve_percent is not None:
+            try:
+                config.llm_tool_timeout_reserve_percent = min(
+                    max(int(timeout_reserve_percent), 1),
+                    100,
+                )
+            except (TypeError, ValueError):
+                config.llm_tool_timeout_reserve_percent = (
+                    PluginConfig().llm_tool_timeout_reserve_percent
                 )
 
         # 自定义参数名

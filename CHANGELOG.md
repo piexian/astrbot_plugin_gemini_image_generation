@@ -21,6 +21,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `limit_settings` 中的 `rate_limit_enabled`、`rate_limit_period_seconds`、`rate_limit_max_requests` 已迁移到 `rate_limit_rules`（template_list 格式）
 - `quick_mode_settings` 从 object 格式迁移到 template_list 格式
 
+## [1.9.6] - 2026-03-07
+
+### Added
+
+- 新增 `llm_tool_timeout_reserve_percent` 配置项，用于按 `tool_call_timeout` 百分比预留安全时间
+- 可配置为 1-100 的整数，默认值为 `50`
+
+### Changed
+
+- LLM 工具触发生图改为“同步优先，超时转后台”的混合模式
+- 前台等待时间根据当前 `tool_call_timeout` 与 `llm_tool_timeout_reserve_percent` 动态计算
+- 默认 `tool_call_timeout=60` 秒时，预留 `50%` 安全时间，前台最多同步等待约 `30` 秒
+- 同步未超安全时间时，工具会直接发送图文结果，减少“图片先到、说明后到”的割裂感
+- 超出前台等待窗口后，不取消已提交的生成任务，而是继续在后台执行并在完成后自动发送
+
+
 ## [1.9.5] - 2026-03-04
 
 ### Fixed

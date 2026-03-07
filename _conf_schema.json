@@ -329,6 +329,14 @@
         "type": "float",
         "hint": "超过此大小的本地图片将使用文件系统引用而非 base64 编码，减少内存占用。默认 2MB",
         "default": 2.0
+      },
+      "llm_tool_timeout_reserve_percent": {
+        "name": "LLM Tool Timeout Reserve Percent",
+        "description": "LLM 工具超时预留百分比",
+        "hint": "LLM 工具触发生图时，会从当前本体配置中按比例预留安全时间。剩余时间用于前台同步等待；超出后转为后台发送。默认 50%，即默认 60 秒超时下，前台最多等待约 30 秒。",
+        "type": "int",
+        "default": 50,
+        "slider": {"min": 1, "max": 100, "step": 1}
       }
     }
   },
