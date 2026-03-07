@@ -162,7 +162,24 @@ async def _dispatch_generation_result(
 ) -> None:
     if success and isinstance(result_data, tuple):
         image_urls, image_paths, text_content, thought_signature = result_data
-        content_text = text_content or fallback_text
+        available_images = plugin.message_sender.merge_available_images(
+            image_urls,
+            image_paths,
+        )
+        sanitized_text = (
+            plugin.message_sender.clean_text_content(text_content)
+            if text_content
+            else ""
+        )
+        sanitized_text = plugin.message_sender.strip_known_image_refs(
+            sanitized_text,
+            available_images,
+        )
+        content_text = sanitized_text or fallback_text
+        if text_content and not sanitized_text and fallback_text:
+            logger.info(
+                f"[{scene}] Text content only contained image references; using fallback text."
+            )
         async for send_res in plugin.message_sender.dispatch_send_results(
             event=event,
             image_urls=image_urls,
