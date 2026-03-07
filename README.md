@@ -1,15 +1,15 @@
-# AstrBot Gemini 图像生成插件 v1.9.4
+# AstrBot Gemini 图像生成插件
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/Version-v1.9.4-blue)
+![Version](https://img.shields.io/badge/Version-v1.9.6-blue)
 ![License](https://img.shields.io/badge/License-AGPL--3.0-orange)
 
 **🎨 强大的 Gemini 图像生成插件，支持智能头像参考和智能表情包切分**
 
 </div>
 
-> ⚠️ **升级警告**：v1.9.0 配置文件格式不兼容旧版本（v1.8.x 及更早）。升级后如遇配置模板显示错误，请查看 [CHANGELOG.md](./CHANGELOG.md#配置迁移说明) 了解迁移方案。
+> ⚠️ **升级警告**：v1.9.0 以后的配置文件格式不兼容旧版本（v1.8.x 及更早）。升级后如遇配置模板显示错误，请查看 [CHANGELOG.md](./CHANGELOG.md#配置迁移说明) 了解迁移方案。
 
 ## ✨ 特性
 
@@ -18,7 +18,7 @@
 - **快速预设**: 头像/海报/壁纸/卡片/手机/手办化/表情包一键生成
 - **智能头像**: 自动获取用户头像和@对象头像作为参考
 - **表情包切分**: SmartMemeSplitter v4 算法自动切割表情包网格
-- **LLM 工具**: 支持自然语言触发图像生成（触发器模式，避免超时）
+- **LLM 工具**: 支持自然语言触发生图，优先前台短等待，超时自动转后台
 - **多 API 支持**: Google 官方、OpenAI 兼容、Zai、grok2api、豆包（Doubao）
 - **多格式支持**: PNG、JPEG、WEBP、HEIC/HEIF、GIF
 
@@ -95,6 +95,7 @@ git clone https://github.com/piexian/astrbot_plugin_gemini_image_generation
 | `resolution_param_name` | `image_size` | 自定义分辨率参数名 |
 | `aspect_ratio_param_name` | `aspect_ratio` | 自定义长宽比参数名 |
 | `max_inline_image_size_mb` | `2.0` | 本地图片 base64 编码阈值 |
+| `llm_tool_timeout_reserve_percent` | `50` | 为 `tool_call_timeout` 预留的百分比；剩余时间用于前台同步等待 |
 
 **quick_mode_settings**
 - 可覆盖各快速模式的默认分辨率/长宽比
@@ -202,7 +203,7 @@ git clone https://github.com/piexian/astrbot_plugin_gemini_image_generation
 - "把我的头像改成动漫风格"
 - "基于这张图生成一个海报"
 
-**触发器模式**：AI 返回确认后图片在后台生成，完成后自动发送，避免超时。
+**混合触发模式**：LLM 工具会根据当前 `tool_call_timeout` 和 `llm_tool_timeout_reserve_percent` 自动计算前台等待窗口；如果图片在窗口内生成完成，就直接把图片和说明一起返回。若超过等待窗口，则自动切到后台继续生成，完成后再发送，兼顾连贯性和超时安全。
 
 **论坛发帖模式**：当用户要求将图片发到论坛/AstrBook 时，AI 会设置 `for_forum=true`，此时工具同步等待生成完成并返回图片路径/URL，AI 可自动调用 `upload_image` 上传图床后完成全自动发帖流程。
 

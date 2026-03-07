@@ -184,6 +184,7 @@ class MessageSender:
         text_content: str | None,
         thought_signature: str | None = None,
         scene: str = "默认",
+        force_text_response: bool = False,
     ):
         """
         根据内容数量选择发送模式：
@@ -194,7 +195,9 @@ class MessageSender:
 
         cleaned_text = self.clean_text_content(text_content) if text_content else ""
         text_to_send = (
-            cleaned_text if (self.enable_text_response and cleaned_text) else ""
+            cleaned_text
+            if ((self.enable_text_response or force_text_response) and cleaned_text)
+            else ""
         )
 
         # 优先 URL，paths 作为补充（URL 在前，去重）
