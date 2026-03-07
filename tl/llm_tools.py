@@ -103,22 +103,22 @@ def _resolve_foreground_wait_seconds(plugin: Any, event: Any) -> int:
     tool_timeout = max(int(plugin.get_tool_timeout(event)), 1)
     session_umo = getattr(event, "unified_msg_origin", None) or "unknown"
     reserved_seconds = math.ceil(tool_timeout * reserve_percent / 100)
-    safe_budget = max(tool_timeout - reserved_seconds, 0)
-    if safe_budget <= 0:
-        logger.info(
-            "[TOOL-FASTWAIT] Foreground wait disabled by timeout budget. "
-            f"umo={session_umo} tool_timeout={tool_timeout} "
-            f"reserve_percent={reserve_percent}"
+    foreground_wait_seconds = max(tool_timeout - reserved_seconds, 0)
+    if foreground_wait_seconds <= 0:
+        logger.debug(
+            "[前台等待] 由于超时预算不足，已禁用前台等待。"
+            f"会话={session_umo} 工具超时={tool_timeout}秒 "
+            f"预留比例={reserve_percent}%"
         )
         return 0
 
-    logger.info(
-        "[TOOL-FASTWAIT] Foreground wait computed from timeout reserve. "
-        f"umo={session_umo} tool_timeout={tool_timeout} "
-        f"reserve_percent={reserve_percent} reserved_seconds={reserved_seconds} "
-        f"effective={safe_budget}"
+    logger.debug(
+        "[前台等待] 已根据超时预留比例计算前台等待时长。"
+        f"会话={session_umo} 工具超时={tool_timeout}秒 "
+        f"预留比例={reserve_percent}% 预留时长={reserved_seconds}秒 "
+        f"前台等待={foreground_wait_seconds}秒"
     )
-    return safe_budget
+    return foreground_wait_seconds
 
 
 def _create_generation_task(
@@ -166,17 +166,12 @@ async def _dispatch_generation_result(
             image_urls,
             image_paths,
         )
-        sanitized_text = (
-            plugin.message_sender.clean_text_content(text_content)
-            if text_content
-            else ""
-        )
-        sanitized_text = plugin.message_sender.strip_known_image_refs(
-            sanitized_text,
+        prepared_text = plugin.message_sender.prepare_text_content(
+            text_content,
             available_images,
         )
-        content_text = sanitized_text or fallback_text
-        if text_content and not sanitized_text and fallback_text:
+        content_text = prepared_text or fallback_text
+        if text_content and not prepared_text and fallback_text:
             logger.info(
                 f"[{scene}] Text content only contained image references; using fallback text."
             )
@@ -188,6 +183,7 @@ async def _dispatch_generation_result(
             thought_signature=thought_signature,
             scene=scene,
             force_text_response=force_text_response,
+            text_content_prepared=True,
         ):
             try:
                 await event.send(send_res)
@@ -249,7 +245,10 @@ def _schedule_generation_delivery(
             return
         exc = task.exception()
         if exc:
-            logger.error(f"[{scene}] 后台发送任务异常终止: {exc}")
+            logger.error(
+                f"[{scene}] 后台发送任务异常终止: {exc}",
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
 
     sender_task.add_done_callback(_report_background_exception)
     return sender_task
@@ -402,14 +401,14 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         # 日志记录（仅记录长度和参数摘要，避免记录用户原始内容）
         prompt_len = len(prompt)
         logger.info(
-            f"[TOOL-TRIGGER] 启动图像生成任务: "
-            f"prompt_len={prompt_len} refs={ref_count} avatars={avatar_count} "
-            f"resolution={resolution} aspect_ratio={aspect_ratio} for_forum={for_forum}"
+            f"[工具调用] 启动图像生成任务："
+            f"提示词长度={prompt_len} 参考图={ref_count} 张 头像={avatar_count} 张 "
+            f"分辨率={resolution} 比例={aspect_ratio} 发帖模式={for_forum}"
         )
 
         # ========== for_forum 模式：同步等待生成完成 ==========
         if for_forum:
-            logger.info("[TOOL-FORUM] 论坛模式：同步等待图片生成完成...")
+            logger.info("[后台任务] 论坛模式：同步等待图片生成完成……")
 
             try:
                 # 直接调用核心生成逻辑，同步等待
@@ -486,21 +485,21 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                     )
 
                 logger.info(
-                    f"[TOOL-FORUM] 图片生成成功，返回 {len(available_images)} 张图片"
+                    f"[后台任务] 图片生成成功，返回 {len(available_images)} 张图片"
                 )
                 return "\n".join(result_lines)
 
             except asyncio.TimeoutError:
                 return "❌ 图片生成超时，请稍后重试"
             except Exception as e:
-                logger.error(f"[TOOL-FORUM] 图片生成异常: {e}", exc_info=True)
+                logger.error(f"[后台任务] 图片生成异常：{e}", exc_info=True)
                 return f"❌ 图片生成过程中出错：{str(e)}"
             finally:
                 # 清理缓存
                 try:
                     await plugin.avatar_manager.cleanup_used_avatars()
                 except Exception as e:
-                    logger.debug(f"[TOOL-FORUM] 清理头像缓存: {e}")
+                    logger.debug(f"[后台任务] 清理头像缓存失败：{e}")
 
         generation_task = _create_generation_task(
             plugin=plugin,
@@ -521,7 +520,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                     plugin=plugin,
                     event=event,
                     generation_task=generation_task,
-                    scene="TOOL-BG",
+                    scene="后台任务",
                 )
                 return _build_background_start_notice(
                     ref_count=ref_count,
@@ -530,9 +529,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                     aspect_ratio=aspect_ratio,
                 )
 
-            logger.info(
-                f"[TOOL-FASTWAIT] Foreground wait up to {foreground_wait_seconds}s."
-            )
+            logger.debug(f"[前台等待] 最多等待 {foreground_wait_seconds} 秒。")
             success, result_data = await asyncio.wait_for(
                 asyncio.shield(generation_task),
                 timeout=foreground_wait_seconds,
@@ -542,21 +539,19 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                 event=event,
                 success=success,
                 result_data=result_data,
-                scene="TOOL-FASTWAIT",
+                scene="前台等待",
                 fallback_text="🎨 图片已生成，请查看",
                 force_text_response=True,
             )
             return None
         except asyncio.TimeoutError:
             cleanup_now = False
-            logger.info(
-                "[TOOL-FASTWAIT] Foreground wait timed out, switching to background."
-            )
+            logger.debug("[前台等待] 等待超时，切换为后台继续生成。")
             _schedule_generation_delivery(
                 plugin=plugin,
                 event=event,
                 generation_task=generation_task,
-                scene="TOOL-BG",
+                scene="后台任务",
             )
             return _build_background_fallback_notice(
                 ref_count=ref_count,
@@ -566,11 +561,11 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                 waited_seconds=foreground_wait_seconds,
             )
         except Exception as e:
-            logger.error(f"[TOOL-FASTWAIT] 图像生成异常: {e}", exc_info=True)
+            logger.error(f"[前台等待] 图像生成异常：{e}", exc_info=True)
             return f"❌ 图片生成过程中出错：{str(e)}"
         finally:
             if cleanup_now:
-                await _cleanup_avatar_cache(plugin, "[TOOL-TRIGGER]")
+                await _cleanup_avatar_cache(plugin, "[工具调用]")
 
 
 async def _background_generate_and_send(
@@ -595,7 +590,7 @@ async def _background_generate_and_send(
         plugin=plugin,
         event=event,
         generation_task=generation_task,
-        scene="TOOL-BG",
+        scene="后台任务",
     )
 
 
@@ -631,7 +626,7 @@ async def execute_image_generation_tool(
 
     # 解析参数
     avatar_value = str(include_user_avatar).lower()
-    logger.debug(f"include_user_avatar 参数: {avatar_value}")
+    logger.debug(f"include_user_avatar 参数值：{avatar_value}")
     include_avatar = avatar_value in {"true", "1", "yes", "y", "是"}
     include_ref_images = str(use_reference_images).lower() in {
         "true",
@@ -652,7 +647,7 @@ async def execute_image_generation_tool(
         avatar_reference = []
 
     logger.info(
-        f"[TOOL] 收集到参考图: 消息 {len(reference_images)} 张，"
+        f"[工具调用] 收集到参考图：消息 {len(reference_images)} 张，"
         f"头像 {len(avatar_reference)} 张"
     )
 
