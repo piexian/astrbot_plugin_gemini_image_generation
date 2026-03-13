@@ -51,15 +51,12 @@
 
 ### 安装方式
 
-**方式一：Git 克隆**
-```bash
-cd AstrBot/data/plugins/
-git clone https://github.com/piexian/astrbot_plugin_gemini_image_generation
-```
-
-**方式二：插件市场**
+**方式一：插件市场**
 搜索 `Gemini 图像生成` 并安装
 
+**方式二：链接安装**
+ 在插件界面右下角点击加号选择从链接安装输入 ` https://github.com/piexian/astrbot_plugin_gemini_image_generation  `
+ 
 ## 🔧 配置
 
 ### 必填配置
