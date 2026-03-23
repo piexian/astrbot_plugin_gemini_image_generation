@@ -303,3 +303,7 @@ AGPL-3.0 License - 详见 [LICENSE](./LICENSE)
 **如果这个插件对你有帮助，请给个 ⭐ Star 支持一下！**
 
 </div>
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/image?repos=piexian/astrbot_plugin_gemini_image_generation&type=date&legend=top-left)](https://www.star-history.com/?repos=piexian%2Fastrbot_plugin_gemini_image_generation&type=date&legend=top-left)
