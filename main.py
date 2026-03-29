@@ -393,6 +393,29 @@ class GeminiImageGenerationPlugin(Star):
             # 绑定 KeyManager 到 API client（支持多 Key 轮换和每日限额）
             if hasattr(self, "key_manager") and self.key_manager:
                 self.api_client.set_key_manager(self.key_manager)
+
+            # 代理优先级：provider_overrides > api_settings 全局 > 环境变量
+            proxy_from_override = (
+                (override_settings.get("proxy") or "").strip()
+                if override_settings else ""
+            )
+            proxy_from_global = getattr(self.cfg, "proxy", None) or ""
+
+            if proxy_from_override:
+                self.api_client.proxy = proxy_from_override
+            elif proxy_from_global:
+                self.api_client.proxy = proxy_from_global
+            else:
+                self.api_client.proxy = (
+                    os.environ.get("HTTPS_PROXY")
+                    or os.environ.get("https_proxy")
+                    or os.environ.get("HTTP_PROXY")
+                    or os.environ.get("http_proxy")
+                )
+
+            # 代理变更后重建 session
+            self.api_client.invalidate_session()
+
             self._update_modules_api_client()
             logger.info("✓ API 客户端已初始化")
             logger.info(f"  - 类型: {self.cfg.api_type}")
@@ -400,6 +423,8 @@ class GeminiImageGenerationPlugin(Star):
             logger.info(f"  - 密钥数量: {len(self.cfg.api_keys)}")
             if self.cfg.api_base:
                 logger.info(f"  - 自定义 API Base: {self.cfg.api_base}")
+            if self.api_client.proxy:
+                logger.info(f"  - 代理: {self.api_client.proxy}")
         else:
             if not quiet:
                 logger.debug("启动阶段未读取到 API 密钥，等待 AstrBot 加载完成后再尝试")

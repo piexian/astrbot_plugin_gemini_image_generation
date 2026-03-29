@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/Version-v1.9.6-blue)
+![Version](https://img.shields.io/badge/Version-v1.9.7-blue)
 ![License](https://img.shields.io/badge/License-AGPL--3.0-orange)
 
 **🎨 强大的 Gemini 图像生成插件，支持智能头像参考和智能表情包切分**
@@ -74,6 +74,7 @@
 | `provider_id` | - | 必填，生图模型提供商 |
 | `api_type` | `openai` | API 类型 |
 | `model` | - | 可选，覆盖提供商模型名称 |
+| `proxy` | - | 全局代理地址，支持 `http://`、`https://`、`socks5://` 格式；留空则读取环境变量 |
 | `vision_provider_id` | - | 可选，切图前 AI 识别网格行列 |
 
 **image_generation_settings**
@@ -221,6 +222,7 @@ SmartMemeSplitter v4 特点：
 | 无法获取头像 | 确认使用 NapCat 平台 |
 | 切图效果不佳 | 手动指定网格 `/切图 4 4` 或配置视觉提供商 |
 | 中文乱码 (local 模式) | 等待字体自动下载或手动放置 `.ttf` 字体到 `tl/` 目录 |
+| 网络连接失败 | 在 `api_settings.proxy` 填写代理地址（如 `http://127.0.0.1:7890`），或在各 provider override 中单独配置 |
 
 开启 AstrBot debug 模式查看详细日志。
 

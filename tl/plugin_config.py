@@ -25,6 +25,7 @@ class PluginConfig:
     api_base: str = ""
     model: str = ""
     api_keys: list[str] = field(default_factory=list)
+    proxy: str | None = None
 
     # 豆包（Volcengine Ark）专用配置（api_type == doubao 时使用）
     doubao_settings: dict[str, Any] = field(default_factory=dict)
@@ -316,6 +317,7 @@ class ConfigLoader:
         config.api_type = (api_settings.get("api_type") or "").strip()
         config.api_base = (api_settings.get("custom_api_base") or "").strip()
         config.model = (api_settings.get("model") or "").strip()
+        config.proxy = str(api_settings.get("proxy") or "").strip() or None
 
         # Provider overrides（从 api_settings.provider_overrides 读取）
         # 新结构：api_settings.provider_overrides 是 template_list，每个条目有 __template_key 标识类型
@@ -438,6 +440,12 @@ class ConfigLoader:
                                 )
                             except (TypeError, ValueError):
                                 override_copy["daily_limit_per_key"] = 0
+                        # 清理 proxy 字段
+                        proxy_val = override_copy.get("proxy")
+                        if isinstance(proxy_val, str):
+                            override_copy["proxy"] = proxy_val.strip() or None
+                        else:
+                            override_copy["proxy"] = None
                         all_overrides[template_key] = override_copy
         config.provider_overrides = all_overrides
 

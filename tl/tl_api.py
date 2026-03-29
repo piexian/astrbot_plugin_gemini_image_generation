@@ -133,8 +133,31 @@ class GeminiAPIClient:
         async with self._session_lock:
             if self._session and not self._session.closed:
                 return self._session
-            self._session = aiohttp.ClientSession()
+            if self.proxy and self.proxy.lower().startswith("socks"):
+                try:
+                    from aiohttp_socks import ProxyConnector
+
+                    connector = ProxyConnector.from_url(self.proxy)
+                    self._session = aiohttp.ClientSession(connector=connector)
+                except ImportError:
+                    logger.error(
+                        "SOCKS 代理需要安装 aiohttp-socks: pip install aiohttp-socks"
+                    )
+                    self._session = aiohttp.ClientSession()
+            else:
+                self._session = aiohttp.ClientSession()
             return self._session
+
+    @property
+    def _http_proxy(self) -> str | None:
+        """HTTP 代理参数：SOCKS 代理由 ProxyConnector 处理，此处返回 None"""
+        if self.proxy and self.proxy.lower().startswith("socks"):
+            return None
+        return self.proxy
+
+    def invalidate_session(self):
+        """标记 session 需要重建（下次 _get_session 时自动创建新 session）"""
+        self._session = None
 
     async def close(self):
         """关闭内部复用的 aiohttp 会话"""
@@ -818,7 +841,7 @@ class GeminiAPIClient:
             url,
             json=send_payload,
             headers=headers,
-            proxy=self.proxy,
+            proxy=self._http_proxy,
             timeout=timeout,
         ) as response:
             logger.debug(f"响应状态: {response.status}")
@@ -1119,9 +1142,9 @@ class GeminiAPIClient:
                             "/images/users-" in candidate_url
                             or "/temp/image/" in candidate_url
                         )
-                        if is_temp_cache:
+                        if is_temp_cache or self.proxy:
                             logger.debug(
-                                f"[grok2api 适配] 检测到临时缓存 URL，强制下载: {candidate_url}"
+                                f"[openai] {'临时缓存' if is_temp_cache else '代理模式'}，强制下载: {candidate_url}"
                             )
                             image_url, image_path = await self._download_image(
                                 candidate_url, session, use_cache=False
@@ -1129,6 +1152,8 @@ class GeminiAPIClient:
                             # 只保留本地路径（_download_image 返回的两个值相同，避免重复）
                             if image_path:
                                 image_paths.append(image_path)
+                            if image_url and not image_path:
+                                image_urls.append(image_url)
                             continue
                         # 其他永久 URL 直接使用
                         image_urls.append(candidate_url)
@@ -1568,7 +1593,7 @@ class GeminiAPIClient:
                 async with session.get(
                     cleaned_url,
                     timeout=aiohttp.ClientTimeout(total=30),
-                    proxy=self.proxy,
+                    proxy=self._http_proxy,
                     headers=headers or None,
                 ) as response:
                     if response.status != 200:

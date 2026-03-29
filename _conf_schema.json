@@ -30,6 +30,12 @@
         "hint": "如需覆盖 AstrBot 提供商的模型，可在此填写。例如 gemini-3-pro-image-preview 或 OpenAI 兼容模型名。留空使用提供商默认模型",
         "default": ""
       },
+      "proxy": {
+        "description": "全局代理地址",
+        "type": "string",
+        "hint": "填写即启用代理，留空不使用。支持 http://host:port、https://host:port、socks5://host:port 格式。provider_overrides 中的代理优先于此设置",
+        "default": ""
+      },
       "vision_provider_id": {
         "description": "视觉行列检测提供商（可选）",
         "type": "string",
@@ -70,6 +76,12 @@
                 "type": "string",
                 "hint": "Google AI API 地址，留空使用默认值",
                 "default": ""
+              },
+              "proxy": {
+                "description": "代理地址",
+                "type": "string",
+                "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式。优先级高于全局代理和环境变量",
+                "default": ""
               }
             }
           },
@@ -99,6 +111,12 @@
                 "description": "API 端点地址",
                 "type": "string",
                 "hint": "OpenAI 兼容 API 地址",
+                "default": ""
+              },
+              "proxy": {
+                "description": "代理地址",
+                "type": "string",
+                "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式。优先级高于全局代理和环境变量",
                 "default": ""
               }
             }
@@ -130,6 +148,12 @@
                 "type": "string",
                 "hint": "Zai API 地址",
                 "default": ""
+              },
+              "proxy": {
+                "description": "代理地址",
+                "type": "string",
+                "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式。优先级高于全局代理和环境变量",
+                "default": ""
               }
             }
           },
@@ -159,6 +183,12 @@
                 "description": "API 端点地址",
                 "type": "string",
                 "hint": "grok2api API 地址",
+                "default": ""
+              },
+              "proxy": {
+                "description": "代理地址",
+                "type": "string",
+                "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式。优先级高于全局代理和环境变量",
                 "default": ""
               }
             }
@@ -190,6 +220,12 @@
                 "type": "string",
                 "hint": "火山引擎 Ark API 地址",
                 "default": "https://ark.cn-beijing.volces.com"
+              },
+              "proxy": {
+                "description": "代理地址",
+                "type": "string",
+                "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式。优先级高于全局代理和环境变量",
+                "default": ""
               },
               "default_size": {
                 "description": "默认尺寸",

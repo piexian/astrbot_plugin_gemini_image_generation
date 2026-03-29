@@ -1,3 +1,4 @@
 PyYAML
 opencv-python-headless
 numpy
+aiohttp-socks

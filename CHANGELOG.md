@@ -1,11 +1,6 @@
 # Changelog
-
-All notable changes to this project will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-### ⚠️ 配置迁移说明
+<details>
+<summary>⚠️ 配置迁移说明（v1.9.0）</summary>
 
 **v1.9.0 以后的配置文件格式不兼容旧版本**。升级时插件会自动迁移配置，但如果遇到配置模板显示错误（如字段类型不匹配、选项无法选择等），请按以下步骤处理：
 
@@ -20,6 +15,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 **主要变更**：
 - `limit_settings` 中的 `rate_limit_enabled`、`rate_limit_period_seconds`、`rate_limit_max_requests` 已迁移到 `rate_limit_rules`（template_list 格式）
 - `quick_mode_settings` 从 object 格式迁移到 template_list 格式
+
+</details>
+
+## [1.9.7] - 2026-03-30
+
+### Added
+
+- 新增代理（Proxy）支持，可在 `api_settings` 中配置全局代理，也可在各 provider override 中独立配置
+- 支持 HTTP、HTTPS、SOCKS5 代理格式（SOCKS5 需将 `aiohttp-socks` 列入依赖，插件会自动安装）
+- 代理优先级：provider override > 全局代理 > 环境变量（`HTTPS_PROXY` / `HTTP_PROXY`）
+- 代理模式下强制下载图片到本地后再发送，避免外部 URL 因代理无法直接访问
 
 ## [1.9.6] - 2026-03-07
 
