@@ -44,10 +44,8 @@
 - NapCat（目前仅适配 NapCat 平台）
 
 ### 依赖库
-插件自动安装（见 [requirements.txt](requirements.txt)）：
-- `opencv-python`：图像处理
-- `numpy`：数值计算
-- `Pillow`：图像操作
+
+自动安装（见 [requirements.txt](requirements.txt)）
 
 ### 安装方式
 
