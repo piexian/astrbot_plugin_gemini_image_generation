@@ -106,7 +106,7 @@ class ImageGenerator:
         """获取工具超时"""
         if self._get_tool_timeout_fn:
             return self._get_tool_timeout_fn(event)
-        return 60
+        return 120
 
     async def generate_image_core(
         self,

@@ -255,15 +255,15 @@ class GeminiImageGenerationPlugin(Star):
                 umo = event.unified_msg_origin
                 chat_config = self.context.get_config(umo=umo)
                 return chat_config.get("provider_settings", {}).get(
-                    "tool_call_timeout", 60
+                    "tool_call_timeout", 120
                 )
             default_config = self.context.get_config()
             return default_config.get("provider_settings", {}).get(
-                "tool_call_timeout", 60
+                "tool_call_timeout", 120
             )
         except Exception as e:
-            logger.warning(f"获取 tool_call_timeout 配置失败: {e}，使用默认值 60 秒")
-            return 60
+            logger.warning(f"获取 tool_call_timeout 配置失败: {e}，使用默认值 120 秒")
+            return 120
 
     def _ensure_api_client(self, *, quiet: bool = False) -> bool:
         """确保 API 客户端已初始化"""

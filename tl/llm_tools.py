@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import math
+import os
 from typing import TYPE_CHECKING, Any
 
+import mcp.types
 from pydantic import Field
 from pydantic.dataclasses import dataclass
 
@@ -19,7 +21,7 @@ from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import FunctionTool, ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
-from .tl_utils import format_error_message
+from .tl_utils import encode_file_to_base64, format_error_message
 
 if TYPE_CHECKING:
     from ..main import GeminiImageGenerationPlugin
@@ -61,6 +63,100 @@ def _build_param_info(
     if aspect_ratio:
         parts.append(f"比例 {aspect_ratio}")
     return f"（{', '.join(parts)}）" if parts else ""
+
+
+_MIME_TYPE_MAP = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".heic": "image/heic",
+    ".heif": "image/heif",
+}
+
+
+def _image_to_base64_content(image_ref: str) -> mcp.types.ImageContent | None:
+    """将图片引用（本地路径、data URI 或 base64 字符串）转换为 ImageContent。"""
+    if not image_ref:
+        return None
+
+    # data URI
+    if image_ref.startswith("data:image/") and ";base64," in image_ref:
+        try:
+            header, b64_data = image_ref.split(";base64,", 1)
+            mime_type = header.replace("data:", "")
+            return mcp.types.ImageContent(type="image", data=b64_data, mimeType=mime_type)
+        except Exception:
+            return None
+
+    # 本地文件路径
+    fs_candidate = image_ref
+    if image_ref.startswith("file:///"):
+        fs_candidate = image_ref[8:]
+
+    if os.path.exists(fs_candidate):
+        try:
+            ext = os.path.splitext(fs_candidate)[1].lower()
+            mime_type = _MIME_TYPE_MAP.get(ext, "image/png")
+            b64_data = encode_file_to_base64(fs_candidate)
+            return mcp.types.ImageContent(type="image", data=b64_data, mimeType=mime_type)
+        except Exception as e:
+            logger.warning(f"[CallToolResult] 编码图片失败: {e}")
+            return None
+
+    # HTTP URL 等无法直接转换的引用
+    return None
+
+
+def _build_call_tool_result(
+    image_urls: list[str] | None,
+    image_paths: list[str] | None,
+    text_content: str | None,
+    thought_signature: str | None,
+    message_sender: Any,
+) -> mcp.types.CallToolResult:
+    """将图像生成结果转换为 AstrBot 官方 CallToolResult 格式（含 ImageContent）。"""
+    contents: list[mcp.types.TextContent | mcp.types.ImageContent] = []
+
+    # 合并去重图片（路径 + 文件哈希去重）
+    available_images = message_sender.merge_available_images(image_urls, image_paths)
+
+    # 处理图片 → ImageContent，并用 data 哈希做最终去重
+    import hashlib
+
+    seen_data_hashes: set[str] = set()
+    for img in available_images:
+        img_content = _image_to_base64_content(img)
+        if img_content:
+            data_hash = hashlib.sha256(img_content.data.encode("ascii")).hexdigest()
+            if data_hash in seen_data_hashes:
+                logger.debug(f"[CallToolResult 去重] 跳过内容相同的图片: {img[:80]}")
+                continue
+            seen_data_hashes.add(data_hash)
+            contents.append(img_content)
+
+    # 处理文本
+    prepared_text = message_sender.prepare_text_content(text_content, available_images)
+    text_parts: list[str] = []
+    if prepared_text:
+        text_parts.append(prepared_text)
+    if thought_signature:
+        text_parts.append(thought_signature)
+    if text_parts:
+        contents.append(
+            mcp.types.TextContent(type="text", text="\n".join(text_parts))
+        )
+
+    if not contents:
+        contents.append(
+            mcp.types.TextContent(
+                type="text",
+                text="图片已生成但未能获取到有效的图片数据。",
+            )
+        )
+
+    return mcp.types.CallToolResult(content=contents)
 
 
 def _build_background_start_notice(
@@ -129,6 +225,7 @@ def _create_generation_task(
     avatar_reference: list[str],
     override_resolution: str | None = None,
     override_aspect_ratio: str | None = None,
+    is_tool_call: bool = False,
 ) -> asyncio.Task:
     return asyncio.create_task(
         plugin._generate_image_core_internal(
@@ -138,7 +235,7 @@ def _create_generation_task(
             avatar_reference=avatar_reference,
             override_resolution=override_resolution,
             override_aspect_ratio=override_aspect_ratio,
-            is_tool_call=True,
+            is_tool_call=is_tool_call,
         )
     )
 
@@ -534,16 +631,30 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                 asyncio.shield(generation_task),
                 timeout=foreground_wait_seconds,
             )
-            await _dispatch_generation_result(
-                plugin=plugin,
-                event=event,
-                success=success,
-                result_data=result_data,
-                scene="前台等待",
-                fallback_text="🎨 图片已生成，请查看",
-                force_text_response=True,
-            )
-            return None
+            if success and isinstance(result_data, tuple):
+                image_urls, image_paths, text_content, thought_signature = result_data
+                img_count = len(
+                    plugin.message_sender.merge_available_images(
+                        image_urls, image_paths
+                    )
+                )
+                logger.info(
+                    f"[前台等待] 生成完成，通过 CallToolResult 返回 {img_count} 张图片"
+                )
+                return _build_call_tool_result(
+                    image_urls=image_urls,
+                    image_paths=image_paths,
+                    text_content=text_content,
+                    thought_signature=thought_signature,
+                    message_sender=plugin.message_sender,
+                )
+            else:
+                error_msg = (
+                    result_data
+                    if isinstance(result_data, str)
+                    else "❌ 图像生成失败"
+                )
+                return error_msg
         except asyncio.TimeoutError:
             cleanup_now = False
             logger.debug("[前台等待] 等待超时，切换为后台继续生成。")

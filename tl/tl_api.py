@@ -1201,22 +1201,23 @@ class GeminiAPIClient:
                     if image_path:
                         image_paths.append(image_path)
 
-            # content 中查找内联 data URI（文本里）
-            extracted_urls: list[str] = []
-            extracted_paths: list[str] = []
+            # content 中查找内联 data URI（文本里）—— 仅在结构化数据中未找到图片时作为回退
+            if not (image_urls or image_paths):
+                extracted_urls2: list[str] = []
+                extracted_paths2: list[str] = []
 
-            if isinstance(content, str):
-                extracted_urls, extracted_paths = await self._extract_from_content(
-                    content
-                )
-            elif text_content:
-                extracted_urls, extracted_paths = await self._extract_from_content(
-                    text_content
-                )
+                if isinstance(content, str):
+                    extracted_urls2, extracted_paths2 = (
+                        await self._extract_from_content(content)
+                    )
+                elif text_content:
+                    extracted_urls2, extracted_paths2 = (
+                        await self._extract_from_content(text_content)
+                    )
 
-            if extracted_urls or extracted_paths:
-                image_urls.extend(extracted_urls)
-                image_paths.extend(extracted_paths)
+                if extracted_urls2 or extracted_paths2:
+                    image_urls.extend(extracted_urls2)
+                    image_paths.extend(extracted_paths2)
 
             # 额外在汇总文本中搜索 http(s) 图片链接，兼容只返回文本的情况
             if text_content:
@@ -1232,25 +1233,26 @@ class GeminiAPIClient:
                     if url not in image_urls:
                         image_urls.append(url)
 
-                # 松散提取 data:image 片段，避免因 Markdown/换行导致遗漏
-                loose_matches = re.finditer(
-                    r"data:image/([a-zA-Z0-9.+-]+);base64,([-A-Za-z0-9+/=_\\s]+)",
-                    text_content,
-                    flags=re.IGNORECASE,
-                )
-                for m in loose_matches:
-                    fmt = m.group(1)
-                    b64_raw = m.group(2)
-                    b64_clean = re.sub(r"\\s+", "", b64_raw)
-                    image_path = await save_base64_image(b64_clean, fmt.lower())
-                    if image_path:
-                        image_urls.append(image_path)
-                        image_paths.append(image_path)
-                        logger.debug(
-                            "[openai] 松散提取 data URI 成功: fmt=%s len=%s",
-                            fmt,
-                            len(b64_clean),
-                        )
+                # 松散提取 data:image 片段 —— 仅在尚无图片时作为最终回退
+                if not (image_urls or image_paths):
+                    loose_matches = re.finditer(
+                        r"data:image/([a-zA-Z0-9.+-]+);base64,([-A-Za-z0-9+/=_\\s]+)",
+                        text_content,
+                        flags=re.IGNORECASE,
+                    )
+                    for m in loose_matches:
+                        fmt = m.group(1)
+                        b64_raw = m.group(2)
+                        b64_clean = re.sub(r"\\s+", "", b64_raw)
+                        image_path = await save_base64_image(b64_clean, fmt.lower())
+                        if image_path:
+                            image_urls.append(image_path)
+                            image_paths.append(image_path)
+                            logger.debug(
+                                "[openai] 松散提取 data URI 成功: fmt=%s len=%s",
+                                fmt,
+                                len(b64_clean),
+                            )
 
         else:
             logger.debug("[openai] 响应缺少可用的 message 字段，尝试 data/b64 解析")

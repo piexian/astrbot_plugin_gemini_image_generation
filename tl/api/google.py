@@ -409,7 +409,8 @@ class GoogleProvider:
 
         logger.debug(f"共找到 {len(image_paths)} 张图片")
 
-        if text_chunks:
+        # 仅在结构化 inlineData 中未找到图片时，从文本中回退提取图片
+        if not (image_urls or image_paths) and text_chunks:
             extracted_urls: list[str] = []
             extracted_paths: list[str] = []
             for chunk in text_chunks:
