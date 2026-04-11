@@ -14,7 +14,7 @@
       "api_type": {
         "description": "API 类型（必选）",
         "type": "string",
-        "hint": "必须选择 API 类型（google/openai/openai_images/zai/grok2api/doubao）。 不同提供商支持的类型不同，请参考提供商说明。openai_images 专门调用 /v1/images/generations 端点",
+        "hint": "必须选择 API 类型（google/openai/zai/grok2api/doubao）。 不同提供商支持的类型不同，请参考提供商说明",
         "default": "openai",
         "options": [
           "google",
