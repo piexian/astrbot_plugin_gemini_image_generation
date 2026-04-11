@@ -187,7 +187,7 @@ class DoubaoProvider:
             payload.get("size"),
             bool(payload.get("image")),
             is_retry,
-            {k: v for k, v in payload.items() if k != "image"},  
+            {k: v for k, v in payload.items() if k != "image"},
         )
         return ProviderRequest(url=url, headers=headers, payload=payload)
 

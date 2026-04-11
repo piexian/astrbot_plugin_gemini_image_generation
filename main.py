@@ -397,7 +397,8 @@ class GeminiImageGenerationPlugin(Star):
             # 代理优先级：provider_overrides > api_settings 全局 > 环境变量
             proxy_from_override = (
                 (override_settings.get("proxy") or "").strip()
-                if override_settings else ""
+                if override_settings
+                else ""
             )
             proxy_from_global = getattr(self.cfg, "proxy", None) or ""
 
