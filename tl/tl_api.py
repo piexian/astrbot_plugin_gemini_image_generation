@@ -20,7 +20,7 @@ import aiohttp
 
 from astrbot.api import logger
 
-from .api import get_api_provider, is_doubao_api_type
+from .api import get_api_provider, is_doubao_api_type, normalize_api_type
 from .api_types import APIError, ApiRequestConfig
 
 try:
@@ -903,6 +903,19 @@ class GeminiAPIClient:
                             api_base,
                             response.status,
                             is_retry=is_retry,
+                        )
+                    # openai_images 使用 provider 自身的解析方法
+                    if normalize_api_type(api_type) in {
+                        "openai_images",
+                        "openai_images_api",
+                    }:
+                        provider = get_api_provider(api_type)
+                        return await provider.parse_response(
+                            client=self,
+                            response_data=response_data,
+                            session=session,
+                            api_base=api_base,
+                            http_status=response.status,
                         )
                     return await self._parse_openai_response(
                         response_data, session, api_base

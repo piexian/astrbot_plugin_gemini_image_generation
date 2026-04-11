@@ -163,6 +163,22 @@ class OpenAIImagesProvider:
 
         # ---------- 解析图片数据 ----------
         if not response_data.get("data"):
+            # 优先提取 API 返回的错误信息
+            error_obj = response_data.get("error")
+            if error_obj:
+                error_msg = (
+                    error_obj.get("message", "未知错误")
+                    if isinstance(error_obj, dict)
+                    else str(error_obj)
+                )
+                logger.warning(f"[openai_images] API 返回错误: {error_msg}")
+                raise APIError(
+                    f"图像生成失败: {error_msg}",
+                    http_status,
+                    "api_error",
+                    error_obj.get("code") if isinstance(error_obj, dict) else None,
+                    retryable=False,
+                )
             logger.warning(f"[openai_images] 响应无 data 字段: {response_data}")
             raise APIError(
                 "API 响应格式不正确，缺少 data 字段",
@@ -235,7 +251,6 @@ class OpenAIImagesProvider:
         payload: dict[str, Any] = {
             "model": model,
             "prompt": config.prompt,
-            "n": 1,
         }
 
         # ---- size ----
@@ -258,29 +273,26 @@ class OpenAIImagesProvider:
         if style:
             payload["style"] = style
 
-        # ---- background (GPT image only) ----
+        # ---- GPT image 模型专属参数 ----
+        is_gpt = _is_gpt_image_model(model)
+
         background = str(settings.get("background") or "").strip()
-        if background:
+        if background and is_gpt:
             payload["background"] = background
 
-        # ---- output_format (GPT image only) ----
         output_format = str(settings.get("output_format") or "").strip()
-        if output_format:
+        if output_format and is_gpt:
             payload["output_format"] = output_format
 
-        # ---- output_compression (GPT image + jpeg/webp) ----
-        output_compression = settings.get("output_compression")
-        if output_compression is not None:
-            try:
-                payload["output_compression"] = max(
-                    0, min(100, int(output_compression))
-                )
-            except (TypeError, ValueError):
-                pass
+        try:
+            output_compression = int(settings.get("output_compression", 0))
+        except (TypeError, ValueError):
+            output_compression = 0
+        if output_compression > 0 and is_gpt and output_format in {"jpeg", "webp"}:
+            payload["output_compression"] = min(output_compression, 100)
 
-        # ---- moderation (GPT image only) ----
         moderation = str(settings.get("moderation") or "").strip()
-        if moderation:
+        if moderation and is_gpt:
             payload["moderation"] = moderation
 
         # ---- seed ----
@@ -356,9 +368,6 @@ class OpenAIImagesProvider:
         # ---- model ----
         form.add_field("model", model)
 
-        # ---- n ----
-        form.add_field("n", "1")
-
         # ---- size ----
         if config.resolution:
             size_map = _get_size_mapping(model)
@@ -405,7 +414,7 @@ class OpenAIImagesProvider:
                 s = parts[1]
 
         try:
-            return base64.b64decode(s)
+            return base64.b64decode(s, validate=True)
         except Exception:
             logger.debug(f"[openai_images] 无法 base64 解码图片输入 (len={len(s)})")
             return None

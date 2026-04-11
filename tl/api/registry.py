@@ -62,7 +62,7 @@ def get_api_provider(api_type: str | None) -> ApiProvider:
     - `grok2api` -> Grok2ApiProvider
     - `zai` -> ZaiProvider
     - `doubao/volcengine/ark/seedream` -> DoubaoProvider
-    - `openai_images` -> OpenAIImagesProvider (/v1/images/generations)
+    - `openai_images` -> OpenAIImagesProvider (/v1/images/generations + /v1/images/edits)
     - 其他 -> OpenAICompatProvider（用于各类 OpenAI 兼容服务）
     """
     normalized = normalize_api_type(api_type)

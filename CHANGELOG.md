@@ -18,6 +18,20 @@
 
 </details>
 
+## [1.9.8] - 2026-04-11
+
+### Added
+
+- 新增 `openai_images` API 类型，支持 OpenAI `/v1/images/generations`（文生图）和 `/v1/images/edits`（图像编辑）专用端点
+- 支持 GPT image 系列模型（gpt-image-1 / gpt-image-1-mini / gpt-image-1.5）和 DALL·E 系列的完整参数配置
+- 新增 `output_compression`（输出压缩率，滑动条 0-100）和 `moderation`（审核模式）配置项
+- 新增 `generations_only` 配置项，可强制只使用文生图端点
+- 支持 multipart/form-data 请求，用于图像编辑端点的二进制图片上传
+- GPT image 模型支持多张参考图同时上传
+- 解析并记录 API 返回的 Token 用量信息（input/output/total）
+
+
+
 ## [1.9.7] - 2026-03-30
 
 ### Added

@@ -257,10 +257,24 @@
                 "default": "",
                 "options": ["", "png", "jpeg", "webp"]
               },
+              "output_compression": {
+                "description": "输出压缩率（仅 GPT image 模型）",
+                "type": "int",
+                "hint": "仅在 output_format 为 jpeg 或 webp 时有效。0 表示不传（使用服务端默认值），1-100 为自定义压缩率",
+                "default": 0,
+                "slider": {"min": 0, "max": 100, "step": 1}
+              },
+              "moderation": {
+                "description": "审核模式（仅 GPT image 模型）",
+                "type": "string",
+                "hint": "审核策略配置，如 low。仅 GPT image 模型支持，留空不传",
+                "default": "",
+                "options": ["", "low"]
+              },
               "generations_only": {
                 "description": "仅使用文生图",
                 "type": "bool",
-                "hint": "edits 接口的兼容端点",
+                "hint": "开启后丢去所有参考图仅输入文本提示词进行生成。",
                 "default": false
               },
               "proxy": {
