@@ -19,6 +19,7 @@
         "options": [
           "google",
           "openai",
+          "openai_images",
           "zai",
           "grok2api",
           "doubao"
@@ -184,6 +185,97 @@
                 "type": "string",
                 "hint": "grok2api API 地址",
                 "default": ""
+              },
+              "proxy": {
+                "description": "代理地址",
+                "type": "string",
+                "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式。优先级高于全局代理和环境变量",
+                "default": ""
+              }
+            }
+          },
+          "openai_images": {
+            "description": "OpenAI Images API 覆盖配置",
+            "hint": "配置 OpenAI /v1/images/generations 和 /v1/images/edits 端点的密钥和参数",
+            "items": {
+              "api_keys": {
+                "description": "API Key 列表",
+                "type": "list",
+                "hint": "多个 API Key，支持轮换使用",
+                "default": []
+              },
+              "daily_limit_per_key": {
+                "description": "每个 Key 每日限额",
+                "type": "int",
+                "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
+                "default": 0
+              },
+              "model": {
+                "description": "模型名称",
+                "type": "string",
+                "hint": "OpenAI Images API 模型名称",
+                "default": "dall-e-3"
+              },
+              "api_base": {
+                "description": "API 端点地址",
+                "type": "string",
+                "hint": "OpenAI Images API 地址，留空使用默认 https://api.openai.com",
+                "default": ""
+              },
+              "quality": {
+                "description": "图像质量",
+                "type": "string",
+                "hint": "GPT image 模型: auto/high/medium/low；dall-e-3: hd/standard；dall-e-2: standard。留空使用默认值",
+                "default": "",
+                "options": ["", "auto", "high", "medium", "low", "hd", "standard"]
+              },
+              "response_format": {
+                "description": "响应格式",
+                "type": "string",
+                "hint": "url 返回临时链接（60分钟有效），b64_json 返回 base64 编码。",
+                "default": "b64_json",
+                "options": ["b64_json", "url"]
+              },
+              "style": {
+                "description": "图像风格（仅 dall-e-3）",
+                "type": "string",
+                "hint": "vivid 生成超现实戏剧性图像，natural 生成更自然的图像。仅 dall-e-3 支持，留空不传",
+                "default": "",
+                "options": ["", "vivid", "natural"]
+              },
+              "background": {
+                "description": "背景透明度（仅 GPT image 模型）",
+                "type": "string",
+                "hint": "transparent 透明背景，opaque 不透明，auto 自动。仅 GPT image 模型支持，留空不传",
+                "default": "",
+                "options": ["", "auto", "transparent", "opaque"]
+              },
+              "output_format": {
+                "description": "输出图像格式（仅 GPT image 模型）",
+                "type": "string",
+                "hint": "png 支持透明背景，jpeg 文件更小，webp 兼顾两者。仅 GPT image 模型支持，留空不传",
+                "default": "",
+                "options": ["", "png", "jpeg", "webp"]
+              },
+              "output_compression": {
+                "description": "输出压缩率（仅 GPT image 模型）",
+                "type": "int",
+                "hint": "仅在 output_format 为 jpeg 或 webp 时有效。0 表示不传（使用服务端默认值），1-100 为自定义压缩率",
+                "default": 0,
+                "slider": {"min": 0, "max": 100, "step": 1}
+              },
+              "moderation": {
+                "description": "审核模式（仅 GPT image 模型）",
+                "type": "string",
+                "hint": "审核策略配置，如 low。仅 GPT image 模型支持，留空不传",
+                "default": "",
+                "options": ["", "low"]
+              },
+              "generations_only": {
+                "description": "仅使用文生图",
+                "type": "bool",
+                "hint": "开启后丢去所有参考图仅输入文本提示词进行生成。",
+                "default": false
               },
               "proxy": {
                 "description": "代理地址",

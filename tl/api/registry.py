@@ -12,12 +12,14 @@ from .doubao import DoubaoProvider
 from .google import GoogleProvider
 from .grok2api import Grok2ApiProvider
 from .openai_compat import OpenAICompatProvider
+from .openai_images import OpenAIImagesProvider
 from .zai import ZaiProvider
 
 _DOUBAO: Final[DoubaoProvider] = DoubaoProvider()
 _GOOGLE: Final[GoogleProvider] = GoogleProvider()
 _GROK2API: Final[Grok2ApiProvider] = Grok2ApiProvider()
 _OPENAI: Final[OpenAICompatProvider] = OpenAICompatProvider()
+_OPENAI_IMAGES: Final[OpenAIImagesProvider] = OpenAIImagesProvider()
 _ZAI: Final[ZaiProvider] = ZaiProvider()
 
 # Doubao/Volcengine Ark 相关的 API 类型别名
@@ -60,6 +62,7 @@ def get_api_provider(api_type: str | None) -> ApiProvider:
     - `grok2api` -> Grok2ApiProvider
     - `zai` -> ZaiProvider
     - `doubao/volcengine/ark/seedream` -> DoubaoProvider
+    - `openai_images` -> OpenAIImagesProvider (/v1/images/generations + /v1/images/edits)
     - 其他 -> OpenAICompatProvider（用于各类 OpenAI 兼容服务）
     """
     normalized = normalize_api_type(api_type)
@@ -79,5 +82,9 @@ def get_api_provider(api_type: str | None) -> ApiProvider:
     # Google/Gemini 官方
     if normalized in {"google", "gemini", "googlegenai", "google_genai"}:
         return _GOOGLE
+
+    # OpenAI Images API (/v1/images/generations)
+    if normalized in {"openai_images", "openai_images_api"}:
+        return _OPENAI_IMAGES
 
     return _OPENAI

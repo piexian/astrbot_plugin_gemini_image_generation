@@ -371,9 +371,11 @@ class GeminiImageGenerationPlugin(Star):
             if api_base:
                 self.cfg.api_base = api_base
 
-            # doubao 特殊：绑定完整 settings 供适配器使用
+            # 绑定完整 settings 供适配器使用
             if api_type_norm == "doubao":
                 self.cfg.doubao_settings = override_settings
+            elif api_type_norm == "openai_images":
+                self.cfg.openai_images_settings = override_settings
 
             # 日志显示覆盖来源
             logger.info(
@@ -382,7 +384,7 @@ class GeminiImageGenerationPlugin(Star):
 
         if self.cfg.api_keys:
             self.api_client = get_api_client(self.cfg.api_keys)
-            # 绑定 doubao_settings 到 API client，供 DoubaoProvider 读取
+            # 绑定 provider settings 到 API client，供各 Provider 读取
             if api_type_norm == "doubao":
                 try:
                     self.api_client.doubao_settings = (
@@ -390,6 +392,13 @@ class GeminiImageGenerationPlugin(Star):
                     )
                 except Exception as e:
                     logger.debug(f"绑定 doubao_settings 到 API client 失败: {e}")
+            elif api_type_norm == "openai_images":
+                try:
+                    self.api_client.openai_images_settings = (
+                        getattr(self.cfg, "openai_images_settings", None) or {}
+                    )
+                except Exception as e:
+                    logger.debug(f"绑定 openai_images_settings 到 API client 失败: {e}")
             # 绑定 KeyManager 到 API client（支持多 Key 轮换和每日限额）
             if hasattr(self, "key_manager") and self.key_manager:
                 self.api_client.set_key_manager(self.key_manager)
@@ -397,7 +406,8 @@ class GeminiImageGenerationPlugin(Star):
             # 代理优先级：provider_overrides > api_settings 全局 > 环境变量
             proxy_from_override = (
                 (override_settings.get("proxy") or "").strip()
-                if override_settings else ""
+                if override_settings
+                else ""
             )
             proxy_from_global = getattr(self.cfg, "proxy", None) or ""
 

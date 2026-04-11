@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/Version-v1.9.7-blue)
+![Version](https://img.shields.io/badge/Version-v1.9.8-blue)
 ![License](https://img.shields.io/badge/License-AGPL--3.0-orange)
 
 **🎨 强大的 Gemini 图像生成插件，支持智能头像参考和智能表情包切分**
@@ -19,7 +19,7 @@
 - **智能头像**: 自动获取用户头像和@对象头像作为参考
 - **表情包切分**: SmartMemeSplitter v4 算法自动切割表情包网格
 - **LLM 工具**: 支持自然语言触发生图，优先前台短等待，超时自动转后台
-- **多 API 支持**: Google 官方、OpenAI 兼容、Zai、grok2api、豆包（Doubao）
+- **多 API 支持**: Google 官方、OpenAI 兼容、OpenAI Images、Zai、grok2api、豆包（Doubao）
 - **多格式支持**: PNG、JPEG、WEBP、HEIC/HEIF、GIF
 
 ### 🛡️ 限制/限流
@@ -62,7 +62,7 @@
 | 配置项 | 说明 |
 |--------|------|
 | `api_settings.provider_id` | 生图模型提供商（从 AstrBot 提供商列表选择；doubao 无需填写） |
-| `api_settings.api_type` | API 类型：`google`/`openai`/`zai`/`grok2api`/`doubao` |
+| `api_settings.api_type` | API 类型：`google`/`openai`/`openai_images`/`zai`/`grok2api`/`doubao` |
 
 ### 配置项详解
 
@@ -145,6 +145,21 @@
 | `optimize_prompt_mode` | `standard` | 提示词优化模式（standard/fast） |
 | `sequential_image_generation` | `disabled` | 组图生成模式（disabled/auto），[官方文档](https://www.volcengine.com/docs/82379/1824121?lang=zh#fc9f85e4) |
 | `sequential_max_images` | `4` | 组图最大数量（2-15） |
+
+**openai_images_settings**（OpenAI Images API 专用配置）
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `api_keys` | `[]` | API Key 列表，支持多 Key 轮换 |
+| `model` | `dall-e-3` | 模型名称（dall-e-2/dall-e-3/gpt-image-1 等） |
+| `api_base` | - | API 端点地址，留空使用 OpenAI 官方 |
+| `quality` | - | 图像质量（GPT image: auto/high/medium/low；dall-e-3: hd/standard） |
+| `response_format` | `b64_json` | 响应格式（b64_json/url） |
+| `style` | - | 图像风格，仅 dall-e-3（vivid/natural） |
+| `background` | - | 背景透明度，仅 GPT image（auto/transparent/opaque） |
+| `output_format` | - | 输出格式，仅 GPT image（png/jpeg/webp） |
+| `output_compression` | `0` | 输出压缩率滑动条 0-100，0 表示不传（使用服务端默认），仅 GPT image + jpeg/webp |
+| `moderation` | - | 审核模式，仅 GPT image（如 low） |
+| `generations_only` | `false` | 开启后强制只用文生图端点，不走 /v1/images/edits |
 
 ## 🎯 使用指南
 

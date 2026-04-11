@@ -20,7 +20,7 @@ import aiohttp
 
 from astrbot.api import logger
 
-from .api import get_api_provider, is_doubao_api_type
+from .api import get_api_provider, is_doubao_api_type, normalize_api_type
 from .api_types import APIError, ApiRequestConfig
 
 try:
@@ -826,24 +826,38 @@ class GeminiAPIClient:
         api_base: str = None,
     ) -> tuple[list[str], list[str], str | None, str | None]:
         """执行实际的HTTP请求"""
+        # 检测 multipart 标记（由 openai_images edits 等需要 FormData 的 provider 设置）
+        is_multipart = payload.get("_multipart", False)
+        form_data = payload.get("_form_data") if is_multipart else None
+
         # 移除内部标记字段，不发送给 API
         send_payload = {k: v for k, v in payload.items() if not k.startswith("_")}
 
         logger.debug(
-            "发送请求: url=%s api_type=%s model=%s payload_keys=%s",
+            "发送请求: url=%s api_type=%s model=%s payload_keys=%s multipart=%s",
             url[:100],
             api_type,
             model,
             list(send_payload.keys()),
+            is_multipart,
         )
 
-        async with session.post(
-            url,
-            json=send_payload,
-            headers=headers,
-            proxy=self._http_proxy,
-            timeout=timeout,
-        ) as response:
+        # multipart 请求需移除 Content-Type（aiohttp 自动设置 boundary）
+        send_headers = dict(headers)
+        if is_multipart and form_data is not None:
+            send_headers.pop("Content-Type", None)
+
+        post_kwargs: dict[str, Any] = {
+            "headers": send_headers,
+            "proxy": self._http_proxy,
+            "timeout": timeout,
+        }
+        if is_multipart and form_data is not None:
+            post_kwargs["data"] = form_data
+        else:
+            post_kwargs["json"] = send_payload
+
+        async with session.post(url, **post_kwargs) as response:
             logger.debug(f"响应状态: {response.status}")
             response_text = await response.text()
             content_type = response.headers.get("Content-Type", "") or ""
@@ -889,6 +903,19 @@ class GeminiAPIClient:
                             api_base,
                             response.status,
                             is_retry=is_retry,
+                        )
+                    # openai_images 使用 provider 自身的解析方法
+                    if normalize_api_type(api_type) in {
+                        "openai_images",
+                        "openai_images_api",
+                    }:
+                        provider = get_api_provider(api_type)
+                        return await provider.parse_response(
+                            client=self,
+                            response_data=response_data,
+                            session=session,
+                            api_base=api_base,
+                            http_status=response.status,
                         )
                     return await self._parse_openai_response(
                         response_data, session, api_base
