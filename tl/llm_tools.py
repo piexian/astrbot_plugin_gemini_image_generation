@@ -109,23 +109,32 @@ def _image_to_base64_content(image_ref: str) -> mcp.types.ImageContent | None:
     return None
 
 
-def _build_call_tool_result(
+async def _build_call_tool_result(
     image_urls: list[str] | None,
     image_paths: list[str] | None,
     text_content: str | None,
     thought_signature: str | None,
     message_sender: Any,
+    api_client: Any | None = None,
 ) -> mcp.types.CallToolResult:
-    """将图像生成结果转换为 AstrBot 官方 CallToolResult 格式（含 ImageContent）。"""
+    """将图像生成结果转换为 AstrBot 官方 CallToolResult 格式（含 ImageContent）。
+
+    当 api_client 配置了代理时，远程 URL 图片会通过代理下载后内联返回，
+    避免 AstrBot Core 无法访问需要代理的图片导致缓存失败。
+    """
     contents: list[mcp.types.TextContent | mcp.types.ImageContent] = []
 
-    # 合并去重图片（路径 + 文件哈希去重）
+    # 合并去重图片
     available_images = message_sender.merge_available_images(image_urls, image_paths)
+
+    # 判断是否需要走代理下载远程 URL
+    has_proxy = bool(api_client and getattr(api_client, "proxy", None))
 
     # 处理图片 → ImageContent，并用 data 哈希做最终去重
     import hashlib
 
     seen_data_hashes: set[str] = set()
+    url_only_images: list[str] = []
     for img in available_images:
         img_content = _image_to_base64_content(img)
         if img_content:
@@ -135,6 +144,63 @@ def _build_call_tool_result(
                 continue
             seen_data_hashes.add(data_hash)
             contents.append(img_content)
+        elif img.startswith(("http://", "https://")):
+            url_only_images.append(img)
+
+    # 对远程 URL：如果配有代理则通过代理下载后内联，否则文本告知模型
+    remaining_urls: list[str] = []
+    if url_only_images and has_proxy:
+        logger.debug(
+            f"[CallToolResult] 检测到代理，将下载 {len(url_only_images)} 张远程图片"
+        )
+        try:
+            session = await api_client._get_session()
+            for url in url_only_images:
+                try:
+                    _, local_path = await api_client._download_image(
+                        url, session, use_cache=False
+                    )
+                    if local_path:
+                        img_content = _image_to_base64_content(local_path)
+                        if img_content:
+                            data_hash = hashlib.sha256(
+                                img_content.data.encode("ascii")
+                            ).hexdigest()
+                            if data_hash not in seen_data_hashes:
+                                seen_data_hashes.add(data_hash)
+                                contents.append(img_content)
+                                continue
+                            else:
+                                logger.debug(
+                                    f"[CallToolResult 去重] 下载后内容相同: {url[:80]}"
+                                )
+                                continue
+                except Exception as e:
+                    logger.warning(f"[CallToolResult] 代理下载图片失败: {url[:80]} {e}")
+                # 下载失败的保留为 URL
+                remaining_urls.append(url)
+        except Exception as e:
+            logger.warning(f"[CallToolResult] 获取下载会话失败: {e}")
+            remaining_urls = url_only_images
+    else:
+        remaining_urls = url_only_images
+
+    if remaining_urls:
+        url_lines = [
+            f"Image URL ({i + 1}): {url}"
+            for i, url in enumerate(remaining_urls)
+        ]
+        contents.append(
+            mcp.types.TextContent(
+                type="text",
+                text=(
+                    "The following images are available as remote URLs only.\n"
+                    + "\n".join(url_lines)
+                    + "\nUse send_message_to_user with type='image' and "
+                    "url=<image_url> to send them to the user."
+                ),
+            )
+        )
 
     # 处理文本
     prepared_text = message_sender.prepare_text_content(text_content, available_images)
@@ -259,6 +325,39 @@ async def _dispatch_generation_result(
 ) -> None:
     if success and isinstance(result_data, tuple):
         image_urls, image_paths, text_content, thought_signature = result_data
+
+        # 代理全链路：后台发送前，将需要代理的远程 URL 下载为本地文件
+        # 避免 NapCat 等平台无法访问代理依赖的 URL
+        api_client = getattr(plugin, "api_client", None)
+        has_proxy = bool(api_client and getattr(api_client, "proxy", None))
+        if has_proxy and image_urls:
+            downloaded_paths: list[str] = []
+            remaining_urls: list[str] = []
+            try:
+                session = await api_client._get_session()
+                for url in image_urls:
+                    if not url.startswith(("http://", "https://")):
+                        remaining_urls.append(url)
+                        continue
+                    try:
+                        _, local_path = await api_client._download_image(
+                            url, session, use_cache=False
+                        )
+                        if local_path:
+                            downloaded_paths.append(local_path)
+                        else:
+                            remaining_urls.append(url)
+                    except Exception as e:
+                        logger.warning(
+                            f"[{scene}] 代理下载图片失败，保留原 URL: {url[:80]} {e}"
+                        )
+                        remaining_urls.append(url)
+            except Exception as e:
+                logger.warning(f"[{scene}] 获取代理下载会话失败: {e}")
+                remaining_urls = list(image_urls)
+            image_urls = remaining_urls
+            image_paths = list(image_paths or []) + downloaded_paths
+
         available_images = plugin.message_sender.merge_available_images(
             image_urls,
             image_paths,
@@ -627,10 +726,13 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                 )
 
             logger.debug(f"[前台等待] 最多等待 {foreground_wait_seconds} 秒。")
-            success, result_data = await asyncio.wait_for(
-                asyncio.shield(generation_task),
-                timeout=foreground_wait_seconds,
-            )
+            try:
+                success, result_data = await asyncio.wait_for(
+                    asyncio.shield(generation_task),
+                    timeout=foreground_wait_seconds,
+                )
+            except asyncio.TimeoutError:
+                raise  # 让外层 except asyncio.TimeoutError 处理
             if success and isinstance(result_data, tuple):
                 image_urls, image_paths, text_content, thought_signature = result_data
                 img_count = len(
@@ -641,13 +743,41 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                 logger.info(
                     f"[前台等待] 生成完成，通过 CallToolResult 返回 {img_count} 张图片"
                 )
-                return _build_call_tool_result(
-                    image_urls=image_urls,
-                    image_paths=image_paths,
-                    text_content=text_content,
-                    thought_signature=thought_signature,
-                    message_sender=plugin.message_sender,
-                )
+                # 构建 CallToolResult（含代理下载），使用剩余前台预算做超时保护
+                try:
+                    result = await asyncio.wait_for(
+                        _build_call_tool_result(
+                            image_urls=image_urls,
+                            image_paths=image_paths,
+                            text_content=text_content,
+                            thought_signature=thought_signature,
+                            message_sender=plugin.message_sender,
+                            api_client=plugin.api_client,
+                        ),
+                        timeout=30,  # 下载最多给 30 秒
+                    )
+                    return result
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "[前台等待] 构建 CallToolResult 超时（代理下载慢），转后台直发"
+                    )
+                    # 生成已完成，创建一个立即完成的 task 包装结果，走后台直发
+                    cleanup_now = False
+
+                    async def _already_done():
+                        return (True, result_data)
+
+                    done_task = asyncio.create_task(_already_done())
+                    _schedule_generation_delivery(
+                        plugin=plugin,
+                        event=event,
+                        generation_task=done_task,
+                        scene="后台任务(代理下载超时回退)",
+                    )
+                    return (
+                        "[图片生成已完成，正在通过代理下载并发送]\n"
+                        "由于代理下载耗时较长，已转为后台发送，完成后会自动发给用户。"
+                    )
             else:
                 error_msg = (
                     result_data

@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/Version-v1.9.8-blue)
+![Version](https://img.shields.io/badge/Version-v1.9.9-blue)
 ![License](https://img.shields.io/badge/License-AGPL--3.0-orange)
 
 **🎨 强大的 Gemini 图像生成插件，支持智能头像参考和智能表情包切分**
@@ -18,7 +18,7 @@
 - **快速预设**: 头像/海报/壁纸/卡片/手机/手办化/表情包一键生成
 - **智能头像**: 自动获取用户头像和@对象头像作为参考
 - **表情包切分**: SmartMemeSplitter v4 算法自动切割表情包网格
-- **LLM 工具**: 支持自然语言触发生图，优先前台短等待，超时自动转后台
+- **LLM 工具**: 支持自然语言触发生图，前台返回 `CallToolResult` 结构化图片，超时自动转后台
 - **多 API 支持**: Google 官方、OpenAI 兼容、OpenAI Images、Zai、grok2api、豆包（Doubao）
 - **多格式支持**: PNG、JPEG、WEBP、HEIC/HEIF、GIF
 
@@ -214,7 +214,7 @@
 - "把我的头像改成动漫风格"
 - "基于这张图生成一个海报"
 
-**混合触发模式**：LLM 工具会根据当前 `tool_call_timeout` 和 `llm_tool_timeout_reserve_percent` 自动计算前台等待窗口；如果图片在窗口内生成完成，就直接把图片和说明一起返回。若超过等待窗口，则自动切到后台继续生成，完成后再发送，兼顾连贯性和超时安全。
+**混合触发模式**：LLM 工具会根据当前 `tool_call_timeout` 和 `llm_tool_timeout_reserve_percent` 自动计算前台等待窗口；如果图片在窗口内生成完成，以 `CallToolResult`（含 `ImageContent`）结构化返回给框架，由模型决定后续操作。若超过等待窗口，则自动切到后台继续生成，完成后通过 `event.send()` 直接发送给用户。代理模式下前台和后台均通过代理下载远程图片，确保全链路可用。
 
 **论坛发帖模式**：当用户要求将图片发到论坛/AstrBook 时，AI 会设置 `for_forum=true`，此时工具同步等待生成完成并返回图片路径/URL，AI 可自动调用 `upload_image` 上传图床后完成全自动发帖流程。
 

@@ -18,6 +18,27 @@
 
 </details>
 
+## [1.9.9] - 2026-04-11
+
+### Added
+
+- 新增 `_build_call_tool_result` 方法，将生成结果封装为 AstrBot 官方 `CallToolResult`（含 `ImageContent` / `TextContent`）
+- 新增 SHA-256 内容哈希去重，避免同一图片以不同路径/URL 重复返回到模型
+- 代理模式下前台路径自动通过代理下载远程 URL 图片并内联为 base64，确保 AstrBot Core 可正常访问
+- 代理模式下后台路径在发送前也通过代理下载远程 URL 为本地文件，避免 NapCat 等平台无法直接访问需代理的图片（代理全链路覆盖）
+- 当图片仅有远程 URL 且无法转为 base64 时，使用 `TextContent` 返回 URL 并引导模型调用 `send_message_to_user` 发送
+
+### Changed
+
+- **LLM 工具前台返回模式迁移至 `CallToolResult + ImageContent`**：工具生图完成后不再通过 `event.send()` 直接发送图片，而是返回结构化 `CallToolResult`，由 AstrBot 框架统一缓存图片并回传模型；后台超时兜底仍使用 `event.send()` 直接发送
+- 默认 `tool_call_timeout` 对齐 AstrBot Core，从 60 秒调整为 120 秒
+- 后台生成任务使用插件配置的 `total_timeout` 作为超时上限，不再共享 `tool_call_timeout`，避免超时预算不足
+
+### Fixed
+
+- 修复 API 响应解析中多次图像提取（结构化字段 + 文本正则）产生重复图片的问题，现在仅在结构化字段未提取到图片时才回退到文本提取
+- 修复代理模式下远程图片下载可能阻塞整个工具调用超时的问题，新增 30 秒独立超时保护，超时后自动降级到后台发送
+
 ## [1.9.8] - 2026-04-11
 
 ### Added

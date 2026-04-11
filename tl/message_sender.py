@@ -143,43 +143,21 @@ class MessageSender:
     def merge_available_images(
         image_urls: list[str] | None, image_paths: list[str] | None
     ) -> list[str]:
-        """合并 URL 与路径，URL 优先，保持顺序并去重（路径去重 + 内容哈希去重）"""
-        import hashlib
+        """合并 URL 与路径，URL 优先，保持顺序并按引用字符串去重。
 
+        内容级去重由上层 _build_call_tool_result 在 base64 数据已加载到内存后完成，
+        此处不做文件 I/O，避免在发送热路径上增加延迟。
+        """
         merged: list[str] = []
-        seen_refs: set[str] = set()
-        seen_hashes: set[str] = set()
-
-        def _file_hash(path: str) -> str | None:
-            """计算本地文件的 SHA-256 摘要（前 32KB 快速判断）。"""
-            try:
-                fs = path[8:] if path.startswith("file:///") else path
-                if not os.path.isfile(fs):
-                    return None
-                h = hashlib.sha256()
-                with open(fs, "rb") as f:
-                    while chunk := f.read(32768):
-                        h.update(chunk)
-                return h.hexdigest()
-            except Exception:
-                return None
+        seen: set[str] = set()
 
         # URL 优先，paths 作为补充
         for img in (image_urls or []) + (image_paths or []):
             if not img:
                 continue
-            if img in seen_refs:
+            if img in seen:
                 continue
-            seen_refs.add(img)
-
-            # 对本地文件做内容哈希去重
-            fh = _file_hash(img)
-            if fh is not None:
-                if fh in seen_hashes:
-                    logger.debug(f"[去重] 跳过内容相同的图片: {img[:80]}")
-                    continue
-                seen_hashes.add(fh)
-
+            seen.add(img)
             merged.append(img)
 
         return merged
