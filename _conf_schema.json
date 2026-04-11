@@ -196,7 +196,7 @@
           },
           "openai_images": {
             "description": "OpenAI Images API 覆盖配置",
-            "hint": "配置 OpenAI /v1/images/generations 端点的密钥和端点",
+            "hint": "配置 OpenAI /v1/images/generations 和 /v1/images/edits 端点的密钥和参数",
             "items": {
               "api_keys": {
                 "description": "API Key 列表",
@@ -213,7 +213,7 @@
               "model": {
                 "description": "模型名称",
                 "type": "string",
-                "hint": "OpenAI Images API 模型名称（如 dall-e-3, dall-e-2）",
+                "hint": "OpenAI Images API 模型名称",
                 "default": "dall-e-3"
               },
               "api_base": {
@@ -221,6 +221,47 @@
                 "type": "string",
                 "hint": "OpenAI Images API 地址，留空使用默认 https://api.openai.com",
                 "default": ""
+              },
+              "quality": {
+                "description": "图像质量",
+                "type": "string",
+                "hint": "GPT image 模型: auto/high/medium/low；dall-e-3: hd/standard；dall-e-2: standard。留空使用默认值",
+                "default": "",
+                "options": ["", "auto", "high", "medium", "low", "hd", "standard"]
+              },
+              "response_format": {
+                "description": "响应格式",
+                "type": "string",
+                "hint": "url 返回临时链接（60分钟有效），b64_json 返回 base64 编码。",
+                "default": "b64_json",
+                "options": ["b64_json", "url"]
+              },
+              "style": {
+                "description": "图像风格（仅 dall-e-3）",
+                "type": "string",
+                "hint": "vivid 生成超现实戏剧性图像，natural 生成更自然的图像。仅 dall-e-3 支持，留空不传",
+                "default": "",
+                "options": ["", "vivid", "natural"]
+              },
+              "background": {
+                "description": "背景透明度（仅 GPT image 模型）",
+                "type": "string",
+                "hint": "transparent 透明背景，opaque 不透明，auto 自动。仅 GPT image 模型支持，留空不传",
+                "default": "",
+                "options": ["", "auto", "transparent", "opaque"]
+              },
+              "output_format": {
+                "description": "输出图像格式（仅 GPT image 模型）",
+                "type": "string",
+                "hint": "png 支持透明背景，jpeg 文件更小，webp 兼顾两者。仅 GPT image 模型支持，留空不传",
+                "default": "",
+                "options": ["", "png", "jpeg", "webp"]
+              },
+              "generations_only": {
+                "description": "仅使用文生图",
+                "type": "bool",
+                "hint": "edits 接口的兼容端点",
+                "default": false
               },
               "proxy": {
                 "description": "代理地址",
