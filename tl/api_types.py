@@ -38,6 +38,9 @@ class ApiRequestConfig:
     resolution_param_name: str = "image_size"  # 分辨率参数名
     aspect_ratio_param_name: str = "aspect_ratio"  # 长宽比参数名
 
+    # OpenAI Images API 端点选择
+    use_images_endpoint: bool = False  # True 使用 /v1/images/generations，False 使用 /v1/chat/completions
+
 
 class APIError(Exception):
     """API 错误基类"""

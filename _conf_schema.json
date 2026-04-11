@@ -14,11 +14,12 @@
       "api_type": {
         "description": "API 类型（必选）",
         "type": "string",
-        "hint": "必须选择 API 类型（google/openai/zai/grok2api/doubao）。 不同提供商支持的类型不同，请参考提供商说明",
+        "hint": "必须选择 API 类型（google/openai/openai_images/zai/grok2api/doubao）。 不同提供商支持的类型不同，请参考提供商说明。openai_images 专门调用 /v1/images/generations 端点",
         "default": "openai",
         "options": [
           "google",
           "openai",
+          "openai_images",
           "zai",
           "grok2api",
           "doubao"
@@ -183,6 +184,42 @@
                 "description": "API 端点地址",
                 "type": "string",
                 "hint": "grok2api API 地址",
+                "default": ""
+              },
+              "proxy": {
+                "description": "代理地址",
+                "type": "string",
+                "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式。优先级高于全局代理和环境变量",
+                "default": ""
+              }
+            }
+          },
+          "openai_images": {
+            "description": "OpenAI Images API 覆盖配置",
+            "hint": "配置 OpenAI /v1/images/generations 端点的密钥和端点",
+            "items": {
+              "api_keys": {
+                "description": "API Key 列表",
+                "type": "list",
+                "hint": "多个 API Key，支持轮换使用",
+                "default": []
+              },
+              "daily_limit_per_key": {
+                "description": "每个 Key 每日限额",
+                "type": "int",
+                "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
+                "default": 0
+              },
+              "model": {
+                "description": "模型名称",
+                "type": "string",
+                "hint": "OpenAI Images API 模型名称（如 dall-e-3, dall-e-2）",
+                "default": "dall-e-3"
+              },
+              "api_base": {
+                "description": "API 端点地址",
+                "type": "string",
+                "hint": "OpenAI Images API 地址，留空使用默认 https://api.openai.com",
                 "default": ""
               },
               "proxy": {
