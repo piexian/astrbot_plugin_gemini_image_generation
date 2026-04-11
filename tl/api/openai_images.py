@@ -5,9 +5,6 @@
 
 from __future__ import annotations
 
-import base64
-import time
-from pathlib import Path
 from typing import Any
 
 import aiohttp
@@ -85,7 +82,7 @@ class OpenAIImagesProvider:
                 image_url = image_item["url"]
                 if isinstance(image_url, str) and image_url:
                     image_urls.append(image_url)
-                    logger.debug(f"🖼️ OpenAI Images 返回图片 URL: {image_url[:80]}...")
+                    logger.debug(f"[openai_images] 返回图片 URL: {image_url[:80]}...")
 
             # 处理 base64 图片
             elif "b64_json" in image_item:
@@ -95,7 +92,9 @@ class OpenAIImagesProvider:
                     if image_path:
                         image_urls.append(image_path)
                         image_paths.append(image_path)
-                        logger.debug(f"🖼️ OpenAI Images 返回 base64 图片: {len(b64_data)} 字节")
+                        logger.debug(
+                            f"[openai_images] 返回 base64 图片: {len(b64_data)} 字节"
+                        )
 
             # 记录修订后的提示词
             if "revised_prompt" in image_item:
@@ -105,7 +104,9 @@ class OpenAIImagesProvider:
                     logger.debug(f"OpenAI 修订提示词: {revised[:100]}...")
 
         if image_urls or image_paths:
-            logger.debug(f"🖼️ OpenAI Images 收集到 {len(image_urls) + len(image_paths)} 张图片")
+            logger.debug(
+                f"[openai_images] 收集到 {len(image_urls) + len(image_paths)} 张图片"
+            )
             return image_urls, image_paths, text_content, thought_signature
 
         # 如果没有图片，检查是否有错误信息
@@ -140,19 +141,9 @@ class OpenAIImagesProvider:
                 "2K": "1792x1024",  # 或 1024x1792 根据比例
                 "4K": "2048x2048",  # DALL-E 3 最大支持
             }
-            payload[resolution_key] = size_mapping.get(config.resolution, config.resolution)
-
-        # 处理长宽比 (OpenAI Images API 不直接支持 aspect_ratio，需要转换)
-        if config.aspect_ratio and config.resolution:
-            aspect_mapping = {
-                "1:1": "square",
-                "16:9": "landscape",
-                "9:16": "portrait",
-                "4:3": "standard",
-                "3:4": "vertical",
-            }
-            # 注意：OpenAI DALL-E 不直接支持 aspect_ratio，这里仅作记录
-            # 实际尺寸由 size 参数决定
+            payload[resolution_key] = size_mapping.get(
+                config.resolution, config.resolution
+            )
 
         # 添加其他可选参数
         if config.seed is not None:
@@ -160,7 +151,11 @@ class OpenAIImagesProvider:
 
         # OpenAI Images API 不支持 reference_images（无图生图功能）
         if config.reference_images:
-            logger.warning("OpenAI Images API (/v1/images/generations) 不支持参考图，已忽略")
+            logger.warning(
+                "OpenAI Images API (/v1/images/generations) 不支持参考图，已忽略"
+            )
 
-        logger.debug(f"OpenAI Images payload: model={config.model}, size={payload.get(resolution_key)}, prompt_len={len(config.prompt)}")
+        logger.debug(
+            f"OpenAI Images payload: model={config.model}, size={payload.get(resolution_key)}, prompt_len={len(config.prompt)}"
+        )
         return payload
