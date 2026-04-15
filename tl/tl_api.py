@@ -1207,20 +1207,23 @@ class GeminiAPIClient:
                 extracted_paths2: list[str] = []
 
                 if isinstance(content, str):
-                    extracted_urls2, extracted_paths2 = (
-                        await self._extract_from_content(content)
-                    )
+                    (
+                        extracted_urls2,
+                        extracted_paths2,
+                    ) = await self._extract_from_content(content)
                 elif text_content:
-                    extracted_urls2, extracted_paths2 = (
-                        await self._extract_from_content(text_content)
-                    )
+                    (
+                        extracted_urls2,
+                        extracted_paths2,
+                    ) = await self._extract_from_content(text_content)
 
                 if extracted_urls2 or extracted_paths2:
                     image_urls.extend(extracted_urls2)
                     image_paths.extend(extracted_paths2)
 
-            # 额外在汇总文本中搜索 http(s) 图片链接，兼容只返回文本的情况
-            if text_content:
+            # 仅在前面没有提取到结构化图片时，才回退扫描文本中的 URL，
+            # 避免同一张图被“带签名 URL + 去签名 URL”重复收集。
+            if text_content and not (image_urls or image_paths):
                 http_urls = self._find_image_urls_in_text(text_content)
                 for url in http_urls:
                     # grok2api 适配：跳过临时缓存 URL（已在上面下载并添加到 image_paths）

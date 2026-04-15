@@ -506,7 +506,9 @@ class OpenAICompatProvider:
                     if p and p not in image_paths:
                         image_paths.append(p)
 
-            if text_content:
+            # 仅在前面没有提取到结构化图片时，才回退扫描文本中的 URL，
+            # 避免同一张图被“带签名 URL + 去签名 URL”重复收集。
+            if text_content and not (image_urls or image_paths):
                 http_urls = client._find_image_urls_in_text(text_content)
                 extra_urls = self._find_additional_image_urls_in_text(text_content)
                 for url in [*http_urls, *extra_urls]:

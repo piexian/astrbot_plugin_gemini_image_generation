@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import urllib.parse
 from typing import TYPE_CHECKING
 
 import astrbot.api.message_components as Comp
@@ -21,6 +22,20 @@ if TYPE_CHECKING:
 DEFAULT_MAX_INLINE_IMAGE_SIZE_BYTES = 2 * 1024 * 1024
 # 超大文件警告阈值（10MB）
 LARGE_FILE_WARNING_THRESHOLD_BYTES = 10 * 1024 * 1024
+AUTH_LIKE_QUERY_KEYS = {
+    "key",
+    "token",
+    "sig",
+    "signature",
+    "expires",
+    "x-amz-algorithm",
+    "x-amz-credential",
+    "x-amz-date",
+    "x-amz-expires",
+    "x-amz-security-token",
+    "x-amz-signature",
+    "x-amz-signedheaders",
+}
 
 
 class MessageSender:
@@ -140,13 +155,55 @@ class MessageSender:
         return self.strip_known_image_refs(cleaned_text, image_refs)
 
     @staticmethod
+    def _normalize_image_ref(ref: str) -> str:
+        ref_str = str(ref).strip()
+        if not ref_str:
+            return ""
+
+        if ref_str.startswith("file:///"):
+            ref_str = ref_str[8:]
+
+        if os.path.exists(ref_str):
+            return os.path.realpath(ref_str)
+
+        if ref_str.startswith(("http://", "https://")):
+            parsed = urllib.parse.urlsplit(ref_str)
+            query_keys = {
+                key.lower()
+                for key, _ in urllib.parse.parse_qsl(
+                    parsed.query, keep_blank_values=True
+                )
+            }
+            if query_keys and query_keys.issubset(AUTH_LIKE_QUERY_KEYS):
+                return urllib.parse.urlunsplit(
+                    (
+                        parsed.scheme.lower(),
+                        parsed.netloc.lower(),
+                        parsed.path,
+                        "",
+                        "",
+                    )
+                )
+            return urllib.parse.urlunsplit(
+                (
+                    parsed.scheme.lower(),
+                    parsed.netloc.lower(),
+                    parsed.path,
+                    parsed.query,
+                    "",
+                )
+            )
+
+        return ref_str
+
+    @staticmethod
     def merge_available_images(
         image_urls: list[str] | None, image_paths: list[str] | None
     ) -> list[str]:
-        """合并 URL 与路径，URL 优先，保持顺序并按引用字符串去重。
+        """合并 URL 与路径，URL 优先，保持顺序并按规范化引用去重。
 
-        内容级去重由上层 _build_call_tool_result 在 base64 数据已加载到内存后完成，
-        此处不做文件 I/O，避免在发送热路径上增加延迟。
+        对远程 URL 会去掉鉴权类 query 参数（如 key/token/signature），
+        避免同一张图的签名版 URL 和裸 URL 被当成两张图发送。
         """
         merged: list[str] = []
         seen: set[str] = set()
@@ -155,9 +212,10 @@ class MessageSender:
         for img in (image_urls or []) + (image_paths or []):
             if not img:
                 continue
-            if img in seen:
+            normalized = MessageSender._normalize_image_ref(img)
+            if normalized in seen:
                 continue
-            seen.add(img)
+            seen.add(normalized)
             merged.append(img)
 
         return merged
