@@ -293,7 +293,7 @@ class GeminiImageGenerationPlugin(Star):
         elif not self.cfg.api_type:
             if not quiet:
                 logger.error(
-                    "✗ 未配置 api_settings.api_type（google/openai/zai/grok2api/doubao），无法初始化 API 客户端"
+                    "✗ 未配置 api_settings.api_type（google/openai/openai_images/xai/zai/grok2api/doubao），无法初始化 API 客户端"
                 )
             return
 
@@ -374,6 +374,8 @@ class GeminiImageGenerationPlugin(Star):
             # 绑定完整 settings 供适配器使用
             if api_type_norm == "doubao":
                 self.cfg.doubao_settings = override_settings
+            elif api_type_norm == "xai":
+                self.cfg.xai_settings = override_settings
             elif api_type_norm == "openai_images":
                 self.cfg.openai_images_settings = override_settings
 
@@ -392,6 +394,13 @@ class GeminiImageGenerationPlugin(Star):
                     )
                 except Exception as e:
                     logger.debug(f"绑定 doubao_settings 到 API client 失败: {e}")
+            elif api_type_norm == "xai":
+                try:
+                    self.api_client.xai_settings = (
+                        getattr(self.cfg, "xai_settings", None) or {}
+                    )
+                except Exception as e:
+                    logger.debug(f"绑定 xai_settings 到 API client 失败: {e}")
             elif api_type_norm == "openai_images":
                 try:
                     self.api_client.openai_images_settings = (
