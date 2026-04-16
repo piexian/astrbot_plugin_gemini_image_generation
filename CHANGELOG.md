@@ -18,6 +18,15 @@
 
 </details>
 
+## [1.9.10] - 2026-04-16
+
+### Fixed
+
+- 修复同一张图片因签名 URL 与裸 URL 同时被收集而重复发送的问题
+  - 新增 `_normalize_image_ref` 方法：对本地路径取 realpath、对远程 URL 去除鉴权类 query 参数（key/token/signature 等），使签名版与裸版 URL 映射到同一规范化键
+  - `merge_available_images` 改用规范化键去重，替代原始字符串比较
+  - `openai_compat` / `tl_api` 的文本回退扫描增加守卫条件：仅在未提取到结构化图片时才回退扫描文本 URL，防止同一张图被双重收集
+
 ## [1.9.9] - 2026-04-11
 
 ### Added
