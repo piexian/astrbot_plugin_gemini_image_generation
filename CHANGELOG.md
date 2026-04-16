@@ -18,6 +18,20 @@
 
 </details>
 
+## [1.9.11] - 2026-04-16
+
+### Added
+
+- 新增 `xai` API 类型，原生支持 xAI 官方 `/v1/images/generations` 和 `/v1/images/edits` JSON 图像接口
+- 新增 `tl/api/xai.py` 供应商实现，支持将参考图统一转为 `data URI` 内联发送，兼容单图编辑和最多 5 张参考图的多图编辑
+- 新增 `provider_overrides[xai]` 配置模板，支持多 Key、每日限额、`response_format`、`n`、代理等参数
+
+### Changed
+
+- `main.py` 增加 `xai_settings` 绑定逻辑，确保 provider override 能注入到 API client
+- `tl/tl_api.py` 现在会让 `xai` 走供应商自定义响应解析，正确处理 `data[].url` 和 `data[].b64_json`
+- `README.md` 更新多 API 支持列表和 `xai` 配置说明
+
 ## [1.9.10] - 2026-04-16
 
 ### Fixed

@@ -13,6 +13,7 @@ from .google import GoogleProvider
 from .grok2api import Grok2ApiProvider
 from .openai_compat import OpenAICompatProvider
 from .openai_images import OpenAIImagesProvider
+from .xai import XAIProvider
 from .zai import ZaiProvider
 
 _DOUBAO: Final[DoubaoProvider] = DoubaoProvider()
@@ -20,6 +21,7 @@ _GOOGLE: Final[GoogleProvider] = GoogleProvider()
 _GROK2API: Final[Grok2ApiProvider] = Grok2ApiProvider()
 _OPENAI: Final[OpenAICompatProvider] = OpenAICompatProvider()
 _OPENAI_IMAGES: Final[OpenAIImagesProvider] = OpenAIImagesProvider()
+_XAI: Final[XAIProvider] = XAIProvider()
 _ZAI: Final[ZaiProvider] = ZaiProvider()
 
 # Doubao/Volcengine Ark 相关的 API 类型别名
@@ -60,6 +62,7 @@ def get_api_provider(api_type: str | None) -> ApiProvider:
     当前映射：
     - `google/gemini/...` -> GoogleProvider
     - `grok2api` -> Grok2ApiProvider
+    - `xai` -> XAIProvider
     - `zai` -> ZaiProvider
     - `doubao/volcengine/ark/seedream` -> DoubaoProvider
     - `openai_images` -> OpenAIImagesProvider (/v1/images/generations + /v1/images/edits)
@@ -78,6 +81,10 @@ def get_api_provider(api_type: str | None) -> ApiProvider:
     # grok2api 独立供应商
     if normalized in {"grok2api", "grok2_api"} or normalized.startswith("grok2api_"):
         return _GROK2API
+
+    # xAI 官方图像 API
+    if normalized == "xai":
+        return _XAI
 
     # Google/Gemini 官方
     if normalized in {"google", "gemini", "googlegenai", "google_genai"}:

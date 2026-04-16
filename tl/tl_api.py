@@ -904,10 +904,11 @@ class GeminiAPIClient:
                             response.status,
                             is_retry=is_retry,
                         )
-                    # openai_images 使用 provider 自身的解析方法
+                    # OpenAI Images / xAI Images 使用 provider 自身的解析方法
                     if normalize_api_type(api_type) in {
                         "openai_images",
                         "openai_images_api",
+                        "xai",
                     }:
                         provider = get_api_provider(api_type)
                         return await provider.parse_response(

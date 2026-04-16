@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/Version-v1.9.10-blue)
+![Version](https://img.shields.io/badge/Version-v1.9.11-blue)
 ![License](https://img.shields.io/badge/License-AGPL--3.0-orange)
 
 **🎨 强大的 Gemini 图像生成插件，支持智能头像参考和智能表情包切分**
@@ -19,7 +19,7 @@
 - **智能头像**: 自动获取用户头像和@对象头像作为参考
 - **表情包切分**: SmartMemeSplitter v4 算法自动切割表情包网格
 - **LLM 工具**: 支持自然语言触发生图，前台返回 `CallToolResult` 结构化图片，超时自动转后台
-- **多 API 支持**: Google 官方、OpenAI 兼容、OpenAI Images、Zai、grok2api、豆包（Doubao）
+- **多 API 支持**: Google 官方、OpenAI 兼容、OpenAI Images、xAI Images、Zai、grok2api、豆包（Doubao）
 - **多格式支持**: PNG、JPEG、WEBP、HEIC/HEIF、GIF
 
 ### 🛡️ 限制/限流
@@ -62,7 +62,7 @@
 | 配置项 | 说明 |
 |--------|------|
 | `api_settings.provider_id` | 生图模型提供商（从 AstrBot 提供商列表选择；doubao 无需填写） |
-| `api_settings.api_type` | API 类型：`google`/`openai`/`openai_images`/`zai`/`grok2api`/`doubao` |
+| `api_settings.api_type` | API 类型：`google`/`openai`/`openai_images`/`xai`/`zai`/`grok2api`/`doubao` |
 
 ### 配置项详解
 
@@ -160,6 +160,23 @@
 | `output_compression` | `0` | 输出压缩率滑动条 0-100，0 表示不传（使用服务端默认），仅 GPT image + jpeg/webp |
 | `moderation` | - | 审核模式，仅 GPT image（如 low） |
 | `generations_only` | `false` | 开启后强制只用文生图端点，不走 /v1/images/edits |
+
+**xai_settings**（xAI Images API 专用配置）
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `api_keys` | `[]` | API Key 列表，支持多 Key 轮换 |
+| `model` | `grok-imagine-image` | xAI 图像模型名称 |
+| `api_base` | `https://api.x.ai` | API 端点地址 |
+| `response_format` | `url` | 响应格式（`url`/`b64_json`） |
+| `quality` | - | 透传给 xAI 图片接口，留空不传；建议仅在确认接口支持时使用 |
+| `n` | `1` | 单次请求生成数量，当前最多 `10` |
+| `proxy` | - | 独立代理地址 |
+
+> `xai` 供应商会自动走 xAI 官方 JSON 图像接口：
+> - 文生图：`/v1/images/generations`
+> - 改图：`/v1/images/edits`
+>
+> 改图请求会把参考图统一内联为 `data URI`，不使用 `multipart/form-data`。xAI 官方文档当前说明单次编辑最多支持 `5` 张参考图，分辨率支持 `1k/2k`，单图编辑时输出比例默认跟随输入图。
 
 ## 🎯 使用指南
 
