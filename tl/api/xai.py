@@ -11,6 +11,7 @@ xAI 的图像编辑端点要求 `application/json`，不支持 OpenAI SDK `image
 from __future__ import annotations
 
 from typing import Any
+import urllib.parse
 
 import aiohttp
 
@@ -35,8 +36,8 @@ class XAIProvider:
         self, *, client: Any, config: ApiRequestConfig
     ) -> ProviderRequest:  # noqa: ANN401
         settings: dict[str, Any] = getattr(client, "xai_settings", None) or {}
-        api_base = (config.api_base or settings.get("api_base") or "").rstrip("/")
-        base = api_base or "https://api.x.ai"
+        raw_api_base = config.api_base or settings.get("api_base") or ""
+        base = self._normalize_api_base(raw_api_base) or "https://api.x.ai"
 
         has_ref_images = bool(config.reference_images)
         endpoint = "images/edits" if has_ref_images else "images/generations"
@@ -196,7 +197,7 @@ class XAIProvider:
         payload: dict[str, Any] = {
             "model": model,
             "prompt": config.prompt,
-            "n": self._coerce_image_count(settings.get("n")),
+            "n": self._get_requested_image_count(config, settings),
         }
 
         aspect_ratio = self._normalize_aspect_ratio(config.aspect_ratio)
@@ -259,7 +260,7 @@ class XAIProvider:
         payload: dict[str, Any] = {
             "model": model,
             "prompt": config.prompt,
-            "n": self._coerce_image_count(settings.get("n")),
+            "n": self._get_requested_image_count(config, settings),
         }
 
         image_items = [
@@ -354,6 +355,38 @@ class XAIProvider:
         return count
 
     @staticmethod
+    def _get_requested_image_count(
+        config: ApiRequestConfig, settings: dict[str, Any]
+    ) -> int:
+        config_n = getattr(config, "n", None)
+        return XAIProvider._coerce_image_count(
+            config_n if config_n is not None else settings.get("n")
+        )
+
+    @staticmethod
+    def _normalize_api_base(value: Any) -> str | None:
+        raw_api_base = str(value or "").strip().rstrip("/")
+        if not raw_api_base:
+            return None
+
+        parsed = urllib.parse.urlsplit(raw_api_base)
+        if parsed.scheme and parsed.netloc:
+            path = parsed.path.rstrip("/")
+            normalized_path = "/v1" if path.startswith("/v1") else ""
+            normalized = urllib.parse.urlunsplit(
+                (parsed.scheme, parsed.netloc, normalized_path, "", "")
+            )
+            if normalized != raw_api_base:
+                logger.debug(
+                    "[xai] 规范化 api_base: %s -> %s",
+                    raw_api_base,
+                    normalized,
+                )
+            return normalized
+
+        return raw_api_base
+
+    @staticmethod
     def _normalize_aspect_ratio(value: Any) -> str | None:
         aspect_ratio = str(value or "").strip()
         return aspect_ratio or None
@@ -394,7 +427,7 @@ class XAIProvider:
         mime_type = str(value or "").strip().lower()
         if not mime_type.startswith("image/"):
             return None
-        ext = mime_type.split("/", 1)[1]
+        ext = mime_type.split(";", 1)[0].split("/")[-1]
         if ext == "jpg":
             return "jpeg"
         if ext in {"jpeg", "png", "webp"}:

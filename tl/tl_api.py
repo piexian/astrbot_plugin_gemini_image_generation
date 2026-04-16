@@ -909,8 +909,6 @@ class GeminiAPIClient:
                         "openai_images",
                         "openai_images_api",
                         "xai",
-                        "grok",
-                        "grok_image",
                     }:
                         provider = get_api_provider(api_type)
                         return await provider.parse_response(

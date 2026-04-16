@@ -62,7 +62,7 @@ def get_api_provider(api_type: str | None) -> ApiProvider:
     当前映射：
     - `google/gemini/...` -> GoogleProvider
     - `grok2api` -> Grok2ApiProvider
-    - `xai/grok/grok_image` -> XAIProvider
+    - `xai` -> XAIProvider
     - `zai` -> ZaiProvider
     - `doubao/volcengine/ark/seedream` -> DoubaoProvider
     - `openai_images` -> OpenAIImagesProvider (/v1/images/generations + /v1/images/edits)
@@ -83,7 +83,7 @@ def get_api_provider(api_type: str | None) -> ApiProvider:
         return _GROK2API
 
     # xAI 官方图像 API
-    if normalized in {"xai", "grok", "grok_image"} or normalized.startswith("xai_"):
+    if normalized == "xai":
         return _XAI
 
     # Google/Gemini 官方
