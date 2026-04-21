@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/Version-v1.9.11-blue)
+![Version](https://img.shields.io/badge/Version-v1.9.12-blue)
 ![License](https://img.shields.io/badge/License-AGPL--3.0-orange)
 
 **🎨 强大的 Gemini 图像生成插件，支持智能头像参考和智能表情包切分**
@@ -19,6 +19,7 @@
 - **智能头像**: 自动获取用户头像和@对象头像作为参考
 - **表情包切分**: SmartMemeSplitter v4 算法自动切割表情包网格
 - **LLM 工具**: 支持自然语言触发生图，前台返回 `CallToolResult` 结构化图片，超时自动转后台
+- **安全回传**: 自动过滤 Gemini `thought_signature`，避免超大签名误注入工具结果导致上下文膨胀
 - **多 API 支持**: Google 官方、OpenAI 兼容、OpenAI Images、xAI Images、Zai、grok2api、豆包（Doubao）
 - **多格式支持**: PNG、JPEG、WEBP、HEIC/HEIF、GIF
 
@@ -233,6 +234,8 @@
 
 **混合触发模式**：LLM 工具会根据当前 `tool_call_timeout` 和 `llm_tool_timeout_reserve_percent` 自动计算前台等待窗口；如果图片在窗口内生成完成，以 `CallToolResult`（含 `ImageContent`）结构化返回给框架，由模型决定后续操作。若超过等待窗口，则自动切到后台继续生成，完成后通过 `event.send()` 直接发送给用户。代理模式下前台和后台均通过代理下载远程图片，确保全链路可用。
 
+**Gemini 思维签名处理**：插件会把 Gemini 返回的 `thought_signature` 视为仅限协议层使用的 opaque 元数据，不会再把它拼进 Tool 文本结果或用户可见内容。这样可以避免部分 Gemini / NewAPI 网关把超大签名重新塞回上下文，导致 `413` 或“输入 Tokens 数量超过系统限制”。
+
 **论坛发帖模式**：当用户要求将图片发到论坛/AstrBook 时，AI 会设置 `for_forum=true`，此时工具同步等待生成完成并返回图片路径/URL，AI 可自动调用 `upload_image` 上传图床后完成全自动发帖流程。
 
 ### 表情包切分算法
@@ -249,6 +252,7 @@ SmartMemeSplitter v4 特点：
 |------|----------|
 | API 错误 | 检查 API 密钥、模型名称（如 `gemini-3-pro-image-preview`）、api_type 配置 |
 | 生成超时 | 降低分辨率、简化提示词、增加工具超时时间（推荐 100s+） |
+| LLM 工具生图后报 `413` / 上下文爆炸 | 升级到 `v1.9.12+`；该版本已过滤 `thought_signature`，不再把超大签名回灌到 Tool 结果 |
 | 无法获取头像 | 确认使用 NapCat 平台 |
 | 切图效果不佳 | 手动指定网格 `/切图 4 4` 或配置视觉提供商 |
 | 中文乱码 (local 模式) | 等待字体自动下载或手动放置 `.ttf` 字体到 `tl/` 目录 |

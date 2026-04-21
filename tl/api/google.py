@@ -12,6 +12,7 @@ import aiohttp
 from astrbot.api import logger
 
 from ..api_types import APIError, ApiRequestConfig
+from ..thought_signature import log_thought_signature_debug
 from ..tl_utils import get_temp_dir, save_base64_image
 from .base import ProviderRequest
 
@@ -327,8 +328,12 @@ class GoogleProvider:
                     logger.debug(f"检查候选 {idx} 的第 {i} 个part: {list(part.keys())}")
 
                     if "thoughtSignature" in part and not thought_signature:
+                        # 这里只保留原始签名供 Provider 协议层续传，不能把它当普通文本使用。
                         thought_signature = part["thoughtSignature"]
-                        logger.debug(f"找到思维签名: {thought_signature[:50]}...")
+                        log_thought_signature_debug(
+                            thought_signature,
+                            scene=f"Google候选{idx}",
+                        )
 
                     if "text" in part and isinstance(part.get("text"), str):
                         text_chunks.append(part.get("text", ""))
