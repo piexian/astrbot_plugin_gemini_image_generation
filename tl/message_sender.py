@@ -12,6 +12,7 @@ from astrbot.api import logger
 from astrbot.api.message_components import Image as AstrImage
 from astrbot.api.message_components import Node, Plain
 
+from .thought_signature import log_thought_signature_debug
 from .tl_utils import encode_file_to_base64
 from .tl_utils import is_valid_base64_image_str as util_is_valid_base64_image_str
 
@@ -361,8 +362,7 @@ class MessageSender:
                         event, event.image_result(available_images[0])
                     ):
                         yield res
-            if thought_signature:
-                logger.debug(f"思维签名: {thought_signature[:50]}...")
+            log_thought_signature_debug(thought_signature, scene=f"{scene}/单图发送")
             return
 
         # AIOCQHTTP 逐图发送（base64）
@@ -391,8 +391,7 @@ class MessageSender:
                 ):
                     yield res
 
-            if thought_signature:
-                logger.debug(f"思维签名: {thought_signature[:50]}...")
+            log_thought_signature_debug(thought_signature, scene=f"{scene}/逐图发送")
             return
 
         # 短链富媒体发送
@@ -406,8 +405,7 @@ class MessageSender:
             if chain:
                 async for res in self.safe_send(event, event.chain_result(chain)):
                     yield res
-            if thought_signature:
-                logger.debug(f"思维签名: {thought_signature[:50]}...")
+            log_thought_signature_debug(thought_signature, scene=f"{scene}/短链发送")
             return
 
         # 合并转发
@@ -440,5 +438,4 @@ class MessageSender:
         async for res in self.safe_send(event, event.chain_result([node])):
             yield res
 
-        if thought_signature:
-            logger.debug(f"思维签名: {thought_signature[:50]}...")
+        log_thought_signature_debug(thought_signature, scene=f"{scene}/合并转发")

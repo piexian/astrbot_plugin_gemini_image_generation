@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from astrbot.api import logger
 
+from .thought_signature import log_thought_signature_debug
 from .tl_api import APIError, ApiRequestConfig
 from .tl_utils import send_file
 
@@ -227,8 +228,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
                 f"🖼️ API 返回图片数量: {len(image_paths)}, URL 数量: {len(image_urls)}"
             )
 
-            if thought_signature:
-                logger.debug(f"思维签名: {thought_signature[:50]}...")
+            log_thought_signature_debug(thought_signature, scene="图像生成完成")
 
             resolved_paths: list[str] = []
             for idx, img_path in enumerate(image_paths):

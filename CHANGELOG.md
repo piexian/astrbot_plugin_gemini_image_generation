@@ -18,6 +18,16 @@
 
 </details>
 
+## [1.9.12] - 2026-04-21
+
+### Fixed
+
+- 修复 Gemini 图像工具调用路径错误透传 `thought_signature` 的问题
+  - 不再将 `thought_signature` 拼入 `CallToolResult` 或 Tool 返回文本，避免 AstrBot 将超大签名重新注入 LLM 上下文
+  - 统一将 `thought_signature` 视为仅限协议层/调试使用的 opaque 元数据，默认直接丢弃，不再参与用户可见结果
+  - 调试日志改为仅输出受限预览和长度，避免超长签名污染日志或被后续误用
+- 修复部分 Gemini / NewAPI 网关下 LLM 工具生图成功后，复核阶段因上下文膨胀触发 `413` / `输入Tokens数量超过系统限制` 的问题
+
 ## [1.9.11] - 2026-04-16
 
 ### Added

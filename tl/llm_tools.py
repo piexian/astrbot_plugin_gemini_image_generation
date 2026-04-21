@@ -21,6 +21,7 @@ from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import FunctionTool, ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
+from .thought_signature import log_thought_signature_debug
 from .tl_utils import encode_file_to_base64, format_error_message
 
 if TYPE_CHECKING:
@@ -86,7 +87,9 @@ def _image_to_base64_content(image_ref: str) -> mcp.types.ImageContent | None:
         try:
             header, b64_data = image_ref.split(";base64,", 1)
             mime_type = header.replace("data:", "")
-            return mcp.types.ImageContent(type="image", data=b64_data, mimeType=mime_type)
+            return mcp.types.ImageContent(
+                type="image", data=b64_data, mimeType=mime_type
+            )
         except Exception:
             return None
 
@@ -100,7 +103,9 @@ def _image_to_base64_content(image_ref: str) -> mcp.types.ImageContent | None:
             ext = os.path.splitext(fs_candidate)[1].lower()
             mime_type = _MIME_TYPE_MAP.get(ext, "image/png")
             b64_data = encode_file_to_base64(fs_candidate)
-            return mcp.types.ImageContent(type="image", data=b64_data, mimeType=mime_type)
+            return mcp.types.ImageContent(
+                type="image", data=b64_data, mimeType=mime_type
+            )
         except Exception as e:
             logger.warning(f"[CallToolResult] 编码图片失败: {e}")
             return None
@@ -113,7 +118,6 @@ async def _build_call_tool_result(
     image_urls: list[str] | None,
     image_paths: list[str] | None,
     text_content: str | None,
-    thought_signature: str | None,
     message_sender: Any,
     api_client: Any | None = None,
 ) -> mcp.types.CallToolResult:
@@ -187,8 +191,7 @@ async def _build_call_tool_result(
 
     if remaining_urls:
         url_lines = [
-            f"Image URL ({i + 1}): {url}"
-            for i, url in enumerate(remaining_urls)
+            f"Image URL ({i + 1}): {url}" for i, url in enumerate(remaining_urls)
         ]
         contents.append(
             mcp.types.TextContent(
@@ -207,12 +210,10 @@ async def _build_call_tool_result(
     text_parts: list[str] = []
     if prepared_text:
         text_parts.append(prepared_text)
-    if thought_signature:
-        text_parts.append(thought_signature)
+    # thought signature 只能留在 Provider 协议层，绝不能拼进 Tool 文本结果。
+    # 否则下游 Runner 会把这类超大 opaque 数据重新塞回上下文。
     if text_parts:
-        contents.append(
-            mcp.types.TextContent(type="text", text="\n".join(text_parts))
-        )
+        contents.append(mcp.types.TextContent(type="text", text="\n".join(text_parts)))
 
     if not contents:
         contents.append(
@@ -750,7 +751,6 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                             image_urls=image_urls,
                             image_paths=image_paths,
                             text_content=text_content,
-                            thought_signature=thought_signature,
                             message_sender=plugin.message_sender,
                             api_client=plugin.api_client,
                         ),
@@ -780,9 +780,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                     )
             else:
                 error_msg = (
-                    result_data
-                    if isinstance(result_data, str)
-                    else "❌ 图像生成失败"
+                    result_data if isinstance(result_data, str) else "❌ 图像生成失败"
                 )
                 return error_msg
         except asyncio.TimeoutError:
@@ -913,8 +911,9 @@ async def execute_image_generation_tool(
         results: list[Any] = []
         if text_content:
             results.append(text_content)
-        if thought_signature:
-            results.append(thought_signature)
+        # thought signature 只允许作为内部调试/协议层元数据存在，不能返回给
+        # Tool 调用方，更不能让 Agent 把它当成普通文本继续消费。
+        log_thought_signature_debug(thought_signature, scene="Tool结果已丢弃")
 
         # 添加图片
         for img_path in image_paths or []:
