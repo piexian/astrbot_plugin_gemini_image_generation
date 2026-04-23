@@ -271,7 +271,7 @@
                 "description": "模型名称",
                 "type": "string",
                 "hint": "OpenAI Images API 模型名称",
-                "default": "dall-e-3"
+                "default": "gpt-image-1"
               },
               "api_base": {
                 "description": "API 端点地址",
@@ -292,6 +292,20 @@
                 "hint": "url 返回临时链接（60分钟有效），b64_json 返回 base64 编码。",
                 "default": "b64_json",
                 "options": ["b64_json", "url"]
+              },
+              "size_mode": {
+                "description": "尺寸模式",
+                "type": "string",
+                "hint": "preset 使用全局分辨率映射；custom 使用下方 custom_size 直接透传到 OpenAI Images API",
+                "default": "preset",
+                "options": ["preset", "custom"]
+              },
+              "custom_size": {
+                "description": "自定义尺寸",
+                "type": "string",
+                "hint": "仅在 size_mode=custom 时生效。默认值仅作示例，可编辑或删除；但 custom 模式下此项必须非空，格式为 WxH，如 1024x1024，且需满足官方限制：最大边<=3840、宽高均为16倍数、长短边比<=3:1、总像素 655360-8294400",
+                "default": "1024x1024",
+                "condition": {"size_mode": "custom"}
               },
               "style": {
                 "description": "图像风格（仅 dall-e-3）",

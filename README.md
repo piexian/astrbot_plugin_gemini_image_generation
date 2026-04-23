@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/Version-v1.9.12-blue)
+![Version](https://img.shields.io/badge/Version-v1.9.13-blue)
 ![License](https://img.shields.io/badge/License-AGPL--3.0-orange)
 
 **🎨 强大的 Gemini 图像生成插件，支持智能头像参考和智能表情包切分**
@@ -151,16 +151,26 @@
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `api_keys` | `[]` | API Key 列表，支持多 Key 轮换 |
-| `model` | `dall-e-3` | 模型名称（dall-e-2/dall-e-3/gpt-image-1 等） |
+| `model` | `gpt-image-1` | 模型名称（dall-e-2/dall-e-3/gpt-image-1 等） |
 | `api_base` | - | API 端点地址，留空使用 OpenAI 官方 |
 | `quality` | - | 图像质量（GPT image: auto/high/medium/low；dall-e-3: hd/standard） |
 | `response_format` | `b64_json` | 响应格式（b64_json/url） |
+| `size_mode` | `preset` | 尺寸模式：`preset` 使用全局分辨率映射，`custom` 使用 `custom_size` 直接传给 OpenAI |
+| `custom_size` | `1024x1024` | 自定义尺寸示例值。仅 `size_mode=custom` 生效；该模式下此项必填，格式需为 `WxH` |
 | `style` | - | 图像风格，仅 dall-e-3（vivid/natural） |
 | `background` | - | 背景透明度，仅 GPT image（auto/transparent/opaque） |
 | `output_format` | - | 输出格式，仅 GPT image（png/jpeg/webp） |
 | `output_compression` | `0` | 输出压缩率滑动条 0-100，0 表示不传（使用服务端默认），仅 GPT image + jpeg/webp |
 | `moderation` | - | 审核模式，仅 GPT image（如 low） |
 | `generations_only` | `false` | 开启后强制只用文生图端点，不走 /v1/images/edits |
+
+> `size_mode=custom` 时，插件会在发送请求前校验 `custom_size` 是否满足 OpenAI 官方限制：
+> 最大边 `<= 3840`、宽高均为 `16` 的倍数、长短边比 `<= 3:1`、总像素在 `655360-8294400` 之间。
+> 官方文档：
+> <https://developers.openai.com/api/docs/guides/image-generation>
+> <https://developers.openai.com/api/docs/models/gpt-image-2>
+
+> **LLM 工具行为**：当 `api_type=openai_images` 且 `size_mode=custom` 时，LLM 工具参数会从 `resolution`/`aspect_ratio` 切换为仅暴露 `size`。若 LLM 未显式传入 `size`，插件会自动使用配置中的 `custom_size` 值，并在返回结果中提示模型。
 
 **xai_settings**（xAI Images API 专用配置）
 | 配置项 | 默认值 | 说明 |
@@ -234,6 +244,10 @@
 
 **混合触发模式**：LLM 工具会根据当前 `tool_call_timeout` 和 `llm_tool_timeout_reserve_percent` 自动计算前台等待窗口；如果图片在窗口内生成完成，以 `CallToolResult`（含 `ImageContent`）结构化返回给框架，由模型决定后续操作。若超过等待窗口，则自动切到后台继续生成，完成后通过 `event.send()` 直接发送给用户。代理模式下前台和后台均通过代理下载远程图片，确保全链路可用。
 
+**参数动态切换**：当使用 `openai_images` 供应商且启用 `size_mode=custom` 时，LLM 工具仅接受 `size` 参数（格式 `WxH`），不再接受 `resolution` 和 `aspect_ratio`。其他供应商/模式继续使用 `resolution`/`aspect_ratio`。
+
+**参数校验**：LLM 传入非法的 `resolution`、`aspect_ratio` 或 `size` 时，工具会直接返回错误并要求模型修正后重试，不再静默回退到默认值。
+
 **Gemini 思维签名处理**：插件会把 Gemini 返回的 `thought_signature` 视为仅限协议层使用的 opaque 元数据，不会再把它拼进 Tool 文本结果或用户可见内容。这样可以避免部分 Gemini / NewAPI 网关把超大签名重新塞回上下文，导致 `413` 或“输入 Tokens 数量超过系统限制”。
 
 **论坛发帖模式**：当用户要求将图片发到论坛/AstrBook 时，AI 会设置 `for_forum=true`，此时工具同步等待生成完成并返回图片路径/URL，AI 可自动调用 `upload_image` 上传图床后完成全自动发帖流程。
@@ -288,9 +302,11 @@ astrbot_plugin_gemini_image_generation/
     ├── image_splitter.py   # 图像切分（SmartMemeSplitter v4 算法）
     ├── llm_tools.py        # LLM 工具定义（触发器模式实现）
     ├── message_sender.py   # 消息格式化和发送（合并转发、ZIP 打包）
+    ├── openai_image_size.py # OpenAI Images 自定义尺寸校验与归一化
     ├── plugin_config.py    # 配置加载和管理（PluginConfig 类）
     ├── rate_limiter.py     # 限流和群限制（KV 持久化）
     ├── sticker_cutter.py   # 主体+附件吸附分割（兜底算法）
+    ├── thought_signature.py # Gemini thought signature 安全处理
     ├── tl_api.py           # API 客户端（请求发送、重试、图片下载）
     ├── tl_utils.py         # 工具函数（错误格式化、路径处理）
     ├── vision_handler.py   # 视觉 LLM 操作（网格行列识别）
@@ -301,7 +317,9 @@ astrbot_plugin_gemini_image_generation/
         ├── google.py       # Google/Gemini 官方 API
         ├── grok2api.py     # grok2api 适配
         ├── openai_compat.py # OpenAI 兼容格式
+        ├── openai_images.py # OpenAI Images 原生端点适配
         ├── registry.py     # 供应商注册表
+        ├── xai.py          # xAI Images 原生端点适配
         └── zai.py          # Zai.is 适配
 ```
 

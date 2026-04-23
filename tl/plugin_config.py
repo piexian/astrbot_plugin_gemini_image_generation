@@ -8,9 +8,23 @@ from typing import Any
 
 from astrbot.api import logger
 
+from .openai_image_size import normalize_size_mode, validate_custom_size
+
 # 豆包组图数量限制常量
 DOUBAO_SEQUENTIAL_IMAGES_MIN = 2
 DOUBAO_SEQUENTIAL_IMAGES_MAX = 15
+
+
+def _validate_openai_images_settings(settings: dict[str, Any]) -> None:
+    """校验 openai_images 覆盖配置。"""
+    size_mode = normalize_size_mode(settings.get("size_mode"))
+    settings["size_mode"] = size_mode
+
+    custom_size = settings.get("custom_size")
+    if size_mode == "custom":
+        settings["custom_size"] = validate_custom_size(custom_size)
+    elif isinstance(custom_size, str):
+        settings["custom_size"] = custom_size.strip()
 
 
 @dataclass
@@ -446,6 +460,8 @@ class ConfigLoader:
                             override_copy["proxy"] = proxy_val.strip() or None
                         else:
                             override_copy["proxy"] = None
+                        if template_key == "openai_images":
+                            _validate_openai_images_settings(override_copy)
                         all_overrides[template_key] = override_copy
         config.provider_overrides = all_overrides
 
