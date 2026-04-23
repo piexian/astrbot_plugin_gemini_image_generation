@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import base64
+import re
 from typing import Any
 
 import aiohttp
@@ -17,6 +18,7 @@ import aiohttp
 from astrbot.api import logger
 
 from ..api_types import APIError, ApiRequestConfig
+from ..openai_image_size import normalize_size_mode, validate_custom_size
 from ..tl_utils import save_base64_image
 from .base import ProviderRequest
 
@@ -56,6 +58,32 @@ def _get_size_mapping(model: str) -> dict[str, str]:
         return _SIZE_MAP_DALLE2
     # dall-e-3 及其他未知模型使用 dall-e-3 映射
     return _SIZE_MAP_DALLE3
+
+
+def _resolve_size_value(
+    model: str, resolution: str | None, settings: dict[str, Any]
+) -> str | None:
+    """根据配置和请求参数决定最终传给 OpenAI Images API 的 size。"""
+    try:
+        size_mode = normalize_size_mode(settings.get("size_mode"))
+    except ValueError as e:
+        raise APIError(str(e), None, "invalid_size_mode", retryable=False) from e
+
+    if size_mode == "custom":
+        if resolution and re.fullmatch(r"\s*\d+\s*[xX]\s*\d+\s*", resolution):
+            try:
+                return validate_custom_size(resolution, field_name="size")
+            except ValueError as e:
+                raise APIError(str(e), None, "invalid_size", retryable=False) from e
+        try:
+            return validate_custom_size(settings.get("custom_size"))
+        except ValueError as e:
+            raise APIError(str(e), None, "invalid_size", retryable=False) from e
+
+    if resolution:
+        size_map = _get_size_mapping(model)
+        return size_map.get(resolution, resolution)
+    return None
 
 
 class OpenAIImagesProvider:
@@ -247,16 +275,16 @@ class OpenAIImagesProvider:
         settings: dict[str, Any],
     ) -> dict[str, Any]:  # noqa: ANN401
         """构建 /v1/images/generations 请求体"""
-        model = config.model or "dall-e-3"
+        model = config.model or "gpt-image-1"
         payload: dict[str, Any] = {
             "model": model,
             "prompt": config.prompt,
         }
 
         # ---- size ----
-        if config.resolution:
-            size_map = _get_size_mapping(model)
-            payload["size"] = size_map.get(config.resolution, config.resolution)
+        size_value = _resolve_size_value(model, config.resolution, settings)
+        if size_value:
+            payload["size"] = size_value
 
         # ---- quality ----
         quality = str(settings.get("quality") or "").strip()
@@ -322,7 +350,7 @@ class OpenAIImagesProvider:
         返回 payload dict 中包含 ``_multipart`` 标记和 ``_form_data`` 对象，
         由 tl_api._perform_request 识别并切换为 FormData 发送。
         """
-        model = config.model or "dall-e-3"
+        model = config.model or "gpt-image-1"
         form = aiohttp.FormData()
 
         # ---- image (required): 第一张参考图 ----
@@ -369,10 +397,9 @@ class OpenAIImagesProvider:
         form.add_field("model", model)
 
         # ---- size ----
-        if config.resolution:
-            size_map = _get_size_mapping(model)
-            size_val = size_map.get(config.resolution, config.resolution)
-            form.add_field("size", size_val)
+        size_value = _resolve_size_value(model, config.resolution, settings)
+        if size_value:
+            form.add_field("size", size_value)
 
         # ---- response_format ----
         response_format = str(settings.get("response_format") or "b64_json").strip()

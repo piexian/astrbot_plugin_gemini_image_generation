@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import math
 import os
+import re
 from typing import TYPE_CHECKING, Any
 
 import mcp.types
@@ -21,6 +22,14 @@ from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import FunctionTool, ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
+from .openai_image_size import (
+    CUSTOM_SIZE_DEFAULT,
+    CUSTOM_SIZE_MAX_EDGE,
+    CUSTOM_SIZE_MAX_PIXELS,
+    CUSTOM_SIZE_MIN_PIXELS,
+    normalize_size_mode,
+    validate_custom_size,
+)
 from .thought_signature import log_thought_signature_debug
 from .tl_utils import encode_file_to_base64, format_error_message
 
@@ -29,8 +38,8 @@ if TYPE_CHECKING:
 
 
 # 参数枚举常量（工具定义和验证共用）
-VALID_RESOLUTIONS = {"1K", "2K", "4K"}
-VALID_ASPECT_RATIOS = {
+RESOLUTION_OPTIONS = ("1K", "2K", "4K")
+ASPECT_RATIO_OPTIONS = (
     "1:1",
     "16:9",
     "4:3",
@@ -41,7 +50,186 @@ VALID_ASPECT_RATIOS = {
     "21:9",
     "3:4",
     "2:3",
-}
+)
+VALID_RESOLUTIONS = set(RESOLUTION_OPTIONS)
+VALID_ASPECT_RATIOS = set(ASPECT_RATIO_OPTIONS)
+
+
+def _get_openai_images_settings(plugin: Any) -> dict[str, Any]:
+    if not plugin or not getattr(plugin, "cfg", None):
+        return {}
+
+    settings = getattr(plugin.cfg, "openai_images_settings", None)
+    if isinstance(settings, dict) and settings:
+        return settings
+
+    overrides = getattr(plugin.cfg, "provider_overrides", None) or {}
+    candidate = overrides.get("openai_images", {})
+    return candidate if isinstance(candidate, dict) else {}
+
+
+def _is_openai_images_custom_size_mode(plugin: Any) -> bool:
+    if not plugin or not getattr(plugin, "cfg", None):
+        return False
+
+    api_type = str(getattr(plugin.cfg, "api_type", "") or "").strip().lower()
+    api_type = api_type.replace("-", "_")
+    if api_type != "openai_images":
+        return False
+
+    try:
+        size_mode = normalize_size_mode(
+            _get_openai_images_settings(plugin).get("size_mode")
+        )
+        return size_mode == "custom"
+    except ValueError as exc:
+        logger.warning(
+            f"[工具定义] openai_images size_mode 非法，回退为预设模式: {exc}"
+        )
+        return False
+
+
+def _custom_size_constraints_text() -> str:
+    return (
+        f"格式必须为 WxH，例如 {CUSTOM_SIZE_DEFAULT} 或 2048x1152；"
+        f"最大边 <= {CUSTOM_SIZE_MAX_EDGE}px，宽高都必须是 16 的倍数，"
+        f"长边与短边之比 <= 3:1，总像素必须在 {CUSTOM_SIZE_MIN_PIXELS} 到 "
+        f"{CUSTOM_SIZE_MAX_PIXELS} 之间。"
+    )
+
+
+def _build_tool_base_properties() -> dict[str, Any]:
+    return {
+        "prompt": {
+            "type": "string",
+            "description": "图像生成或修改的详细描述",
+        },
+        "use_reference_images": {
+            "type": "boolean",
+            "description": (
+                "是否使用上下文中的参考图片。"
+                "当用户意图是修改、变换或基于现有图片时设置为true"
+            ),
+            "default": False,
+        },
+        "include_user_avatar": {
+            "type": "boolean",
+            "description": (
+                "是否包含用户头像作为参考图像。"
+                "当用户说'根据我'、'我的头像'或@某人时设置为true"
+            ),
+            "default": False,
+        },
+    }
+
+
+def _build_forum_property() -> dict[str, Any]:
+    return {
+        "type": "boolean",
+        "description": (
+            "是否用于论坛发帖。当用户明确表示要将生成的图片发到论坛/AstrBook时设置为true。"
+            "设置为true时，工具会等待图片生成完成并返回图片路径，不会自动发送给用户。"
+            "你需要使用返回的路径调用 upload_image 上传到论坛图床。"
+        ),
+        "default": False,
+    }
+
+
+def _build_tool_description(plugin: Any) -> str:
+    prefix = (
+        "使用 Gemini 模型生成或修改图像。"
+        "当用户请求图像生成、绘画、改图、换风格或手办化时调用此函数。"
+        "此工具会先在前台短时间等待结果，若快速完成则直接返回图片；"
+        "若超出等待时间则自动转为后台生成，完成后自动发送给用户。"
+        "判断逻辑：用户说'改成'、'变成'、'基于'、'修改'、'改图'等词时，"
+        "设置 use_reference_images=true；用户说'根据我'、'我的头像'或@某人时，"
+        "设置 use_reference_images=true 和 include_user_avatar=true。"
+    )
+    if _is_openai_images_custom_size_mode(plugin):
+        return (
+            prefix + "当前供应商为 OpenAI Images 且已启用自定义尺寸模式。"
+            "如果用户指定尺寸，设置 size，且不要传 resolution 或 aspect_ratio。"
+            f"size {_custom_size_constraints_text()}"
+            "【重要】当用户明确表示要将生成的图片发到论坛/AstrBook时，设置 for_forum=true。"
+            "此时工具会等待图片生成完成后返回图片路径，你需要使用 upload_image 工具将图片上传到论坛图床获取URL，"
+            "然后在发帖或回复时使用 Markdown 格式 ![描述](URL) 插入图片。"
+        )
+
+    return (
+        prefix
+        + "用户指定分辨率时设置 resolution（仅限 1K/2K/4K 大写）；"
+        + "用户指定比例时设置 aspect_ratio（仅限 1:1/16:9/4:3/3:2/9:16/4:5/5:4/21:9/3:4/2:3）。"
+        + "【重要】当用户明确表示要将生成的图片发到论坛/AstrBook时，设置 for_forum=true。"
+        + "此时工具会等待图片生成完成后返回图片路径，你需要使用 upload_image 工具将图片上传到论坛图床获取URL，"
+        + "然后在发帖或回复时使用 Markdown 格式 ![描述](URL) 插入图片。"
+    )
+
+
+def _build_tool_parameters(plugin: Any) -> dict[str, Any]:
+    properties = _build_tool_base_properties()
+
+    if _is_openai_images_custom_size_mode(plugin):
+        settings = _get_openai_images_settings(plugin)
+        configured_size = (
+            str(settings.get("custom_size") or "").strip() or CUSTOM_SIZE_DEFAULT
+        )
+        properties["size"] = {
+            "type": "string",
+            "description": (
+                "OpenAI Images 自定义尺寸。"
+                "如用户未指定尺寸可省略，省略时使用当前插件配置默认值 "
+                f"{configured_size}。{_custom_size_constraints_text()}"
+            ),
+        }
+    else:
+        properties["resolution"] = {
+            "type": "string",
+            "description": (
+                "图像分辨率，可选参数，留空使用默认配置。"
+                "仅支持：1K、2K、4K（必须大写英文）"
+            ),
+            "enum": list(RESOLUTION_OPTIONS),
+        }
+        properties["aspect_ratio"] = {
+            "type": "string",
+            "description": (
+                "图像长宽比，可选参数，留空使用默认配置。"
+                "仅支持：1:1、16:9、4:3、3:2、9:16、4:5、5:4、21:9、3:4、2:3"
+            ),
+            "enum": list(ASPECT_RATIO_OPTIONS),
+        }
+
+    properties["for_forum"] = _build_forum_property()
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": ["prompt"],
+    }
+
+
+def _build_tool_retry_message(message: str, *, custom_size_mode: bool) -> str:
+    if custom_size_mode:
+        return (
+            f"❌ 参数错误：{message}\n"
+            "当前工具处于 OpenAI Images 自定义尺寸模式，只能传 size，不要传 resolution 或 aspect_ratio。\n"
+            f"size {_custom_size_constraints_text()}\n"
+            "请修正参数后重新调用 gemini_image_generation 工具。"
+        )
+
+    return (
+        f"❌ 参数错误：{message}\n"
+        f"resolution 仅支持：{'/'.join(RESOLUTION_OPTIONS)}；"
+        f"aspect_ratio 仅支持：{'/'.join(ASPECT_RATIO_OPTIONS)}。\n"
+        "请修正参数后重新调用 gemini_image_generation 工具；如果用户没有指定这些参数，可以直接省略。"
+    )
+
+
+def _build_config_size_notice(configured_size: str) -> str:
+    return (
+        "【提醒】本次未显式传入 size，"
+        f"已使用插件配置中的 openai_images.custom_size={configured_size}。"
+        "如果后续需要指定尺寸，请在下次调用工具时显式传入合法的 size。"
+    )
 
 
 def _build_reference_info(ref_count: int, avatar_count: int) -> str:
@@ -60,7 +248,10 @@ def _build_param_info(
 ) -> str:
     parts: list[str] = []
     if resolution:
-        parts.append(f"分辨率 {resolution}")
+        if re.fullmatch(r"\d+[xX]\d+", resolution):
+            parts.append(f"尺寸 {resolution}")
+        else:
+            parts.append(f"分辨率 {resolution}")
     if aspect_ratio:
         parts.append(f"比例 {aspect_ratio}")
     return f"（{', '.join(parts)}）" if parts else ""
@@ -120,6 +311,7 @@ async def _build_call_tool_result(
     text_content: str | None,
     message_sender: Any,
     api_client: Any | None = None,
+    llm_notice: str | None = None,
 ) -> mcp.types.CallToolResult:
     """将图像生成结果转换为 AstrBot 官方 CallToolResult 格式（含 ImageContent）。
 
@@ -210,6 +402,8 @@ async def _build_call_tool_result(
     text_parts: list[str] = []
     if prepared_text:
         text_parts.append(prepared_text)
+    if llm_notice:
+        text_parts.append(llm_notice)
     # thought signature 只能留在 Provider 协议层，绝不能拼进 Tool 文本结果。
     # 否则下游 Runner 会把这类超大 opaque 数据重新塞回上下文。
     if text_parts:
@@ -231,14 +425,18 @@ def _build_background_start_notice(
     avatar_count: int,
     resolution: str | None,
     aspect_ratio: str | None,
+    llm_notice: str | None = None,
 ) -> str:
     ref_info = _build_reference_info(ref_count, avatar_count)
     param_info = _build_param_info(resolution, aspect_ratio)
-    return (
+    message = (
         f"[图像生成任务已启动]{ref_info}{param_info}\n"
         "图片正在后台生成中，通常需要 10-30 秒，高质量生成可能长达几百秒，生成完成后会自动发送给用户。\n"
         "请用你维持原有的人设告诉用户：图片正在生成，请稍等片刻，完成后会自动发送。"
     )
+    if llm_notice:
+        message += f"\n{llm_notice}"
+    return message
 
 
 def _build_background_fallback_notice(
@@ -247,15 +445,19 @@ def _build_background_fallback_notice(
     resolution: str | None,
     aspect_ratio: str | None,
     waited_seconds: int,
+    llm_notice: str | None = None,
 ) -> str:
     ref_info = _build_reference_info(ref_count, avatar_count)
     param_info = _build_param_info(resolution, aspect_ratio)
-    return (
+    message = (
         f"[图像生成任务已转入后台]{ref_info}{param_info}\n"
         f"前台等待 {waited_seconds} 秒后仍未完成，已切换为后台继续生成。\n"
         "图片生成完成后会自动发送给用户。\n"
         "请用你维持原有的人设告诉用户：图片正在生成，请稍等片刻，完成后会自动发送。"
     )
+    if llm_notice:
+        message += f"\n{llm_notice}"
+    return message
 
 
 def _resolve_foreground_wait_seconds(plugin: Any, event: Any) -> int:
@@ -462,76 +664,15 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
 
     name: str = "gemini_image_generation"
     handler_module_path: str = "astrbot_plugin_gemini_image_generation"
-    description: str = (
-        "使用 Gemini 模型生成或修改图像。"
-        "当用户请求图像生成、绘画、改图、换风格或手办化时调用此函数。"
-        "此工具会先在前台短时间等待结果，若快速完成则直接返回图片；"
-        "若超出等待时间则自动转为后台生成，完成后自动发送给用户。"
-        "判断逻辑：用户说'改成'、'变成'、'基于'、'修改'、'改图'等词时，"
-        "设置 use_reference_images=true；用户说'根据我'、'我的头像'或@某人时，"
-        "设置 use_reference_images=true 和 include_user_avatar=true。"
-        "用户指定分辨率时设置 resolution（仅限 1K/2K/4K 大写）；"
-        "用户指定比例时设置 aspect_ratio（仅限 1:1/16:9/4:3/3:2/9:16/4:5/5:4/21:9/3:4/2:3）。"
-        "【重要】当用户明确表示要将生成的图片发到论坛/AstrBook时，设置 for_forum=true。"
-        "此时工具会等待图片生成完成后返回图片路径，你需要使用 upload_image 工具将图片上传到论坛图床获取URL，"
-        "然后在发帖或回复时使用 Markdown 格式 ![描述](URL) 插入图片。"
-    )
-    parameters: dict = Field(
-        default_factory=lambda: {
-            "type": "object",
-            "properties": {
-                "prompt": {
-                    "type": "string",
-                    "description": "图像生成或修改的详细描述",
-                },
-                "use_reference_images": {
-                    "type": "boolean",
-                    "description": (
-                        "是否使用上下文中的参考图片。"
-                        "当用户意图是修改、变换或基于现有图片时设置为true"
-                    ),
-                    "default": False,
-                },
-                "include_user_avatar": {
-                    "type": "boolean",
-                    "description": (
-                        "是否包含用户头像作为参考图像。"
-                        "当用户说'根据我'、'我的头像'或@某人时设置为true"
-                    ),
-                    "default": False,
-                },
-                "resolution": {
-                    "type": "string",
-                    "description": (
-                        "图像分辨率，可选参数，留空使用默认配置。"
-                        "仅支持：1K、2K、4K（必须大写英文）"
-                    ),
-                    "enum": sorted(VALID_RESOLUTIONS),
-                },
-                "aspect_ratio": {
-                    "type": "string",
-                    "description": (
-                        "图像长宽比，可选参数，留空使用默认配置。"
-                        "仅支持：1:1、16:9、4:3、3:2、9:16、4:5、5:4、21:9、3:4、2:3"
-                    ),
-                    "enum": sorted(VALID_ASPECT_RATIOS),
-                },
-                "for_forum": {
-                    "type": "boolean",
-                    "description": (
-                        "是否用于论坛发帖。当用户明确表示要将生成的图片发到论坛/AstrBook时设置为true。"
-                        "设置为true时，工具会等待图片生成完成并返回图片路径，不会自动发送给用户。"
-                        "你需要使用返回的路径调用 upload_image 上传到论坛图床。"
-                    ),
-                    "default": False,
-                },
-            },
-            "required": ["prompt"],
-        }
-    )
+    description: str = Field(default_factory=str)
+    parameters: dict = Field(default_factory=dict)
 
     # 插件实例引用（在创建时设置）
     plugin: Any = Field(default=None, repr=False)
+
+    def refresh_from_plugin(self) -> None:
+        self.description = _build_tool_description(self.plugin)
+        self.parameters = _build_tool_parameters(self.plugin)
 
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
@@ -542,12 +683,15 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         Foreground-first hybrid mode for normal chats.
         When for_forum=True, the tool waits synchronously and returns image paths.
         """
+        self.refresh_from_plugin()
+
         prompt = kwargs.get("prompt") or ""
         if not prompt.strip():
             return "❌ 缺少必填参数：图像描述不能为空"
 
         use_reference_images = kwargs.get("use_reference_images", False)
         include_user_avatar = kwargs.get("include_user_avatar", False)
+        size = kwargs.get("size") or None
         resolution = kwargs.get("resolution") or None
         aspect_ratio = kwargs.get("aspect_ratio") or None
         for_forum = kwargs.get("for_forum", False)
@@ -574,13 +718,69 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         # 布尔参数已在工具定义中声明为 boolean 类型，直接使用
         include_avatar = bool(include_user_avatar)
         include_ref_images = bool(use_reference_images)
+        config_value_notice: str | None = None
 
-        # 验证分辨率和比例参数，无效值回退到默认配置
-        # 大小写兼容：LLM 有时会输出小写（如 "1k"），统一转换为大写后验证
-        if resolution:
-            resolution = resolution.upper()
-        resolution = resolution if resolution in VALID_RESOLUTIONS else None
-        aspect_ratio = aspect_ratio if aspect_ratio in VALID_ASPECT_RATIOS else None
+        custom_size_mode = _is_openai_images_custom_size_mode(plugin)
+        if custom_size_mode:
+            if resolution is not None:
+                return _build_tool_retry_message(
+                    "当前模式不支持 resolution 参数，请改用 size。",
+                    custom_size_mode=True,
+                )
+            if aspect_ratio is not None:
+                return _build_tool_retry_message(
+                    "当前模式不支持 aspect_ratio 参数，请改用 size。",
+                    custom_size_mode=True,
+                )
+            if size is not None and str(size).strip():
+                try:
+                    resolution = validate_custom_size(size, field_name="size")
+                except ValueError as exc:
+                    return _build_tool_retry_message(
+                        str(exc),
+                        custom_size_mode=True,
+                    )
+            else:
+                settings = _get_openai_images_settings(plugin)
+                try:
+                    resolution = validate_custom_size(
+                        settings.get("custom_size"),
+                        field_name="openai_images.custom_size",
+                    )
+                except ValueError as exc:
+                    return f"❌ 插件配置错误：{exc}"
+                config_value_notice = _build_config_size_notice(resolution)
+                logger.warning(
+                    "[工具调用] OpenAI Images 自定义尺寸模式未显式提供 size，"
+                    f"已使用插件配置中的 openai_images.custom_size={resolution}"
+                )
+            aspect_ratio = None
+        else:
+            if size is not None and str(size).strip():
+                return _build_tool_retry_message(
+                    "当前模式不支持 size 参数，请使用 resolution 和 aspect_ratio，或直接省略。",
+                    custom_size_mode=False,
+                )
+
+            if resolution is not None:
+                resolution = str(resolution).strip().upper()
+                if resolution not in VALID_RESOLUTIONS:
+                    return _build_tool_retry_message(
+                        f"resolution 仅支持 {'/'.join(RESOLUTION_OPTIONS)}，当前值: {kwargs.get('resolution')!r}",
+                        custom_size_mode=False,
+                    )
+            else:
+                resolution = None
+
+            if aspect_ratio is not None:
+                aspect_ratio = str(aspect_ratio).strip()
+                if aspect_ratio not in VALID_ASPECT_RATIOS:
+                    return _build_tool_retry_message(
+                        f"aspect_ratio 仅支持 {'/'.join(ASPECT_RATIO_OPTIONS)}，当前值: {kwargs.get('aspect_ratio')!r}",
+                        custom_size_mode=False,
+                    )
+            else:
+                aspect_ratio = None
 
         # 获取参考图片（需要在启动后台任务前获取，因为 event 可能在之后失效）
         reference_images, avatar_reference = await plugin._fetch_images_from_event(
@@ -600,7 +800,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         logger.info(
             f"[工具调用] 启动图像生成任务："
             f"提示词长度={prompt_len} 参考图={ref_count} 张 头像={avatar_count} 张 "
-            f"分辨率={resolution} 比例={aspect_ratio} 发帖模式={for_forum}"
+            f"尺寸/分辨率={resolution} 比例={aspect_ratio} 发帖模式={for_forum}"
         )
 
         # ========== for_forum 模式：同步等待生成完成 ==========
@@ -681,6 +881,9 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                         ["", f"【AI 生成的图片描述】{text_content[:200]}..."]
                     )
 
+                if config_value_notice:
+                    result_lines.extend(["", config_value_notice])
+
                 logger.info(
                     f"[后台任务] 图片生成成功，返回 {len(available_images)} 张图片"
                 )
@@ -724,6 +927,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                     avatar_count=avatar_count,
                     resolution=resolution,
                     aspect_ratio=aspect_ratio,
+                    llm_notice=config_value_notice,
                 )
 
             logger.debug(f"[前台等待] 最多等待 {foreground_wait_seconds} 秒。")
@@ -753,6 +957,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                             text_content=text_content,
                             message_sender=plugin.message_sender,
                             api_client=plugin.api_client,
+                            llm_notice=config_value_notice,
                         ),
                         timeout=30,  # 下载最多给 30 秒
                     )
@@ -774,10 +979,13 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                         generation_task=done_task,
                         scene="后台任务(代理下载超时回退)",
                     )
-                    return (
+                    result_message = (
                         "[图片生成已完成，正在通过代理下载并发送]\n"
                         "由于代理下载耗时较长，已转为后台发送，完成后会自动发给用户。"
                     )
+                    if config_value_notice:
+                        result_message += f"\n{config_value_notice}"
+                    return result_message
             else:
                 error_msg = (
                     result_data if isinstance(result_data, str) else "❌ 图像生成失败"
@@ -798,6 +1006,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                 resolution=resolution,
                 aspect_ratio=aspect_ratio,
                 waited_seconds=foreground_wait_seconds,
+                llm_notice=config_value_notice,
             )
         except Exception as e:
             logger.error(f"[前台等待] 图像生成异常：{e}", exc_info=True)

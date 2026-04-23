@@ -74,6 +74,7 @@ class GeminiImageGenerationPlugin(Star):
         # 初始化状态
         self.api_client: APIClient | None = None
         self._cleanup_task: asyncio.Task | None = None
+        self.llm_image_tool: GeminiImageGenerationTool | None = None
 
         # 获取插件数据目录
         self._plugin_data_dir = os.path.join(
@@ -87,14 +88,14 @@ class GeminiImageGenerationPlugin(Star):
         # 初始化各功能模块
         self._init_modules()
 
+        # 尝试加载 API 客户端（支持插件重载场景）
+        self._load_provider_from_context(quiet=True)
+
         # 注册 LLM 工具
         self._register_llm_tools()
 
         # 启动定时清理任务
         self._start_cleanup_task()
-
-        # 尝试加载 API 客户端（支持插件重载场景）
-        self._load_provider_from_context(quiet=True)
 
     def _load_version(self) -> str:
         """从 metadata.yaml 读取版本号"""
@@ -198,6 +199,8 @@ class GeminiImageGenerationPlugin(Star):
         """注册 LLM 工具到 Context"""
         try:
             tool = GeminiImageGenerationTool(plugin=self)
+            tool.refresh_from_plugin()
+            self.llm_image_tool = tool
             self.context.add_llm_tools(tool)
             logger.debug("已注册 GeminiImageGenerationTool 到 LLM 工具列表")
         except Exception as e:
@@ -455,11 +458,15 @@ class GeminiImageGenerationPlugin(Star):
         """AstrBot 完成初始化后加载提供商"""
         # 初始化时尝试加载
         self._load_provider_from_context(quiet=True)
+        if self.llm_image_tool:
+            self.llm_image_tool.refresh_from_plugin()
         if self.cfg.help_render_mode == "local":
             asyncio.create_task(self._ensure_font_for_local_mode())
 
         if not self.api_client:
             self._load_provider_from_context()
+            if self.llm_image_tool:
+                self.llm_image_tool.refresh_from_plugin()
 
         if self.api_client:
             logger.info("Gemini 图像生成插件已加载")

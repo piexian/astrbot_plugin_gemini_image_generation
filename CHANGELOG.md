@@ -18,6 +18,30 @@
 
 </details>
 
+## [1.9.13] - 2026-04-23
+
+### Added
+
+- `openai_images` 新增 `size_mode` / `custom_size` 配置，支持在 provider override 条目内显式切换预设尺寸模式与自定义尺寸模式
+- 新增 `tl/openai_image_size.py`，统一处理 OpenAI 官方自定义尺寸约束校验与归一化
+
+### Changed
+
+- `openai_images` 默认模型调整为 `gpt-image-1`
+- LLM 生图工具会根据当前 provider 配置动态切换参数定义
+  - `openai_images + size_mode=custom` 时仅暴露 `size`
+  - 其他模式继续使用 `resolution` / `aspect_ratio`
+- README 补充 OpenAI 官方文档链接，并更新项目结构说明以反映当前仓库模块布局
+
+### Fixed
+
+- 配置保存后插件重载场景下，`openai_images` 自定义尺寸模式现在会随配置动态刷新工具注册信息
+- 修复 LLM 工具在非法 `resolution` / `aspect_ratio` / `size` 输入下静默回退默认值的问题，改为直接报错并要求模型修正参数后重试
+- 当 `openai_images + size_mode=custom` 且本次未显式传入 `size` 时：
+  - 使用配置文件中的 `custom_size`
+  - 输出警告级别日志
+  - 在工具返回结果中提醒 LLM 本次使用了配置值
+
 ## [1.9.12] - 2026-04-21
 
 ### Fixed
