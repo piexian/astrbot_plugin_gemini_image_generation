@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/Version-v1.9.13-blue)
+![Version](https://img.shields.io/badge/Version-v1.9.14-blue)
 ![License](https://img.shields.io/badge/License-AGPL--3.0-orange)
 
 **🎨 强大的 Gemini 图像生成插件，支持智能头像参考和智能表情包切分**
@@ -155,8 +155,8 @@
 | `api_base` | - | API 端点地址，留空使用 OpenAI 官方 |
 | `quality` | - | 图像质量（GPT image: auto/high/medium/low；dall-e-3: hd/standard） |
 | `response_format` | `b64_json` | 响应格式（b64_json/url） |
-| `size_mode` | `preset` | 尺寸模式：`preset` 使用全局分辨率映射，`custom` 使用 `custom_size` 直接传给 OpenAI |
-| `custom_size` | `1024x1024` | 自定义尺寸示例值。仅 `size_mode=custom` 生效；该模式下此项必填，格式需为 `WxH` |
+| `size_mode` | `preset` | 尺寸模式：`preset` 使用全局分辨率映射；`custom` 使用 `custom_size` 直接传给 OpenAI |
+| `custom_size` | `1024x1024` | 自定义尺寸，仅 `size_mode=custom` 生效。格式 `WxH`（支持 `x` 或 `×`） |
 | `style` | - | 图像风格，仅 dall-e-3（vivid/natural） |
 | `background` | - | 背景透明度，仅 GPT image（auto/transparent/opaque） |
 | `output_format` | - | 输出格式，仅 GPT image（png/jpeg/webp） |
@@ -164,13 +164,18 @@
 | `moderation` | - | 审核模式，仅 GPT image（如 low） |
 | `generations_only` | `false` | 开启后强制只用文生图端点，不走 /v1/images/edits |
 
-> `size_mode=custom` 时，插件会在发送请求前校验 `custom_size` 是否满足 OpenAI 官方限制：
-> 最大边 `<= 3840`、宽高均为 `16` 的倍数、长短边比 `<= 3:1`、总像素在 `655360-8294400` 之间。
-> 官方文档：
-> <https://developers.openai.com/api/docs/guides/image-generation>
-> <https://developers.openai.com/api/docs/models/gpt-image-2>
+> **尺寸校验**：`size_mode=custom` 时，插件会在发送请求前校验尺寸是否满足 OpenAI 官方限制——最大边 `≤ 3840`、宽高均为 `16` 的倍数、长短边比 `≤ 3:1`、总像素在 `655360–8294400` 之间。
+> 官方文档：<https://developers.openai.com/api/docs/guides/image-generation> / <https://developers.openai.com/api/docs/models/gpt-image-2>
 
-> **LLM 工具行为**：当 `api_type=openai_images` 且 `size_mode=custom` 时，LLM 工具参数会从 `resolution`/`aspect_ratio` 切换为仅暴露 `size`。若 LLM 未显式传入 `size`，插件会自动使用配置中的 `custom_size` 值，并在返回结果中提示模型。
+**`size_mode=custom` 各调用路径行为：**
+
+| 调用路径 | `size` 取值 |
+|----------|------------|
+| 普通生图/改图 | 直接使用配置中的 `custom_size` |
+| 快速模式 | 根据模式预设的 `resolution + aspect_ratio` 自动换算（如 `2K + 16:9 → 2048x1152`） |
+| LLM 工具调用 | LLM 显式传入 `size` 时以该值为准，否则使用配置中的 `custom_size` |
+
+> **LLM 工具参数切换**：`size_mode=custom` 时，LLM 工具仅暴露 `size` 参数（格式 `WxH`），不再接受 `resolution`/`aspect_ratio`。传入非法值时工具直接返回校验错误，不会静默回退。
 
 **xai_settings**（xAI Images API 专用配置）
 | 配置项 | 默认值 | 说明 |

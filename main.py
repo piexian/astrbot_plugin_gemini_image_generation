@@ -57,6 +57,7 @@ from .tl.enhanced_prompts import (
     get_wallpaper_prompt,
 )
 from .tl.llm_tools import GeminiImageGenerationTool
+from .tl.openai_image_size import derive_custom_size_from_preset_params
 from .tl.tl_api import APIClient, ApiRequestConfig, get_api_client
 from .tl.tl_utils import AvatarManager, cleanup_old_images, format_error_message
 
@@ -193,7 +194,48 @@ class GeminiImageGenerationPlugin(Star):
                 model=self.cfg.model,
                 api_type=self.cfg.api_type,
                 api_base=self.cfg.api_base,
+                resolution=self.cfg.resolution,
+                aspect_ratio=self.cfg.aspect_ratio,
             )
+
+    def _get_openai_images_settings(self) -> dict[str, Any]:
+        settings = getattr(self.cfg, "openai_images_settings", None)
+        if isinstance(settings, dict):
+            return settings
+
+        overrides = getattr(self.cfg, "provider_overrides", None) or {}
+        override_settings = overrides.get("openai_images")
+        return override_settings if isinstance(override_settings, dict) else {}
+
+    def _apply_openai_custom_size_runtime_defaults(self) -> None:
+        return
+
+    def _resolve_quick_mode_custom_size_overrides(
+        self,
+        resolution: str | None,
+        aspect_ratio: str | None,
+    ) -> tuple[str | None, str | None]:
+        api_type_norm = (self.cfg.api_type or "").strip().lower().replace("-", "_")
+        if api_type_norm != "openai_images":
+            return resolution, aspect_ratio
+
+        settings = self._get_openai_images_settings()
+        size_mode = str(settings.get("size_mode") or "").strip().lower()
+        if size_mode != "custom":
+            return resolution, aspect_ratio
+
+        try:
+            custom_size = derive_custom_size_from_preset_params(
+                resolution,
+                aspect_ratio,
+                resolution_field_name="quick_mode.resolution",
+                aspect_ratio_field_name="quick_mode.aspect_ratio",
+            )
+        except ValueError as exc:
+            logger.warning(f"[快捷模式] 根据预设参数生成 custom_size 失败: {exc}")
+            return resolution, aspect_ratio
+
+        return custom_size, ""
 
     def _register_llm_tools(self):
         """注册 LLM 工具到 Context"""
@@ -411,6 +453,8 @@ class GeminiImageGenerationPlugin(Star):
                     )
                 except Exception as e:
                     logger.debug(f"绑定 openai_images_settings 到 API client 失败: {e}")
+
+            self._apply_openai_custom_size_runtime_defaults()
             # 绑定 KeyManager 到 API client（支持多 Key 轮换和每日限额）
             if hasattr(self, "key_manager") and self.key_manager:
                 self.api_client.set_key_manager(self.key_manager)
@@ -670,6 +714,12 @@ class GeminiImageGenerationPlugin(Star):
         effective_resolution, effective_aspect_ratio = self._resolve_quick_mode_params(
             mode_key, resolution, aspect_ratio
         )
+        effective_resolution, effective_aspect_ratio = (
+            self._resolve_quick_mode_custom_size_overrides(
+                effective_resolution,
+                effective_aspect_ratio,
+            )
+        )
 
         yield event.plain_result(f"🎨 使用{mode_name}模式生成图像...")
 
@@ -844,6 +894,12 @@ class GeminiImageGenerationPlugin(Star):
 
         sticker_resolution, sticker_aspect_ratio = self._resolve_quick_mode_params(
             "sticker", "4K", "16:9"
+        )
+        sticker_resolution, sticker_aspect_ratio = (
+            self._resolve_quick_mode_custom_size_overrides(
+                sticker_resolution,
+                sticker_aspect_ratio,
+            )
         )
 
         if not self.cfg.enable_sticker_split:

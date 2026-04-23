@@ -8,7 +8,11 @@ from typing import Any
 
 from astrbot.api import logger
 
-from .openai_image_size import normalize_size_mode, validate_custom_size
+from .openai_image_size import (
+    normalize_custom_size_input,
+    normalize_size_mode,
+    validate_custom_size,
+)
 
 # 豆包组图数量限制常量
 DOUBAO_SEQUENTIAL_IMAGES_MIN = 2
@@ -17,14 +21,24 @@ DOUBAO_SEQUENTIAL_IMAGES_MAX = 15
 
 def _validate_openai_images_settings(settings: dict[str, Any]) -> None:
     """校验 openai_images 覆盖配置。"""
-    size_mode = normalize_size_mode(settings.get("size_mode"))
+    try:
+        size_mode = normalize_size_mode(settings.get("size_mode"))
+    except ValueError as exc:
+        logger.warning(
+            f"[配置加载] {exc}；已回退为 preset，以允许插件继续加载并在 WebUI 中修复配置"
+        )
+        size_mode = "preset"
     settings["size_mode"] = size_mode
 
     custom_size = settings.get("custom_size")
     if size_mode == "custom":
-        settings["custom_size"] = validate_custom_size(custom_size)
+        settings["custom_size"] = normalize_custom_size_input(custom_size)
+        try:
+            settings["custom_size"] = validate_custom_size(custom_size)
+        except ValueError as exc:
+            logger.warning(f"[配置加载] {exc}；已保留当前值，以便在 WebUI 中继续修改")
     elif isinstance(custom_size, str):
-        settings["custom_size"] = custom_size.strip()
+        settings["custom_size"] = normalize_custom_size_input(custom_size)
 
 
 @dataclass

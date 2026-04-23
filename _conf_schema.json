@@ -296,14 +296,14 @@
               "size_mode": {
                 "description": "尺寸模式",
                 "type": "string",
-                "hint": "preset 使用全局分辨率映射；custom 使用下方 custom_size 直接透传到 OpenAI Images API",
+                "hint": "preset 使用全局分辨率映射；custom 使用下方 custom_size 直接透传到 OpenAI Images API。快速模式会用其预设 resolution + aspect_ratio 自动换算合法尺寸",
                 "default": "preset",
                 "options": ["preset", "custom"]
               },
               "custom_size": {
                 "description": "自定义尺寸",
                 "type": "string",
-                "hint": "仅在 size_mode=custom 时生效。默认值仅作示例，可编辑或删除；但 custom 模式下此项必须非空，格式为 WxH，如 1024x1024，且需满足官方限制：最大边<=3840、宽高均为16倍数、长短边比<=3:1、总像素 655360-8294400",
+                "hint": "仅在 size_mode=custom 时生效。普通生图/改图默认直接使用当前值；快速模式会按预设 resolution + aspect_ratio 自动换算。具体限制与示例请查看 README。",
                 "default": "1024x1024",
                 "condition": {"size_mode": "custom"}
               },

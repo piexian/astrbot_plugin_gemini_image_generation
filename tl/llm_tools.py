@@ -91,7 +91,7 @@ def _is_openai_images_custom_size_mode(plugin: Any) -> bool:
 
 def _custom_size_constraints_text() -> str:
     return (
-        f"格式必须为 WxH，例如 {CUSTOM_SIZE_DEFAULT} 或 2048x1152；"
+        f"格式必须为 WxH（支持 x 或 ×），例如 {CUSTOM_SIZE_DEFAULT} 或 2048x1152；"
         f"最大边 <= {CUSTOM_SIZE_MAX_EDGE}px，宽高都必须是 16 的倍数，"
         f"长边与短边之比 <= 3:1，总像素必须在 {CUSTOM_SIZE_MIN_PIXELS} 到 "
         f"{CUSTOM_SIZE_MAX_PIXELS} 之间。"

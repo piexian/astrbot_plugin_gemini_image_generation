@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import base64
-import re
 from typing import Any
 
 import aiohttp
@@ -18,7 +17,10 @@ import aiohttp
 from astrbot.api import logger
 
 from ..api_types import APIError, ApiRequestConfig
-from ..openai_image_size import normalize_size_mode, validate_custom_size
+from ..openai_image_size import (
+    normalize_size_mode,
+    resolve_openai_custom_size,
+)
 from ..tl_utils import save_base64_image
 from .base import ProviderRequest
 
@@ -61,7 +63,9 @@ def _get_size_mapping(model: str) -> dict[str, str]:
 
 
 def _resolve_size_value(
-    model: str, resolution: str | None, settings: dict[str, Any]
+    model: str,
+    resolution: str | None,
+    settings: dict[str, Any],
 ) -> str | None:
     """根据配置和请求参数决定最终传给 OpenAI Images API 的 size。"""
     try:
@@ -70,13 +74,14 @@ def _resolve_size_value(
         raise APIError(str(e), None, "invalid_size_mode", retryable=False) from e
 
     if size_mode == "custom":
-        if resolution and re.fullmatch(r"\s*\d+\s*[xX]\s*\d+\s*", resolution):
-            try:
-                return validate_custom_size(resolution, field_name="size")
-            except ValueError as e:
-                raise APIError(str(e), None, "invalid_size", retryable=False) from e
         try:
-            return validate_custom_size(settings.get("custom_size"))
+            return resolve_openai_custom_size(
+                resolution,
+                None,
+                None,
+                settings,
+                size_field_name="size",
+            )
         except ValueError as e:
             raise APIError(str(e), None, "invalid_size", retryable=False) from e
 
@@ -282,7 +287,11 @@ class OpenAIImagesProvider:
         }
 
         # ---- size ----
-        size_value = _resolve_size_value(model, config.resolution, settings)
+        size_value = _resolve_size_value(
+            model,
+            config.resolution,
+            settings,
+        )
         if size_value:
             payload["size"] = size_value
 
@@ -397,7 +406,11 @@ class OpenAIImagesProvider:
         form.add_field("model", model)
 
         # ---- size ----
-        size_value = _resolve_size_value(model, config.resolution, settings)
+        size_value = _resolve_size_value(
+            model,
+            config.resolution,
+            settings,
+        )
         if size_value:
             form.add_field("size", size_value)
 
