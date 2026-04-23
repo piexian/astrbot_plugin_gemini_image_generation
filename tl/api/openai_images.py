@@ -65,7 +65,6 @@ def _get_size_mapping(model: str) -> dict[str, str]:
 def _resolve_size_value(
     model: str,
     resolution: str | None,
-    aspect_ratio: str | None,
     settings: dict[str, Any],
 ) -> str | None:
     """根据配置和请求参数决定最终传给 OpenAI Images API 的 size。"""
@@ -291,7 +290,6 @@ class OpenAIImagesProvider:
         size_value = _resolve_size_value(
             model,
             config.resolution,
-            config.aspect_ratio,
             settings,
         )
         if size_value:
@@ -411,7 +409,6 @@ class OpenAIImagesProvider:
         size_value = _resolve_size_value(
             model,
             config.resolution,
-            config.aspect_ratio,
             settings,
         )
         if size_value:
