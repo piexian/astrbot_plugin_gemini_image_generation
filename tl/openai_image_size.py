@@ -25,7 +25,7 @@ def validate_custom_size(
 ) -> str:
     """Validate a custom OpenAI Images size against official constraints."""
     raw_size = str(value or "").strip()
-    normalized = raw_size.replace(" ", "")
+    normalized = re.sub(r"\s+", "", raw_size)
     if not normalized:
         raise ValueError(
             f"{field_name} 不能为空；切换到 custom 模式后必须填写合法尺寸，如 {CUSTOM_SIZE_DEFAULT}"
