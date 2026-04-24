@@ -9,7 +9,7 @@
 
 </div>
 
-> **升级提示**：v1.9.0 以后的配置文件格式不兼容 v1.8.x 及更早版本。升级后如遇配置模板显示错误，请查看 [CHANGELOG.md](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/CHANGELOG.md#配置迁移说明)。
+> **升级提示**：v1.9.0 以后的配置文件格式不兼容 v1.8.x 及更早版本。升级后如遇配置模板显示错误，请查看 [配置迁移说明](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/troubleshooting.md#配置迁移说明)。
 
 ## 功能概览
 
@@ -52,9 +52,9 @@ https://github.com/piexian/astrbot_plugin_gemini_image_generation
 
 常用配置入口：
 
-- [完整配置参考](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/docs/readme-refactor/docs/config.md)
-- [使用指南](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/docs/readme-refactor/docs/usage.md)
-- [故障排除](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/docs/readme-refactor/docs/troubleshooting.md)
+- [完整配置参考](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/config.md)
+- [使用指南](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/usage.md)
+- [故障排除](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/troubleshooting.md)
 - [新增 API 供应商](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/新增API供应商.md)
 
 ## 常用命令
@@ -74,7 +74,7 @@ https://github.com/piexian/astrbot_plugin_gemini_image_generation
 | `/切图` | 切割图片 | `/切图` 或 `/切图 4 4` |
 | `/生图帮助` | 查看帮助 | `/生图帮助` |
 
-更多参数、快速模式说明和 LLM 工具行为见 [使用指南](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/docs/readme-refactor/docs/usage.md)。
+更多参数、快速模式说明和 LLM 工具行为见 [使用指南](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/usage.md)。
 
 ## OpenAI Images 提示
 
@@ -86,7 +86,7 @@ https://github.com/piexian/astrbot_plugin_gemini_image_generation
 | 快速模式 | 根据模式预设的 `resolution + aspect_ratio` 自动换算 |
 | LLM 工具调用 | LLM 显式传入 `size` 时以该值为准，否则使用配置中的 `custom_size` |
 
-尺寸格式为 `WxH`，支持 `x` 或 `×`，例如 `1024x1024`、`2048×1152`。详细限制和示例见 [OpenAI Images 配置](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/docs/readme-refactor/docs/config.md#openai_images_settingsopenai-images-api-专用配置)。
+尺寸格式为 `WxH`，支持 `x` 或 `×`，例如 `1024x1024`、`2048×1152`。详细限制和示例见 [OpenAI Images 配置](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/config.md#openai_images_settingsopenai-images-api-专用配置)。
 
 ## 项目结构
 

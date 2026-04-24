@@ -1,5 +1,22 @@
 # 故障排除
 
+## 配置迁移说明
+
+v1.9.0 以后的配置文件格式不兼容 v1.8.x 及更早版本。首次加载新版插件时，会自动尝试迁移旧配置并在插件数据目录下写入迁移标记。
+
+主要迁移内容：
+
+- `limit_settings` 中的旧版限流字段会迁移为 `rate_limit_rules`。
+- `quick_mode_settings` 会从 object 格式迁移为 `template_list` 格式。
+- 迁移前会生成配置备份，文件名类似 `config_backup_pre_v1.9.0_*.json`。
+
+如果升级后 WebUI 配置模板显示异常，建议按顺序处理：
+
+1. 重载插件或重启 AstrBot，让迁移逻辑完整执行。
+2. 检查插件数据目录中的配置备份。
+3. 打开 WebUI 重新保存插件配置。
+4. 如仍异常，参考 [CHANGELOG.md](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/CHANGELOG.md) 中对应版本记录核对配置结构。
+
 ## 常见问题
 
 | 问题 | 处理方式 |
