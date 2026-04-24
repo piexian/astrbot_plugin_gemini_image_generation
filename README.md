@@ -99,6 +99,8 @@ astrbot_plugin_gemini_image_generation/
 └── tl/                     # 核心模块和供应商适配器
 ```
 
+`tl/` 目录接口索引见：[tl 模块接口说明](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/tl/README.md)。
+
 ## 贡献
 
 欢迎提交 [Issue](https://github.com/piexian/astrbot_plugin_gemini_image_generation/issues) 和 [Pull Request](https://github.com/piexian/astrbot_plugin_gemini_image_generation/pulls)。
