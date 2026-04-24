@@ -337,10 +337,11 @@ astrbot_plugin_gemini_image_generation/
 ### 致谢
 
 - [@MliKiowa](https://github.com/MliKiowa) - 图像切割算法
-- [@exynos967](https://github.com/exynos967) - 限流设置、手办化功能、OpenAI 兼容
+- [@exynos967](https://github.com/exynos967) - 限流设置、手办化功能、OpenAI 兼容、Zai 供应商、快速模式配置
 - [@zouyonghe](https://github.com/zouyonghe) - 代理支持、保留参考图尺寸、空格参数支持
 - [@vmoranv](https://github.com/vmoranv) - 表情包提示词优化
 - [@itismygo](https://github.com/itismygo) - grok2api 适配
+- [@xunxiing](https://github.com/xunxiing) - OpenAI Images 端点支持、配置提示修复
 - [@Clhikari](https://github.com/Clhikari) - 快速生图修复
 - [@YukiRa1n](https://github.com/YukiRa1n) - GIF 支持、多项修复
 
