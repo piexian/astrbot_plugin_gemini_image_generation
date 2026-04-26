@@ -12,6 +12,7 @@ tl/api/
 ├── openai_images.py  # OpenAI Images 原生端点
 ├── google.py         # Google/Gemini 官方接口
 ├── xai.py            # xAI Images 官方接口
+├── minimax.py        # MiniMax 图片生成接口
 ├── doubao.py         # 火山引擎 Ark / 豆包 Seedream
 ├── zai.py            # Zai 适配
 └── grok2api.py       # grok2api 适配
@@ -24,6 +25,7 @@ tl/api/
 | `google` / `gemini` / `googlegenai` / `google_genai` | `GoogleProvider` | Google/Gemini 官方接口 |
 | `openai_images` / `openai_images_api` | `OpenAIImagesProvider` | OpenAI `/v1/images/generations` 与 `/v1/images/edits` |
 | `xai` | `XAIProvider` | xAI 官方图像接口 |
+| `minimax` / `minimaxi` / `hailuo` | `MiniMaxProvider` | MiniMax `/v1/image_generation` |
 | `doubao` / `volcengine` / `ark` / `seedream` | `DoubaoProvider` | 火山引擎 Ark / 豆包 |
 | `zai` / `zai_*` | `ZaiProvider` | Zai 兼容接口 |
 | `grok2api` / `grok2_api` / `grok2api_*` | `Grok2ApiProvider` | grok2api 兼容接口 |
@@ -118,6 +120,7 @@ class MyProvider(OpenAICompatProvider):
 
 - `openai_images.py`：multipart/form-data 图像编辑、`b64_json` / `url` 响应解析、自定义尺寸校验。
 - `xai.py`：JSON 图像接口、参考图转 `data URI`。
+- `minimax.py`：MiniMax `/v1/image_generation`、`subject_reference` 图生图、`image_base64` / `image_urls` 响应解析。
 - `doubao.py`：火山 Ark 请求结构、尺寸映射、组图参数。
 - `google.py`：Google/Gemini 官方协议。
 

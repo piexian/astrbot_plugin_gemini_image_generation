@@ -109,7 +109,7 @@ class MiniMaxProvider:
         config: ApiRequestConfig,
         settings: dict[str, Any],
     ) -> dict[str, Any]:
-        model = str(settings.get("model") or config.model or "image-01").strip()
+        model = str(settings.get("model") or config.model or "image-01").strip().lower()
         payload: dict[str, Any] = {
             "model": model,
             "prompt": config.prompt,
@@ -155,7 +155,7 @@ class MiniMaxProvider:
             payload["aspect_ratio"] = aspect_ratio
         else:
             w, h = self._get_dimensions(settings)
-            if w and h:
+            if supports_explicit_dims and w and h:
                 payload["width"] = w
                 payload["height"] = h
             elif supports_explicit_dims and resolution_dim >= 512:
