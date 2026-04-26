@@ -1,6 +1,6 @@
 """
 工具函数模块
-提供头像管理、文件传输和图像处理功能
+提供头像管理、文件保存和图像处理功能
 """
 
 import asyncio
@@ -10,7 +10,6 @@ import hashlib
 import io
 import os
 import re
-import struct
 import time
 import urllib.parse
 from collections import OrderedDict
@@ -714,102 +713,6 @@ async def download_qq_avatar(
     except Exception as e:
         logger.error(f"下载头像 {cache_name} 失败: {e}")
         return None
-
-
-async def send_file(filename: str, host: str, port: int):
-    """
-    发送文件到远程服务器
-
-    Args:
-        filename: 要发送的文件路径
-        host: 远程主机地址
-        port: 远程主机端口
-
-    Returns:
-        str: 远程文件路径，失败返回None
-    """
-    reader = None
-    writer = None
-
-    async def recv_all(reader, size):
-        """接收指定大小的数据"""
-        data = b""
-        while len(data) < size:
-            chunk = await reader.read(size - len(data))
-            if not chunk:
-                break
-            data += chunk
-        return data
-
-    try:
-        # 添加连接超时控制
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(host, port),
-            timeout=5.0,  # 5秒连接超时
-        )
-
-        file_name = os.path.basename(filename)
-        file_name_bytes = file_name.encode("utf-8")
-
-        # 发送文件名长度和文件名
-        writer.write(struct.pack(">I", len(file_name_bytes)))
-        writer.write(file_name_bytes)
-
-        # 发送文件大小
-        file_size = os.path.getsize(filename)
-        writer.write(struct.pack(">Q", file_size))
-
-        # 发送文件内容，添加总体超时控制
-        await writer.drain()
-        with open(filename, "rb") as f:
-            while True:
-                data = f.read(4096)
-                if not data:
-                    break
-                writer.write(data)
-                await writer.drain()
-
-        logger.debug(f"文件 {file_name} 发送成功")
-
-        # 接收接收端发送的文件绝对路径
-        try:
-            file_abs_path_len_data = await recv_all(reader, 4)
-            if not file_abs_path_len_data:
-                logger.error("无法接收文件绝对路径长度")
-                return None
-            file_abs_path_len = struct.unpack(">I", file_abs_path_len_data)[0]
-
-            file_abs_path_data = await recv_all(reader, file_abs_path_len)
-            if not file_abs_path_data:
-                logger.error("无法接收文件绝对路径")
-                return None
-
-            file_abs_path = file_abs_path_data.decode("utf-8")
-            logger.debug(f"文件在远程服务器保存为: {file_abs_path}")
-            return file_abs_path
-
-        except Exception as e:
-            logger.error(f"接收远程文件路径失败: {e}")
-            return None
-
-    except asyncio.TimeoutError:
-        logger.error(f"连接 {host}:{port} 超时")
-        return None
-    except Exception as e:
-        logger.error(f"发送文件失败: {e}")
-        return None
-    finally:
-        if writer:
-            try:
-                writer.close()
-                await writer.wait_closed()
-            except Exception:
-                pass
-        if reader:
-            try:
-                reader.close()
-            except Exception:
-                pass
 
 
 def is_valid_base64_image_str(value: str) -> bool:
