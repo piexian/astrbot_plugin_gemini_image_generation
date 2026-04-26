@@ -18,6 +18,27 @@
 | `model` | - | 可选，覆盖提供商模型名称 |
 | `proxy` | - | 全局代理地址，支持 `http://`、`https://`、`socks5://`；留空读取环境变量 |
 | `vision_provider_id` | - | 可选，用于切图前 AI 识别网格行列 |
+| `provider_overrides` | `[]` | 可选，按 API 类型覆盖密钥、模型、端点、代理和每日限额 |
+
+## api_settings.provider_overrides
+
+`provider_overrides` 是 `template_list` 配置项。选择对应模板后，该模板内的配置会优先于 AstrBot 提供商配置：
+
+| 通用配置项 | 默认值 | 说明 |
+|------------|--------|------|
+| `api_keys` | `[]` | API Key 列表，支持多 Key 轮换 |
+| `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
+| `model` | - | 模型名称；豆包使用 `endpoint_id` |
+| `api_base` | - | API 端点地址 |
+| `proxy` | - | 独立代理地址，优先级高于全局代理和环境变量 |
+
+支持的模板：
+
+```text
+google / openai / zai / grok2api / xai / openai_images / doubao
+```
+
+下方 `doubao_settings`、`openai_images_settings`、`xai_settings` 章节对应这些模板的专用字段。旧版顶层配置仅作为兼容读取路径，新配置建议统一放在 `api_settings.provider_overrides` 中。
 
 ## image_generation_settings
 
@@ -92,10 +113,13 @@ avatar / poster / wallpaper / card / mobile / figure / sticker
 
 ## doubao_settings（豆包生图专用配置）
 
+配置路径：`api_settings.provider_overrides` 中选择 `doubao` 模板。
+
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
-| `api_key` | - | 火山引擎 API Key |
-| `endpoint_id` | `doubao-seedream-4.5` | Endpoint/Model ID，例如 `ep-xxxx` 或 `doubao-seedream-4.5` |
+| `api_keys` | `[]` | 火山引擎 API Key 列表，支持多 Key 轮换 |
+| `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
+| `endpoint_id` | `doubao-seedream-4-5-251128` | Endpoint/Model ID，例如 `ep-xxxx` 或 `doubao-seedream-4-5-251128` |
 | `api_base` | `https://ark.cn-beijing.volces.com` | API 端点地址 |
 | `default_size` | `2K` | 默认尺寸，支持 `2K` / `4K` 或具体尺寸 |
 | `watermark` | `false` | 是否添加水印 |
@@ -107,9 +131,12 @@ avatar / poster / wallpaper / card / mobile / figure / sticker
 
 ## openai_images_settings（OpenAI Images API 专用配置）
 
+配置路径：`api_settings.provider_overrides` 中选择 `openai_images` 模板。
+
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `api_keys` | `[]` | API Key 列表，支持多 Key 轮换 |
+| `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
 | `model` | `gpt-image-1` | 模型名称，例如 `dall-e-2` / `dall-e-3` / `gpt-image-1` / `gpt-image-2` |
 | `api_base` | - | API 端点地址，留空使用 OpenAI 官方 |
 | `quality` | - | 图像质量。GPT image：`auto` / `high` / `medium` / `low`；dall-e-3：`hd` / `standard` |
@@ -149,9 +176,12 @@ avatar / poster / wallpaper / card / mobile / figure / sticker
 
 ## xai_settings（xAI Images API 专用配置）
 
+配置路径：`api_settings.provider_overrides` 中选择 `xai` 模板。
+
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `api_keys` | `[]` | API Key 列表，支持多 Key 轮换 |
+| `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
 | `model` | `grok-imagine-image` | xAI 图像模型名称 |
 | `api_base` | `https://api.x.ai` | API 端点地址 |
 | `response_format` | `url` | 响应格式：`url` / `b64_json` |
