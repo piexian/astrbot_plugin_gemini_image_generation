@@ -11,6 +11,7 @@ from .base import ApiProvider
 from .doubao import DoubaoProvider
 from .google import GoogleProvider
 from .grok2api import Grok2ApiProvider
+from .minimax import MiniMaxProvider
 from .openai_compat import OpenAICompatProvider
 from .openai_images import OpenAIImagesProvider
 from .xai import XAIProvider
@@ -19,6 +20,7 @@ from .zai import ZaiProvider
 _DOUBAO: Final[DoubaoProvider] = DoubaoProvider()
 _GOOGLE: Final[GoogleProvider] = GoogleProvider()
 _GROK2API: Final[Grok2ApiProvider] = Grok2ApiProvider()
+_MINIMAX: Final[MiniMaxProvider] = MiniMaxProvider()
 _OPENAI: Final[OpenAICompatProvider] = OpenAICompatProvider()
 _OPENAI_IMAGES: Final[OpenAIImagesProvider] = OpenAIImagesProvider()
 _XAI: Final[XAIProvider] = XAIProvider()
@@ -62,6 +64,7 @@ def get_api_provider(api_type: str | None) -> ApiProvider:
     当前映射：
     - `google/gemini/...` -> GoogleProvider
     - `grok2api` -> Grok2ApiProvider
+    - `minimax/minimaxi/hailuo` -> MiniMaxProvider
     - `xai` -> XAIProvider
     - `zai` -> ZaiProvider
     - `doubao/volcengine/ark/seedream` -> DoubaoProvider
@@ -81,6 +84,10 @@ def get_api_provider(api_type: str | None) -> ApiProvider:
     # grok2api 独立供应商
     if normalized in {"grok2api", "grok2_api"} or normalized.startswith("grok2api_"):
         return _GROK2API
+
+    # MiniMax Image Generation API
+    if normalized in {"minimax", "minimaxi", "hailuo"}:
+        return _MINIMAX
 
     # xAI 官方图像 API
     if normalized == "xai":

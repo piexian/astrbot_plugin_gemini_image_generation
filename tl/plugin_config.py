@@ -57,6 +57,7 @@ class PluginConfig:
 
     # 豆包（Volcengine Ark）专用配置（api_type == doubao 时使用）
     doubao_settings: dict[str, Any] = field(default_factory=dict)
+    minimax_settings: dict[str, Any] = field(default_factory=dict)
 
     # 供应商配置覆盖（支持所有 API 类型的多 Key 轮换和限流）
     # 结构：{api_type: {api_keys: [...], daily_limit_per_key: int, ...}}
@@ -477,6 +478,7 @@ class ConfigLoader:
                             _validate_openai_images_settings(override_copy)
                         all_overrides[template_key] = override_copy
         config.provider_overrides = all_overrides
+        config.minimax_settings = all_overrides.get("minimax", {})
 
         # 图像生成设置
         image_settings = self.raw_config.get("image_generation_settings") or {}

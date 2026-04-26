@@ -168,6 +168,7 @@ generate_image()
 | `google` / `gemini` / `googlegenai` / `google_genai` | `GoogleProvider` |
 | `openai_images` / `openai_images_api` | `OpenAIImagesProvider` |
 | `xai` | `XAIProvider` |
+| `minimax` / `minimaxi` / `hailuo` | `MiniMaxProvider` |
 | `doubao` / `volcengine` / `ark` / `seedream` | `DoubaoProvider` |
 | `zai` / `zai_*` | `ZaiProvider` |
 | `grok2api` / `grok2_api` / `grok2api_*` | `Grok2ApiProvider` |
@@ -221,6 +222,20 @@ xAI Images 官方 provider。
 | `_prepare_generations_payload()` | 文生图请求体 |
 | `_prepare_edits_payload()` | 改图请求体，参考图转 `data URI` |
 | `_to_image_url()` | 统一把本地/URL/base64 输入转换为 xAI 可用图片引用 |
+
+### `api/minimax.py`
+
+MiniMax 图片生成官方 provider。
+
+| 接口 | 说明 |
+|------|------|
+| `MiniMaxProvider.build_request()` | 构造 `/v1/image_generation` JSON 请求 |
+| `MiniMaxProvider.parse_response()` | 解析 `data.image_urls` / `data.image_base64` 响应 |
+| `_prepare_payload()` | 组装模型、比例、生成数量、水印、提示词优化和参考图；根据 `resolution` 和 `aspect_ratio` 自动选择 `aspect_ratio` 或显式 `width`/`height` |
+| `_map_resolution()` | 全局 `resolution`（1K/2K/4K）映射为目标像素尺寸（4K 降级为 2048） |
+| `_compute_dimensions_from_ratio()` | 从 W:H 比例和目标长边计算 `width`/`height`，自动对齐 8 的倍数并钳制 512-2048 |
+| `_build_subject_reference()` | 构造 MiniMax `subject_reference` |
+| `_to_image_file()` | 参考图按配置透传 URL 或转为 `data URI` |
 
 ### `api/doubao.py`
 

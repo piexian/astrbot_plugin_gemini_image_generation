@@ -423,6 +423,8 @@ class GeminiImageGenerationPlugin(Star):
             # 绑定完整 settings 供适配器使用
             if api_type_norm == "doubao":
                 self.cfg.doubao_settings = override_settings
+            elif api_type_norm == "minimax":
+                self.cfg.minimax_settings = override_settings
             elif api_type_norm == "xai":
                 self.cfg.xai_settings = override_settings
             elif api_type_norm == "openai_images":
@@ -443,6 +445,13 @@ class GeminiImageGenerationPlugin(Star):
                     )
                 except Exception as e:
                     logger.debug(f"绑定 doubao_settings 到 API client 失败: {e}")
+            elif api_type_norm == "minimax":
+                try:
+                    self.api_client.minimax_settings = (
+                        getattr(self.cfg, "minimax_settings", None) or {}
+                    )
+                except Exception as e:
+                    logger.debug(f"绑定 minimax_settings 到 API client 失败: {e}")
             elif api_type_norm == "xai":
                 try:
                     self.api_client.xai_settings = (
