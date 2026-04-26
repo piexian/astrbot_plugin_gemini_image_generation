@@ -1,22 +1,21 @@
 # Changelog
-<details>
-<summary>⚠️ 配置迁移说明（v1.9.0）</summary>
 
-**v1.9.0 以后的配置文件格式不兼容旧版本**。升级时插件会自动迁移配置，但如果遇到配置模板显示错误（如字段类型不匹配、选项无法选择等），请按以下步骤处理：
+> **升级提示**：v1.9.0 以后的配置文件格式不兼容旧版本。升级后如遇配置模板显示错误，请查看 [配置迁移说明](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/troubleshooting.md#配置迁移说明)。
 
-1. **查找备份文件**：旧配置已自动备份到插件数据目录
-   - 路径：`AstrBot/data/plugins/astrbot_plugin_gemini_image_generation/config_backup_pre_v1.9.x_<时间戳>.json`
-   - 示例：`config_backup_pre_v1.9.0_20260130_143052.json`
+## [1.9.14] - 2026-04-23
 
-2. **删除当前配置**：在根目录中删除本插件的配置文件，`AstrBot\data\config\astrbot_plugin_gemini_image_generation_config.json`
+### Changed
 
-3. **重新配置**：然后webui重载插件，再对照备份文件手动重新配置各项参数
+- `size_mode=custom` 下各调用路径的行为：
+  - 普通生图/改图：直接使用配置中的 `custom_size`
+  - 快速模式：根据 `resolution + aspect_ratio` 自动换算合法尺寸（如 `2K + 16:9 -> 2048x1152`）后透传
+- `custom_size` 支持 `x` 与 `×` 作为尺寸分隔符
 
-**主要变更**：
-- `limit_settings` 中的 `rate_limit_enabled`、`rate_limit_period_seconds`、`rate_limit_max_requests` 已迁移到 `rate_limit_rules`（template_list 格式）
-- `quick_mode_settings` 从 object 格式迁移到 template_list 格式
+### Fixed
 
-</details>
+- 配置保存后插件重载时，自定义尺寸模式现在会随配置动态刷新工具注册信息
+- `size_mode=custom` 配置值非法时不再阻塞插件加载，保留当前值并输出警告以便通过 WebUI 修复
+- `size_mode=custom` 工具调用显式传入非法 `size` 时，直接返回校验错误而非静默回退
 
 ## [1.9.13] - 2026-04-23
 
@@ -42,21 +41,6 @@
   - 输出警告级别日志
   - 在工具返回结果中提醒 LLM 本次使用了配置值
 - 更新 WebUI 提示文案与 README，明确 `custom_size` 支持 `x`/`×`，并补充快速模式与普通生图/改图的差异
-
-## [1.9.14] - 2026-04-23
-
-### Changed
-
-- `size_mode=custom` 下各调用路径的行为：
-  - 普通生图/改图：直接使用配置中的 `custom_size`
-  - 快速模式：根据 `resolution + aspect_ratio` 自动换算合法尺寸（如 `2K + 16:9 -> 2048x1152`）后透传
-- `custom_size` 支持 `x` 与 `×` 作为尺寸分隔符
-
-### Fixed
-
-- 配置保存后插件重载时，自定义尺寸模式现在会随配置动态刷新工具注册信息
-- `size_mode=custom` 配置值非法时不再阻塞插件加载，保留当前值并输出警告以便通过 WebUI 修复
-- `size_mode=custom` 工具调用显式传入非法 `size` 时，直接返回校验错误而非静默回退
 
 ## [1.9.12] - 2026-04-21
 
