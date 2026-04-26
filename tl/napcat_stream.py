@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import math
@@ -34,8 +35,10 @@ async def _call_action(bot_client: Any, action: str, params: dict[str, Any]) -> 
 
 
 def _extract_response_data(response: Any) -> dict[str, Any]:
+    if response is None:
+        raise RuntimeError("NapCat Stream API 未返回响应")
     if not isinstance(response, dict):
-        return {}
+        raise RuntimeError(f"NapCat Stream API 返回格式异常: {type(response).__name__}")
 
     status = response.get("status")
     if status == "failed":
@@ -100,7 +103,6 @@ async def upload_file_stream(
 
     chunk_size = max(1, int(chunk_size or DEFAULT_STREAM_CHUNK_SIZE))
     total_chunks = max(1, math.ceil(file_size / chunk_size))
-    expected_sha256 = _calculate_sha256(path)
     stream_id = str(uuid.uuid4())
 
     logger.debug(
@@ -108,11 +110,34 @@ async def upload_file_stream(
     )
 
     try:
+        expected_sha256 = await asyncio.to_thread(_calculate_sha256, path)
+        current_size = path.stat().st_size
+        if current_size != file_size:
+            raise RuntimeError(
+                "文件在上传前大小发生变化，无法按声明大小完成上传: "
+                f"file={path} expected={file_size} actual={current_size}"
+            )
+
         with path.open("rb") as file:
             for chunk_index in range(total_chunks):
                 chunk = file.read(chunk_size)
                 if not chunk:
-                    break
+                    raise RuntimeError(
+                        "文件在上传过程中提前结束，无法按声明的分块数完成上传: "
+                        f"file={path} chunk_index={chunk_index} "
+                        f"total_chunks={total_chunks}"
+                    )
+                expected_chunk_size = (
+                    file_size - chunk_size * chunk_index
+                    if chunk_index == total_chunks - 1
+                    else chunk_size
+                )
+                if len(chunk) != expected_chunk_size:
+                    raise RuntimeError(
+                        "文件在上传过程中大小发生变化，无法按声明大小完成上传: "
+                        f"file={path} chunk_index={chunk_index} "
+                        f"expected={expected_chunk_size} actual={len(chunk)}"
+                    )
 
                 response = await _call_action(
                     bot_client,
@@ -141,6 +166,8 @@ async def upload_file_stream(
         else:
             logger.warning("[NapCat Stream] 上传完成响应缺少 file_path")
         return uploaded_path
+    except asyncio.CancelledError:
+        raise
     except Exception as exc:
         logger.warning(f"[NapCat Stream] 上传失败，回退原文件路径: {exc}")
         return None
