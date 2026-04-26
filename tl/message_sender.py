@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import urllib.parse
@@ -12,6 +13,7 @@ from astrbot.api import logger
 from astrbot.api.message_components import Image as AstrImage
 from astrbot.api.message_components import Node, Plain
 
+from .napcat_stream import upload_file_stream
 from .thought_signature import log_thought_signature_debug
 from .tl_utils import encode_file_to_base64
 from .tl_utils import is_valid_base64_image_str as util_is_valid_base64_image_str
@@ -39,6 +41,16 @@ AUTH_LIKE_QUERY_KEYS = {
 }
 
 
+class _DispatchSendError(RuntimeError):
+    def __init__(self, *, sent_count: int, failed_count: int, cause: Exception):
+        super().__init__(
+            f"发送结果中有 {failed_count} 条消息失败，成功 {sent_count} 条: {cause}"
+        )
+        self.sent_count = sent_count
+        self.failed_count = failed_count
+        self.cause = cause
+
+
 class MessageSender:
     """消息格式化和发送处理器"""
 
@@ -46,22 +58,36 @@ class MessageSender:
         self,
         enable_text_response: bool = False,
         max_inline_image_size_mb: float = 2.0,
+        napcat_stream_threshold_mb: float = 2.0,
         log_debug_fn=None,
     ):
         """
         Args:
             enable_text_response: 是否启用文本响应
             max_inline_image_size_mb: 本地图片 base64 编码阈值（MB）
+            napcat_stream_threshold_mb: NapCat Stream API 兜底上传阈值（MB）
             log_debug_fn: 可选的日志函数
         """
         self.enable_text_response = enable_text_response
         self.max_inline_image_size_bytes = int(max_inline_image_size_mb * 1024 * 1024)
+        self.napcat_stream_threshold_bytes = self._mb_to_bytes(
+            napcat_stream_threshold_mb
+        )
         self._log_debug = log_debug_fn or logger.debug
+
+    @staticmethod
+    def _mb_to_bytes(value: float | int | str | None) -> int:
+        try:
+            value_mb = float(value or 0)
+        except (TypeError, ValueError):
+            value_mb = 0.0
+        return int(max(value_mb, 0.0) * 1024 * 1024)
 
     def update_config(
         self,
         enable_text_response: bool | None = None,
         max_inline_image_size_mb: float | None = None,
+        napcat_stream_threshold_mb: float | None = None,
     ):
         """更新配置"""
         if enable_text_response is not None:
@@ -69,6 +95,10 @@ class MessageSender:
         if max_inline_image_size_mb is not None:
             self.max_inline_image_size_bytes = int(
                 max_inline_image_size_mb * 1024 * 1024
+            )
+        if napcat_stream_threshold_mb is not None:
+            self.napcat_stream_threshold_bytes = self._mb_to_bytes(
+                napcat_stream_threshold_mb
             )
 
     @staticmethod
@@ -85,9 +115,184 @@ class MessageSender:
         """包装发送，若平台发送失败则提示用户"""
         try:
             yield payload
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.error(f"发送消息失败: {e}")
             yield event.plain_result("⚠️ 消息发送失败，请稍后重试或检查网络/权限。")
+
+    def _stream_fallback_candidate(self, image: str) -> str | None:
+        if self.napcat_stream_threshold_bytes <= 0 or not image:
+            return None
+        if image.startswith(("http://", "https://", "data:image/")):
+            return None
+        if util_is_valid_base64_image_str(image):
+            return None
+
+        candidate = image[8:] if image.startswith("file:///") else image
+        if not os.path.isfile(candidate):
+            return None
+
+        try:
+            if os.path.getsize(candidate) < self.napcat_stream_threshold_bytes:
+                return None
+        except OSError:
+            return None
+        return candidate
+
+    async def _build_stream_fallback_paths(
+        self,
+        event: AstrMessageEvent,
+        image_paths: list[str] | None,
+    ) -> tuple[list[str], bool, bool, int]:
+        fallback_paths: list[str] = []
+        has_candidate = False
+        changed = False
+        failed_candidates = 0
+
+        for image in image_paths or []:
+            candidate = self._stream_fallback_candidate(image)
+            if not candidate:
+                if image:
+                    fallback_paths.append(image)
+                continue
+
+            has_candidate = True
+            streamed_path = await upload_file_stream(event, candidate)
+            if streamed_path:
+                fallback_paths.append(streamed_path)
+                changed = True
+            else:
+                failed_candidates += 1
+                fallback_paths.append(image)
+
+        return fallback_paths, has_candidate, changed, failed_candidates
+
+    async def _send_dispatch_results(
+        self,
+        *,
+        event: AstrMessageEvent,
+        image_urls: list[str] | None,
+        image_paths: list[str] | None,
+        text_content: str | None,
+        thought_signature: str | None = None,
+        scene: str = "默认",
+        force_text_response: bool = False,
+        text_content_prepared: bool = False,
+    ) -> None:
+        if not hasattr(event, "send"):
+            raise RuntimeError("当前事件对象不支持直接发送，无法执行 Stream API 兜底")
+
+        sent_count = 0
+        failed_count = 0
+        first_error: Exception | None = None
+        async for payload in self.dispatch_send_results(
+            event=event,
+            image_urls=image_urls,
+            image_paths=image_paths,
+            text_content=text_content,
+            thought_signature=thought_signature,
+            scene=scene,
+            force_text_response=force_text_response,
+            text_content_prepared=text_content_prepared,
+        ):
+            try:
+                await event.send(payload)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                failed_count += 1
+                if first_error is None:
+                    first_error = exc
+                logger.warning(
+                    f"[SEND] {scene} 第 {sent_count + failed_count} 条消息发送失败: {exc}"
+                )
+                continue
+            else:
+                sent_count += 1
+
+        if first_error is not None:
+            raise _DispatchSendError(
+                sent_count=sent_count,
+                failed_count=failed_count,
+                cause=first_error,
+            ) from first_error
+
+    async def send_results_with_stream_retry(
+        self,
+        *,
+        event: AstrMessageEvent,
+        image_urls: list[str] | None,
+        image_paths: list[str] | None,
+        text_content: str | None,
+        thought_signature: str | None = None,
+        scene: str = "默认",
+        force_text_response: bool = False,
+        text_content_prepared: bool = False,
+    ) -> None:
+        """先按现有逻辑发送；失败后再使用 NapCat Stream API 兜底重试一次。"""
+        first_error: Exception | None = None
+        try:
+            await self._send_dispatch_results(
+                event=event,
+                image_urls=image_urls,
+                image_paths=image_paths,
+                text_content=text_content,
+                thought_signature=thought_signature,
+                scene=scene,
+                force_text_response=force_text_response,
+                text_content_prepared=text_content_prepared,
+            )
+            return
+        except asyncio.CancelledError:
+            raise
+        except _DispatchSendError as exc:
+            if exc.sent_count > 0:
+                logger.warning(
+                    f"[SEND] {scene} 已成功发送 {exc.sent_count} 条消息，"
+                    f"跳过 Stream API 整组兜底以避免重复发送: {exc.cause}"
+                )
+                raise
+            first_error = exc.cause
+            logger.warning(
+                f"[SEND] {scene} 原始发送失败，准备检查 Stream API 兜底: {exc.cause}"
+            )
+        except Exception as exc:
+            first_error = exc
+            logger.warning(
+                f"[SEND] {scene} 原始发送失败，准备检查 Stream API 兜底: {exc}"
+            )
+
+        (
+            fallback_paths,
+            has_candidate,
+            changed,
+            failed_candidates,
+        ) = await self._build_stream_fallback_paths(event, image_paths)
+        if not has_candidate:
+            raise RuntimeError(
+                "原始发送失败，且没有可用于 NapCat Stream API 兜底的本地图片"
+            ) from first_error
+        if failed_candidates:
+            raise RuntimeError(
+                f"原始发送失败，NapCat Stream API 兜底上传仍有 {failed_candidates} 个候选文件失败"
+            ) from first_error
+        if not changed:
+            raise RuntimeError(
+                "原始发送失败，NapCat Stream API 兜底上传也未成功"
+            ) from first_error
+
+        logger.warning(f"[SEND] {scene} 已启用 NapCat Stream API 兜底重试")
+        await self._send_dispatch_results(
+            event=event,
+            image_urls=image_urls,
+            image_paths=fallback_paths,
+            text_content=text_content,
+            thought_signature=thought_signature,
+            scene=f"{scene}/Stream兜底",
+            force_text_response=force_text_response,
+            text_content_prepared=text_content_prepared,
+        )
 
     async def send_api_duration(
         self,
@@ -110,6 +315,8 @@ class MessageSender:
                 msg = f"⏱️ API响应 {api_duration:.1f}s"
             async for res in self.safe_send(event, event.plain_result(msg)):
                 yield res
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             # 非关键统计信息发送失败时仅记录日志，避免影响主流程
             logger.error(f"发送耗时统计消息失败: {e}")

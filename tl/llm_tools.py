@@ -574,20 +574,19 @@ async def _dispatch_generation_result(
             logger.info(
                 f"[{scene}] Text content only contained image references; using fallback text."
             )
-        async for send_res in plugin.message_sender.dispatch_send_results(
-            event=event,
-            image_urls=image_urls,
-            image_paths=image_paths,
-            text_content=content_text,
-            thought_signature=thought_signature,
-            scene=scene,
-            force_text_response=force_text_response,
-            text_content_prepared=True,
-        ):
-            try:
-                await event.send(send_res)
-            except Exception as exc:
-                logger.warning(f"[{scene}] 发送结果失败: {exc}")
+        try:
+            await plugin.message_sender.send_results_with_stream_retry(
+                event=event,
+                image_urls=image_urls,
+                image_paths=image_paths,
+                text_content=content_text,
+                thought_signature=thought_signature,
+                scene=scene,
+                force_text_response=force_text_response,
+                text_content_prepared=True,
+            )
+        except Exception as exc:
+            logger.warning(f"[{scene}] 发送结果失败: {exc}")
         return
 
     error_msg = result_data if isinstance(result_data, str) else "❌ 图像生成失败"

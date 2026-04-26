@@ -10,7 +10,6 @@ from astrbot.api import logger
 
 from .thought_signature import log_thought_signature_debug
 from .tl_api import APIError, ApiRequestConfig
-from .tl_utils import send_file
 
 if TYPE_CHECKING:
     from astrbot.api.event import AstrMessageEvent
@@ -40,8 +39,6 @@ class ImageGenerator:
         max_reference_images: int = 6,
         total_timeout: int = 120,
         max_attempts_per_key: int = 3,
-        nap_server_address: str = "localhost",
-        nap_server_port: int = 3658,
         filter_valid_fn=None,
         get_tool_timeout_fn=None,
     ):
@@ -63,8 +60,6 @@ class ImageGenerator:
             max_reference_images: 最大参考图片数
             total_timeout: 总超时时间
             max_attempts_per_key: 每个密钥最大尝试次数
-            nap_server_address: NAP 服务器地址
-            nap_server_port: NAP 服务器端口
             filter_valid_fn: 过滤有效参考图片的函数
             get_tool_timeout_fn: 获取工具超时的函数
         """
@@ -84,8 +79,6 @@ class ImageGenerator:
         self.max_reference_images = max_reference_images
         self.total_timeout = total_timeout
         self.max_attempts_per_key = max_attempts_per_key
-        self.nap_server_address = nap_server_address
-        self.nap_server_port = nap_server_port
         self._filter_valid_fn = filter_valid_fn
         self._get_tool_timeout_fn = get_tool_timeout_fn
 
@@ -231,32 +224,11 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
             log_thought_signature_debug(thought_signature, scene="图像生成完成")
 
             resolved_paths: list[str] = []
-            for idx, img_path in enumerate(image_paths):
+            for img_path in image_paths:
                 if not img_path:
                     continue
                 if Path(img_path).exists():
-                    resolved_path = img_path
-                    if (
-                        self.nap_server_address
-                        and self.nap_server_address != "localhost"
-                    ):
-                        logger.debug(f"开始传输第 {idx + 1} 张图片到远程服务器...")
-                        try:
-                            remote_path = await asyncio.wait_for(
-                                send_file(
-                                    img_path,
-                                    host=self.nap_server_address,
-                                    port=self.nap_server_port,
-                                ),
-                                timeout=10.0,
-                            )
-                            if remote_path:
-                                resolved_path = remote_path
-                        except asyncio.TimeoutError:
-                            logger.warning("文件传输超时，使用本地文件")
-                        except Exception as e:
-                            logger.warning(f"文件传输失败: {e}，将使用本地文件")
-                    resolved_paths.append(resolved_path)
+                    resolved_paths.append(img_path)
                 else:
                     logger.warning(f"图像文件不存在或不可访问: {img_path}")
                     resolved_paths.append(img_path)

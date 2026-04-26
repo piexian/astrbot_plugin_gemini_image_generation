@@ -10,7 +10,7 @@ main.py
   ├─ GeminiAPIClient -> tl/api/* Provider
   ├─ ImageGenerator -> GeminiAPIClient.generate_image()
   ├─ ImageHandler / AvatarHandler -> 收集参考图
-  ├─ MessageSender -> 发送生成结果
+  ├─ MessageSender -> 发送生成结果和 NapCat Stream 兜底
   ├─ VisionHandler / image_splitter / sticker_cutter -> 表情包切分
   ├─ RateLimiter -> 群限制与限流
   ├─ KeyManager -> provider_overrides 多 Key 轮换
@@ -28,7 +28,8 @@ main.py
 | `ImageGenerator.generate_image_core()` | `image_generator.py` | 指令与 LLM Tool 共用的核心生图逻辑 |
 | `GeminiImageGenerationTool.call()` | `llm_tools.py` | AstrBot FunctionTool 调用入口 |
 | `execute_image_generation_tool()` | `llm_tools.py` | 兼容旧调用方式的工具入口 |
-| `MessageSender.dispatch_send_results()` | `message_sender.py` | 图片、文本、合并转发发送入口 |
+| `MessageSender.dispatch_send_results()` | `message_sender.py` | 图片、文本、合并转发发送结果构造入口 |
+| `MessageSender.send_results_with_stream_retry()` | `message_sender.py` | 直接发送结果；原始发送失败后按阈值尝试 NapCat Stream API 兜底 |
 | `ImageHandler.fetch_images_from_event()` | `image_handler.py` | 从消息事件收集参考图和头像图 |
 | `AvatarHandler.get_avatar_reference()` | `avatar_handler.py` | 获取用户头像参考图 |
 | `split_image()` | `image_splitter.py` | 表情包切图入口 |
@@ -337,8 +338,8 @@ prompt + use_reference_images + include_user_avatar + resolution + aspect_ratio 
 
 | 接口 | 说明 |
 |------|------|
-| `MessageSender(enable_text_response=False, max_inline_image_size_mb=2.0)` | 消息发送处理器 |
-| `update_config(enable_text_response=None, max_inline_image_size_mb=None)` | 热更新发送配置 |
+| `MessageSender(enable_text_response=False, max_inline_image_size_mb=2.0, napcat_stream_threshold_mb=2.0)` | 消息发送处理器 |
+| `update_config(enable_text_response=None, max_inline_image_size_mb=None, napcat_stream_threshold_mb=None)` | 热更新发送配置 |
 | `is_aioqhttp_event(event)` | 判断是否为 aiocqhttp 平台 |
 | `safe_send(event, payload)` | 发送失败时兜底返回错误提示 |
 | `send_api_duration(event, api_duration, send_duration=None)` | 发送耗时统计 |
@@ -348,6 +349,7 @@ prompt + use_reference_images + include_user_avatar + resolution + aspect_ratio 
 | `merge_available_images(image_urls, image_paths)` | URL 与本地路径合并去重，URL 优先 |
 | `build_forward_image_component(image, force_base64=False)` | 构造 AstrBot 图片组件 |
 | `dispatch_send_results(...)` | 按单图、多图、合并转发策略发送结果 |
+| `send_results_with_stream_retry(...)` | 发送失败时筛选达到阈值的本地图片，调用 `upload_file_stream()` 后重试 |
 
 ## 表情包切分与视觉识别
 
@@ -475,7 +477,7 @@ _prepare_foreground()
 | 图片规范化 | `coerce_supported_image_bytes()`、`coerce_supported_image()`、`normalize_image_input()` | 将输入图片统一为 provider 可用格式 |
 | 图片源解析 | `collect_image_sources()`、`resolve_image_source_to_path()` | 从 AstrBot 事件或任意来源解析图片 |
 | QQ 头像 | `download_qq_avatar()`、`AvatarManager`、`download_qq_avatar_legacy()` | 头像下载和缓存管理 |
-| NapCat 文件 | `send_file()` | 向 NAP 文件服务器发送文件 |
+| NapCat Stream | `upload_file_stream()` | 复用当前 NapCat/OneBot 连接上传本地文件并返回可发送路径 |
 | 错误展示 | `format_error_message()` | 统一生图错误提示文案 |
 
 注意事项：
@@ -483,6 +485,7 @@ _prepare_foreground()
 - `normalize_image_input()` 是 API provider 处理参考图时的核心工具。
 - `resolve_image_source_to_path()` 是 `/切图` 将 URL/base64/data URI 转成本地文件的核心工具。
 - `AvatarManager` 管理头像缓存和清理，通常通过 `AvatarHandler` 或 `ImageHandler` 间接使用。
+- `upload_file_stream()` 只作为发送失败后的兜底路径使用，常规图片发送仍由 `MessageSender.dispatch_send_results()` 构造。
 
 ## `tl/api/__init__.py` 与 `tl/__init__.py`
 

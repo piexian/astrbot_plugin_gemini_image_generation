@@ -79,7 +79,7 @@ LLM 工具会根据当前 `tool_call_timeout` 和 `llm_tool_timeout_reserve_perc
 
 - LLM 工具仅接受 `size` 参数，格式 `WxH`。
 - 不再接受 `resolution` 和 `aspect_ratio`。
-- 未显式传入 `size` 时，使用配置中的 `openai_images.custom_size`。
+- 未显式传入 `size` 时，使用 `api_settings.provider_overrides` 中 `openai_images` 模板的 `custom_size`。
 
 其他供应商或非 custom 模式继续使用 `resolution` / `aspect_ratio`。
 

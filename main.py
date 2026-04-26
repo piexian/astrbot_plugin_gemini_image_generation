@@ -142,6 +142,7 @@ class GeminiImageGenerationPlugin(Star):
         self.message_sender = MessageSender(
             enable_text_response=self.cfg.enable_text_response,
             max_inline_image_size_mb=self.cfg.max_inline_image_size_mb,
+            napcat_stream_threshold_mb=self.cfg.napcat_stream_threshold_mb,
             log_debug_fn=logger.debug,
         )
 
@@ -174,8 +175,6 @@ class GeminiImageGenerationPlugin(Star):
             max_reference_images=self.cfg.max_reference_images,
             total_timeout=self.cfg.total_timeout,
             max_attempts_per_key=self.cfg.max_attempts_per_key,
-            nap_server_address=self.cfg.nap_server_address,
-            nap_server_port=self.cfg.nap_server_port,
             filter_valid_fn=self.image_handler.filter_valid_reference_images,
             get_tool_timeout_fn=self.get_tool_timeout,
         )
@@ -187,6 +186,11 @@ class GeminiImageGenerationPlugin(Star):
         """更新各模块的 API 客户端和相关配置"""
         if self.api_client:
             self.image_handler.update_config(api_client=self.api_client)
+            self.message_sender.update_config(
+                enable_text_response=self.cfg.enable_text_response,
+                max_inline_image_size_mb=self.cfg.max_inline_image_size_mb,
+                napcat_stream_threshold_mb=self.cfg.napcat_stream_threshold_mb,
+            )
             self.vision_handler.update_config(api_client=self.api_client)
             # 同步更新 ImageGenerator 的全部相关配置
             self.image_generator.update_config(
@@ -620,15 +624,14 @@ class GeminiImageGenerationPlugin(Star):
             api_duration = time.perf_counter() - api_start
 
             send_start = time.perf_counter()
-            async for send_res in self.message_sender.dispatch_send_results(
+            await self.message_sender.send_results_with_stream_retry(
                 event=event,
                 image_urls=image_urls,
                 image_paths=image_paths,
                 text_content=text_content,
                 thought_signature=thought_signature,
                 scene="快捷生成",
-            ):
-                yield send_res
+            )
             send_duration = time.perf_counter() - send_start
 
             async for res in self.message_sender.send_api_duration(
@@ -1447,15 +1450,18 @@ class GeminiImageGenerationPlugin(Star):
         send_start = time.perf_counter()
         if success and result_data:
             image_urls, image_paths, text_content, thought_signature = result_data
-            async for send_res in self.message_sender.dispatch_send_results(
-                event=event,
-                image_urls=image_urls,
-                image_paths=image_paths,
-                text_content=text_content,
-                thought_signature=thought_signature,
-                scene="换风格",
-            ):
-                yield send_res
+            try:
+                await self.message_sender.send_results_with_stream_retry(
+                    event=event,
+                    image_urls=image_urls,
+                    image_paths=image_paths,
+                    text_content=text_content,
+                    thought_signature=thought_signature,
+                    scene="换风格",
+                )
+            except Exception as e:
+                logger.warning(f"换风格结果发送失败: {e}")
+                yield event.plain_result("⚠️ 图像已生成，但发送失败，请查看日志。")
         else:
             yield event.plain_result(result_data)
         send_duration = time.perf_counter() - send_start
@@ -1640,14 +1646,6 @@ class GeminiImageGenerationPlugin(Star):
     @property
     def max_attempts_per_key(self) -> int:
         return self.cfg.max_attempts_per_key
-
-    @property
-    def nap_server_address(self) -> str:
-        return self.cfg.nap_server_address
-
-    @property
-    def nap_server_port(self) -> int:
-        return self.cfg.nap_server_port
 
     @property
     def preserve_reference_image_size(self) -> bool:

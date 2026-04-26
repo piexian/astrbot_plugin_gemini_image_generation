@@ -96,8 +96,7 @@ class PluginConfig:
     total_timeout: int = 120
 
     # 服务设置
-    nap_server_address: str = "localhost"
-    nap_server_port: int = 3658
+    napcat_stream_threshold_mb: float = 2.0
     auto_avatar_reference: bool = False
 
     # 帮助页渲染
@@ -555,10 +554,13 @@ class ConfigLoader:
 
         # 服务设置
         service_settings = self.raw_config.get("service_settings") or {}
-        config.nap_server_address = (
-            service_settings.get("nap_server_address") or "localhost"
-        )
-        config.nap_server_port = service_settings.get("nap_server_port") or 3658
+        try:
+            config.napcat_stream_threshold_mb = float(
+                service_settings.get("napcat_stream_threshold_mb", 2.0)
+            )
+        except (TypeError, ValueError):
+            config.napcat_stream_threshold_mb = 2.0
+        config.napcat_stream_threshold_mb = max(config.napcat_stream_threshold_mb, 0.0)
         config.auto_avatar_reference = (
             service_settings.get("auto_avatar_reference") or False
         )

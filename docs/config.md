@@ -38,7 +38,7 @@
 google / openai / zai / grok2api / xai / openai_images / doubao
 ```
 
-下方 `doubao_settings`、`openai_images_settings`、`xai_settings` 章节对应这些模板的专用字段。旧版顶层配置仅作为兼容读取路径，新配置建议统一放在 `api_settings.provider_overrides` 中。
+下方 `doubao_settings`、`openai_images_settings`、`xai_settings` 章节对应这些模板的专用字段。配置时在 `api_settings.provider_overrides` 中选择相应模板。
 
 ## image_generation_settings
 
@@ -79,10 +79,11 @@ avatar / poster / wallpaper / card / mobile / figure / sticker
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
-| `nap_server_address` | `localhost` | NAP 文件传输地址 |
-| `nap_server_port` | `3658` | NAP 文件传输端口 |
+| `napcat_stream_threshold_mb` | `2.0` | 本地图片原始发送失败后，达到该大小才使用 NapCat Stream API 兜底重试；`0` 表示禁用 |
 | `auto_avatar_reference` | `false` | 自动获取头像作为参考图 |
 | `theme_settings.mode` | `cycle` | 帮助页主题模式 |
+
+NapCat v4.8.115+ 支持 Stream API。插件默认仍先按 `max_inline_image_size_mb` 规则发送本地图片；只有原始发送失败且文件大小达到 `napcat_stream_threshold_mb` 时，才会复用当前 NapCat/OneBot 连接调用 `upload_file_stream` 并重试一次。Docker / docker compose 部署仍建议共享 `AstrBot/data` 目录，以兼容普通本地文件发送路径。
 
 ## help_render_mode
 

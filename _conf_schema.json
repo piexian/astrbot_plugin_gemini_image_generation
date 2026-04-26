@@ -717,17 +717,11 @@
     "type": "object",
     "hint": "配置文件传输等外部服务",
     "items": {
-      "nap_server_address": {
-        "description": "NAP cat 服务地址",
-        "type": "string",
-        "hint": "仅当 NAP 和机器人不在同一服务器时填写，同服务器填写 localhost",
-        "default": "localhost"
-      },
-      "nap_server_port": {
-        "description": "文件传输端口",
-        "type": "int",
-        "hint": "NAP cat 所在服务器接收文件端口，在同一服务器上可以不填",
-        "default": 3658
+      "napcat_stream_threshold_mb": {
+        "description": "NapCat 流式上传阈值（MB）",
+        "type": "float",
+        "hint": "先按现有 max_inline_image_size_mb 规则发送本地图片；若发送失败，且本地文件大小达到该阈值，则复用当前 OneBot/NapCat 连接调用 upload_file_stream 并重试一次。填 0 表示禁用。Docker / docker compose 环境建议保持默认或按图片大小调大",
+        "default": 2.0
       },
       "auto_avatar_reference": {
         "description": "自动头像参考",
