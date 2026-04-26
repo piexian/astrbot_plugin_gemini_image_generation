@@ -42,9 +42,12 @@ AUTH_LIKE_QUERY_KEYS = {
 
 
 class _DispatchSendError(RuntimeError):
-    def __init__(self, *, sent_count: int, cause: Exception):
-        super().__init__(f"发送第 {sent_count + 1} 条消息失败: {cause}")
+    def __init__(self, *, sent_count: int, failed_count: int, cause: Exception):
+        super().__init__(
+            f"发送结果中有 {failed_count} 条消息失败，成功 {sent_count} 条: {cause}"
+        )
         self.sent_count = sent_count
+        self.failed_count = failed_count
         self.cause = cause
 
 
@@ -141,10 +144,11 @@ class MessageSender:
         self,
         event: AstrMessageEvent,
         image_paths: list[str] | None,
-    ) -> tuple[list[str], bool, bool]:
+    ) -> tuple[list[str], bool, bool, int]:
         fallback_paths: list[str] = []
         has_candidate = False
         changed = False
+        failed_candidates = 0
 
         for image in image_paths or []:
             candidate = self._stream_fallback_candidate(image)
@@ -159,9 +163,10 @@ class MessageSender:
                 fallback_paths.append(streamed_path)
                 changed = True
             else:
+                failed_candidates += 1
                 fallback_paths.append(image)
 
-        return fallback_paths, has_candidate, changed
+        return fallback_paths, has_candidate, changed, failed_candidates
 
     async def _send_dispatch_results(
         self,
@@ -179,6 +184,8 @@ class MessageSender:
             raise RuntimeError("当前事件对象不支持直接发送，无法执行 Stream API 兜底")
 
         sent_count = 0
+        failed_count = 0
+        first_error: Exception | None = None
         async for payload in self.dispatch_send_results(
             event=event,
             image_urls=image_urls,
@@ -194,8 +201,22 @@ class MessageSender:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                raise _DispatchSendError(sent_count=sent_count, cause=exc) from exc
-            sent_count += 1
+                failed_count += 1
+                if first_error is None:
+                    first_error = exc
+                logger.warning(
+                    f"[SEND] {scene} 第 {sent_count + failed_count} 条消息发送失败: {exc}"
+                )
+                continue
+            else:
+                sent_count += 1
+
+        if first_error is not None:
+            raise _DispatchSendError(
+                sent_count=sent_count,
+                failed_count=failed_count,
+                cause=first_error,
+            ) from first_error
 
     async def send_results_with_stream_retry(
         self,
@@ -246,10 +267,15 @@ class MessageSender:
             fallback_paths,
             has_candidate,
             changed,
+            failed_candidates,
         ) = await self._build_stream_fallback_paths(event, image_paths)
         if not has_candidate:
             raise RuntimeError(
                 "原始发送失败，且没有可用于 NapCat Stream API 兜底的本地图片"
+            ) from first_error
+        if failed_candidates:
+            raise RuntimeError(
+                f"原始发送失败，NapCat Stream API 兜底上传仍有 {failed_candidates} 个候选文件失败"
             ) from first_error
         if not changed:
             raise RuntimeError(
