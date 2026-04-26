@@ -59,6 +59,9 @@ class MessageSender:
         enable_text_response: bool = False,
         max_inline_image_size_mb: float = 2.0,
         napcat_stream_threshold_mb: float = 2.0,
+        show_duration_stats: bool = True,
+        show_retry_stats: bool = True,
+        show_token_usage_stats: bool = True,
         log_debug_fn=None,
     ):
         """
@@ -66,6 +69,9 @@ class MessageSender:
             enable_text_response: 是否启用文本响应
             max_inline_image_size_mb: 本地图片 base64 编码阈值（MB）
             napcat_stream_threshold_mb: NapCat Stream API 兜底上传阈值（MB）
+            show_duration_stats: 是否展示 API/发送耗时统计
+            show_retry_stats: 是否展示重试次数和重试说明
+            show_token_usage_stats: 是否展示 token 用量
             log_debug_fn: 可选的日志函数
         """
         self.enable_text_response = enable_text_response
@@ -73,6 +79,9 @@ class MessageSender:
         self.napcat_stream_threshold_bytes = self._mb_to_bytes(
             napcat_stream_threshold_mb
         )
+        self.show_duration_stats = show_duration_stats
+        self.show_retry_stats = show_retry_stats
+        self.show_token_usage_stats = show_token_usage_stats
         self._log_debug = log_debug_fn or logger.debug
 
     @staticmethod
@@ -88,6 +97,9 @@ class MessageSender:
         enable_text_response: bool | None = None,
         max_inline_image_size_mb: float | None = None,
         napcat_stream_threshold_mb: float | None = None,
+        show_duration_stats: bool | None = None,
+        show_retry_stats: bool | None = None,
+        show_token_usage_stats: bool | None = None,
     ):
         """更新配置"""
         if enable_text_response is not None:
@@ -100,6 +112,12 @@ class MessageSender:
             self.napcat_stream_threshold_bytes = self._mb_to_bytes(
                 napcat_stream_threshold_mb
             )
+        if show_duration_stats is not None:
+            self.show_duration_stats = show_duration_stats
+        if show_retry_stats is not None:
+            self.show_retry_stats = show_retry_stats
+        if show_token_usage_stats is not None:
+            self.show_token_usage_stats = show_token_usage_stats
 
     @staticmethod
     def is_aioqhttp_event(event: AstrMessageEvent) -> bool:
@@ -299,6 +317,9 @@ class MessageSender:
         event: AstrMessageEvent,
         api_duration: float,
         send_duration: float | None = None,
+        retry_count: int = 0,
+        retry_note: str | None = None,
+        token_usage: dict[str, int] | None = None,
     ):
         """
         发送耗时统计消息
@@ -309,10 +330,25 @@ class MessageSender:
             send_duration: 消息发送耗时（秒），可选
         """
         try:
-            if send_duration is not None:
-                msg = f"⏱️ API响应 {api_duration:.1f}s | 发送 {send_duration:.1f}s"
-            else:
-                msg = f"⏱️ API响应 {api_duration:.1f}s"
+            parts = []
+            if self.show_duration_stats:
+                parts.append(f"⏱️ API响应 {api_duration:.1f}s")
+            if self.show_duration_stats and send_duration is not None:
+                parts.append(f"发送 {send_duration:.1f}s")
+            if self.show_retry_stats:
+                parts.append(f"重试 {max(int(retry_count or 0), 0)}次")
+            if self.show_retry_stats and retry_note:
+                parts.append(str(retry_note))
+            token_text = (
+                self._format_token_usage(token_usage)
+                if self.show_token_usage_stats
+                else None
+            )
+            if token_text:
+                parts.append(token_text)
+            if not parts:
+                return
+            msg = " | ".join(parts)
             async for res in self.safe_send(event, event.plain_result(msg)):
                 yield res
         except asyncio.CancelledError:
@@ -320,6 +356,21 @@ class MessageSender:
         except Exception as e:
             # 非关键统计信息发送失败时仅记录日志，避免影响主流程
             logger.error(f"发送耗时统计消息失败: {e}")
+
+    @staticmethod
+    def _format_token_usage(token_usage: dict[str, int] | None) -> str | None:
+        if not token_usage:
+            return None
+        input_tokens = int(token_usage.get("input_tokens") or 0)
+        output_tokens = int(token_usage.get("output_tokens") or 0)
+        total_tokens = int(token_usage.get("total_tokens") or 0)
+        if total_tokens <= 0 and (input_tokens or output_tokens):
+            total_tokens = input_tokens + output_tokens
+        if total_tokens <= 0:
+            return None
+        if input_tokens or output_tokens:
+            return f"Token {total_tokens}（输入 {input_tokens} / 输出 {output_tokens}）"
+        return f"Token {total_tokens}"
 
     @staticmethod
     def clean_text_content(text: str) -> str:

@@ -823,6 +823,24 @@
         "hint": "启用后，当消息包含头像相关关键词时，自动获取群头像和用户头像作为参考图像。仅支持 NapCat 平台",
         "default": false
       },
+      "show_duration_stats": {
+        "description": "显示耗时统计",
+        "type": "bool",
+        "hint": "生成完成后是否展示耗时统计",
+        "default": true
+      },
+      "show_retry_stats": {
+        "description": "显示重试统计",
+        "type": "bool",
+        "hint": "生成完成后是否展示重试次数",
+        "default": true
+      },
+      "show_token_usage_stats": {
+        "description": "显示 Token 用量",
+        "type": "bool",
+        "hint": "生成完成后是否展示上游返回的 token 用量",
+        "default": true
+      },
       "theme_settings": {
         "description": "主题设置",
         "type": "object",

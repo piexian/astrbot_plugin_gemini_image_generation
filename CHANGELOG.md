@@ -2,6 +2,18 @@
 
 > **升级提示**：v1.9.0 以后的配置文件格式不兼容旧版本。升级后如遇配置模板显示错误，请查看 [配置迁移说明](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/troubleshooting.md#配置迁移说明)。
 
+## [1.10.1] - 2026-04-26
+
+### Added
+
+- 新增 `show_duration_stats`、`show_retry_stats`、`show_token_usage_stats` 配置项，分别控制生成完成后是否展示耗时、重试次数和 token 用量（默认均开启）
+
+### Fixed
+
+- MiniMax 返回 `base_resp.status_code=1000` / `unknown error` 时自动按 `aspect_ratio` 重试，不再继续用显式 `width`/`height`
+- MiniMax 自定义尺寸接近正方形的大尺寸时改用 `aspect_ratio=1:1`，避免显式 `width`/`height` 触发 `unknown error`
+- 生成完成后的统计消息新增重试次数展示，并在上游返回 usage 时展示 token 用量
+
 ## [1.10.0] - 2026-04-26
 
 ### Added

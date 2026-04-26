@@ -81,6 +81,11 @@ class ImageGenerator:
         self.max_attempts_per_key = max_attempts_per_key
         self._filter_valid_fn = filter_valid_fn
         self._get_tool_timeout_fn = get_tool_timeout_fn
+        self.last_request_stats: dict[str, object] = {
+            "retry_count": 0,
+            "token_usage": None,
+            "retry_note": None,
+        }
 
     def update_config(self, **kwargs):
         """更新配置"""
@@ -120,11 +125,21 @@ class ImageGenerator:
             (是否成功, (图片URL列表, 图片路径列表, 文本内容, 思维签名) 或错误消息)
         """
         if not self.api_client:
+            self.last_request_stats = {
+                "retry_count": 0,
+                "token_usage": None,
+                "retry_note": None,
+            }
             return False, (
                 "❌ 无法生成图像：API 客户端尚未初始化。\n"
                 "🧐 可能原因：服务启动过快，提供商尚未加载或 API 配置/密钥缺失。\n"
                 "✅ 建议：先在配置文件中填写有效的 API 密钥并重启服务。"
             )
+        self.last_request_stats = {
+            "retry_count": 0,
+            "token_usage": None,
+            "retry_note": None,
+        }
 
         valid_msg_images = self._filter_valid_reference_images(
             reference_images, source="消息图片"
@@ -213,6 +228,11 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
                 per_retry_timeout=per_retry_timeout,
                 max_total_time=max_total_time,
             )
+            self.last_request_stats = {
+                "retry_count": request_config.retry_count,
+                "token_usage": request_config.token_usage,
+                "retry_note": request_config.retry_note,
+            }
 
             end_time = asyncio.get_running_loop().time()
             api_duration = end_time - start_time

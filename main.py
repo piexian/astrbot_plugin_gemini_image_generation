@@ -143,6 +143,9 @@ class GeminiImageGenerationPlugin(Star):
             enable_text_response=self.cfg.enable_text_response,
             max_inline_image_size_mb=self.cfg.max_inline_image_size_mb,
             napcat_stream_threshold_mb=self.cfg.napcat_stream_threshold_mb,
+            show_duration_stats=self.cfg.show_duration_stats,
+            show_retry_stats=self.cfg.show_retry_stats,
+            show_token_usage_stats=self.cfg.show_token_usage_stats,
             log_debug_fn=logger.debug,
         )
 
@@ -190,6 +193,9 @@ class GeminiImageGenerationPlugin(Star):
                 enable_text_response=self.cfg.enable_text_response,
                 max_inline_image_size_mb=self.cfg.max_inline_image_size_mb,
                 napcat_stream_threshold_mb=self.cfg.napcat_stream_threshold_mb,
+                show_duration_stats=self.cfg.show_duration_stats,
+                show_retry_stats=self.cfg.show_retry_stats,
+                show_token_usage_stats=self.cfg.show_token_usage_stats,
             )
             self.vision_handler.update_config(api_client=self.api_client)
             # 同步更新 ImageGenerator 的全部相关配置
@@ -644,7 +650,12 @@ class GeminiImageGenerationPlugin(Star):
             send_duration = time.perf_counter() - send_start
 
             async for res in self.message_sender.send_api_duration(
-                event, api_duration, send_duration
+                event,
+                api_duration,
+                send_duration,
+                retry_count=config.retry_count,
+                retry_note=config.retry_note,
+                token_usage=config.token_usage,
             ):
                 yield res
 
@@ -1476,7 +1487,12 @@ class GeminiImageGenerationPlugin(Star):
         send_duration = time.perf_counter() - send_start
 
         async for res in self.message_sender.send_api_duration(
-            event, api_duration, send_duration
+            event,
+            api_duration,
+            send_duration,
+            retry_count=self.image_generator.last_request_stats.get("retry_count", 0),
+            retry_note=self.image_generator.last_request_stats.get("retry_note"),
+            token_usage=self.image_generator.last_request_stats.get("token_usage"),
         ):
             yield res
 

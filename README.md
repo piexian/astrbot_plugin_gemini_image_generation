@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/Version-v1.9.14-blue)
+![Version](https://img.shields.io/badge/Version-v1.10.1-blue)
 ![License](https://img.shields.io/badge/License-AGPL--3.0-orange)
 
 **强大的 AstrBot 图像生成插件，支持生图、改图、头像参考、表情包切分和 LLM 工具调用。**

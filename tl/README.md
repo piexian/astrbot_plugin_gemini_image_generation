@@ -353,11 +353,11 @@ prompt + use_reference_images + include_user_avatar + resolution + aspect_ratio 
 
 | 接口 | 说明 |
 |------|------|
-| `MessageSender(enable_text_response=False, max_inline_image_size_mb=2.0, napcat_stream_threshold_mb=2.0)` | 消息发送处理器 |
-| `update_config(enable_text_response=None, max_inline_image_size_mb=None, napcat_stream_threshold_mb=None)` | 热更新发送配置 |
+| `MessageSender(enable_text_response=False, max_inline_image_size_mb=2.0, napcat_stream_threshold_mb=2.0, show_duration_stats=True, show_retry_stats=True, show_token_usage_stats=True)` | 消息发送处理器 |
+| `update_config(enable_text_response=None, max_inline_image_size_mb=None, napcat_stream_threshold_mb=None, show_duration_stats=None, show_retry_stats=None, show_token_usage_stats=None)` | 热更新发送配置 |
 | `is_aioqhttp_event(event)` | 判断是否为 aiocqhttp 平台 |
 | `safe_send(event, payload)` | 发送失败时兜底返回错误提示 |
-| `send_api_duration(event, api_duration, send_duration=None)` | 发送耗时统计 |
+| `send_api_duration(event, api_duration, send_duration=None, retry_count=0, retry_note=None, token_usage=None)` | 发送耗时、重试次数和可用 token 用量统计 |
 | `clean_text_content(text)` | 移除 Markdown 图片等不可发送内容 |
 | `strip_known_image_refs(text, image_refs)` | 从文本中移除已识别图片引用，避免重复发送 |
 | `prepare_text_content(text, image_refs=None)` | 统一清理待发送文本 |

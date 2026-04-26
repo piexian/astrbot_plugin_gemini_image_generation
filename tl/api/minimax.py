@@ -15,13 +15,44 @@ from ..api_types import APIError, ApiRequestConfig
 from ..tl_utils import save_base64_image
 from .base import ProviderRequest
 
-_SUPPORTED_ASPECT_RATIOS: frozenset[str] = frozenset(
-    {"1:1", "16:9", "4:3", "3:2", "2:3", "3:4", "9:16", "21:9"}
+_SUPPORTED_ASPECT_RATIO_VALUES: tuple[str, ...] = (
+    "1:1",
+    "16:9",
+    "4:3",
+    "3:2",
+    "2:3",
+    "3:4",
+    "9:16",
+    "21:9",
 )
+_SUPPORTED_ASPECT_RATIOS: frozenset[str] = frozenset(_SUPPORTED_ASPECT_RATIO_VALUES)
 _SUPPORTED_RESPONSE_FORMATS: frozenset[str] = frozenset({"url", "base64"})
 _REFERENCE_IMAGE_MODES: frozenset[str] = frozenset({"auto", "url", "base64"})
 # MiniMax API width/height 上限为 2048，4K 降级到该上限
 _RESOLUTION_MAP: dict[str, int] = {"1K": 1024, "2K": 2048, "4K": 2048}
+_UNKNOWN_ERROR_MESSAGES: frozenset[str] = frozenset({"unknown error", "unknown"})
+_ERROR_MESSAGES: dict[int, str] = {
+    1000: (
+        "服务端 unknown error；已启用按比例重试策略，重试时会移除显式 "
+        "width/height 并改用 MiniMax 官方 aspect_ratio"
+    ),
+    1002: "触发限流，请稍后再试",
+    1004: "账号鉴权失败，请检查 API Key 是否正确",
+    1008: "账号余额不足",
+    1026: "图片描述涉及敏感内容",
+    2013: "传入参数异常，请检查入参是否按 MiniMax 官方要求填写",
+    2049: "无效的 API Key",
+}
+_ERROR_TYPES: dict[int, str] = {
+    1000: "server_error",
+    1002: "rate_limit",
+    1004: "auth",
+    1008: "quota",
+    1026: "safety",
+    2013: "invalid_request",
+    2049: "auth",
+}
+_RETRYABLE_ERROR_CODES: frozenset[int] = frozenset({1002})
 _MAX_IMAGES = 9
 
 
@@ -31,7 +62,12 @@ class MiniMaxProvider:
     name = "minimax"
 
     async def build_request(
-        self, *, client: Any, config: ApiRequestConfig
+        self,
+        *,
+        client: Any,
+        config: ApiRequestConfig,
+        is_retry: bool = False,
+        retry_error: APIError | None = None,
     ) -> ProviderRequest:  # noqa: ANN401
         settings: dict[str, Any] = getattr(client, "minimax_settings", None) or {}
         raw_api_base = config.api_base or settings.get("api_base")
@@ -41,14 +77,17 @@ class MiniMaxProvider:
             client=client,
             config=config,
             settings=settings,
+            is_retry=is_retry,
+            retry_error=retry_error,
         )
 
         logger.debug(
-            "[minimax] URL=%s refs=%s n=%s response_format=%s",
+            "[minimax] URL=%s refs=%s n=%s response_format=%s is_retry=%s",
             url,
             len(config.reference_images or []),
             payload.get("n"),
             payload.get("response_format"),
+            is_retry,
         )
         return ProviderRequest(
             url=url,
@@ -108,6 +147,8 @@ class MiniMaxProvider:
         client: Any,
         config: ApiRequestConfig,
         settings: dict[str, Any],
+        is_retry: bool = False,
+        retry_error: APIError | None = None,
     ) -> dict[str, Any]:
         model = str(settings.get("model") or config.model or "image-01").strip().lower()
         payload: dict[str, Any] = {
@@ -124,12 +165,90 @@ class MiniMaxProvider:
         # image-01-live 仅支持 aspect_ratio，不支持显式 width/height
         supports_explicit_dims = model != "image-01-live"
 
+        if is_retry and self._should_retry_with_aspect_ratio(retry_error):
+            retry_aspect_ratio = self._resolve_retry_aspect_ratio(
+                config=config,
+                settings=settings,
+                model=model,
+                normalized_aspect_ratio=aspect_ratio,
+            )
+            payload["aspect_ratio"] = retry_aspect_ratio
+            payload["_is_retry"] = True
+            config.retry_note = (
+                "MiniMax 1000 unknown error 已移除 width/height 并按比例重试"
+                f"（aspect_ratio={retry_aspect_ratio}）"
+            )
+            logger.warning(
+                "[minimax] 1000 unknown error 重试：移除 width/height，改用 aspect_ratio=%s",
+                retry_aspect_ratio,
+            )
+        else:
+            self._apply_size_fields(
+                payload=payload,
+                config=config,
+                settings=settings,
+                model=model,
+                aspect_ratio=aspect_ratio,
+                resolution_dim=resolution_dim,
+                supports_explicit_dims=supports_explicit_dims,
+            )
+
+        seed = self._coerce_optional_int(settings.get("seed"))
+        if seed is not None and seed != 0:
+            payload["seed"] = seed
+
+        payload["prompt_optimizer"] = bool(settings.get("prompt_optimizer", False))
+        payload["aigc_watermark"] = bool(settings.get("aigc_watermark", False))
+
+        style = settings.get("style")
+        if isinstance(style, dict) and style and model == "image-01-live":
+            payload["style"] = style
+
+        subject_reference = await self._build_subject_reference(
+            client=client,
+            config=config,
+            settings=settings,
+        )
+        if subject_reference:
+            payload["subject_reference"] = subject_reference
+
+        logger.debug(
+            "[minimax] payload: model=%s n=%s aspect_ratio=%s width=%s height=%s "
+            "response_format=%s refs=%s prompt_len=%s retry=%s",
+            model,
+            payload.get("n"),
+            payload.get("aspect_ratio"),
+            payload.get("width"),
+            payload.get("height"),
+            payload.get("response_format"),
+            len(subject_reference),
+            len(config.prompt or ""),
+            is_retry,
+        )
+        return payload
+
+    def _apply_size_fields(
+        self,
+        *,
+        payload: dict[str, Any],
+        config: ApiRequestConfig,
+        settings: dict[str, Any],
+        model: str,
+        aspect_ratio: str | None,
+        resolution_dim: int,
+        supports_explicit_dims: bool,
+    ) -> None:
         needs_explicit = False
         reason = ""
         if supports_explicit_dims and config.aspect_ratio and not aspect_ratio:
             needs_explicit = True
             reason = f"aspect_ratio {config.aspect_ratio} 不受 MiniMax 支持"
-        elif supports_explicit_dims and aspect_ratio and resolution_dim > 1024:
+        elif (
+            supports_explicit_dims
+            and aspect_ratio
+            and aspect_ratio != "1:1"
+            and resolution_dim > 1024
+        ):
             needs_explicit = True
             reason = f"resolution {config.resolution} 需要显式尺寸"
 
@@ -156,44 +275,24 @@ class MiniMaxProvider:
         else:
             w, h = self._get_dimensions(settings)
             if supports_explicit_dims and w and h:
-                payload["width"] = w
-                payload["height"] = h
+                if self._is_unsafe_near_square_dimension(w, h):
+                    payload["aspect_ratio"] = "1:1"
+                    logger.warning(
+                        "[minimax] 忽略 %dx%d 近正方形大尺寸，改用 aspect_ratio=1:1",
+                        w,
+                        h,
+                    )
+                else:
+                    payload["width"] = w
+                    payload["height"] = h
+            elif supports_explicit_dims and resolution_dim > 1024:
+                payload["aspect_ratio"] = "1:1"
+                logger.info(
+                    "[minimax] 避免 2048x2048 触发 MiniMax unknown error，改用 aspect_ratio=1:1"
+                )
             elif supports_explicit_dims and resolution_dim >= 512:
                 payload["width"] = resolution_dim
                 payload["height"] = resolution_dim
-
-        seed = self._coerce_optional_int(settings.get("seed"))
-        if seed is not None and seed != 0:
-            payload["seed"] = seed
-
-        payload["prompt_optimizer"] = bool(settings.get("prompt_optimizer", False))
-        payload["aigc_watermark"] = bool(settings.get("aigc_watermark", False))
-
-        style = settings.get("style")
-        if isinstance(style, dict) and style and model == "image-01-live":
-            payload["style"] = style
-
-        subject_reference = await self._build_subject_reference(
-            client=client,
-            config=config,
-            settings=settings,
-        )
-        if subject_reference:
-            payload["subject_reference"] = subject_reference
-
-        logger.debug(
-            "[minimax] payload: model=%s n=%s aspect_ratio=%s width=%s height=%s "
-            "response_format=%s refs=%s prompt_len=%s",
-            model,
-            payload.get("n"),
-            payload.get("aspect_ratio"),
-            payload.get("width"),
-            payload.get("height"),
-            payload.get("response_format"),
-            len(subject_reference),
-            len(config.prompt or ""),
-        )
-        return payload
 
     async def _collect_image_data(
         self,
@@ -334,6 +433,80 @@ class MiniMaxProvider:
         return aspect_ratio
 
     @staticmethod
+    def _should_retry_with_aspect_ratio(retry_error: APIError | None) -> bool:
+        if retry_error is None:
+            return True
+        if str(retry_error.error_code or "") != "1000":
+            return False
+        message = str(retry_error.message or "").lower()
+        return any(item in message for item in _UNKNOWN_ERROR_MESSAGES)
+
+    def _resolve_retry_aspect_ratio(
+        self,
+        *,
+        config: ApiRequestConfig,
+        settings: dict[str, Any],
+        model: str,
+        normalized_aspect_ratio: str | None,
+    ) -> str:
+        if normalized_aspect_ratio:
+            return normalized_aspect_ratio
+
+        aspect_ratio = self._nearest_supported_aspect_ratio(config.aspect_ratio, model)
+        if aspect_ratio:
+            logger.warning(
+                "[minimax] 重试时 aspect_ratio=%s 不受原生支持，改用最接近的 %s",
+                config.aspect_ratio,
+                aspect_ratio,
+            )
+            return aspect_ratio
+
+        width, height = self._get_dimensions(settings)
+        aspect_ratio = self._nearest_supported_aspect_ratio(f"{width}:{height}", model)
+        if aspect_ratio:
+            logger.warning(
+                "[minimax] 重试时根据 width/height=%sx%s 推断 aspect_ratio=%s",
+                width,
+                height,
+                aspect_ratio,
+            )
+            return aspect_ratio
+
+        logger.warning("[minimax] 重试时无法推断比例，回退到 aspect_ratio=1:1")
+        return "1:1"
+
+    @staticmethod
+    def _nearest_supported_aspect_ratio(value: Any, model: str) -> str | None:
+        ratio = MiniMaxProvider._ratio_value(value)
+        if ratio is None:
+            return None
+        candidates = [
+            item
+            for item in _SUPPORTED_ASPECT_RATIO_VALUES
+            if not (item == "21:9" and model == "image-01-live")
+        ]
+        return min(
+            candidates,
+            key=lambda item: abs(MiniMaxProvider._ratio_value(item) - ratio),
+        )
+
+    @staticmethod
+    def _ratio_value(value: Any) -> float | None:
+        raw = str(value or "").strip().lower().replace("×", "x")
+        separator = ":" if ":" in raw else "x"
+        parts = raw.split(separator)
+        if len(parts) != 2:
+            return None
+        try:
+            width = float(parts[0])
+            height = float(parts[1])
+        except (TypeError, ValueError):
+            return None
+        if width <= 0 or height <= 0:
+            return None
+        return width / height
+
+    @staticmethod
     def _map_resolution(value: Any) -> int:
         key = str(value or "").strip().upper()
         result = _RESOLUTION_MAP.get(key, 0)
@@ -399,6 +572,12 @@ class MiniMaxProvider:
         return None, None
 
     @staticmethod
+    def _is_unsafe_near_square_dimension(width: int, height: int) -> bool:
+        long_edge = max(width, height)
+        short_edge = min(width, height)
+        return long_edge > 1024 and short_edge / long_edge >= 0.9
+
+    @staticmethod
     def _coerce_dimension(value: Any) -> int | None:
         dimension = MiniMaxProvider._coerce_optional_int(value)
         if dimension is None or dimension == 0:
@@ -451,13 +630,28 @@ class MiniMaxProvider:
         if status_code_int == 0:
             return
 
-        status_msg = str(base_resp.get("status_msg") or "未知错误")
+        raw_status_msg = str(base_resp.get("status_msg") or "").strip()
+        raw_status_msg_lower = raw_status_msg.lower()
+        is_unknown_server_error = (
+            status_code_int == 1000 and raw_status_msg_lower in _UNKNOWN_ERROR_MESSAGES
+        )
+        mapped_msg = _ERROR_MESSAGES.get(status_code_int)
+        if (
+            mapped_msg
+            and raw_status_msg
+            and raw_status_msg.lower() not in _UNKNOWN_ERROR_MESSAGES
+        ):
+            status_msg = f"{mapped_msg}（{raw_status_msg}）"
+        else:
+            status_msg = mapped_msg or raw_status_msg or "未知错误"
+
         raise APIError(
-            f"MiniMax 图像生成失败: {status_msg}",
+            f"MiniMax 图像生成失败（错误码 {status_code_int}）: {status_msg}",
             http_status,
-            "api_error",
+            _ERROR_TYPES.get(status_code_int, "api_error"),
             str(status_code),
-            retryable=False,
+            retryable=status_code_int in _RETRYABLE_ERROR_CODES
+            or is_unknown_server_error,
         )
 
     @staticmethod

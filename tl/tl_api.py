@@ -650,9 +650,18 @@ class GeminiAPIClient:
                         config.api_key = current_key_from_headers
 
                     provider = get_api_provider(api_type)
-                    req = await provider.build_request(
-                        client=self, config=config, is_retry=True
-                    )
+                    provider_kwargs: dict[str, Any] = {
+                        "client": self,
+                        "config": config,
+                        "is_retry": True,
+                    }
+                    if normalize_api_type(api_type) in {
+                        "minimax",
+                        "minimaxi",
+                        "hailuo",
+                    }:
+                        provider_kwargs["retry_error"] = last_error
+                    req = await provider.build_request(**provider_kwargs)
                     current_url = req.url
                     current_payload = req.payload
                     # 重建后用外层 headers 的 key 覆盖，确保轮换结果不被覆盖
@@ -677,7 +686,7 @@ class GeminiAPIClient:
                     effective_max_retries,
                     attempt_timeout_int,
                 )
-                return await self._perform_request(
+                result = await self._perform_request(
                     session,
                     current_url,
                     current_payload,
@@ -686,7 +695,11 @@ class GeminiAPIClient:
                     model,
                     timeout=timeout_cfg,
                     api_base=api_base,
+                    request_config=config,
                 )
+                if config is not None:
+                    config.retry_count = attempt
+                return result
 
             except asyncio.CancelledError:
                 # 只有框架取消才不重试（这是最顶层的超时）
@@ -824,6 +837,7 @@ class GeminiAPIClient:
         *,
         timeout: aiohttp.ClientTimeout | None = None,
         api_base: str = None,
+        request_config: ApiRequestConfig | None = None,
     ) -> tuple[list[str], list[str], str | None, str | None]:
         """执行实际的HTTP请求"""
         # 检测 multipart 标记（由 openai_images edits 等需要 FormData 的 provider 设置）
@@ -887,6 +901,8 @@ class GeminiAPIClient:
                     raise APIError(
                         f"API 返回了无效的 JSON 响应: {e}", response.status
                     ) from None
+
+            self._record_token_usage(request_config, response_data, response.status)
 
             if response.status == 200:
                 logger.debug("API 调用成功")
@@ -956,6 +972,81 @@ class GeminiAPIClient:
                 )
                 logger.warning(f"API 错误: {error_msg}")
                 raise APIError(error_msg, response.status)
+
+    def _record_token_usage(
+        self,
+        config: ApiRequestConfig | None,
+        response_data: dict[str, Any],
+        http_status: int,
+    ) -> None:
+        if config is None or http_status != 200:
+            return
+        config.token_usage = self._extract_token_usage(response_data)
+
+    @classmethod
+    def _extract_token_usage(
+        cls, response_data: dict[str, Any]
+    ) -> dict[str, int] | None:
+        usage = response_data.get("usage")
+        if isinstance(usage, dict):
+            token_usage = cls._normalize_token_usage(
+                usage,
+                input_keys=("input_tokens", "prompt_tokens", "input_token_count"),
+                output_keys=(
+                    "output_tokens",
+                    "completion_tokens",
+                    "output_token_count",
+                ),
+                total_keys=("total_tokens", "total_token_count"),
+            )
+            if token_usage:
+                return token_usage
+
+        usage_metadata = response_data.get("usageMetadata") or response_data.get(
+            "usage_metadata"
+        )
+        if isinstance(usage_metadata, dict):
+            return cls._normalize_token_usage(
+                usage_metadata,
+                input_keys=("promptTokenCount", "prompt_token_count"),
+                output_keys=("candidatesTokenCount", "candidates_token_count"),
+                total_keys=("totalTokenCount", "total_token_count"),
+            )
+        return None
+
+    @classmethod
+    def _normalize_token_usage(
+        cls,
+        usage: dict[str, Any],
+        *,
+        input_keys: tuple[str, ...],
+        output_keys: tuple[str, ...],
+        total_keys: tuple[str, ...],
+    ) -> dict[str, int] | None:
+        input_tokens = cls._first_usage_value(usage, input_keys)
+        output_tokens = cls._first_usage_value(usage, output_keys)
+        total_tokens = cls._first_usage_value(usage, total_keys)
+        if total_tokens == 0 and (input_tokens or output_tokens):
+            total_tokens = input_tokens + output_tokens
+        if not any((input_tokens, output_tokens, total_tokens)):
+            return None
+        return {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+        }
+
+    @staticmethod
+    def _first_usage_value(usage: dict[str, Any], keys: tuple[str, ...]) -> int:
+        for key in keys:
+            value = usage.get(key)
+            try:
+                token_count = int(value)
+            except (TypeError, ValueError):
+                continue
+            if token_count > 0:
+                return token_count
+        return 0
 
     def _parse_sse_payload(self, raw_text: str) -> dict[str, Any]:
         """解析 text/event-stream 响应，提取最后一个包含有效 payload 的 data 包"""
