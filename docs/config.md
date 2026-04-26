@@ -7,7 +7,7 @@
 | 配置项 | 说明 |
 |--------|------|
 | `api_settings.provider_id` | 生图模型提供商，从 AstrBot 提供商列表选择；豆包可不填 |
-| `api_settings.api_type` | API 类型：`google` / `openai` / `openai_images` / `xai` / `zai` / `grok2api` / `doubao` |
+| `api_settings.api_type` | API 类型：`google` / `openai` / `openai_images` / `xai` / `minimax` / `zai` / `grok2api` / `doubao` |
 
 ## api_settings
 
@@ -35,10 +35,10 @@
 支持的模板：
 
 ```text
-google / openai / zai / grok2api / xai / openai_images / doubao
+google / openai / zai / grok2api / xai / minimax / openai_images / doubao
 ```
 
-下方 `doubao_settings`、`openai_images_settings`、`xai_settings` 章节对应这些模板的专用字段。配置时在 `api_settings.provider_overrides` 中选择相应模板。
+下方 `doubao_settings`、`openai_images_settings`、`xai_settings`、`minimax_settings` 章节对应这些模板的专用字段。配置时在 `api_settings.provider_overrides` 中选择相应模板。
 
 ## image_generation_settings
 
@@ -196,3 +196,46 @@ NapCat v4.8.115+ 支持 Stream API。插件默认仍先按 `max_inline_image_siz
 - 改图：`/v1/images/edits`
 
 改图请求会把参考图统一内联为 `data URI`，不使用 `multipart/form-data`。xAI 官方文档当前说明单次编辑最多支持 `5` 张参考图，分辨率支持 `1k/2k`，单图编辑时输出比例默认跟随输入图。
+
+## minimax_settings（MiniMax 图片生成 API 专用配置）
+
+配置路径：`api_settings.provider_overrides` 中选择 `minimax` 模板。
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `api_keys` | `[]` | MiniMax API Key 列表，支持多 Key 轮换 |
+| `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
+| `model` | `image-01` | MiniMax 图片模型，官方支持 `image-01` / `image-01-live` |
+| `api_base` | `https://api.minimaxi.com` | API 端点地址，插件会统一调用 `/v1/image_generation` |
+| `response_format` | `base64` | 响应格式：`base64` / `url`。官方 URL 有效期为 24 小时 |
+| `n` | `1` | 单次请求生成图片数量，官方范围 `1-9` |
+| `prompt_optimizer` | `false` | 是否开启 MiniMax 提示词自动优化 |
+| `aigc_watermark` | `false` | 是否添加 AIGC 水印 |
+| `reference_image_mode` | `auto` | 参考图传递方式：`auto` / `base64` / `url` |
+| `subject_reference_type` | `character` | `subject_reference.type`，默认用于人物主体一致性 |
+| `width` / `height` | `0` | 未传 `aspect_ratio` 时可同时设置，范围 `512-2048` 且为 `8` 的倍数；`0` 表示不传 |
+| `seed` | `0` | 固定随机种子，`0` 表示不传 |
+| `proxy` | - | 独立代理地址 |
+
+`minimax` 供应商使用 MiniMax 官方单一图像端点：
+
+- 文生图：`POST /v1/image_generation`
+- 图生图：同一端点，通过 `subject_reference[].image_file` 传入参考图
+
+全局 `resolution` 和 `aspect_ratio` 的适配规则：
+
+| 场景 | resolution | aspect_ratio | 实际行为 |
+|------|-----------|-------------|---------|
+| 1K + 支持比例 | 1K | `1:1`/`16:9`/... | 透传 `aspect_ratio`（MiniMax 原生） |
+| 2K/4K + 支持比例 | 2K/4K | `1:1`/`16:9`/... | 计算显式 `width`/`height`（4K 降级为 2048） |
+| 不支持比例 | 任意 | `4:5`/`5:4` | 计算显式 `width`/`height` |
+| 无比例 + 无 w/h 设置 | 2K/4K | — | 使用 `resolution` 对应的正方形尺寸 |
+| `image-01-live` 模型 | 任意 | 任意 | 仅使用 `aspect_ratio`，不发送 `width`/`height` |
+
+支持的长宽比枚举：`1:1` / `16:9` / `4:3` / `3:2` / `2:3` / `3:4` / `9:16` / `21:9`。`image-01-live` 不支持 `21:9`，插件会自动忽略。
+
+官方文档：
+
+- <https://platform.minimaxi.com/docs/guides/image-generation>
+- <https://platform.minimaxi.com/docs/api-reference/image-generation-t2i>
+- <https://platform.minimaxi.com/docs/api-reference/image-generation-i2i>

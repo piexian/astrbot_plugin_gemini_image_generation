@@ -2,6 +2,32 @@
 
 > **升级提示**：v1.9.0 以后的配置文件格式不兼容旧版本。升级后如遇配置模板显示错误，请查看 [配置迁移说明](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/troubleshooting.md#配置迁移说明)。
 
+## [1.10.0] - 2026-04-26
+
+### Added
+
+#### MiniMax 图片生成 API 支持
+
+- 新增 `minimax` API 类型，支持 MiniMax 官方 `/v1/image_generation` 端点，类型别名 `minimax` / `minimaxi` / `hailuo`
+- 新增 `tl/api/minimax.py` 供应商实现（`MiniMaxProvider`），支持文生图和 `subject_reference` 图生图
+- 支持 `image_urls` 和 `image_base64` 两种响应格式，base64 自动保存为本地图片文件
+- 新增 `provider_overrides[minimax]` 完整配置模板：多 Key 轮换、每日限额、模型（`image-01` / `image-01-live`）、`response_format`、`n`（1-9）、提示词自动优化、AIGC 水印、参考图传递方式（`auto` / `base64` / `url`）、自定义尺寸（512-2048，8 的倍数）、随机种子和代理
+- 全局 `resolution`（1K/2K/4K）和 `aspect_ratio` 自动适配：1K + 支持比例使用 MiniMax 原生 `aspect_ratio`；2K/4K 或不支持比例（4:5、5:4）时自动计算显式 `width`/`height`；`image-01-live` 模型仅使用 `aspect_ratio`，不发送 `width`/`height`
+
+#### NapCat Stream API 文件上传
+
+- 新增 `tl/napcat_stream.py`，通过 NapCat `upload_file_stream` 动作分块上传本地文件，替代旧 TCP 文件传输
+- 图片发送失败时自动检测本地大图并通过 Stream API 重试，解决 NapCat 大图发送失败问题
+- 新增 `napcat_stream_threshold_mb` 配置项（默认 2.0MB），控制触发 Stream 回退的文件大小阈值
+
+### Changed
+
+- 移除旧的 NAP TCP 文件传输方式及 `nap_server_address` / `nap_server_port` 配置项，统一替换为 NapCat Stream API 方案
+- 所有图片发送路径（快捷生成、风格变换、LLM 工具后台发送）统一使用 `send_results_with_stream_retry()` 包装器，内置 Stream 自动重试逻辑
+- 文档重构：README 精简为概览入口，详细配置参考、使用指南和故障排除拆分至 `docs/` 目录
+- 新增 `docs/config.md`（完整配置参考）、`docs/usage.md`（使用指南）、`docs/troubleshooting.md`（故障排除与配置迁移说明）
+- 扩展 `tl/README.md` 为完整的内部模块 API 文档索引
+
 ## [1.9.14] - 2026-04-23
 
 ### Changed

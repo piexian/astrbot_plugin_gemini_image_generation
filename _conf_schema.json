@@ -14,13 +14,14 @@
       "api_type": {
         "description": "API 类型（必选）",
         "type": "string",
-        "hint": "必须选择 API 类型（google/openai/openai_images/xai/zai/grok2api/doubao）。 不同提供商支持的类型不同，请参考提供商说明",
+        "hint": "必须选择 API 类型（google/openai/openai_images/xai/minimax/zai/grok2api/doubao）。 不同提供商支持的类型不同，请参考提供商说明",
         "default": "openai",
         "options": [
           "google",
           "openai",
           "openai_images",
           "xai",
+          "minimax",
           "zai",
           "grok2api",
           "doubao"
@@ -242,6 +243,99 @@
                 "type": "int",
                 "hint": "单次请求生成的图片数量，xAI 当前单次最多 10 张",
                 "default": 1
+              },
+              "proxy": {
+                "description": "代理地址",
+                "type": "string",
+                "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式。优先级高于全局代理和环境变量",
+                "default": ""
+              }
+            }
+          },
+          "minimax": {
+            "description": "MiniMax 图片生成 API 覆盖配置",
+            "hint": "配置 MiniMax /v1/image_generation 端点的密钥和参数，支持文生图和 subject_reference 图生图",
+            "items": {
+              "api_keys": {
+                "description": "API Key 列表",
+                "type": "list",
+                "hint": "多个 API Key，支持轮换使用",
+                "default": []
+              },
+              "daily_limit_per_key": {
+                "description": "每个 Key 每日限额",
+                "type": "int",
+                "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
+                "default": 0
+              },
+              "model": {
+                "description": "模型名称",
+                "type": "string",
+                "hint": "MiniMax 图片模型名称，官方支持 image-01 / image-01-live",
+                "default": "image-01"
+              },
+              "api_base": {
+                "description": "API 端点地址",
+                "type": "string",
+                "hint": "MiniMax API 地址，留空使用默认 https://api.minimaxi.com；插件会统一调用 /v1/image_generation",
+                "default": "https://api.minimaxi.com"
+              },
+              "response_format": {
+                "description": "响应格式",
+                "type": "string",
+                "hint": "url 返回 24 小时临时链接，base64 返回编码图片并由插件保存到本地。",
+                "default": "base64",
+                "options": ["base64", "url"]
+              },
+              "n": {
+                "description": "生成数量",
+                "type": "int",
+                "hint": "单次请求生成图片数量，MiniMax 官方范围 1-9",
+                "default": 1,
+                "slider": {"min": 1, "max": 9, "step": 1}
+              },
+              "prompt_optimizer": {
+                "description": "提示词自动优化",
+                "type": "bool",
+                "hint": "是否开启 MiniMax prompt_optimizer",
+                "default": false
+              },
+              "aigc_watermark": {
+                "description": "添加水印",
+                "type": "bool",
+                "hint": "是否在生成图片中添加 AIGC 水印",
+                "default": false
+              },
+              "reference_image_mode": {
+                "description": "参考图传递方式",
+                "type": "string",
+                "hint": "auto 对 URL 直接透传、对本地/base64 转 data URI；base64 强制内联；url 要求参考图必须是公开 URL",
+                "default": "auto",
+                "options": ["auto", "base64", "url"]
+              },
+              "subject_reference_type": {
+                "description": "参考主体类型",
+                "type": "string",
+                "hint": "MiniMax subject_reference.type，默认 character 用于人物主体一致性",
+                "default": "character"
+              },
+              "width": {
+                "description": "自定义宽度",
+                "type": "int",
+                "hint": "仅当未传 aspect_ratio 时生效；需与 height 同时设置，范围 512-2048 且为 8 的倍数，0 表示不传",
+                "default": 0
+              },
+              "height": {
+                "description": "自定义高度",
+                "type": "int",
+                "hint": "仅当未传 aspect_ratio 时生效；需与 width 同时设置，范围 512-2048 且为 8 的倍数，0 表示不传",
+                "default": 0
+              },
+              "seed": {
+                "description": "随机种子",
+                "type": "int",
+                "hint": "固定 seed 可生成相近结果，0 表示不传",
+                "default": 0
               },
               "proxy": {
                 "description": "代理地址",
