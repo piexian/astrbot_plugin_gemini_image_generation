@@ -266,7 +266,9 @@ NapCat v4.8.115+ 支持 Stream API。插件默认仍先按 `max_inline_image_siz
 - 文生图：`POST /v1/images/generations`（JSON 请求体）
 - 图生图：`POST /v1/images/edits`（`multipart/form-data`）
 
-尺寸适配规则：插件会把通用 `size` 入参映射到 step-image-edit-2 支持的 5 档预设：
+尺寸适配规则（按模型自动选择官方支持的预设集合）：
+
+**`step-image-edit-2` 文生图（generations）** 支持五档尺寸：
 
 | 通用尺寸/比例 | 实际下发 |
 |--------------|---------|
@@ -275,6 +277,13 @@ NapCat v4.8.115+ 支持 Stream API。插件默认仍先按 `max_inline_image_siz
 | 竖图 接近 4:5 | `896x1184` |
 | 横图 16:9 / 4:3 | `1360x768` |
 | 横图 接近 5:4 | `1184x896` |
+
+**`step-1x-medium` 文生图（generations）** 支持六档：`256x256` / `512x512` / `768x768` / `1024x1024` / `1280x800` / `800x1280`，按目标长宽比自动选最近预设。
+
+**图生图（edits）**：
+
+- `step-image-edit-2`：官方仅支持单图输入，传入多图会自动取首张并打 debug 日志；`size` 参数官方明确"该参数不生效"，因此插件不再下发，输出尺寸始终与输入图一致。
+- `step-1x-edit`：`size` 仅在 `512x512` / `768x768` / `1024x1024` 三档内透传。
 
 其他注意事项：
 

@@ -18,18 +18,20 @@ tl/api/
 └── grok2api.py       # grok2api 适配
 ```
 
-当前注册映射：
+当前注册映射（与 `_conf_schema.json` 中 `api_settings.api_type.options` 严格一致，不再提供别名）：
 
 | `api_type` | Provider | 说明 |
 |------------|----------|------|
-| `google` / `gemini` / `googlegenai` / `google_genai` | `GoogleProvider` | Google/Gemini 官方接口 |
-| `openai_images` / `openai_images_api` | `OpenAIImagesProvider` | OpenAI `/v1/images/generations` 与 `/v1/images/edits` |
+| `google` | `GoogleProvider` | Google/Gemini 官方接口 |
+| `openai` | `OpenAICompatProvider` | OpenAI Chat Completions 兼容格式（默认兜底） |
+| `openai_images` | `OpenAIImagesProvider` | OpenAI `/v1/images/generations` 与 `/v1/images/edits` |
 | `xai` | `XAIProvider` | xAI 官方图像接口 |
-| `minimax` / `minimaxi` / `hailuo` | `MiniMaxProvider` | MiniMax `/v1/image_generation` |
-| `doubao` / `volcengine` / `ark` / `seedream` | `DoubaoProvider` | 火山引擎 Ark / 豆包 |
-| `zai` / `zai_*` | `ZaiProvider` | Zai 兼容接口 |
-| `grok2api` / `grok2_api` / `grok2api_*` | `Grok2ApiProvider` | grok2api 兼容接口 |
-| 其他值 | `OpenAICompatProvider` | 默认 OpenAI Chat Completions 兼容格式 |
+| `minimax` | `MiniMaxProvider` | MiniMax `/v1/image_generation` |
+| `stepfun` | `StepfunProvider` | StepFun `/v1/images/generations` 与 `/v1/images/edits` |
+| `zai` | `ZaiProvider` | Zai 兼容接口 |
+| `grok2api` | `Grok2ApiProvider` | grok2api 兼容接口 |
+| `doubao` | `DoubaoProvider` | 火山引擎 Ark / 豆包 |
+| 未知值 | `OpenAICompatProvider` | 默认兜底 |
 
 ## 核心接口
 
@@ -134,19 +136,18 @@ from .my_provider import MyProvider
 _MY_PROVIDER: Final[MyProvider] = MyProvider()
 ```
 
-在 `get_api_provider()` 中添加映射：
+并在模块顶部的 `_PROVIDERS` 字典中追加映射：
 
 ```python
-def get_api_provider(api_type: str | None) -> ApiProvider:
-    normalized = normalize_api_type(api_type)
-
-    if normalized in {"my_provider", "myprovider"}:
-        return _MY_PROVIDER
-
-    return _OPENAI
+_PROVIDERS: Final[dict[str, ApiProvider]] = {
+    # ... 其他 canonical key
+    "my_provider": _MY_PROVIDER,
+}
 ```
 
-`normalize_api_type()` 已统一做小写、去空格，并把 `-` 转为 `_`。如果需要兼容多种写法，建议显式列出别名。
+`get_api_provider()` 本身是一行查表：`_PROVIDERS.get(normalize_api_type(api_type), _OPENAI)`，未知 `api_type` 默认回退到 OpenAI 兼容实现。
+
+> **只使用 canonical key**：所有 canonical `api_type` 名称必须与 `_conf_schema.json` 中 `api_settings.api_type.options` 严格一致（全小写、下划线分隔）；代码内不再维护其他别名。`normalize_api_type()` 仅做小写、去空格、`-` 转 `_` 三项面向输入的宽容处理。
 
 ## 更新配置和文档
 
@@ -193,7 +194,7 @@ def get_api_provider(api_type: str | None) -> ApiProvider:
 
 | 问题 | 原因 | 处理 |
 |------|------|------|
-| 新 `api_type` 没生效 | 未注册或别名未归一化 | 检查 `registry.py` 和 `_conf_schema.json` |
+| 新 `api_type` 没生效 | 未注册或 canonical 名称与 `_conf_schema.json` 不一致 | 检查 `registry.py` 中 `_PROVIDERS` 字典和 `_conf_schema.json` 中 `api_type.options` |
 | 图片重复发送 | 响应结构和文本回退都提取到同一张图 | 在 provider 内做去重，或避免无条件文本扫描 |
 | URL 过期 | 返回的是临时缓存链接 | 在 provider 内立即下载并返回 `image_paths` |
 | 相对路径无法访问 | 响应只给 `/images/...` | 使用 `api_base` 拼接 origin 后下载 |

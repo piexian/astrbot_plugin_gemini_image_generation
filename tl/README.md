@@ -158,21 +158,21 @@ generate_image()
 | 接口 | 说明 |
 |------|------|
 | `normalize_api_type(api_type)` | 小写、去空格、`-` 转 `_` |
-| `is_doubao_api_type(api_type)` | 判断是否为豆包/火山 Ark 类型 |
-| `get_api_provider(api_type)` | 返回对应 provider 单例 |
+| `get_api_provider(api_type)` | 返回对应 provider 单例（字典查表，未知值回退 `OpenAICompatProvider`） |
 
-当前映射：
+当前映射（与 `_conf_schema.json` 中 `api_settings.api_type.options` 严格一致，不再提供别名）：
 
 | `api_type` | Provider |
 |------------|----------|
-| `google` / `gemini` / `googlegenai` / `google_genai` | `GoogleProvider` |
-| `openai_images` / `openai_images_api` | `OpenAIImagesProvider` |
+| `google` | `GoogleProvider` |
+| `openai` | `OpenAICompatProvider`（默认兑底） |
+| `openai_images` | `OpenAIImagesProvider` |
 | `xai` | `XAIProvider` |
-| `minimax` / `minimaxi` / `hailuo` | `MiniMaxProvider` |
-| `doubao` / `volcengine` / `ark` / `seedream` | `DoubaoProvider` |
-| `zai` / `zai_*` | `ZaiProvider` |
-| `grok2api` / `grok2_api` / `grok2api_*` | `Grok2ApiProvider` |
-| 其他 | `OpenAICompatProvider` |
+| `minimax` | `MiniMaxProvider` |
+| `stepfun` | `StepfunProvider` |
+| `doubao` | `DoubaoProvider` |
+| `zai` | `ZaiProvider` |
+| `grok2api` | `Grok2ApiProvider` |
 
 ### `api/openai_compat.py`
 
@@ -507,7 +507,7 @@ _prepare_foreground()
 | 文件 | 作用 |
 |------|------|
 | `tl/__init__.py` | 包初始化文件，目前不暴露额外接口 |
-| `tl/api/__init__.py` | 重新导出 `DOUBAO_API_TYPES`、`get_api_provider()`、`is_doubao_api_type()`、`normalize_api_type()` |
+| `tl/api/__init__.py` | 重新导出 `get_api_provider()`、`normalize_api_type()` |
 
 ## 修改建议
 

@@ -20,7 +20,7 @@ import aiohttp
 
 from astrbot.api import logger
 
-from .api import get_api_provider, is_doubao_api_type, normalize_api_type
+from .api import get_api_provider, normalize_api_type
 from .api_types import APIError, ApiRequestConfig
 
 try:
@@ -910,7 +910,7 @@ class GeminiAPIClient:
                     return await self._parse_gresponse(response_data, session)
                 else:  # openai 兼容格式
                     # 豆包使用专门的解析方法
-                    if is_doubao_api_type(api_type):
+                    if normalize_api_type(api_type) == "doubao":
                         # 传递重试标记用于降级处理
                         is_retry = payload.get("_is_retry", False)
                         return await self._parse_doubao_response(
@@ -923,11 +923,8 @@ class GeminiAPIClient:
                     # OpenAI Images / xAI Images 使用 provider 自身的解析方法
                     if normalize_api_type(api_type) in {
                         "openai_images",
-                        "openai_images_api",
                         "xai",
                         "minimax",
-                        "minimaxi",
-                        "hailuo",
                         "stepfun",
                     }:
                         provider = get_api_provider(api_type)
@@ -943,7 +940,7 @@ class GeminiAPIClient:
                     )
             elif response.status in [429, 402, 403]:
                 # 豆包 API 使用专门的错误处理
-                if is_doubao_api_type(api_type):
+                if normalize_api_type(api_type) == "doubao":
                     is_retry = payload.get("_is_retry", False)
                     return await self._parse_doubao_response(
                         response_data,
@@ -971,7 +968,7 @@ class GeminiAPIClient:
                 )
             else:
                 # 豆包 API 使用专门的错误处理
-                if is_doubao_api_type(api_type):
+                if normalize_api_type(api_type) == "doubao":
                     is_retry = payload.get("_is_retry", False)
                     return await self._parse_doubao_response(
                         response_data,
