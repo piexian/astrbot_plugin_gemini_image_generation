@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import base64
-import re
 from typing import Any
 
 import aiohttp
@@ -20,9 +19,9 @@ from astrbot.api import logger
 from ..api_types import APIError, ApiRequestConfig
 from ..openai_image_size import (
     derive_custom_size_matching_aspect,
-    normalize_custom_size_input,
     normalize_size_mode,
     resolve_openai_custom_size,
+    validate_custom_size,
 )
 from ..tl_utils import save_base64_image
 from .base import ProviderRequest
@@ -93,14 +92,15 @@ def _resolve_size_value(
         raw_custom = settings.get("custom_size")
         if raw_custom not in (None, ""):
             try:
-                normalized = normalize_custom_size_input(raw_custom)
-                match = re.fullmatch(r"(\d+)x(\d+)", normalized)
-                if match:
-                    target_pixels = int(match.group(1)) * int(match.group(2))
-            except (TypeError, ValueError) as e:
+                validated = validate_custom_size(
+                    raw_custom, field_name="openai_images.custom_size"
+                )
+                w_str, h_str = validated.split("x")
+                target_pixels = int(w_str) * int(h_str)
+            except ValueError as e:
                 # custom_size 配置不合法时明确报错，不静默回退到默认像素数
                 raise APIError(
-                    f"invalid custom_size: {raw_custom}",
+                    str(e),
                     None,
                     "invalid_size",
                     retryable=False,
