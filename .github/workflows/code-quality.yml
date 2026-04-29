@@ -29,15 +29,15 @@ jobs:
       - name: Ruff lint
         run: |
           ruff check . \
-            --line-length 120 \
+            --line-length 88 \
             --target-version py310 \
             --extend-exclude plans,docs,templates \
-            --select E,F,W,I,B,UP \
-            --ignore E501,B008 \
+            --select F,W,E,ASYNC,C4,Q,I,UP \
+            --ignore F403,F405,E501,ASYNC230,ASYNC240 \
             --per-file-ignores "__init__.py:F401"
 
       - name: Ruff format check
-        run: ruff format --check . --line-length 120 --exclude plans,docs,templates
+        run: ruff format --check . --line-length 88 --exclude plans,docs,templates
 
   syntax:
     name: Syntax Check

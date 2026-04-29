@@ -9,10 +9,9 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from PIL import Image as PILImage
-
 from astrbot.api import logger
 from astrbot.api.provider import ProviderRequest
+from PIL import Image as PILImage
 
 from .enhanced_prompts import (
     get_grid_detect_prompt,

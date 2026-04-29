@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import Image as AstrImage
@@ -42,6 +41,7 @@ from .tl import (
     resolve_split_source_to_path,
     split_image,
 )
+from .tl.api import normalize_api_type
 from .tl.enhanced_prompts import (
     build_quick_prompt,
     get_avatar_prompt,
@@ -57,7 +57,6 @@ from .tl.enhanced_prompts import (
     get_wallpaper_prompt,
 )
 from .tl.llm_tools import GeminiImageGenerationTool
-from .tl.api import normalize_api_type
 from .tl.openai_image_size import derive_custom_size_from_preset_params
 from .tl.tl_api import APIClient, ApiRequestConfig, get_api_client
 from .tl.tl_utils import AvatarManager, cleanup_old_images, format_error_message

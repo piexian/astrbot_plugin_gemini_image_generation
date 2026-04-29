@@ -9,9 +9,8 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
-
 from astrbot.api import logger
+from PIL import Image, ImageDraw, ImageFont
 
 # 字体下载配置
 # 注意：如果自动下载失败，可手动将字体文件放入 tl 目录（支持 .ttf/.otf/.ttc 格式）

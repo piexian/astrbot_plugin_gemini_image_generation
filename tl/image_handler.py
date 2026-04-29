@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import aiohttp
-
 from astrbot.api import logger
 from astrbot.api.message_components import At, Image, Reply
 

@@ -20,9 +20,8 @@ from uuid import uuid4
 
 import aiohttp
 import cv2
-from PIL import Image as PILImage
-
 from astrbot.api import logger
+from PIL import Image as PILImage
 
 SUPPORTED_IMAGE_MIME_TYPES = frozenset(
     {"image/png", "image/jpeg", "image/webp", "image/heic", "image/heif"}
