@@ -7,7 +7,7 @@
 | 配置项 | 说明 |
 |--------|------|
 | `api_settings.provider_id` | 生图模型提供商，从 AstrBot 提供商列表选择；豆包可不填 |
-| `api_settings.api_type` | API 类型：`google` / `openai` / `openai_images` / `xai` / `minimax` / `zai` / `grok2api` / `doubao` |
+| `api_settings.api_type` | API 类型：`google` / `openai` / `openai_images` / `xai` / `minimax` / `stepfun` / `zai` / `grok2api` / `doubao` |
 
 ## api_settings
 
@@ -35,10 +35,10 @@
 支持的模板：
 
 ```text
-google / openai / zai / grok2api / xai / minimax / openai_images / doubao
+google / openai / zai / grok2api / xai / minimax / stepfun / openai_images / doubao
 ```
 
-下方 `doubao_settings`、`openai_images_settings`、`xai_settings`、`minimax_settings` 章节对应这些模板的专用字段。配置时在 `api_settings.provider_overrides` 中选择相应模板。
+下方 `doubao_settings`、`openai_images_settings`、`xai_settings`、`minimax_settings`、`stepfun_settings` 章节对应这些模板的专用字段。配置时在 `api_settings.provider_overrides` 中选择相应模板。
 
 ## image_generation_settings
 
@@ -242,3 +242,46 @@ NapCat v4.8.115+ 支持 Stream API。插件默认仍先按 `max_inline_image_siz
 - <https://platform.minimaxi.com/docs/guides/image-generation>
 - <https://platform.minimaxi.com/docs/api-reference/image-generation-t2i>
 - <https://platform.minimaxi.com/docs/api-reference/image-generation-i2i>
+
+## stepfun_settings（StepFun 图片生成 API 专用配置）
+
+配置路径：`api_settings.provider_overrides` 中选择 `stepfun` 模板。仅完全适配 `step-image-edit-2` 模型参数，其他模型名可填写但参数会按 step-image-edit-2 的格式透传。
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `api_keys` | `[]` | StepFun API Key 列表，支持多 Key 轮换 |
+| `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
+| `model` | `step-image-edit-2` | 图片模型名称，可改为其它 StepFun 图片模型 |
+| `api_base` | `https://api.stepfun.com` | API 端点；同时兼容 `https://api.stepfun.com/step_plan/v1` 写法，自动识别 `/v1` 后缀 |
+| `response_format` | `url` | `url` 返回临时签名链接（`res.stepfun.com`），`b64_json` 返回 base64 并由插件落盘 |
+| `steps` | `0` | 采样步数，`0` 表示不传（服务端默认 `8`） |
+| `cfg_scale` | `0` | 提示词引导强度，`0` 表示不传（服务端默认 `1.0`） |
+| `negative_prompt` | `""` | 负向提示词，留空不传 |
+| `text_mode` | `false` | 是否启用 step-image-edit-2 的 `text_mode`，适用于含文字生成场景 |
+| `seed` | `0` | 固定随机种子，`0` 表示不传 |
+| `proxy` | - | 独立代理地址，优先级高于全局代理和环境变量 |
+
+`stepfun` 供应商使用阶跃星辰官方图片端点：
+
+- 文生图：`POST /v1/images/generations`（JSON 请求体）
+- 图生图：`POST /v1/images/edits`（`multipart/form-data`）
+
+尺寸适配规则：插件会把通用 `size` 入参映射到 step-image-edit-2 支持的 5 档预设：
+
+| 通用尺寸/比例 | 实际下发 |
+|--------------|---------|
+| 正方形 | `1024x1024` |
+| 竖图 9:16 / 3:4 | `768x1360` |
+| 竖图 接近 4:5 | `896x1184` |
+| 横图 16:9 / 4:3 | `1360x768` |
+| 横图 接近 5:4 | `1184x896` |
+
+其他注意事项：
+
+- 请求被安全审核拦截时，StepFun 会返回 `HTTP 451`，插件统一识别为安全类错误（`category="safety"`，不重试）。
+- `b64_json` 模式下生成的图片会保存为本地文件，避免 URL 过期问题。
+
+官方文档：
+
+- <https://platform.stepfun.com/docs/llm/image-edit>
+- <https://platform.stepfun.com/docs/api-reference/image-edit>
