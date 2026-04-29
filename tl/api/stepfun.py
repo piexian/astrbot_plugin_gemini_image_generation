@@ -1,5 +1,4 @@
-"""阶跃星辰图片生成供应商实现。
-"""
+"""阶跃星辰图片生成供应商实现。"""
 
 from __future__ import annotations
 
@@ -14,15 +13,33 @@ from ..api_types import APIError, ApiRequestConfig
 from ..tl_utils import save_base64_image
 from .base import ProviderRequest
 
-# step-image-edit-2 文生图官方支持的预设尺寸（WxH 格式）
-# 文档以 height x width 呈现，这里转换为常见的 WxH 表达
-_STEP_PRESET_SIZES: list[tuple[int, int]] = [
+# generations 接口不同模型支持的 size 预设（WxH 格式）。
+# step-image-edit-2 的 edits 接口：size 不生效，输出始终与输入同尺寸。
+# step-1x-edit 的 edits 接口：仅支持 512x512 / 768x768 / 1024x1024。
+_STEP_IMAGE_EDIT2_GEN_SIZES: list[tuple[int, int]] = [
     (1024, 1024),  # 1:1
     (768, 1360),  # ~9:16  竖
     (896, 1184),  # ~3:4   竖
     (1360, 768),  # ~16:9  横
     (1184, 896),  # ~4:3   横
 ]
+_STEP_1X_MEDIUM_GEN_SIZES: list[tuple[int, int]] = [
+    (256, 256),
+    (512, 512),
+    (768, 768),
+    (1024, 1024),
+    (1280, 800),  # 16:10
+    (800, 1280),  # 10:16
+]
+_STEP1X_EDIT_SIZES: set[str] = {"512x512", "768x768", "1024x1024"}
+
+
+def _gen_size_presets_for(model: str) -> list[tuple[int, int]]:
+    name = (model or "").strip().lower()
+    if name == "step-1x-medium":
+        return _STEP_1X_MEDIUM_GEN_SIZES
+    # 默认按 step-image-edit-2 的预设集处理
+    return _STEP_IMAGE_EDIT2_GEN_SIZES
 
 
 def _parse_aspect_ratio(value: str | None) -> float | None:
@@ -43,11 +60,45 @@ def _parse_aspect_ratio(value: str | None) -> float | None:
         return None
 
 
-def _resolve_step_size(resolution: str | None, aspect_ratio: str | None) -> str | None:
-    """将 resolution + aspect_ratio 映射到 step-image-edit-2 文生图预设尺寸。
+def _normalize_size_str(value: Any) -> str | None:
+    """将 'WxH' / 'W×H' 归一化为 'WxH' 小写格式。"""
+    if value is None:
+        return None
+    text = str(value).strip().lower().replace("×", "x")
+    if not text or "x" not in text:
+        return None
+    parts = text.split("x", 1)
+    try:
+        w = int(parts[0].strip())
+        h = int(parts[1].strip())
+    except (TypeError, ValueError):
+        return None
+    if w <= 0 or h <= 0:
+        return None
+    return f"{w}x{h}"
 
-    仅当 resolution 为 1K 或留空时启用映射；其他情况返回 None（不传 size，由服务端默认）。
+
+def _resolve_step_size(
+    resolution: str | None,
+    aspect_ratio: str | None,
+    *,
+    explicit_size: Any = None,
+    model: str | None = None,
+) -> str | None:
+    """将 resolution + aspect_ratio 映射到当前模型支持的 generations 预设尺寸。
+
+    优先级：
+    1. ``explicit_size`` 合法且在该模型预设集合内 → 透传；
+    2. resolution 为 1K 或留空 + aspect_ratio → 选最接近预设；
+    3. 其他情况 → None（不传 size，服务端默认 1024x1024）。
     """
+    presets = _gen_size_presets_for(model or "")
+    preset_set = {f"{w}x{h}" for w, h in presets}
+
+    norm_explicit = _normalize_size_str(explicit_size)
+    if norm_explicit and norm_explicit in preset_set:
+        return norm_explicit
+
     res_norm = (resolution or "").strip().upper()
     if res_norm and res_norm not in {"1K", ""}:
         return None
@@ -59,7 +110,7 @@ def _resolve_step_size(resolution: str | None, aspect_ratio: str | None) -> str 
 
     # 选择与目标长宽比最接近的预设
     best = min(
-        _STEP_PRESET_SIZES,
+        presets,
         key=lambda wh: abs((wh[0] / wh[1]) - target_ratio),
     )
     return f"{best[0]}x{best[1]}"
@@ -216,7 +267,13 @@ class StepfunProvider:
         }
 
         # ---- size（仅文生图模式）----
-        size_value = _resolve_step_size(config.resolution, config.aspect_ratio)
+        # 优先使用 LLM/工具显式传入的 resolution（可能是 WxH字符串）作为 explicit size
+        size_value = _resolve_step_size(
+            config.resolution,
+            config.aspect_ratio,
+            explicit_size=config.resolution,
+            model=model,
+        )
         if size_value:
             payload["size"] = size_value
 
@@ -243,6 +300,12 @@ class StepfunProvider:
                 retryable=False,
             )
 
+        # 官方文档：edits 接口当前仅支持传入一个图片
+        if len(ref_images) > 1:
+            logger.debug(
+                f"[stepfun] edits 仅支持单张参考图，已提供 {len(ref_images)} 张，取首张"
+            )
+
         image_data = self._decode_image_input(ref_images[0])
         if image_data is None:
             raise APIError(
@@ -261,6 +324,13 @@ class StepfunProvider:
             filename="image.png",
             content_type="image/png",
         )
+
+        # ---- size：仅对 step-1x-edit 生效（官方 512/768/1024 三档）;
+        # step-image-edit-2 的 edits 接口 size 不生效，输出始终与输入同尺寸。
+        if model.strip().lower() == "step-1x-edit":
+            explicit = _normalize_size_str(config.resolution)
+            if explicit and explicit in _STEP1X_EDIT_SIZES:
+                form.add_field("size", explicit)
 
         # ---- 可选参数（仅非零/非空才传） ----
         response_format = str(settings.get("response_format") or "url").strip() or "url"

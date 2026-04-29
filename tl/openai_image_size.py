@@ -186,18 +186,24 @@ def derive_custom_size_matching_aspect(
     raw_height = math.sqrt(target_pixels / aspect)
     raw_width = raw_height * aspect
 
-    def _round16(v: float) -> int:
-        return max(16, int(round(v / 16.0)) * 16)
+    def _floor16(v: float) -> int:
+        # 向下对齐到 16 的倍数，避免四舍五入推高超过 max edge
+        return max(16, int(math.floor(v / 16.0)) * 16)
 
-    width = _round16(raw_width)
-    height = _round16(raw_height)
+    width = _floor16(raw_width)
+    height = _floor16(raw_height)
 
-    # 收紧到 max edge 约束
+    # 收紧到 max edge 约束（向下对齐 + 必要时迭代缩小）
     max_edge = max(width, height)
     if max_edge > CUSTOM_SIZE_MAX_EDGE:
         scale = CUSTOM_SIZE_MAX_EDGE / max_edge
-        width = _round16(width * scale)
-        height = _round16(height * scale)
+        width = _floor16(width * scale)
+        height = _floor16(height * scale)
+    while max(width, height) > CUSTOM_SIZE_MAX_EDGE and (width > 16 and height > 16):
+        if width >= height:
+            width -= 16
+        else:
+            height -= 16
 
     # 像素总量收敛：若超上限，缩小；若不足下限，放大
     def _pixels(w: int, h: int) -> int:

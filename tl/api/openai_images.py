@@ -88,15 +88,23 @@ def _resolve_size_value(
         if size_mode != "custom":
             return None
         ref_w, ref_h = ref_image_dims
-        # 以用户配置的 custom_size 像素总量作为目标，未配置则默认 1024*1024
+        # 以用户配置的 custom_size 像素总量作为目标；未配置留为 None 交由推导函数使用默认值
         target_pixels: int | None = None
-        try:
-            normalized = normalize_custom_size_input(settings.get("custom_size"))
-            match = re.fullmatch(r"(\d+)x(\d+)", normalized)
-            if match:
-                target_pixels = int(match.group(1)) * int(match.group(2))
-        except Exception:
-            target_pixels = None
+        raw_custom = settings.get("custom_size")
+        if raw_custom not in (None, ""):
+            try:
+                normalized = normalize_custom_size_input(raw_custom)
+                match = re.fullmatch(r"(\d+)x(\d+)", normalized)
+                if match:
+                    target_pixels = int(match.group(1)) * int(match.group(2))
+            except (TypeError, ValueError) as e:
+                # custom_size 配置不合法时明确报错，不静默回退到默认像素数
+                raise APIError(
+                    f"invalid custom_size: {raw_custom}",
+                    None,
+                    "invalid_size",
+                    retryable=False,
+                ) from e
         try:
             return derive_custom_size_matching_aspect(
                 ref_w, ref_h, target_pixels=target_pixels
