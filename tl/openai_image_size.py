@@ -154,6 +154,81 @@ def derive_custom_size_from_preset_params(
     return validate_custom_size(f"{width}x{height}", field_name="derived_custom_size")
 
 
+def derive_custom_size_matching_aspect(
+    ref_width: int,
+    ref_height: int,
+    target_pixels: int | None = None,
+) -> str:
+    """根据参考图实际像素比例推导一个合法的 custom size。
+
+    规则：
+    - 输出宽高均为 16 的倍数；
+    - 长短边比 ≤ 3:1（超出时截断到 3:1）；
+    - 总像素接近 ``target_pixels``（默认 1024*1024），并落在合法区间内；
+    - 任一边不超过 ``CUSTOM_SIZE_MAX_EDGE``。
+    """
+    if ref_width <= 0 or ref_height <= 0:
+        raise ValueError("参考图宽高必须大于 0")
+
+    aspect = ref_width / ref_height
+    # 长短边比限制为 3:1
+    if aspect > 3.0:
+        aspect = 3.0
+    elif aspect < 1.0 / 3.0:
+        aspect = 1.0 / 3.0
+
+    if target_pixels is None or target_pixels <= 0:
+        target_pixels = 1024 * 1024
+    target_pixels = max(
+        CUSTOM_SIZE_MIN_PIXELS, min(CUSTOM_SIZE_MAX_PIXELS, int(target_pixels))
+    )
+
+    raw_height = math.sqrt(target_pixels / aspect)
+    raw_width = raw_height * aspect
+
+    def _floor16(v: float) -> int:
+        # 向下对齐到 16 的倍数，避免四舍五入推高超过 max edge
+        return max(16, int(math.floor(v / 16.0)) * 16)
+
+    width = _floor16(raw_width)
+    height = _floor16(raw_height)
+
+    # 收紧到 max edge 约束（向下对齐 + 必要时迭代缩小）
+    max_edge = max(width, height)
+    if max_edge > CUSTOM_SIZE_MAX_EDGE:
+        scale = CUSTOM_SIZE_MAX_EDGE / max_edge
+        width = _floor16(width * scale)
+        height = _floor16(height * scale)
+    while max(width, height) > CUSTOM_SIZE_MAX_EDGE and (width > 16 and height > 16):
+        if width >= height:
+            width -= 16
+        else:
+            height -= 16
+
+    # 像素总量收敛：若超上限，缩小；若不足下限，放大
+    def _pixels(w: int, h: int) -> int:
+        return w * h
+
+    while _pixels(width, height) > CUSTOM_SIZE_MAX_PIXELS and (
+        width > 16 and height > 16
+    ):
+        if width >= height:
+            width -= 16
+        else:
+            height -= 16
+    while _pixels(width, height) < CUSTOM_SIZE_MIN_PIXELS and (
+        max(width, height) + 16 <= CUSTOM_SIZE_MAX_EDGE
+    ):
+        if width <= height:
+            width += 16
+        else:
+            height += 16
+
+    return validate_custom_size(
+        f"{width}x{height}", field_name="derived_from_reference"
+    )
+
+
 def resolve_openai_custom_size(
     size_candidate: Any,
     resolution_candidate: Any,

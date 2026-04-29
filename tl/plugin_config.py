@@ -55,11 +55,12 @@ class PluginConfig:
     api_keys: list[str] = field(default_factory=list)
     proxy: str | None = None
 
-    # 豆包（Volcengine Ark）专用配置（api_type == doubao 时使用）
+    # 供应商特定设置
     doubao_settings: dict[str, Any] = field(default_factory=dict)
     minimax_settings: dict[str, Any] = field(default_factory=dict)
+    stepfun_settings: dict[str, Any] = field(default_factory=dict)
 
-    # 供应商配置覆盖（支持所有 API 类型的多 Key 轮换和限流）
+    # 供应商配置覆盖
     # 结构：{api_type: {api_keys: [...], daily_limit_per_key: int, ...}}
     provider_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
 
@@ -161,7 +162,6 @@ class ConfigLoader:
         migrations_needed = []
 
         # 检查 limit_settings 是否使用旧版格式
-        # 旧版格式特征：存在 enable_rate_limit 字段，且不存在 rate_limit_rules
         limit_settings = self.raw_config.get("limit_settings")
         if isinstance(limit_settings, dict):
             has_old_fields = "enable_rate_limit" in limit_settings
@@ -170,7 +170,6 @@ class ConfigLoader:
                 migrations_needed.append("limit_settings")
 
         # 检查 quick_mode_settings 是否使用旧版 object 格式
-        # 旧版格式特征：是 dict 类型；新版是 list 类型（template_list）
         quick_mode_settings = self.raw_config.get("quick_mode_settings")
         if isinstance(quick_mode_settings, dict):
             migrations_needed.append("quick_mode_settings")
@@ -278,8 +277,6 @@ class ConfigLoader:
         migrated = False
 
         # 迁移旧版限流配置到 rate_limit_rules
-        # 旧版格式：enable_rate_limit, rate_limit_period, max_requests_per_group
-        # 新版格式：rate_limit_rules (template_list)
         limit_settings = self.raw_config.get("limit_settings")
         if isinstance(limit_settings, dict):
             has_old_fields = "enable_rate_limit" in limit_settings
@@ -306,8 +303,6 @@ class ConfigLoader:
                 migrated = True
 
         # 迁移旧版 quick_mode_settings 从 object 格式到 template_list 格式
-        # 旧版格式：{avatar: {resolution: "1K", aspect_ratio: "1:1"}, ...}
-        # 新版格式：[{__template_key: "avatar", resolution: "1K", aspect_ratio: "1:1"}, ...]
         quick_mode_settings = self.raw_config.get("quick_mode_settings")
         if isinstance(quick_mode_settings, dict):
             new_quick_mode_list = []
@@ -350,8 +345,6 @@ class ConfigLoader:
         config.model = (api_settings.get("model") or "").strip()
         config.proxy = str(api_settings.get("proxy") or "").strip() or None
 
-        # Provider overrides（从 api_settings.provider_overrides 读取）
-        # 新结构：api_settings.provider_overrides 是 template_list，每个条目有 __template_key 标识类型
         provider_overrides = api_settings.get("provider_overrides") or []
         doubao_settings = {}
 
@@ -442,7 +435,6 @@ class ConfigLoader:
         config.doubao_settings = doubao_settings
 
         # 解析所有 provider_overrides 并存入 config.provider_overrides
-        # 结构：{api_type: {api_keys: [...], daily_limit_per_key: int, ...}}
         all_overrides: dict[str, dict[str, Any]] = {}
         if isinstance(provider_overrides, list):
             for override in provider_overrides:
@@ -482,6 +474,7 @@ class ConfigLoader:
                         all_overrides[template_key] = override_copy
         config.provider_overrides = all_overrides
         config.minimax_settings = all_overrides.get("minimax", {})
+        config.stepfun_settings = all_overrides.get("stepfun", {})
 
         # 图像生成设置
         image_settings = self.raw_config.get("image_generation_settings") or {}
@@ -597,10 +590,7 @@ class ConfigLoader:
             or {}
         )
 
-        # 设置默认值以确保图片清晰度
-        # scale: "device" 使用设备像素比，生成更清晰的图片
-        # full_page: True 截取整个页面
-        # type: "png" 无损格式
+        # 设置默认值以确保图片清晰度和完整性
         defaults = {
             "scale": "device",
             "full_page": True,

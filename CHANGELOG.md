@@ -2,6 +2,34 @@
 
 > **升级提示**：v1.9.0 以后的配置文件格式不兼容旧版本。升级后如遇配置模板显示错误，请查看 [配置迁移说明](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/troubleshooting.md#配置迁移说明)。
 
+## [1.10.2] - 2026-04-29
+
+### Added
+
+#### 阶跃星辰 图片生成 API 支持
+
+- 新增 `stepfun` API 类型
+- 新增 `tl/api/stepfun.py` 供应商实现（`StepfunProvider`），适配 StepFun 官方 `/v1/images/generations`（文生图，JSON）与 `/v1/images/edits`（图生图，multipart）端点
+- 默认模型 `step-image-edit-2`，同时允许在配置中填写自定义模型名透传
+- generations 接口按模型自动选择官方支持的 size 预设：`step-image-edit-2` 五档（`1024x1024` / `768x1360` / `896x1184` / `1360x768` / `1184x896`），`step-1x-medium` 六档（`256/512/768/1024` 正方形 + `1280x800`、`800x1280`）
+- edits 接口遵循官方约束：`step-image-edit-2` 仅传单图且不传 `size`（官方明确"该参数不生效"，输出与输入同尺寸）；`step-1x-edit` 仅在 `512x512 / 768x768 / 1024x1024` 三档内透传 `size`
+- `api_base` 同时兼容 `https://api.stepfun.com` 与 `https://api.stepfun.com/step_plan/v1` 两种写法，自动识别 `/v1` 后缀
+- 解析 `data[].url` 与 `data[].b64_json` 两种返回格式
+- 451 响应统一识别为安全审核失败（`APIError(..., category="safety", retryable=False)`），不再触发重试
+- 新增 `provider_overrides[stepfun]` 完整配置模板：多 Key 轮换、每日限额、模型、`api_base`、`response_format`、`steps`、`cfg_scale`、`negative_prompt`、`text_mode`、随机种子、代理
+
+### Changed
+
+- `api_type` 不再支持别名，仅保留与 `_conf_schema.json` 中 `api_type.options` 一致的 9 个 canonical 值（`google` / `openai` / `openai_images` / `xai` / `minimax` / `stepfun` / `zai` / `grok2api` / `doubao`）。原先的 `step` / `step_fun` / `gemini` / `googlegenai` / `google_genai` / `minimaxi` / `hailuo` / `grok2_api` / `volcengine` / `ark` / `seedream` / `openai_images_api` 等别名以及 `zai_*` / `grok2api_*` 前缀匹配全部移除
+- `tl/api/registry.py` 重构：`get_api_provider` 改为字典查表；移除 `DOUBAO_API_TYPES` / `is_doubao_api_type` 公共导出，调用点改为 `normalize_api_type(x) == "doubao"`
+- `main.py` 中两处手写 canonical 化逻辑改为统一调用 `normalize_api_type`，避免规则漂移
+
+### Fixed
+
+- OpenAI Images `edits` 链路在 `size_mode=custom` 且开启 `preserve_reference_image_size` 时不再回退到固定的 `custom_size`
+- 新增 `derive_custom_size_matching_aspect()` 工具：当处于自定义尺寸模式且检测到参考图时，按参考图比例（限制在 3:1 内、对齐到 16 的倍数、严格不超过 `CUSTOM_SIZE_MAX_EDGE`）自动推导出 WxH 透传给上游，从而真正保留参考图比例
+- `openai_images._resolve_size_value` 不再吞掉 `custom_size` 解析异常：非法值会抛出 `APIError(category="invalid_size", retryable=False)`，避免静默回退到默认 1024×1024 像素
+
 ## [1.10.1] - 2026-04-26
 
 ### Added
@@ -39,6 +67,9 @@
 - 文档重构：README 精简为概览入口，详细配置参考、使用指南和故障排除拆分至 `docs/` 目录
 - 新增 `docs/config.md`（完整配置参考）、`docs/usage.md`（使用指南）、`docs/troubleshooting.md`（故障排除与配置迁移说明）
 - 扩展 `tl/README.md` 为完整的内部模块 API 文档索引
+
+<details>
+<summary><strong>1.9.x 历史版本</strong>（点击展开）</summary>
 
 ## [1.9.14] - 2026-04-23
 
@@ -260,6 +291,11 @@
 - `tl/api/registry.py` - 注册 DoubaoProvider
 - `_conf_schema.json` - 新增 doubao 到 api_type 选项，新增 doubao_settings 配置节
 
+</details>
+
+<details>
+<summary><strong>1.8.x 历史版本</strong>（点击展开）</summary>
+
 ## [1.8.5] - 2026-01-21
 
 ### Added
@@ -367,6 +403,8 @@
 - 新增配置项 `max_inline_image_size_mb` 控制 base64 编码阈值
 - 本地图片大于阈值时使用文件系统引用
 - 修复发送顺序问题
+
+</details>
 
 ## Earlier Versions
 

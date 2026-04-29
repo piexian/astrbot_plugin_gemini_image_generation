@@ -18,8 +18,10 @@ from astrbot.api import logger
 
 from ..api_types import APIError, ApiRequestConfig
 from ..openai_image_size import (
+    derive_custom_size_matching_aspect,
     normalize_size_mode,
     resolve_openai_custom_size,
+    validate_custom_size,
 )
 from ..tl_utils import save_base64_image
 from .base import ProviderRequest
@@ -66,12 +68,49 @@ def _resolve_size_value(
     model: str,
     resolution: str | None,
     settings: dict[str, Any],
+    *,
+    ref_image_dims: tuple[int, int] | None = None,
 ) -> str | None:
-    """根据配置和请求参数决定最终传给 OpenAI Images API 的 size。"""
+    """根据配置和请求参数决定最终传给 OpenAI Images API 的 size。
+
+    当 ``ref_image_dims`` 提供且 resolution 为空（preserve_reference_image_size 触发）：
+    - preset 模式：返回 None（不传 size，由 API 默认按原图）
+    - custom 模式：根据参考图实际比例推导一个合法 custom size，避免回落到固定 custom_size
+    """
     try:
         size_mode = normalize_size_mode(settings.get("size_mode"))
     except ValueError as e:
         raise APIError(str(e), None, "invalid_size_mode", retryable=False) from e
+
+    # 保留参考图尺寸场景：resolution 被显式置空
+    if not resolution and ref_image_dims is not None:
+        if size_mode != "custom":
+            return None
+        ref_w, ref_h = ref_image_dims
+        # 以用户配置的 custom_size 像素总量作为目标；未配置留为 None 交由推导函数使用默认值
+        target_pixels: int | None = None
+        raw_custom = settings.get("custom_size")
+        if raw_custom not in (None, ""):
+            try:
+                validated = validate_custom_size(
+                    raw_custom, field_name="openai_images.custom_size"
+                )
+                w_str, h_str = validated.split("x")
+                target_pixels = int(w_str) * int(h_str)
+            except ValueError as e:
+                # custom_size 配置不合法时明确报错，不静默回退到默认像素数
+                raise APIError(
+                    str(e),
+                    None,
+                    "invalid_size",
+                    retryable=False,
+                ) from e
+        try:
+            return derive_custom_size_matching_aspect(
+                ref_w, ref_h, target_pixels=target_pixels
+            )
+        except ValueError as e:
+            raise APIError(str(e), None, "invalid_size", retryable=False) from e
 
     if size_mode == "custom":
         try:
@@ -95,10 +134,6 @@ class OpenAIImagesProvider:
     """OpenAI /v1/images/generations + /v1/images/edits 端点实现"""
 
     name = "openai_images"
-
-    # ------------------------------------------------------------------
-    # build_request
-    # ------------------------------------------------------------------
 
     async def build_request(
         self, *, client: Any, config: ApiRequestConfig
@@ -156,10 +191,6 @@ class OpenAIImagesProvider:
 
         logger.debug(f"[openai_images] URL: {url} (edits={has_ref_images})")
         return ProviderRequest(url=url, headers=headers, payload=payload)
-
-    # ------------------------------------------------------------------
-    # parse_response
-    # ------------------------------------------------------------------
 
     async def parse_response(
         self,
@@ -268,10 +299,6 @@ class OpenAIImagesProvider:
             retryable=False,
         )
 
-    # ------------------------------------------------------------------
-    # _prepare_generations_payload (文生图 JSON)
-    # ------------------------------------------------------------------
-
     async def _prepare_generations_payload(
         self,
         *,
@@ -343,10 +370,6 @@ class OpenAIImagesProvider:
         )
         return payload
 
-    # ------------------------------------------------------------------
-    # _prepare_edits_payload (图像编辑 multipart/form-data)
-    # ------------------------------------------------------------------
-
     async def _prepare_edits_payload(
         self,
         *,
@@ -406,19 +429,21 @@ class OpenAIImagesProvider:
         form.add_field("model", model)
 
         # ---- size ----
+        ref_dims: tuple[int, int] | None = None
+        if not config.resolution:
+            ref_dims = self._probe_image_dims(image_data)
         size_value = _resolve_size_value(
             model,
             config.resolution,
             settings,
+            ref_image_dims=ref_dims,
         )
         if size_value:
             form.add_field("size", size_value)
 
-        # ---- response_format ----
         response_format = str(settings.get("response_format") or "b64_json").strip()
         form.add_field("response_format", response_format)
 
-        # ---- quality ----
         quality = str(settings.get("quality") or "").strip()
         if quality:
             form.add_field("quality", quality)
@@ -435,10 +460,6 @@ class OpenAIImagesProvider:
             "model": model,
             "prompt": config.prompt,
         }
-
-    # ------------------------------------------------------------------
-    # helpers
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _decode_image_input(image_input: str) -> bytes | None:
@@ -457,4 +478,20 @@ class OpenAIImagesProvider:
             return base64.b64decode(s, validate=True)
         except Exception:
             logger.debug(f"[openai_images] 无法 base64 解码图片输入 (len={len(s)})")
+            return None
+
+    @staticmethod
+    def _probe_image_dims(image_bytes: bytes | None) -> tuple[int, int] | None:
+        """读取图片二进制的真实宽高（用于参考图比例感知）"""
+        if not image_bytes:
+            return None
+        try:
+            from io import BytesIO
+
+            from PIL import Image as _PILImage
+
+            with _PILImage.open(BytesIO(image_bytes)) as img:
+                return int(img.width), int(img.height)
+        except Exception as e:
+            logger.debug(f"[openai_images] 读取参考图尺寸失败: {e}")
             return None

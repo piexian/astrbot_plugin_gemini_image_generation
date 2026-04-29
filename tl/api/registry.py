@@ -14,6 +14,7 @@ from .grok2api import Grok2ApiProvider
 from .minimax import MiniMaxProvider
 from .openai_compat import OpenAICompatProvider
 from .openai_images import OpenAIImagesProvider
+from .stepfun import StepfunProvider
 from .xai import XAIProvider
 from .zai import ZaiProvider
 
@@ -23,82 +24,32 @@ _GROK2API: Final[Grok2ApiProvider] = Grok2ApiProvider()
 _MINIMAX: Final[MiniMaxProvider] = MiniMaxProvider()
 _OPENAI: Final[OpenAICompatProvider] = OpenAICompatProvider()
 _OPENAI_IMAGES: Final[OpenAIImagesProvider] = OpenAIImagesProvider()
+_STEPFUN: Final[StepfunProvider] = StepfunProvider()
 _XAI: Final[XAIProvider] = XAIProvider()
 _ZAI: Final[ZaiProvider] = ZaiProvider()
 
-# Doubao/Volcengine Ark 相关的 API 类型别名
-DOUBAO_API_TYPES: Final[frozenset[str]] = frozenset(
-    {"doubao", "volcengine", "ark", "seedream"}
-)
+# canonical api_type -> provider 映射表（与 _conf_schema.json 中 api_type.options 严格一致）
+_PROVIDERS: Final[dict[str, ApiProvider]] = {
+    "google": _GOOGLE,
+    "openai": _OPENAI,
+    "openai_images": _OPENAI_IMAGES,
+    "xai": _XAI,
+    "minimax": _MINIMAX,
+    "stepfun": _STEPFUN,
+    "zai": _ZAI,
+    "grok2api": _GROK2API,
+    "doubao": _DOUBAO,
+}
 
 
 def normalize_api_type(api_type: str | None) -> str:
-    """规范化 API 类型字符串。
-
-    将 api_type 转换为小写、去除空格、替换连字符为下划线。
-
-    Args:
-        api_type: 原始 API 类型字符串
-
-    Returns:
-        规范化后的字符串
-    """
+    """规范化 API 类型字符串（小写 + 去空格 + 连字符转下划线）。"""
     return (api_type or "").strip().lower().replace("-", "_")
 
 
-def is_doubao_api_type(api_type: str | None) -> bool:
-    """判断是否为豆包/火山引擎 API 类型。
-
-    Args:
-        api_type: API 类型字符串
-
-    Returns:
-        是否为豆包相关类型
-    """
-    return normalize_api_type(api_type) in DOUBAO_API_TYPES
-
-
 def get_api_provider(api_type: str | None) -> ApiProvider:
-    """根据 api_type 返回对应的供应商实现。
+    """根据 canonical ``api_type`` 返回对应的供应商实现。
 
-    当前映射：
-    - `google/gemini/...` -> GoogleProvider
-    - `grok2api` -> Grok2ApiProvider
-    - `minimax/minimaxi/hailuo` -> MiniMaxProvider
-    - `xai` -> XAIProvider
-    - `zai` -> ZaiProvider
-    - `doubao/volcengine/ark/seedream` -> DoubaoProvider
-    - `openai_images` -> OpenAIImagesProvider (/v1/images/generations + /v1/images/edits)
-    - 其他 -> OpenAICompatProvider（用于各类 OpenAI 兼容服务）
+    未知值回退到 ``OpenAICompatProvider``。
     """
-    normalized = normalize_api_type(api_type)
-
-    # Doubao/Volcengine Ark
-    if normalized in DOUBAO_API_TYPES:
-        return _DOUBAO
-
-    # Zai 独立供应商
-    if normalized == "zai" or normalized.startswith("zai_"):
-        return _ZAI
-
-    # grok2api 独立供应商
-    if normalized in {"grok2api", "grok2_api"} or normalized.startswith("grok2api_"):
-        return _GROK2API
-
-    # MiniMax Image Generation API
-    if normalized in {"minimax", "minimaxi", "hailuo"}:
-        return _MINIMAX
-
-    # xAI 官方图像 API
-    if normalized == "xai":
-        return _XAI
-
-    # Google/Gemini 官方
-    if normalized in {"google", "gemini", "googlegenai", "google_genai"}:
-        return _GOOGLE
-
-    # OpenAI Images API (/v1/images/generations)
-    if normalized in {"openai_images", "openai_images_api"}:
-        return _OPENAI_IMAGES
-
-    return _OPENAI
+    return _PROVIDERS.get(normalize_api_type(api_type), _OPENAI)

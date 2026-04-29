@@ -1,0 +1,78 @@
+name: Code Quality
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff
+
+      - name: Ruff lint
+        run: |
+          ruff check . \
+            --line-length 120 \
+            --target-version py310 \
+            --extend-exclude plans,docs,templates \
+            --select E,F,W,I,B,UP \
+            --ignore E501,B008 \
+            --per-file-ignores "__init__.py:F401"
+
+      - name: Ruff format check
+        run: ruff format --check . --line-length 120 --exclude plans,docs,templates
+
+  syntax:
+    name: Syntax Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compile all Python files
+        run: python -m compileall -q .
+
+  metadata:
+    name: Metadata Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Validate metadata.yaml
+        run: |
+          python -c "import yaml,sys; yaml.safe_load(open('metadata.yaml',encoding='utf-8')); print('metadata.yaml OK')"
+
+      - name: Validate _conf_schema.json
+        run: |
+          python -c "import json; json.load(open('_conf_schema.json',encoding='utf-8')); print('_conf_schema.json OK')"

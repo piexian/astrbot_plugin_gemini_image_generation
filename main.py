@@ -57,6 +57,7 @@ from .tl.enhanced_prompts import (
     get_wallpaper_prompt,
 )
 from .tl.llm_tools import GeminiImageGenerationTool
+from .tl.api import normalize_api_type
 from .tl.openai_image_size import derive_custom_size_from_preset_params
 from .tl.tl_api import APIClient, ApiRequestConfig, get_api_client
 from .tl.tl_utils import AvatarManager, cleanup_old_images, format_error_message
@@ -225,7 +226,7 @@ class GeminiImageGenerationPlugin(Star):
         resolution: str | None,
         aspect_ratio: str | None,
     ) -> tuple[str | None, str | None]:
-        api_type_norm = (self.cfg.api_type or "").strip().lower().replace("-", "_")
+        api_type_norm = normalize_api_type(self.cfg.api_type)
         if api_type_norm != "openai_images":
             return resolution, aspect_ratio
 
@@ -404,7 +405,7 @@ class GeminiImageGenerationPlugin(Star):
             logger.error(f"读取 AstrBot 提供商配置失败: {e}")
 
         # provider_overrides 中的配置优先于 AstrBot 提供商配置
-        api_type_norm = (self.cfg.api_type or "").strip().lower().replace("-", "_")
+        api_type_norm = normalize_api_type(self.cfg.api_type)
         overrides = getattr(self.cfg, "provider_overrides", None) or {}
         override_settings = overrides.get(api_type_norm, {})
 
@@ -431,6 +432,8 @@ class GeminiImageGenerationPlugin(Star):
                 self.cfg.doubao_settings = override_settings
             elif api_type_norm == "minimax":
                 self.cfg.minimax_settings = override_settings
+            elif api_type_norm == "stepfun":
+                self.cfg.stepfun_settings = override_settings
             elif api_type_norm == "xai":
                 self.cfg.xai_settings = override_settings
             elif api_type_norm == "openai_images":
@@ -458,6 +461,13 @@ class GeminiImageGenerationPlugin(Star):
                     )
                 except Exception as e:
                     logger.debug(f"绑定 minimax_settings 到 API client 失败: {e}")
+            elif api_type_norm == "stepfun":
+                try:
+                    self.api_client.stepfun_settings = (
+                        getattr(self.cfg, "stepfun_settings", None) or {}
+                    )
+                except Exception as e:
+                    logger.debug(f"绑定 stepfun_settings 到 API client 失败: {e}")
             elif api_type_norm == "xai":
                 try:
                     self.api_client.xai_settings = (

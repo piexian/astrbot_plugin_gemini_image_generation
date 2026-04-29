@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/Version-v1.10.1-blue)
+![Version](https://img.shields.io/badge/Version-v1.10.2-blue)
 ![License](https://img.shields.io/badge/License-AGPL--3.0-orange)
 
 **强大的 AstrBot 图像生成插件，支持生图、改图、头像参考、表情包切分和 LLM 工具调用。**
@@ -16,7 +16,7 @@
 - **多模式图像生成**：纯文本生图、参考图改图、风格转换、手办化、表情包生成。
 - **快速预设**：头像、海报、壁纸、卡片、手机壁纸、手办化、表情包一键生成。
 - **智能参考图**：自动读取消息图片、引用图片、合并转发、群文件，以及用户头像和 @ 对象头像。
-- **多供应商支持**：Google Gemini、OpenAI 兼容、OpenAI Images、xAI Images、MiniMax、Zai、grok2api、豆包。
+- **多供应商支持**：Google Gemini、OpenAI 兼容、OpenAI Images、xAI Images、MiniMax、阶跃星辰、Zai、grok2api、豆包。
 - **LLM 工具集成**：支持自然语言触发生图，前台短等待，超时后自动转后台发送。
 - **表情包切分**：内置 SmartMemeSplitter v4，并提供手动网格、视觉识别、主体吸附等兜底路径。
 - **限流与缓存**：支持群白名单/黑名单、周期限流、KV 持久化、临时文件自动清理。
@@ -43,12 +43,13 @@ https://github.com/piexian/astrbot_plugin_gemini_image_generation
 
 ## 最小配置
 
-至少需要配置一个可用的图像模型供应商：
+至少需要配置一个可用的图像模型供应商。以下两种方式 **二选一**：
 
-| 配置项 | 说明 |
-|--------|------|
-| `api_settings.provider_id` | 生图模型提供商，从 AstrBot 提供商列表选择；豆包可不填 |
-| `api_settings.api_type` | API 类型：`google` / `openai` / `openai_images` / `xai` / `minimax` / `zai` / `grok2api` / `doubao` |
+- **方式 A：复用 AstrBot 提供商**
+  - 在 `api_settings.provider_id` 中选择已在 AstrBot 中配置好的提供商，并把 `api_settings.api_type` 设为对应类型（`google` / `openai` 等）。
+- **方式 B：使用插件内置覆盖配置**
+  - 在 `api_settings.api_type` 中选择目标类型；
+  - 在 `api_settings.provider_overrides` 中添加同名模板（如 `google`），填入 `api_keys`、`model`、`api_base` 等字段；
 
 常用配置入口：
 
@@ -76,31 +77,10 @@ https://github.com/piexian/astrbot_plugin_gemini_image_generation
 
 更多参数、快速模式说明和 LLM 工具行为见 [使用指南](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/usage.md)。
 
-## OpenAI Images 提示
+## 供应商说明
 
-`openai_images` 供应商支持 OpenAI Images 原生端点。启用 `size_mode=custom` 后：
+各供应商的端点、参数、尺寸适配规则等完整说明见 [完整配置参考](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/config.md)：
 
-| 调用路径 | `size` 取值 |
-|----------|-------------|
-| 普通生图/改图 | 直接使用配置中的 `custom_size` |
-| 快速模式 | 根据模式预设的 `resolution + aspect_ratio` 自动换算 |
-| LLM 工具调用 | LLM 显式传入 `size` 时以该值为准，否则使用配置中的 `custom_size` |
-
-尺寸格式为 `WxH`，支持 `x` 或 `×`，例如 `1024x1024`、`2048×1152`。详细限制和示例见 [OpenAI Images 配置](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/config.md#openai_images_settingsopenai-images-api-专用配置)。
-
-## MiniMax 提示
-
-`minimax` 供应商支持 MiniMax 官方 `/v1/image_generation` 端点，模型默认 `image-01`：
-
-| 能力 | 说明 |
-|------|------|
-| 文生图 | 直接发送 prompt、长宽比、生成数量等参数 |
-| 图生图 | 通过 `subject_reference` 传入参考图，默认 `type=character` |
-| 多图生成 | `n` 支持 `1-9` |
-| 响应格式 | 默认 `base64` 并保存为本地图片，避免官方 URL 24 小时过期 |
-| 分辨率适配 | 全局 `resolution`（1K/2K/4K）自动映射；不支持的比例（如 4:5）会计算显式像素尺寸 |
-
-详细配置见 [MiniMax 配置](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/config.md#minimax_settingsminimax-图片生成-api-专用配置)。
 
 ## 项目结构
 
