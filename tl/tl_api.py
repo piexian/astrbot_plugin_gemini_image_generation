@@ -928,6 +928,7 @@ class GeminiAPIClient:
                         "minimax",
                         "minimaxi",
                         "hailuo",
+                        "stepfun",
                     }:
                         provider = get_api_provider(api_type)
                         return await provider.parse_response(
@@ -956,6 +957,18 @@ class GeminiAPIClient:
                 )
                 logger.warning(f"API 配额/权限问题: {error_msg}")
                 raise APIError(error_msg, response.status, "quota")
+            elif response.status == 451:
+                # 内容安全审核拒绝
+                error_msg = response_data.get("error", {}).get(
+                    "message", "内容审核未通过"
+                )
+                logger.warning(f"内容安全拦截 (451): {error_msg}")
+                raise APIError(
+                    f"内容安全审核未通过: {error_msg}",
+                    response.status,
+                    "safety",
+                    retryable=False,
+                )
             else:
                 # 豆包 API 使用专门的错误处理
                 if is_doubao_api_type(api_type):
@@ -1195,7 +1208,7 @@ class GeminiAPIClient:
                 text_chunks.append(content)
                 extracted_urls.extend(self._find_image_urls_in_text(content))
 
-            # 标准 images 字段（兼容 Gemini/OpenAI 混合格式）
+            # 标准 images 字段
             if message.get("images"):
                 for image_item in message["images"]:
                     if not isinstance(image_item, dict):
@@ -1245,7 +1258,7 @@ class GeminiAPIClient:
                             image_url, image_path = await self._download_image(
                                 full_url, session, use_cache=False
                             )
-                            # 只保留本地路径（_download_image 返回的两个值相同，避免重复）
+                            # 只保留本地路径
                             if image_path:
                                 image_paths.append(image_path)
                             continue
@@ -1258,8 +1271,6 @@ class GeminiAPIClient:
                     if candidate_url.startswith("http://") or candidate_url.startswith(
                         "https://"
                     ):
-                        # grok2api 适配：检测临时缓存 URL 并强制下载（避免被清理）
-                        # 临时缓存 URL 特征：包含 /images/users- 或 /temp/image/
                         is_temp_cache = (
                             "/images/users-" in candidate_url
                             or "/temp/image/" in candidate_url
@@ -1271,7 +1282,6 @@ class GeminiAPIClient:
                             image_url, image_path = await self._download_image(
                                 candidate_url, session, use_cache=False
                             )
-                            # 只保留本地路径（_download_image 返回的两个值相同，避免重复）
                             if image_path:
                                 image_paths.append(image_path)
                             if image_url and not image_path:
@@ -1296,7 +1306,7 @@ class GeminiAPIClient:
                     if image_path:
                         image_paths.append(image_path)
 
-            # content 中查找内联 data URI（文本里）—— 仅在结构化数据中未找到图片时作为回退
+            # content 中查找内联 data URI
             if not (image_urls or image_paths):
                 extracted_urls2: list[str] = []
                 extracted_paths2: list[str] = []
@@ -1317,11 +1327,9 @@ class GeminiAPIClient:
                     image_paths.extend(extracted_paths2)
 
             # 仅在前面没有提取到结构化图片时，才回退扫描文本中的 URL，
-            # 避免同一张图被“带签名 URL + 去签名 URL”重复收集。
             if text_content and not (image_urls or image_paths):
                 http_urls = self._find_image_urls_in_text(text_content)
                 for url in http_urls:
-                    # grok2api 适配：跳过临时缓存 URL（已在上面下载并添加到 image_paths）
                     is_temp_cache = "/images/users-" in url or "/temp/image/" in url
                     if is_temp_cache:
                         logger.debug(
@@ -1389,10 +1397,7 @@ class GeminiAPIClient:
             )
             return image_urls, image_paths, text_content, thought_signature
 
-        # 如果只有文本内容，也返回
         if text_content:
-            # 如果配置了需要文本响应，且确实没有找到图片，这里应该报错触发重试而不是直接返回文本
-            # 除非这是一个纯文本请求（但在生图插件里通常不是）
             detail = (
                 f" | 参考图处理提示: {'; '.join(fail_reasons[:3])}"
                 if fail_reasons
@@ -1613,7 +1618,7 @@ class GeminiAPIClient:
                 cleaned_b64 or base64_string, image_format.lower()
             )
             if image_path:
-                # 直接使用文件路径，不使用 file:// URI（根据 AstrBot 文档要求）
+                # 直接使用文件路径，不使用 file:// URI
                 image_url = image_path
                 image_urls.append(image_url)
                 image_paths.append(image_path)
@@ -1641,7 +1646,7 @@ class GeminiAPIClient:
 
         def _push(candidate: str):
             cleaned = candidate.strip().replace("&amp;", "&").rstrip(").,;")
-            # grok2api 适配：移除 URL 两端的引号（单引号或双引号）
+            # grok2api 适配：移除 URL 两端的引号
             cleaned = cleaned.strip("'\"")
             if cleaned and cleaned not in seen:
                 seen.add(cleaned)
@@ -1656,7 +1661,7 @@ class GeminiAPIClient:
             if not match.startswith(("http://", "https://", "data:")):
                 _push(match)
 
-        # 适配带空格的 http:// 片段（如 "http: //1. 2. 3. 4/image.png"）
+        # 适配带空格的 http:// 片段
         for match in re.findall(spaced_pattern, text, flags=re.IGNORECASE):
             compact = re.sub(r"\s+", "", match)
             if compact.lower().startswith(("http://", "https://")):
@@ -1857,6 +1862,6 @@ def get_api_client(api_keys: list[str]) -> GeminiAPIClient:
 
 
 def clear_api_client():
-    """清除全局 API 客户端实例（用于测试）"""
+    """清除全局 API 客户端实例"""
     global _api_client
     _api_client = None

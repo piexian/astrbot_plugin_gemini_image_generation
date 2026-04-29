@@ -431,6 +431,8 @@ class GeminiImageGenerationPlugin(Star):
                 self.cfg.doubao_settings = override_settings
             elif api_type_norm == "minimax":
                 self.cfg.minimax_settings = override_settings
+            elif api_type_norm == "stepfun":
+                self.cfg.stepfun_settings = override_settings
             elif api_type_norm == "xai":
                 self.cfg.xai_settings = override_settings
             elif api_type_norm == "openai_images":
@@ -458,6 +460,13 @@ class GeminiImageGenerationPlugin(Star):
                     )
                 except Exception as e:
                     logger.debug(f"绑定 minimax_settings 到 API client 失败: {e}")
+            elif api_type_norm == "stepfun":
+                try:
+                    self.api_client.stepfun_settings = (
+                        getattr(self.cfg, "stepfun_settings", None) or {}
+                    )
+                except Exception as e:
+                    logger.debug(f"绑定 stepfun_settings 到 API client 失败: {e}")
             elif api_type_norm == "xai":
                 try:
                     self.api_client.xai_settings = (

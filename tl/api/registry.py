@@ -14,6 +14,7 @@ from .grok2api import Grok2ApiProvider
 from .minimax import MiniMaxProvider
 from .openai_compat import OpenAICompatProvider
 from .openai_images import OpenAIImagesProvider
+from .stepfun import StepfunProvider
 from .xai import XAIProvider
 from .zai import ZaiProvider
 
@@ -23,6 +24,7 @@ _GROK2API: Final[Grok2ApiProvider] = Grok2ApiProvider()
 _MINIMAX: Final[MiniMaxProvider] = MiniMaxProvider()
 _OPENAI: Final[OpenAICompatProvider] = OpenAICompatProvider()
 _OPENAI_IMAGES: Final[OpenAIImagesProvider] = OpenAIImagesProvider()
+_STEPFUN: Final[StepfunProvider] = StepfunProvider()
 _XAI: Final[XAIProvider] = XAIProvider()
 _ZAI: Final[ZaiProvider] = ZaiProvider()
 
@@ -85,7 +87,7 @@ def get_api_provider(api_type: str | None) -> ApiProvider:
     if normalized in {"grok2api", "grok2_api"} or normalized.startswith("grok2api_"):
         return _GROK2API
 
-    # MiniMax Image Generation API
+    # MiniMax 图片生成 API
     if normalized in {"minimax", "minimaxi", "hailuo"}:
         return _MINIMAX
 
@@ -100,5 +102,9 @@ def get_api_provider(api_type: str | None) -> ApiProvider:
     # OpenAI Images API (/v1/images/generations)
     if normalized in {"openai_images", "openai_images_api"}:
         return _OPENAI_IMAGES
+
+    # 阶跃星辰 图片生成
+    if normalized in {"stepfun", "step", "step_fun"}:
+        return _STEPFUN
 
     return _OPENAI

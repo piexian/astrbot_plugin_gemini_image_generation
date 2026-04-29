@@ -14,7 +14,7 @@
       "api_type": {
         "description": "API 类型（必选）",
         "type": "string",
-        "hint": "必须选择 API 类型（google/openai/openai_images/xai/minimax/zai/grok2api/doubao）。 不同提供商支持的类型不同，请参考提供商说明",
+        "hint": "必须选择 API 类型。 不同提供商支持的类型不同，请参考提供商说明",
         "default": "openai",
         "options": [
           "google",
@@ -22,6 +22,7 @@
           "openai_images",
           "xai",
           "minimax",
+          "stepfun",
           "zai",
           "grok2api",
           "doubao"
@@ -330,6 +331,79 @@
                 "type": "int",
                 "hint": "仅当未传 aspect_ratio 时生效；需与 width 同时设置，范围 512-2048 且为 8 的倍数，0 表示不传",
                 "default": 0
+              },
+              "seed": {
+                "description": "随机种子",
+                "type": "int",
+                "hint": "固定 seed 可生成相近结果，0 表示不传",
+                "default": 0
+              },
+              "proxy": {
+                "description": "代理地址",
+                "type": "string",
+                "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式。优先级高于全局代理和环境变量",
+                "default": ""
+              }
+            }
+          },
+          "stepfun": {
+            "description": "阶跃星辰图片生成 API 覆盖配置",
+            "hint": "仅完全适配 step-image-edit-2 模型参数",
+            "items": {
+              "api_keys": {
+                "description": "API Key 列表",
+                "type": "list",
+                "hint": "多个 API Key，支持轮换使用",
+                "default": []
+              },
+              "daily_limit_per_key": {
+                "description": "每个 Key 每日限额",
+                "type": "int",
+                "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
+                "default": 0
+              },
+              "model": {
+                "description": "模型名称",
+                "type": "string",
+                "hint": "StepFun 图片模型名称",
+                "default": "step-image-edit-2"
+              },
+              "api_base": {
+                "description": "API 端点地址",
+                "type": "string",
+                "hint": "StepFun API 地址，留空使用默认 https://api.stepfun.com",
+                "default": "https://api.stepfun.com"
+              },
+              "response_format": {
+                "description": "响应格式",
+                "type": "string",
+                "hint": "url 返回临时链接，b64_json 返回 base64 编码并由插件保存到本地",
+                "default": "url",
+                "options": ["url", "b64_json"]
+              },
+              "steps": {
+                "description": "采样步数",
+                "type": "int",
+                "hint": "step-image-edit-2 采样步数，0 表示不传（使用服务端默认 8）",
+                "default": 0
+              },
+              "cfg_scale": {
+                "description": "CFG Scale",
+                "type": "float",
+                "hint": "提示词引导强度，0 表示不传（使用服务端默认 1.0）",
+                "default": 0
+              },
+              "negative_prompt": {
+                "description": "负向提示词",
+                "type": "string",
+                "hint": "不希望出现的元素描述，留空不传",
+                "default": ""
+              },
+              "text_mode": {
+                "description": "文字模式",
+                "type": "bool",
+                "hint": "开启后启用 step-image-edit-2 的 text_mode 参数（适用于含文字生成场景）",
+                "default": false
               },
               "seed": {
                 "description": "随机种子",
