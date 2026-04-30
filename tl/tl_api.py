@@ -1,6 +1,6 @@
 """
 API客户端模块
-提供Google Gemini和OpenAI兼容API的客户端实现
+
 """
 
 from __future__ import annotations
