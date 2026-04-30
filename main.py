@@ -1583,118 +1583,24 @@ class GeminiImageGenerationPlugin(Star):
         """兼容旧 API：检测网格行列"""
         return await self.vision_handler.detect_grid_rows_cols(image_path)
 
-    # 兼容属性
-    @property
-    def auto_avatar_reference(self) -> bool:
-        return self.cfg.auto_avatar_reference
+    # 兼容属性: 大部分 PluginConfig 字段通过 __getattr__ 转发到 self.cfg
+    # 旧版本曾为 30+ 字段定义显式 property,实际全工作区无调用方;此处折叠以减少样板。
 
-    @property
-    def max_reference_images(self) -> int:
-        return self.cfg.max_reference_images
+    def __getattr__(self, name: str):
+        """未在类上定义的属性回退到 self.cfg,保持向后兼容。
 
-    @property
-    def api_keys(self) -> list[str]:
-        return self.cfg.api_keys
-
-    @property
-    def model(self) -> str:
-        return self.cfg.model
-
-    @property
-    def api_type(self) -> str:
-        return self.cfg.api_type
-
-    @property
-    def api_base(self) -> str:
-        return self.cfg.api_base
-
-    @property
-    def resolution(self) -> str:
-        return self.cfg.resolution
-
-    @property
-    def aspect_ratio(self) -> str:
-        return self.cfg.aspect_ratio
-
-    @property
-    def enable_sticker_split(self) -> bool:
-        return self.cfg.enable_sticker_split
-
-    @property
-    def enable_sticker_zip(self) -> bool:
-        return self.cfg.enable_sticker_zip
-
-    @property
-    def enable_grounding(self) -> bool:
-        return self.cfg.enable_grounding
-
-    @property
-    def enable_smart_retry(self) -> bool:
-        return self.cfg.enable_smart_retry
-
-    @property
-    def enable_text_response(self) -> bool:
-        return self.cfg.enable_text_response
-
-    @property
-    def enable_llm_crop(self) -> bool:
-        return self.cfg.enable_llm_crop
-
-    @property
-    def vision_provider_id(self) -> str:
-        return self.cfg.vision_provider_id
-
-    @property
-    def sticker_grid_rows(self) -> int:
-        return self.cfg.sticker_grid_rows
-
-    @property
-    def sticker_grid_cols(self) -> int:
-        return self.cfg.sticker_grid_cols
-
-    @property
-    def total_timeout(self) -> int:
-        return self.cfg.total_timeout
-
-    @property
-    def max_attempts_per_key(self) -> int:
-        return self.cfg.max_attempts_per_key
-
-    @property
-    def preserve_reference_image_size(self) -> bool:
-        return self.cfg.preserve_reference_image_size
+        注意: 仅当属性查找走完正常 MRO 仍找不到时才会调用,因此不会影响
+        类内显式定义的属性(如下方 ``image_input_mode`` / ``config``)。
+        """
+        # 避免初始化阶段或 cfg 缺失时进入死循环
+        cfg = self.__dict__.get("cfg")
+        if cfg is not None and hasattr(cfg, name):
+            return getattr(cfg, name)
+        raise AttributeError(name)
 
     @property
     def image_input_mode(self) -> str:
         return "force_base64"
-
-    @property
-    def resolution_param_name(self) -> str:
-        return self.cfg.resolution_param_name
-
-    @property
-    def aspect_ratio_param_name(self) -> str:
-        return self.cfg.aspect_ratio_param_name
-
-    @property
-    def force_resolution(self) -> bool:
-        return self.cfg.force_resolution
-
-    @property
-    def group_limit_mode(self) -> str:
-        return self.cfg.group_limit_mode
-
-    @property
-    def group_limit_list(self) -> set[str]:
-        return self.cfg.group_limit_list
-
-    @property
-    def help_render_mode(self) -> str:
-        return self.cfg.help_render_mode
-
-    @property
-    def html_render_options(self) -> dict:
-        return self.cfg.html_render_options
 
     @property
     def config(self) -> dict:
