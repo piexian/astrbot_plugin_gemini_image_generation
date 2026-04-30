@@ -13,6 +13,7 @@ from ..api_types import APIError, ApiRequestConfig
 from ..plugin_config import DOUBAO_SEQUENTIAL_IMAGES_MAX, DOUBAO_SEQUENTIAL_IMAGES_MIN
 from ..tl_utils import save_base64_image
 from .base import ProviderRequest
+from .provider_limits import MAX_REFERENCE_IMAGES_DOUBAO
 
 # 豆包 API 错误码分类
 # 参考文档: https://www.volcengine.com/docs/82379/1299023
@@ -398,7 +399,7 @@ class DoubaoProvider:
 
         processed_images: list[str] = []
 
-        for image_input in image_inputs[:14]:  # Max 14 reference images
+        for image_input in image_inputs[:MAX_REFERENCE_IMAGES_DOUBAO]:
             image_str = str(image_input).strip()
             if not image_str:
                 continue

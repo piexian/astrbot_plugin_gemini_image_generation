@@ -14,6 +14,7 @@ from ..api_types import APIError, ApiRequestConfig
 from ..thought_signature import log_thought_signature_debug
 from ..tl_utils import get_temp_dir, save_base64_image
 from .base import ProviderRequest
+from .provider_limits import MAX_REFERENCE_IMAGES_GOOGLE
 
 
 class GoogleProvider:
@@ -84,19 +85,21 @@ class GoogleProvider:
         added_refs = 0
         fail_reasons: list[str] = []
         total_ref_count = len(config.reference_images or [])
-        # 实际处理的参考图数量受 [:14] 限制
-        processed_ref_count = min(total_ref_count, 14)
+        # 实际处理的参考图数量受 MAX_REFERENCE_IMAGES_GOOGLE 限制
+        processed_ref_count = min(total_ref_count, MAX_REFERENCE_IMAGES_GOOGLE)
         total_start = time.perf_counter()
         if total_ref_count > 0:
             if total_ref_count > processed_ref_count:
                 logger.info(
-                    f"📎 开始处理 {processed_ref_count} 张参考图片 (共配置 {total_ref_count} 张，最多处理 14 张)..."
+                    f"📎 开始处理 {processed_ref_count} 张参考图片 (共配置 {total_ref_count} 张，最多处理 {MAX_REFERENCE_IMAGES_GOOGLE} 张)..."
                 )
             else:
                 logger.info(f"开始处理 {processed_ref_count} 张参考图片...")
 
         if config.reference_images:
-            for idx, image_input in enumerate(config.reference_images[:14]):
+            for idx, image_input in enumerate(
+                config.reference_images[:MAX_REFERENCE_IMAGES_GOOGLE]
+            ):
                 image_str = str(image_input).strip()
                 logger.debug(
                     "[google] 处理参考图 idx=%s type=%s preview=%s",
