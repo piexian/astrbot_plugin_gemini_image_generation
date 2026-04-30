@@ -14,6 +14,7 @@ from .grok2api import Grok2ApiProvider
 from .minimax import MiniMaxProvider
 from .openai_compat import OpenAICompatProvider
 from .openai_images import OpenAIImagesProvider
+from .sensenova import SenseNovaProvider
 from .stepfun import StepfunProvider
 from .xai import XAIProvider
 from .zai import ZaiProvider
@@ -24,6 +25,7 @@ _GROK2API: Final[Grok2ApiProvider] = Grok2ApiProvider()
 _MINIMAX: Final[MiniMaxProvider] = MiniMaxProvider()
 _OPENAI: Final[OpenAICompatProvider] = OpenAICompatProvider()
 _OPENAI_IMAGES: Final[OpenAIImagesProvider] = OpenAIImagesProvider()
+_SENSENOVA: Final[SenseNovaProvider] = SenseNovaProvider()
 _STEPFUN: Final[StepfunProvider] = StepfunProvider()
 _XAI: Final[XAIProvider] = XAIProvider()
 _ZAI: Final[ZaiProvider] = ZaiProvider()
@@ -36,6 +38,7 @@ _PROVIDERS: Final[dict[str, ApiProvider]] = {
     "xai": _XAI,
     "minimax": _MINIMAX,
     "stepfun": _STEPFUN,
+    "sensenova": _SENSENOVA,
     "zai": _ZAI,
     "grok2api": _GROK2API,
     "doubao": _DOUBAO,
