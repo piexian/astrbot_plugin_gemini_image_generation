@@ -61,6 +61,17 @@ from .tl.openai_image_size import derive_custom_size_from_preset_params
 from .tl.tl_api import APIClient, ApiRequestConfig, get_api_client
 from .tl.tl_utils import AvatarManager, cleanup_old_images, format_error_message
 
+# 各 provider 的 settings 字段在 cfg / api_client 上的属性名映射。
+# 新增 provider 时只需在此 map 中追加一行即可被 _load_provider_from_context 自动绑定。
+PROVIDER_SETTINGS_ATTR_MAP: dict[str, str] = {
+    "doubao": "doubao_settings",
+    "minimax": "minimax_settings",
+    "stepfun": "stepfun_settings",
+    "sensenova": "sensenova_settings",
+    "xai": "xai_settings",
+    "openai_images": "openai_images_settings",
+}
+
 
 class GeminiImageGenerationPlugin(Star):
     """Gemini 图像生成插件主类 - 仅负责业务流程编排"""
@@ -427,18 +438,9 @@ class GeminiImageGenerationPlugin(Star):
                 self.cfg.api_base = api_base
 
             # 绑定完整 settings 供适配器使用
-            if api_type_norm == "doubao":
-                self.cfg.doubao_settings = override_settings
-            elif api_type_norm == "minimax":
-                self.cfg.minimax_settings = override_settings
-            elif api_type_norm == "stepfun":
-                self.cfg.stepfun_settings = override_settings
-            elif api_type_norm == "sensenova":
-                self.cfg.sensenova_settings = override_settings
-            elif api_type_norm == "xai":
-                self.cfg.xai_settings = override_settings
-            elif api_type_norm == "openai_images":
-                self.cfg.openai_images_settings = override_settings
+            cfg_attr = PROVIDER_SETTINGS_ATTR_MAP.get(api_type_norm)
+            if cfg_attr:
+                setattr(self.cfg, cfg_attr, override_settings)
 
             # 日志显示覆盖来源
             logger.info(
@@ -448,48 +450,16 @@ class GeminiImageGenerationPlugin(Star):
         if self.cfg.api_keys:
             self.api_client = get_api_client(self.cfg.api_keys)
             # 绑定 provider settings 到 API client，供各 Provider 读取
-            if api_type_norm == "doubao":
+            client_attr = PROVIDER_SETTINGS_ATTR_MAP.get(api_type_norm)
+            if client_attr:
                 try:
-                    self.api_client.doubao_settings = (
-                        getattr(self.cfg, "doubao_settings", None) or {}
+                    setattr(
+                        self.api_client,
+                        client_attr,
+                        getattr(self.cfg, client_attr, None) or {},
                     )
                 except Exception as e:
-                    logger.debug(f"绑定 doubao_settings 到 API client 失败: {e}")
-            elif api_type_norm == "minimax":
-                try:
-                    self.api_client.minimax_settings = (
-                        getattr(self.cfg, "minimax_settings", None) or {}
-                    )
-                except Exception as e:
-                    logger.debug(f"绑定 minimax_settings 到 API client 失败: {e}")
-            elif api_type_norm == "stepfun":
-                try:
-                    self.api_client.stepfun_settings = (
-                        getattr(self.cfg, "stepfun_settings", None) or {}
-                    )
-                except Exception as e:
-                    logger.debug(f"绑定 stepfun_settings 到 API client 失败: {e}")
-            elif api_type_norm == "sensenova":
-                try:
-                    self.api_client.sensenova_settings = (
-                        getattr(self.cfg, "sensenova_settings", None) or {}
-                    )
-                except Exception as e:
-                    logger.debug(f"绑定 sensenova_settings 到 API client 失败: {e}")
-            elif api_type_norm == "xai":
-                try:
-                    self.api_client.xai_settings = (
-                        getattr(self.cfg, "xai_settings", None) or {}
-                    )
-                except Exception as e:
-                    logger.debug(f"绑定 xai_settings 到 API client 失败: {e}")
-            elif api_type_norm == "openai_images":
-                try:
-                    self.api_client.openai_images_settings = (
-                        getattr(self.cfg, "openai_images_settings", None) or {}
-                    )
-                except Exception as e:
-                    logger.debug(f"绑定 openai_images_settings 到 API client 失败: {e}")
+                    logger.debug(f"绑定 {client_attr} 到 API client 失败: {e}")
 
             self._apply_openai_custom_size_runtime_defaults()
             # 绑定 KeyManager 到 API client（支持多 Key 轮换和每日限额）
