@@ -181,9 +181,9 @@ generate_image()
 
 | 模块 | 主要接口 | 说明 |
 |------|----------|------|
-| `api/provider_limits.py` | `MAX_REFERENCE_IMAGES_GOOGLE` / `_DOUBAO` / `_OPENAI_COMPAT` / `_MINIMAX` | 集中维护各 provider 参考图上限常量（`Final[int]`） |
+| `api/provider_limits.py` | `MAX_REFERENCE_IMAGES_GOOGLE` / `MAX_REFERENCE_IMAGES_DOUBAO` / `MAX_REFERENCE_IMAGES_OPENAI_COMPAT` / `MAX_REFERENCE_IMAGES_MINIMAX` | 集中维护各 provider 参考图上限常量（`Final[int]`） |
 | `api/reference_intake.py` | `announce_reference_intake(references, max_count, *, log_prefix="")` | 参考图接收阶段统一日志，返回 `(收到数量, 采用数量)` |
-| `api/data_uri.py` | `format_data_uri(mime, b64)` / `strip_data_uri_prefix(s)` / `looks_like_base64(s)` | data URI 与 base64 字符串的格式化/识别助手 |
+| `api/data_uri.py` | `format_data_uri(b64_data, mime_type=None)` / `strip_data_uri_prefix(s)` / `looks_like_base64(s)` | data URI 与 base64 字符串的格式化/识别助手 |
 
 详见 [docs/新增API供应商.md](../docs/新增API供应商.md)。
 

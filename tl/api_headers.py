@@ -8,7 +8,7 @@ from __future__ import annotations
 
 
 def extract_api_key_from_headers(headers: dict[str, str]) -> str | None:
-    """从请求头中提取 API Key。
+    """从请求头中提取 API Key (键名大小写不敏感)。
 
     支持的头格式:
     - ``Authorization: Bearer <key>``
@@ -16,35 +16,24 @@ def extract_api_key_from_headers(headers: dict[str, str]) -> str | None:
     - ``X-Api-Key`` / ``X-API-Key`` / ``x-api-key`` (通用格式)
     - ``Api-Key`` / ``api-key`` / ``API-Key`` (部分反代使用)
     """
-    # Bearer Token 格式(最常见)
-    if "Authorization" in headers:
-        auth = str(headers.get("Authorization") or "")
-        if auth.lower().startswith("bearer "):
-            return auth[7:]
-    # Google API 格式
-    if "x-goog-api-key" in headers:
-        return headers.get("x-goog-api-key")
-    # 通用 X-Api-Key 格式(大小写变体)
-    for k in ("X-Api-Key", "X-API-Key", "x-api-key"):
-        if k in headers:
-            return headers.get(k)
-    # 部分反代使用的 Api-Key 格式
-    for k in ("Api-Key", "api-key", "API-Key"):
-        if k in headers:
-            return headers.get(k)
+    for k, v in headers.items():
+        kl = k.lower()
+        sval = str(v or "")
+        if kl == "authorization":
+            if sval.lower().startswith("bearer "):
+                return sval[7:].strip() or None
+        elif kl == "x-goog-api-key":
+            return sval or None
+        elif kl in ("x-api-key", "api-key"):
+            return sval or None
     return None
 
 
 def apply_api_key_to_headers(headers: dict[str, str], api_key: str) -> None:
-    """将 API Key 应用到请求头中(覆盖现有的 key 相关头,原地修改)。"""
-    if "Authorization" in headers:
-        headers["Authorization"] = f"Bearer {api_key}"
-    if "x-goog-api-key" in headers:
-        headers["x-goog-api-key"] = api_key
-    for k in ("X-Api-Key", "X-API-Key", "x-api-key"):
-        if k in headers:
-            headers[k] = api_key
-    # 部分反代使用的 Api-Key 格式
-    for k in ("Api-Key", "api-key", "API-Key"):
-        if k in headers:
+    """将 API Key 应用到请求头中 (覆盖现有的 key 相关头，原地修改，键名大小写不敏感)。"""
+    for k in list(headers.keys()):
+        kl = k.lower()
+        if kl == "authorization":
+            headers[k] = f"Bearer {api_key}"
+        elif kl in ("x-goog-api-key", "x-api-key", "api-key"):
             headers[k] = api_key

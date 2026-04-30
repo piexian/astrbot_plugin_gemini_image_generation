@@ -305,7 +305,7 @@ NapCat v4.8.115+ 支持 Stream API。插件默认仍先按 `max_inline_image_siz
 | `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
 | `model` | `sensenova-u1-fast` | SenseNova 图像生成模型，目前仅支持 `sensenova-u1-fast` |
 | `api_base` | `https://token.sensenova.cn` | API 端点地址 |
-| `default_size` | `2752x1536` | 未推导出合法比例时的兑底尺寸，必须为下表 11 种官方尺寸之一 |
+| `default_size` | `2752x1536` | 未推导出合法比例时的兜底尺寸，必须为下表 11 种官方尺寸之一 |
 | `proxy` | - | 独立代理地址，优先级高于全局代理和环境变量 |
 
 `sensenova` 供应商使用 SenseNova 官方图像端点：

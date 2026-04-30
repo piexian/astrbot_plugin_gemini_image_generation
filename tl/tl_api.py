@@ -1,6 +1,8 @@
-"""
-API客户端模块
+"""API 客户端模块。
 
+提供 Google Gemini 与 OpenAI 兼容 API 的客户端实现，
+并负责响应解析、重试调度与参考图预处理等公共逻辑。
+各供应商的实现细节拆到 ``tl/api/`` 下的子模块。
 """
 
 from __future__ import annotations

@@ -8,13 +8,13 @@
 
 #### 代码重构（均为零风险抽取 / 样板折叠）
 
-- **provider settings dict 化**（H2）：`main.py` 中 5 个 provider settings （google/openai/openai_images/xai/zai/grok2api/minimax/stepfun/doubao）的属性赋值改为字典驱动 `setattr` 循环，减少重复代码 50+ 行
+- **provider settings dict 化**（H2）：`main.py` 中 9 个 provider settings（google/openai/openai_images/xai/zai/grok2api/minimax/stepfun/doubao）的属性赋值改为字典驱动 `setattr` 循环，减少重复代码 50+ 行
 - **集中 provider 参考图上限**（M1）：新增 [`tl/api/provider_limits.py`](tl/api/provider_limits.py)，集中管理 google / doubao / openai-compat / minimax 的参考图最大数量常量
 - **参考图接收阶段公共助手**（H6）：新增 [`tl/api/reference_intake.py`](tl/api/reference_intake.py)，`announce_reference_intake()` 统一输出“接收/采用”计数日志，google / openai_compat / doubao / minimax 三个 provider 复用
 - **data URI / base64 公共助手**（H5）：新增 [`tl/api/data_uri.py`](tl/api/data_uri.py)（`format_data_uri` / `strip_data_uri_prefix` / `looks_like_base64`），消除多个 provider 中的 base64 处理重复代码
 - **`format_error_message` 抽离**（H4-1）：127 行错误格式化工具从 [`tl/tl_utils.py`](tl/tl_utils.py) 抽取到独立模块 [`tl/format_error.py`](tl/format_error.py)，`tl_utils` 中保留 re-export 调用位点兼容
 - **API Key 头处理抽离**（H3-1）：`GeminiAPIClient` 中两个 `staticmethod`（`extract_api_key_from_headers` / `apply_api_key_to_headers`）抽到 [`tl/api_headers.py`](tl/api_headers.py) 独立模块
-- **`main.py` property 折叠**（H1-1）：30 个仅代理 `self.cfg` 同名字段的样板 `@property` 全部删除，改为单个 `__getattr__` 兑底转发，`main.py` 净减少 94 行
+- **`main.py` property 折叠**（H1-1）：30 个仅代理 `self.cfg` 同名字段的样板 `@property` 全部删除，改为单个 `__getattr__` 兜底转发，`main.py` 净减少 94 行
 
 ### Docs
 

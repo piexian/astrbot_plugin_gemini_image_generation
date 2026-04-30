@@ -15,6 +15,7 @@ from ..tl_utils import save_base64_image
 from .base import ProviderRequest
 from .data_uri import format_data_uri, looks_like_base64, strip_data_uri_prefix
 from .provider_limits import MAX_REFERENCE_IMAGES_DOUBAO
+from .reference_intake import announce_reference_intake
 
 # 豆包 API 错误码分类
 # 参考文档: https://www.volcengine.com/docs/82379/1299023
@@ -363,6 +364,12 @@ class DoubaoProvider:
 
         processed_images: list[str] = []
 
+        announce_reference_intake(
+            image_inputs,
+            MAX_REFERENCE_IMAGES_DOUBAO,
+            log_prefix="[doubao] ",
+        )
+
         for image_input in image_inputs[:MAX_REFERENCE_IMAGES_DOUBAO]:
             image_str = str(image_input).strip()
             if not image_str:
@@ -410,7 +417,7 @@ class DoubaoProvider:
 
         # Raw base64 - add data URI prefix
         if looks_like_base64(image_str) and not image_str.startswith("data:"):
-            cleaned = strip_data_uri_prefix(image_str).replace("\n", "")
+            cleaned = strip_data_uri_prefix(image_str)
             return format_data_uri(cleaned)
 
         # Need to normalize through client
@@ -435,7 +442,7 @@ class DoubaoProvider:
                 return image_str
             return None
 
-        cleaned = strip_data_uri_prefix(b64_data).replace("\n", "")
+        cleaned = strip_data_uri_prefix(b64_data)
         # Best-effort validation
         try:
             base64.b64decode(cleaned, validate=True)

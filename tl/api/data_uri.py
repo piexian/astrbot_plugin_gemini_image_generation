@@ -14,11 +14,13 @@ _BASE64_PATTERN = re.compile(r"^[A-Za-z0-9+/=_-]+$")
 def format_data_uri(b64_data: str, mime_type: str | None = None) -> str:
     """拼接标准 data URI:``data:<mime>;base64,<裸 base64>``。
 
-    若入参已包含 ``data:image/`` 前缀则原样返回。
+    若入参已包含 ``data:`` 前缀则原样返回（仅后续合并内部空白）。
     未指定 ``mime_type`` 时回退为 ``image/png``。
+    会同时合并裸 base64 内部的所有空白字符(含 ``\n``、``\r``、``\t``、空格)，
+    以免多行 base64 被部分上游拒接。
     """
-    cleaned = (b64_data or "").strip()
-    if cleaned.startswith("data:image/"):
+    cleaned = "".join((b64_data or "").split())
+    if cleaned.startswith("data:"):
         return cleaned
     return f"data:{mime_type or 'image/png'};base64,{cleaned}"
 
@@ -27,24 +29,25 @@ def strip_data_uri_prefix(value: str) -> str:
     """剥离 data URI 前缀,返回裸 base64 字符串。
 
     无 ``;base64,`` 分隔符时返回原字符串(已 strip)。
+    会同步合并输出中的所有空白字符，避免调用方重复写 ``.replace("\n", "")``。
     """
     cleaned = (value or "").strip()
     if ";base64," in cleaned:
         _, _, cleaned = cleaned.partition(";base64,")
-    return cleaned.strip()
+    return "".join(cleaned.split())
 
 
 def looks_like_base64(value: str, *, min_length: int = 64) -> bool:
     """启发式判断字符串是否像 base64。
 
     不做严格解码校验,仅排除明显非 base64 输入(URL、过短、含空白等)。
-    若包含空白字符会先合并再判断字符集。
+    若包含空白字符(含制表符)会先合并再判断字符集。
     """
     v = (value or "").strip()
     if not v or len(v) < min_length:
         return False
     if v.startswith(("http://", "https://")):
         return False
-    if any(ws in v for ws in (" ", "\n", "\r")):
+    if any(ws in v for ws in " \n\r\t"):
         v = "".join(v.split())
     return bool(_BASE64_PATTERN.match(v))
