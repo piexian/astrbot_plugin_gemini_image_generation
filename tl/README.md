@@ -170,9 +170,22 @@ generate_image()
 | `xai` | `XAIProvider` |
 | `minimax` | `MiniMaxProvider` |
 | `stepfun` | `StepfunProvider` |
+| `sensenova` | `SenseNovaProvider` |
 | `doubao` | `DoubaoProvider` |
 | `zai` | `ZaiProvider` |
 | `grok2api` | `Grok2ApiProvider` |
+
+### Provider 公共辅助模块
+
+以下模块抽出 provider 间的共享逻辑，新供应商应优先复用：
+
+| 模块 | 主要接口 | 说明 |
+|------|----------|------|
+| `api/provider_limits.py` | `MAX_REFERENCE_IMAGES_GOOGLE` / `_DOUBAO` / `_OPENAI_COMPAT` / `_MINIMAX` | 集中维护各 provider 参考图上限常量（`Final[int]`） |
+| `api/reference_intake.py` | `announce_reference_intake(references, max_count, *, log_prefix="")` | 参考图接收阶段统一日志，返回 `(收到数量, 采用数量)` |
+| `api/data_uri.py` | `format_data_uri(mime, b64)` / `strip_data_uri_prefix(s)` / `looks_like_base64(s)` | data URI 与 base64 字符串的格式化/识别助手 |
+
+详见 [docs/新增API供应商.md](../docs/新增API供应商.md)。
 
 ### `api/openai_compat.py`
 
@@ -249,6 +262,25 @@ MiniMax 图片生成官方 provider。
 | `_map_resolution()` | 将内部 `1K/2K/4K` 或具体尺寸映射为豆包尺寸 |
 | `_process_reference_images()` | 处理图生图参考图 |
 | `_build_api_error()` | 将豆包错误转为 `APIError` |
+
+### `api/sensenova.py`
+
+SenseNova（商汤日日新）provider，仅支持文生图。
+
+| 接口 | 说明 |
+|------|------|
+| `SenseNovaProvider.build_request()` | 构造 `/v1/images/generations` 请求 |
+| `SenseNovaProvider.parse_response()` | 解析 `data[].url` / `data[].b64_json` 响应 |
+| `_resolve_size()` | 将内部 resolution/aspect_ratio 映射到 11 种固定尺寸 |
+
+### `api/stepfun.py`
+
+StepFun provider。
+
+| 接口 | 说明 |
+|------|------|
+| `StepfunProvider.build_request()` | 根据是否有参考图选择 `/v1/images/generations` 或 `/v1/images/edits` |
+| `StepfunProvider.parse_response()` | 解析 StepFun 图像响应 |
 
 ### `api/zai.py`
 
@@ -493,7 +525,7 @@ _prepare_foreground()
 | 图片源解析 | `collect_image_sources()`、`resolve_image_source_to_path()` | 从 AstrBot 事件或任意来源解析图片 |
 | QQ 头像 | `download_qq_avatar()`、`AvatarManager`、`download_qq_avatar_legacy()` | 头像下载和缓存管理 |
 | NapCat Stream | `upload_file_stream()` | 复用当前 NapCat/OneBot 连接上传本地文件并返回可发送路径 |
-| 错误展示 | `format_error_message()` | 统一生图错误提示文案 |
+| 错误展示 | `format_error_message()` | 已迁移到 `tl/format_error.py`，此处保留 re-export shim 维持向后兼容 |
 
 注意事项：
 
@@ -502,11 +534,24 @@ _prepare_foreground()
 - `AvatarManager` 管理头像缓存和清理，通常通过 `AvatarHandler` 或 `ImageHandler` 间接使用。
 - `upload_file_stream()` 只作为发送失败后的兜底路径使用，常规图片发送仍由 `MessageSender.dispatch_send_results()` 构造。
 
+### `format_error.py`
+
+| 接口 | 说明 |
+|------|------|
+| `format_error_message(error)` | 根据异常类型生成用户友好的中文错误提示（含 API Key、配额、超时、安全过滤等分类）。从 `tl_utils.py` 抽出，`tl_utils.format_error_message` 仍可用作 re-export |
+
+### `api_headers.py`
+
+| 接口 | 说明 |
+|------|------|
+| `extract_api_key_from_headers(headers)` | 从 `Authorization`/`x-goog-api-key`/`X-Api-Key`/`Api-Key` 等多种头格式中提取 Key |
+| `apply_api_key_to_headers(headers, api_key)` | 将 Key 写回所有匹配的头字段（原地修改），用于 Key 轮换 |
+
 ## `tl/api/__init__.py` 与 `tl/__init__.py`
 
 | 文件 | 作用 |
 |------|------|
-| `tl/__init__.py` | 包初始化文件，目前不暴露额外接口 |
+| `tl/__init__.py` | 包初始化文件，重新导出常用类与函数（`PluginConfig`、`AvatarHandler`、`ImageHandler`、`MessageSender`、`split_image` 等） |
 | `tl/api/__init__.py` | 重新导出 `get_api_provider()`、`normalize_api_type()` |
 
 ## 修改建议
