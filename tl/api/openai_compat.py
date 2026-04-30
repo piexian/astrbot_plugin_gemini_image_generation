@@ -20,6 +20,7 @@ from ..api_types import APIError, ApiRequestConfig
 from ..tl_utils import save_base64_image
 from .base import ProviderRequest
 from .provider_limits import MAX_REFERENCE_IMAGES_OPENAI_COMPAT
+from .reference_intake import announce_reference_intake
 
 
 class OpenAICompatProvider:
@@ -119,16 +120,10 @@ class OpenAICompatProvider:
         if config.reference_images:
             processed_cache: dict[str, dict[str, Any]] = {}
             total_start = time.perf_counter()
-            total_ref_count = len(config.reference_images)
-            processed_ref_count = min(
-                total_ref_count, MAX_REFERENCE_IMAGES_OPENAI_COMPAT
+            total_ref_count, processed_ref_count = announce_reference_intake(
+                config.reference_images,
+                MAX_REFERENCE_IMAGES_OPENAI_COMPAT,
             )
-            if total_ref_count > processed_ref_count:
-                logger.info(
-                    f"📎 开始处理 {processed_ref_count} 张参考图片 (共配置 {total_ref_count} 张，最多处理 {MAX_REFERENCE_IMAGES_OPENAI_COMPAT} 张)..."
-                )
-            else:
-                logger.info(f"开始处理 {processed_ref_count} 张参考图片...")
 
             for idx, image_input in enumerate(
                 config.reference_images[:MAX_REFERENCE_IMAGES_OPENAI_COMPAT]
