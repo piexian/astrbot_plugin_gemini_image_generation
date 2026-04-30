@@ -19,6 +19,7 @@ from astrbot.api import logger
 from ..api_types import APIError, ApiRequestConfig
 from ..tl_utils import save_base64_image
 from .base import ProviderRequest
+from .data_uri import format_data_uri
 from .provider_limits import MAX_REFERENCE_IMAGES_OPENAI_COMPAT
 from .reference_intake import announce_reference_intake
 
@@ -258,9 +259,9 @@ class OpenAICompatProvider:
                                     None,
                                     "invalid_reference_image",
                                 )
-                            payload_url = f"data:{mime_type};base64,{cleaned}"
+                            payload_url = format_data_uri(cleaned, mime_type)
                         else:
-                            payload_url = f"data:{mime_type};base64,{data}"
+                            payload_url = format_data_uri(data, mime_type)
 
                         image_payload = {
                             "type": "image_url",

@@ -13,6 +13,7 @@ from ..api_types import APIError, ApiRequestConfig
 from ..plugin_config import DOUBAO_SEQUENTIAL_IMAGES_MAX, DOUBAO_SEQUENTIAL_IMAGES_MIN
 from ..tl_utils import save_base64_image
 from .base import ProviderRequest
+from .data_uri import format_data_uri, looks_like_base64, strip_data_uri_prefix
 from .provider_limits import MAX_REFERENCE_IMAGES_DOUBAO
 
 # 豆包 API 错误码分类
@@ -339,43 +340,6 @@ class DoubaoProvider:
         # Unknown, default to 2K
         return "2K"
 
-    @staticmethod
-    def _format_base64_data_uri(b64_data: str, mime_type: str | None = None) -> str:
-        """Format base64 data with proper data URI prefix for Doubao API.
-
-        Doubao API requires: data:image/<format>;base64,<Base64编码>
-        """
-        cleaned = b64_data.strip()
-        # Already has data URI prefix
-        if cleaned.startswith("data:image/"):
-            return cleaned
-        # Guess mime type from base64 header if not provided
-        if not mime_type:
-            mime_type = "image/png"
-        return f"data:{mime_type};base64,{cleaned}"
-
-    @staticmethod
-    def _strip_data_uri_prefix(value: str) -> str:
-        cleaned = (value or "").strip()
-        if ";base64," in cleaned:
-            _, _, cleaned = cleaned.partition(";base64,")
-        return cleaned.strip()
-
-    @staticmethod
-    def _looks_like_base64(value: str) -> bool:
-        # Quick heuristic; do not be overly strict to allow provider-side validation.
-        v = (value or "").strip()
-        if not v:
-            return False
-        if len(v) < 64:
-            return False
-        if v.startswith(("http://", "https://")):
-            return False
-        if " " in v or "\n" in v or "\r" in v:
-            # base64 can include newlines, but we treat it as "needs cleaning"
-            v = "".join(v.split())
-        return re.match(r"^[A-Za-z0-9+/=_-]+$", v) is not None
-
     async def _process_reference_images(
         self, *, client: Any, config: ApiRequestConfig, image_inputs: list[Any]
     ) -> str | list[str] | None:  # noqa: ANN401
@@ -445,9 +409,9 @@ class DoubaoProvider:
             return image_str
 
         # Raw base64 - add data URI prefix
-        if self._looks_like_base64(image_str) and not image_str.startswith("data:"):
-            cleaned = self._strip_data_uri_prefix(image_str).replace("\n", "")
-            return self._format_base64_data_uri(cleaned)
+        if looks_like_base64(image_str) and not image_str.startswith("data:"):
+            cleaned = strip_data_uri_prefix(image_str).replace("\n", "")
+            return format_data_uri(cleaned)
 
         # Need to normalize through client
         try:
@@ -471,7 +435,7 @@ class DoubaoProvider:
                 return image_str
             return None
 
-        cleaned = self._strip_data_uri_prefix(b64_data).replace("\n", "")
+        cleaned = strip_data_uri_prefix(b64_data).replace("\n", "")
         # Best-effort validation
         try:
             base64.b64decode(cleaned, validate=True)
@@ -487,7 +451,7 @@ class DoubaoProvider:
                     ) from None
 
         # Format with proper data URI prefix for Doubao API
-        formatted = self._format_base64_data_uri(cleaned, mime_type)
+        formatted = format_data_uri(cleaned, mime_type)
         logger.debug(
             "[doubao] prepared i2i image: mime=%s b64_len=%s",
             mime_type,
