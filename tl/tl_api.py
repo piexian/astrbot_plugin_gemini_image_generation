@@ -1,6 +1,8 @@
-"""
-API客户端模块
-提供Google Gemini和OpenAI兼容API的客户端实现
+"""API 客户端模块。
+
+提供 Google Gemini 与 OpenAI 兼容 API 的客户端实现，
+并负责响应解析、重试调度与参考图预处理等公共逻辑。
+各供应商的实现细节拆到 ``tl/api/`` 下的子模块。
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ import aiohttp
 from astrbot.api import logger
 
 from .api import get_api_provider, normalize_api_type
+from .api_headers import apply_api_key_to_headers, extract_api_key_from_headers
 from .api_types import APIError, ApiRequestConfig
 
 try:
@@ -642,9 +645,7 @@ class GeminiAPIClient:
             if is_retry and config is not None:
                 try:
                     # 重建前同步 config.api_key 为当前选中的 key（保持轮换一致性）
-                    current_key_from_headers = self._extract_api_key_from_headers(
-                        headers
-                    )
+                    current_key_from_headers = extract_api_key_from_headers(headers)
                     if current_key_from_headers:
                         config.api_key = current_key_from_headers
 
@@ -666,7 +667,7 @@ class GeminiAPIClient:
                     # 重建后用外层 headers 的 key 覆盖，确保轮换结果不被覆盖
                     current_headers = dict(req.headers)
                     if current_key_from_headers:
-                        self._apply_api_key_to_headers(
+                        apply_api_key_to_headers(
                             current_headers, current_key_from_headers
                         )
                     logger.debug("[retry] 已重新构建请求（is_retry=True）")
@@ -746,49 +747,6 @@ class GeminiAPIClient:
             raise last_error from None
 
         return [], [], None, None
-
-    @staticmethod
-    def _extract_api_key_from_headers(headers: dict[str, str]) -> str | None:
-        """从请求头中提取 API Key
-
-        支持的头格式：
-        - Authorization: Bearer <key>
-        - x-goog-api-key: <key> (Google API)
-        - X-Api-Key / X-API-Key / x-api-key: <key> (通用格式)
-        - Api-Key / api-key: <key> (部分反代使用)
-        """
-        # Bearer Token 格式（最常见）
-        if "Authorization" in headers:
-            auth = str(headers.get("Authorization") or "")
-            if auth.lower().startswith("bearer "):
-                return auth[7:]
-        # Google API 格式
-        if "x-goog-api-key" in headers:
-            return headers.get("x-goog-api-key")
-        # 通用 X-Api-Key 格式（大小写变体）
-        for k in ("X-Api-Key", "X-API-Key", "x-api-key"):
-            if k in headers:
-                return headers.get(k)
-        # 部分反代使用的 Api-Key 格式
-        for k in ("Api-Key", "api-key", "API-Key"):
-            if k in headers:
-                return headers.get(k)
-        return None
-
-    @staticmethod
-    def _apply_api_key_to_headers(headers: dict[str, str], api_key: str) -> None:
-        """将 API Key 应用到请求头中（覆盖现有的 key 相关头）"""
-        if "Authorization" in headers:
-            headers["Authorization"] = f"Bearer {api_key}"
-        if "x-goog-api-key" in headers:
-            headers["x-goog-api-key"] = api_key
-        for k in ("X-Api-Key", "X-API-Key", "x-api-key"):
-            if k in headers:
-                headers[k] = api_key
-        # 部分反代使用的 Api-Key 格式
-        for k in ("Api-Key", "api-key", "API-Key"):
-            if k in headers:
-                headers[k] = api_key
 
     def _classify_error(self, exception: Exception, error_msg: str) -> str:
         """分类错误类型"""

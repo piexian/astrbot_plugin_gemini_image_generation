@@ -13,6 +13,8 @@ from astrbot.api import logger
 from ..api_types import APIError, ApiRequestConfig
 from ..tl_utils import save_base64_image
 from .base import ProviderRequest
+from .data_uri import format_data_uri, strip_data_uri_prefix
+from .provider_limits import MAX_REFERENCE_IMAGES_MINIMAX
 
 _SUPPORTED_ASPECT_RATIO_VALUES: tuple[str, ...] = (
     "1:1",
@@ -52,7 +54,8 @@ _ERROR_TYPES: dict[int, str] = {
     2049: "auth",
 }
 _RETRYABLE_ERROR_CODES: frozenset[int] = frozenset({1002})
-_MAX_IMAGES = 9
+# 向后兼容别名;新代码请直接引用 provider_limits.MAX_REFERENCE_IMAGES_MINIMAX
+_MAX_IMAGES = MAX_REFERENCE_IMAGES_MINIMAX
 
 
 class MiniMaxProvider:
@@ -378,7 +381,7 @@ class MiniMaxProvider:
             )
 
         mime = mime_type or "image/png"
-        return f"data:{mime};base64,{b64_data}"
+        return format_data_uri(b64_data, mime)
 
     @staticmethod
     def _normalize_api_base(value: Any) -> str:
@@ -663,9 +666,8 @@ class MiniMaxProvider:
 
     @staticmethod
     def _strip_data_uri(value: str) -> str:
-        if ";base64," in value:
-            _, _, value = value.partition(";base64,")
-        return value
+        # 向后兼容别名;新代码请直接引用 data_uri.strip_data_uri_prefix
+        return strip_data_uri_prefix(value)
 
     @staticmethod
     def _detect_image_extension(value: str) -> str:

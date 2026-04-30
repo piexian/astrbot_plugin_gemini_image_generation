@@ -19,6 +19,9 @@ from astrbot.api import logger
 from ..api_types import APIError, ApiRequestConfig
 from ..tl_utils import save_base64_image
 from .base import ProviderRequest
+from .data_uri import format_data_uri
+from .provider_limits import MAX_REFERENCE_IMAGES_OPENAI_COMPAT
+from .reference_intake import announce_reference_intake
 
 
 class OpenAICompatProvider:
@@ -118,16 +121,14 @@ class OpenAICompatProvider:
         if config.reference_images:
             processed_cache: dict[str, dict[str, Any]] = {}
             total_start = time.perf_counter()
-            total_ref_count = len(config.reference_images)
-            processed_ref_count = min(total_ref_count, 6)
-            if total_ref_count > processed_ref_count:
-                logger.info(
-                    f"📎 开始处理 {processed_ref_count} 张参考图片 (共配置 {total_ref_count} 张，最多处理 6 张)..."
-                )
-            else:
-                logger.info(f"开始处理 {processed_ref_count} 张参考图片...")
+            total_ref_count, processed_ref_count = announce_reference_intake(
+                config.reference_images,
+                MAX_REFERENCE_IMAGES_OPENAI_COMPAT,
+            )
 
-            for idx, image_input in enumerate(config.reference_images[:6]):
+            for idx, image_input in enumerate(
+                config.reference_images[:MAX_REFERENCE_IMAGES_OPENAI_COMPAT]
+            ):
                 per_start = time.perf_counter()
                 image_str = str(image_input).strip()
                 if not image_str:
@@ -258,9 +259,9 @@ class OpenAICompatProvider:
                                     None,
                                     "invalid_reference_image",
                                 )
-                            payload_url = f"data:{mime_type};base64,{cleaned}"
+                            payload_url = format_data_uri(cleaned, mime_type)
                         else:
-                            payload_url = f"data:{mime_type};base64,{data}"
+                            payload_url = format_data_uri(data, mime_type)
 
                         image_payload = {
                             "type": "image_url",

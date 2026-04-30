@@ -7,7 +7,7 @@
 | 配置项 | 说明 |
 |--------|------|
 | `api_settings.provider_id` | 生图模型提供商，从 AstrBot 提供商列表选择；豆包可不填 |
-| `api_settings.api_type` | API 类型：`google` / `openai` / `openai_images` / `xai` / `minimax` / `stepfun` / `zai` / `grok2api` / `doubao` |
+| `api_settings.api_type` | API 类型：`google` / `openai` / `openai_images` / `xai` / `minimax` / `stepfun` / `sensenova` / `zai` / `grok2api` / `doubao` |
 
 ## api_settings
 
@@ -35,10 +35,10 @@
 支持的模板：
 
 ```text
-google / openai / zai / grok2api / xai / minimax / stepfun / openai_images / doubao
+google / openai / zai / grok2api / xai / minimax / stepfun / sensenova / openai_images / doubao
 ```
 
-下方 `doubao_settings`、`openai_images_settings`、`xai_settings`、`minimax_settings`、`stepfun_settings` 章节对应这些模板的专用字段。配置时在 `api_settings.provider_overrides` 中选择相应模板。
+下方 `doubao_settings`、`openai_images_settings`、`xai_settings`、`minimax_settings`、`stepfun_settings`、`sensenova_settings` 章节对应这些模板的专用字段。配置时在 `api_settings.provider_overrides` 中选择相应模板。
 
 ## image_generation_settings
 
@@ -294,3 +294,41 @@ NapCat v4.8.115+ 支持 Stream API。插件默认仍先按 `max_inline_image_siz
 
 - <https://platform.stepfun.com/docs/llm/image-edit>
 - <https://platform.stepfun.com/docs/api-reference/image-edit>
+
+## sensenova_settings（SenseNova（商汤日日新）专用配置）
+
+配置路径：`api_settings.provider_overrides` 中选择 `sensenova` 模板。仅支持文生图，尺寸限定为 11 种官方预设。
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `api_keys` | `[]` | SenseNova API Key 列表，控制台获取的 Bearer Token，支持多 Key 轮换 |
+| `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
+| `model` | `sensenova-u1-fast` | SenseNova 图像生成模型，目前仅支持 `sensenova-u1-fast` |
+| `api_base` | `https://token.sensenova.cn` | API 端点地址 |
+| `default_size` | `2752x1536` | 未推导出合法比例时的兜底尺寸，必须为下表 11 种官方尺寸之一 |
+| `proxy` | - | 独立代理地址，优先级高于全局代理和环境变量 |
+
+`sensenova` 供应商使用 SenseNova 官方图像端点：
+
+- 文生图：`POST /v1/images/generations`
+- 不支持图生图（由 provider 在 `build_request()` 阶段报错）
+
+官方支持的 11 种固定尺寸（全局 `aspect_ratio` 会被映射到最接近的预设）：
+
+| 尺寸 | 近似比例 |
+|------|---------|
+| `2048x2048` | 1:1 |
+| `2752x1536` | 16:9 |
+| `1536x2752` | 9:16 |
+| `2368x1760` | 4:3 |
+| `1760x2368` | 3:4 |
+| `2496x1664` | 3:2 |
+| `1664x2496` | 2:3 |
+| `1824x2272` | 4:5 |
+| `2272x1824` | 5:4 |
+| `3072x1376` | 21:9 |
+| `1344x3136` | 超竖长 |
+
+官方文档：
+
+- <https://platform.sensenova.cn/doc?path=/chat/ImageGeneration/ImageGeneration.md>
