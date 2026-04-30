@@ -348,7 +348,7 @@ class GeminiImageGenerationPlugin(Star):
         elif not self.cfg.api_type:
             if not quiet:
                 logger.error(
-                    "✗ 未配置 api_settings.api_type（google/openai/openai_images/xai/zai/grok2api/doubao），无法初始化 API 客户端"
+                    "✗ 未配置 api_settings.api_type（google/openai/openai_images/xai/minimax/stepfun/sensenova/zai/grok2api/doubao），无法初始化 API 客户端"
                 )
             return
 
@@ -433,6 +433,8 @@ class GeminiImageGenerationPlugin(Star):
                 self.cfg.minimax_settings = override_settings
             elif api_type_norm == "stepfun":
                 self.cfg.stepfun_settings = override_settings
+            elif api_type_norm == "sensenova":
+                self.cfg.sensenova_settings = override_settings
             elif api_type_norm == "xai":
                 self.cfg.xai_settings = override_settings
             elif api_type_norm == "openai_images":
@@ -467,6 +469,13 @@ class GeminiImageGenerationPlugin(Star):
                     )
                 except Exception as e:
                     logger.debug(f"绑定 stepfun_settings 到 API client 失败: {e}")
+            elif api_type_norm == "sensenova":
+                try:
+                    self.api_client.sensenova_settings = (
+                        getattr(self.cfg, "sensenova_settings", None) or {}
+                    )
+                except Exception as e:
+                    logger.debug(f"绑定 sensenova_settings 到 API client 失败: {e}")
             elif api_type_norm == "xai":
                 try:
                     self.api_client.xai_settings = (

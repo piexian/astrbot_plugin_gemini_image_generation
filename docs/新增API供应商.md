@@ -28,6 +28,7 @@ tl/api/
 | `xai` | `XAIProvider` | xAI 官方图像接口 |
 | `minimax` | `MiniMaxProvider` | MiniMax `/v1/image_generation` |
 | `stepfun` | `StepfunProvider` | StepFun `/v1/images/generations` 与 `/v1/images/edits` |
+| `sensenova` | `SenseNovaProvider` | SenseNova（商汤日日新）`/v1/images/generations`（仅文生图，11 种固定尺寸） |
 | `zai` | `ZaiProvider` | Zai 兼容接口 |
 | `grok2api` | `Grok2ApiProvider` | grok2api 兼容接口 |
 | `doubao` | `DoubaoProvider` | 火山引擎 Ark / 豆包 |
