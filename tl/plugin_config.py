@@ -59,6 +59,7 @@ class PluginConfig:
     doubao_settings: dict[str, Any] = field(default_factory=dict)
     minimax_settings: dict[str, Any] = field(default_factory=dict)
     stepfun_settings: dict[str, Any] = field(default_factory=dict)
+    sensenova_settings: dict[str, Any] = field(default_factory=dict)
 
     # 供应商配置覆盖
     # 结构：{api_type: {api_keys: [...], daily_limit_per_key: int, ...}}
@@ -475,6 +476,7 @@ class ConfigLoader:
         config.provider_overrides = all_overrides
         config.minimax_settings = all_overrides.get("minimax", {})
         config.stepfun_settings = all_overrides.get("stepfun", {})
+        config.sensenova_settings = all_overrides.get("sensenova", {})
 
         # 图像生成设置
         image_settings = self.raw_config.get("image_generation_settings") or {}
