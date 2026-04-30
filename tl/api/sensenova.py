@@ -145,7 +145,7 @@ class SenseNovaProvider:
     ) -> ProviderRequest:  # noqa: ANN401
         settings: dict[str, Any] = getattr(client, "sensenova_settings", None) or {}
 
-        api_base = settings.get("api_base") or config.api_base or _DEFAULT_API_BASE
+        api_base = config.api_base or settings.get("api_base") or _DEFAULT_API_BASE
         url = _ensure_v1_endpoint(str(api_base))
 
         if not config.api_key:
