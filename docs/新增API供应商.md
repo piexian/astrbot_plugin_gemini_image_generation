@@ -6,16 +6,21 @@
 
 ```text
 tl/api/
-├── base.py           # ApiProvider / ProviderRequest 接口定义
-├── registry.py       # api_type -> Provider 注册表
-├── openai_compat.py  # OpenAI Chat Completions 兼容基类
-├── openai_images.py  # OpenAI Images 原生端点
-├── google.py         # Google/Gemini 官方接口
-├── xai.py            # xAI Images 官方接口
-├── minimax.py        # MiniMax 图片生成接口
-├── doubao.py         # 火山引擎 Ark / 豆包 Seedream
-├── zai.py            # Zai 适配
-└── grok2api.py       # grok2api 适配
+├── base.py             # ApiProvider / ProviderRequest 接口定义
+├── registry.py         # api_type -> Provider 注册表
+├── openai_compat.py    # OpenAI Chat Completions 兼容基类
+├── openai_images.py    # OpenAI Images 原生端点
+├── google.py           # Google/Gemini 官方接口
+├── xai.py              # xAI Images 官方接口
+├── minimax.py          # MiniMax 图片生成接口
+├── doubao.py           # 火山引擎 Ark / 豆包 Seedream
+├── zai.py              # Zai 适配
+├── grok2api.py         # grok2api 适配
+├── sensenova.py        # SenseNova(商汤日日新)
+├── stepfun.py          # StepFun
+├── provider_limits.py  # 各 provider 参考图上限常量(共享)
+├── reference_intake.py # 参考图接收阶段日志助手(共享)
+└── data_uri.py         # data URI / base64 助手(共享)
 ```
 
 当前注册映射（与 `_conf_schema.json` 中 `api_settings.api_type.options` 严格一致，不再提供别名）：
@@ -127,9 +132,64 @@ class MyProvider(OpenAICompatProvider):
 - `doubao.py`：火山 Ark 请求结构、尺寸映射、组图参数。
 - `google.py`：Google/Gemini 官方协议。
 
+## 公共辅助模块（推荐复用）
+
+`tl/api/` 下抽出了若干共享 helper,新供应商应优先使用,避免重复造轮子:
+
+### `provider_limits.py` — 各 provider 参考图上限常量
+
+集中维护 `MAX_REFERENCE_IMAGES_*` 常量,避免魔法数字散落各 provider:
+
+```python
+from .provider_limits import (
+    MAX_REFERENCE_IMAGES_GOOGLE,        # 14
+    MAX_REFERENCE_IMAGES_DOUBAO,        # 14
+    MAX_REFERENCE_IMAGES_OPENAI_COMPAT, # 6
+    MAX_REFERENCE_IMAGES_MINIMAX,       # 9
+)
+```
+
+新增 provider 若有专属上限,在此模块新增 `Final[int]` 常量并在 provider 内引用。
+
+### `reference_intake.py` — 参考图接收阶段的统一日志
+
+```python
+from .reference_intake import announce_reference_intake
+
+received, accepted = announce_reference_intake(
+    references,
+    max_count=MAX_REFERENCE_IMAGES_OPENAI_COMPAT,
+    log_prefix="[my_provider] ",
+)
+```
+
+返回 `(收到数量, 实际采用数量)`,并产出统一格式的日志。**不**做截断 — 上限超过时仅打 warning,截断仍由各 provider 自行决定。
+
+### `data_uri.py` — Data URI / Base64 助手
+
+```python
+from .data_uri import format_data_uri, strip_data_uri_prefix, looks_like_base64
+
+uri = format_data_uri("image/png", b64_str)   # "data:image/png;base64,..."
+pure = strip_data_uri_prefix(maybe_uri)        # 去掉前缀仅留 base64 主体
+ok = looks_like_base64(some_str)               # 启发式判断是否疑似 base64
+```
+
+`doubao` / `minimax` / `openai_compat` 均已迁移至此模块。新 provider 处理图像 base64 时直接用模块函数即可。
+
+### `tl/api_headers.py`(注:在 `tl/` 下,非 `tl/api/`)
+
+API Key 在请求头中的读写:
+
+```python
+from ..api_headers import extract_api_key_from_headers, apply_api_key_to_headers
+```
+
+provider 通常无需直接调用(由 `tl_api.py` 在重试逻辑中使用),仅在自定义 Key 轮换时可能用到。
+
 ## 注册供应商
 
-在 `tl/api/registry.py` 中导入并注册单例：
+在 `tl/api/registry.py` 中导入并注册单例:
 
 ```python
 from .my_provider import MyProvider
