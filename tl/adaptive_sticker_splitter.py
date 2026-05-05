@@ -1354,7 +1354,6 @@ class AdaptiveStickerSplitter:
         if not np.any(hard_mask):
             rgba = cv2.cvtColor(crop_img, cv2.COLOR_BGR2BGRA)
             rgba[:, :, 3] = hard_alpha
-            rgba[hard_alpha == 0, :3] = 255
             return rgba
 
         bg_color = cls._estimate_crop_bg_color(crop_img, local_labels, hard_mask)
@@ -1393,14 +1392,15 @@ class AdaptiveStickerSplitter:
         alpha_shell = np.where(alpha_shell > 0.02, alpha_shell, 0.0)
 
         alpha = np.maximum(hard_alpha.astype(np.float32) / 255.0, alpha_shell)
-        out_rgb = np.full_like(rgb, 255.0)
+        # Preserve original crop background colors under transparent pixels so
+        # callers can flatten back onto the source background later.
+        out_rgb = rgb.copy()
         out_rgb[hard_mask] = rgb[hard_mask]
 
         soft_only = (alpha > 0.0) & (~hard_mask)
         out_rgb[soft_only] = fg_est[soft_only]
 
         rgba = np.dstack([out_rgb, alpha[:, :, None] * 255.0]).astype(np.uint8)
-        rgba[rgba[:, :, 3] == 0, :3] = 255
         return rgba
 
     @classmethod
@@ -1537,7 +1537,6 @@ class AdaptiveStickerSplitter:
                     cv2.BORDER_CONSTANT,
                     value=(255, 255, 255, 0),
                 )
-                crop_rgba[crop_rgba[:, :, 3] == 0, :3] = 255
             crops.append(crop_rgba)
 
         return crops

@@ -1023,45 +1023,48 @@ def split_image(
         sticker_crops: list[np.ndarray] | None = None
         sticker_debug: np.ndarray | None = None
 
-        def flatten_crop_background(crop: np.ndarray) -> np.ndarray:
-            """将带 alpha 的切片按原图背景回填为不透明结果。"""
+        def estimate_global_background_color(source_img: np.ndarray) -> np.ndarray:
+            """从整张源图估计统一背景色，供所有切片共用。"""
+            if source_img.ndim == 2:
+                gray_val = float(np.median(source_img))
+                return np.array([gray_val, gray_val, gray_val], dtype=np.float32)
+
+            bgr = source_img[:, :, :3].astype(np.float32)
+            gray = cv2.cvtColor(source_img[:, :, :3], cv2.COLOR_BGR2GRAY)
+            h, w = gray.shape
+
+            border = np.zeros((h, w), dtype=bool)
+            border[0, :] = True
+            border[-1, :] = True
+            border[:, 0] = True
+            border[:, -1] = True
+
+            border_pixels = bgr[border]
+            border_gray = gray[border]
+            near_white = border_pixels[border_gray >= 245]
+            if len(near_white) > 0:
+                return np.median(near_white, axis=0)
+
+            if len(border_pixels) > 0:
+                return np.median(border_pixels, axis=0)
+            return np.array([255.0, 255.0, 255.0], dtype=np.float32)
+
+        global_bg_color = estimate_global_background_color(img)
+
+        def flatten_crop_background(
+            crop: np.ndarray,
+            bg_color: np.ndarray,
+        ) -> np.ndarray:
+            """将带 alpha 的切片按统一背景色回填为不透明结果。"""
             if crop.ndim != 3 or crop.shape[2] != 4:
                 return crop
 
             alpha = crop[:, :, 3].astype(np.float32) / 255.0
             rgb = crop[:, :, :3].astype(np.float32)
-            bg_color = np.array([255.0, 255.0, 255.0], dtype=np.float32)
-            edge_rgb = np.concatenate(
-                [rgb[0], rgb[-1], rgb[:, 0], rgb[:, -1]],
-                axis=0,
-            )
-            edge_alpha = np.concatenate(
-                [alpha[0], alpha[-1], alpha[:, 0], alpha[:, -1]],
-                axis=0,
-            )
-            edge_bg = edge_rgb[edge_alpha < 0.05]
-            if len(edge_bg) > 0:
-                bg_color = edge_bg.mean(axis=0)
 
             alpha_3 = alpha[:, :, None]
             composed = rgb * alpha_3 + bg_color[None, None, :] * (1.0 - alpha_3)
             return np.clip(composed, 0, 255).astype(np.uint8)
-
-        def should_flatten_crop_background(crop: np.ndarray) -> bool:
-            """仅在裁剪结果本身已经是不透明底图时再做背景回填。"""
-            if crop.ndim != 3 or crop.shape[2] != 4:
-                return False
-
-            alpha = crop[:, :, 3]
-            if not np.any(alpha == 0):
-                return False
-
-            # 若透明区域已经是白底占位色，则按原图背景回填为不透明图；
-            # 否则保留 alpha，避免把透明贴纸错误压平成白底 PNG。
-            transparent_rgb = crop[alpha == 0, :3]
-            if len(transparent_rgb) == 0:
-                return False
-            return bool(np.all(transparent_rgb == 255))
 
         def generate_manual_boxes(
             target_rows: int, target_cols: int
@@ -1171,12 +1174,10 @@ def split_image(
                 for idx, crop in enumerate(sticker_crops, 1):
                     file_name = f"{base_name}_{idx:03d}.png"
                     file_path = final_output_dir / file_name
-                    output_crop = (
-                        flatten_crop_background(crop)
-                        if should_flatten_crop_background(crop)
-                        else crop
+                    cv2.imwrite(
+                        str(file_path),
+                        flatten_crop_background(crop, global_bg_color),
                     )
-                    cv2.imwrite(str(file_path), output_crop)
                     output_files.append(str(file_path))
                 if sticker_debug is not None:
                     debug_file = final_output_dir / f"{base_name}_debug.png"
