@@ -152,10 +152,35 @@ class AdaptiveStickerSplitter:
 
     @staticmethod
     def _nms(coords: np.ndarray, min_dist: int) -> list[tuple[int, int]]:
+        if len(coords) == 0:
+            return []
+
         kept: list[tuple[int, int]] = []
+        cell_size = max(1, int(min_dist))
+        buckets: dict[tuple[int, int], list[tuple[int, int]]] = {}
+        min_dist_sq = float(min_dist * min_dist)
         for y, x in coords:
-            if all(np.hypot(y - ky, x - kx) >= min_dist for ky, kx in kept):
-                kept.append((int(y), int(x)))
+            yi = int(y)
+            xi = int(x)
+            cy = yi // cell_size
+            cx = xi // cell_size
+            too_close = False
+            for ny in range(cy - 1, cy + 2):
+                for nx in range(cx - 1, cx + 2):
+                    for ky, kx in buckets.get((ny, nx), []):
+                        dy = yi - ky
+                        dx = xi - kx
+                        if float(dy * dy + dx * dx) < min_dist_sq:
+                            too_close = True
+                            break
+                    if too_close:
+                        break
+                if too_close:
+                    break
+            if not too_close:
+                point = (yi, xi)
+                kept.append(point)
+                buckets.setdefault((cy, cx), []).append(point)
         return kept
 
     def _auto_peaks(
@@ -169,12 +194,38 @@ class AdaptiveStickerSplitter:
         dt_thresh = max(5.0, dt_max * 0.15)
         local_max = maximum_filter(dist, size=max(5, int(min(h, w) * 0.03)))
         all_peaks_mask = (dist == local_max) & (dist > dt_thresh) & (cc_mask > 0)
-        all_coords = np.argwhere(all_peaks_mask)
+        n_cc, cc_labels = cv2.connectedComponents(
+            all_peaks_mask.astype(np.uint8),
+            connectivity=8,
+        )
+        peak_coords: list[tuple[int, int, float]] = []
+        for cc_id in range(1, n_cc):
+            ys, xs = np.where(cc_labels == cc_id)
+            if len(ys) == 0:
+                continue
+            if len(ys) == 1:
+                py = int(ys[0])
+                px = int(xs[0])
+            else:
+                cy = float(np.mean(ys))
+                cx = float(np.mean(xs))
+                dist_to_center = (ys - cy) ** 2 + (xs - cx) ** 2
+                best_idx = int(np.argmin(dist_to_center))
+                py = int(ys[best_idx])
+                px = int(xs[best_idx])
+            peak_coords.append((py, px, float(dist[py, px])))
+
+        all_coords = np.array(
+            [
+                (py, px)
+                for py, px, _ in sorted(
+                    peak_coords, key=lambda item: item[2], reverse=True
+                )
+            ],
+            dtype=np.int32,
+        )
         if len(all_coords) == 0:
             return []
-
-        vals = np.array([dist[y, x] for y, x in all_coords])
-        all_coords = all_coords[np.argsort(vals)[::-1]]
 
         lo, hi = 20, int(min(h, w) * 0.45)
         step = max(3, (hi - lo) // 30)
@@ -1139,7 +1190,8 @@ class AdaptiveStickerSplitter:
             x1, y1 = int(xs.max()), int(ys.max())
             bw, bh = x1 - x0, y1 - y0
             body_boxes[li] = (x0, y0, x1, y1)
-            margin = max(18, int(max(bw, bh) * 0.22))
+            margin = int(round(max(bw, bh) * 0.22))
+            margin = max(6, margin)
             panel_boxes[li] = (
                 max(0, x0 - margin),
                 max(0, y0 - margin),
@@ -1202,16 +1254,17 @@ class AdaptiveStickerSplitter:
 
                 # Keep nearby vertical text attached to its panel unless it is
                 # clearly detached far below the body and far outside the body width.
-                if (
-                    gy0 > body_y1 + max(18.0, body_h * 0.28)
-                    and x_overreach > body_w * 0.35
-                ):
+                below_allow = max(6.0, body_h * 0.28)
+                right_allow = max(6.0, body_w * 0.22)
+                left_allow = max(4.0, body_w * 0.16)
+                above_allow = max(4.0, body_h * 0.16)
+                if gy0 > body_y1 + below_allow and x_overreach > body_w * 0.35:
                     continue
-                if gx0 >= body_x1 and gx0 - body_x1 <= max(28.0, body_w * 0.22):
+                if gx0 >= body_x1 and gx0 - body_x1 <= right_allow:
                     score *= 0.55
-                if gx1 <= body_x0 and body_x0 - gx1 <= max(20.0, body_w * 0.16):
+                if gx1 <= body_x0 and body_x0 - gx1 <= left_allow:
                     score *= 0.8
-                if gy1 <= body_y0 and body_y0 - gy1 <= max(20.0, body_h * 0.16):
+                if gy1 <= body_y0 and body_y0 - gy1 <= above_allow:
                     score *= 0.85
                 candidates.append((score, li))
 
@@ -1292,26 +1345,49 @@ class AdaptiveStickerSplitter:
         if not np.any(core_first_roi) or not np.any(core_second_roi):
             return result
 
+        first_ys, first_xs = np.where(core_first_roi)
+        second_ys, second_xs = np.where(core_second_roi)
+        if (
+            len(first_ys) == 0
+            or len(first_xs) == 0
+            or len(second_ys) == 0
+            or len(second_xs) == 0
+        ):
+            return result
+
+        first_h = int(first_ys.max() - first_ys.min() + 1)
+        first_w = int(first_xs.max() - first_xs.min() + 1)
+        second_h = int(second_ys.max() - second_ys.min() + 1)
+        second_w = int(second_xs.max() - second_xs.min() + 1)
+        scale_x = max(1.0, float(min(first_w, second_w)))
+        scale_y = max(1.0, float(min(first_h, second_h)))
+
         dist_first = distance_transform_edt(~core_first_roi)
         dist_second = distance_transform_edt(~core_second_roi)
-        work = union_roi & (dist_first <= 90.0) & (dist_second <= 90.0)
+        dist_cap = max(
+            12.0,
+            min(
+                float(max(union_roi.shape[:2])),
+                max(scale_x, scale_y) * 0.65,
+            ),
+        )
+        work = union_roi & (dist_first <= dist_cap) & (dist_second <= dist_cap)
 
         if vertical:
-            ys_first = np.where(core_first_roi)[0]
-            ys_second = np.where(core_second_roi)[0]
-            band_lo = max(int(ys_first.max()) - 18, 0)
-            band_hi = min(int(ys_second.min()) + 18, union_roi.shape[0] - 1)
+            band_pad = max(6, int(round(scale_y * 0.12)))
+            band_lo = max(int(first_ys.max()) - band_pad, 0)
+            band_hi = min(int(second_ys.min()) + band_pad, union_roi.shape[0] - 1)
             yy = np.arange(union_roi.shape[0], dtype=np.int32)[:, None]
             work &= (yy >= band_lo) & (yy <= band_hi)
         else:
-            xs_first = np.where(core_first_roi)[1]
-            xs_second = np.where(core_second_roi)[1]
-            band_lo = max(int(xs_first.max()) - 18, 0)
-            band_hi = min(int(xs_second.min()) + 18, union_roi.shape[1] - 1)
+            band_pad = max(6, int(round(scale_x * 0.12)))
+            band_lo = max(int(first_xs.max()) - band_pad, 0)
+            band_hi = min(int(second_xs.min()) + band_pad, union_roi.shape[1] - 1)
             xx = np.arange(union_roi.shape[1], dtype=np.int32)[None, :]
             work &= (xx >= band_lo) & (xx <= band_hi)
 
-        if np.count_nonzero(work) < 24:
+        min_work = max(12, int(round(min(scale_x, scale_y) * 0.08)))
+        if np.count_nonzero(work) < min_work:
             return result
 
         seed_first = self._core_seed(core_first_roi)
@@ -1324,8 +1400,17 @@ class AdaptiveStickerSplitter:
         costs_second = self._travel_costs(union_roi, gray_norm, seed_second)
 
         roi = result[y0:y1, x0:x1].copy()
-        move_first = work & (costs_first + 1.5 < costs_second)
-        move_second = work & (costs_second + 1.5 < costs_first)
+        movable = work & (~core_first_roi) & (~core_second_roi)
+        cost_margin = (
+            max(
+                0.75,
+                float(np.quantile(np.abs(costs_first - costs_second)[movable], 0.2)),
+            )
+            if np.any(movable)
+            else 0.75
+        )
+        move_first = movable & (costs_first + cost_margin < costs_second)
+        move_second = movable & (costs_second + cost_margin < costs_first)
         roi[move_first] = first_li
         roi[move_second] = second_li
         result[y0:y1, x0:x1] = roi
@@ -1455,9 +1540,9 @@ class AdaptiveStickerSplitter:
             return crop_alpha
 
         keep_ids = {main_id}
-        head_band_y = my + max(60, int(mh * 0.4))
-        x_margin = max(40, int(mw * 0.35))
-        min_group_area = max(30, int(main_area * 0.0008))
+        head_band_y = my + max(6, int(round(mh * 0.4)))
+        x_margin = max(6, int(round(mw * 0.35)))
+        min_group_area = max(6, int(round(main_area * 0.0008)))
 
         for group in cls._group_text_words(aux_ccs):
             x0 = min(aux_ccs[i]["x0"] for i in group)
@@ -1521,7 +1606,7 @@ class AdaptiveStickerSplitter:
 
             ax0, ay0 = int(xs_a.min()), int(ys_a.min())
             ax1, ay1 = int(xs_a.max()) + 1, int(ys_a.max()) + 1
-            pad_alpha = max(4, int(min(ax1 - ax0, ay1 - ay0) * 0.04))
+            pad_alpha = max(2, int(round(min(ax1 - ax0, ay1 - ay0) * 0.04)))
             ax0 = max(0, ax0 - pad_alpha)
             ay0 = max(0, ay0 - pad_alpha)
             ax1 = min(crop_rgba.shape[1], ax1 + pad_alpha)
@@ -1530,14 +1615,23 @@ class AdaptiveStickerSplitter:
             crop_rgba = crop_rgba[ay0:ay1, ax0:ax1]
             crop_alpha = crop_rgba[:, :, 3]
 
-            # If a recovered outline still touches the crop edge, add breathing room
-            # instead of hard-clipping the stroke onto the border.
-            touch_band = 2
-            pad_touch = 4
-            top_pad = pad_touch if np.any(crop_alpha[:touch_band, :] > 0) else 0
-            bottom_pad = pad_touch if np.any(crop_alpha[-touch_band:, :] > 0) else 0
-            left_pad = pad_touch if np.any(crop_alpha[:, :touch_band] > 0) else 0
-            right_pad = pad_touch if np.any(crop_alpha[:, -touch_band:] > 0) else 0
+            # Enforce a minimum transparent breathing room so detached text and
+            # thin outlines are not visually glued to the crop border.
+            ys_m, xs_m = np.where(crop_alpha > 0)
+            top_margin = int(ys_m.min()) if len(ys_m) else 0
+            bottom_margin = (
+                int(crop_alpha.shape[0] - 1 - ys_m.max()) if len(ys_m) else 0
+            )
+            left_margin = int(xs_m.min()) if len(xs_m) else 0
+            right_margin = int(crop_alpha.shape[1] - 1 - xs_m.max()) if len(xs_m) else 0
+            desired_margin = max(
+                2,
+                int(round(max(ax1 - ax0, ay1 - ay0) * 0.06)),
+            )
+            top_pad = max(0, desired_margin - top_margin)
+            bottom_pad = max(0, desired_margin - bottom_margin)
+            left_pad = max(0, desired_margin - left_margin)
+            right_pad = max(0, desired_margin - right_margin)
             if top_pad or bottom_pad or left_pad or right_pad:
                 crop_rgba = cv2.copyMakeBorder(
                     crop_rgba,

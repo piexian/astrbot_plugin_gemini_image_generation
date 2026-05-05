@@ -1033,6 +1033,146 @@ def _collect_projection_bands(
     return bands
 
 
+def _detect_solid_grid_boxes(
+    source_img: np.ndarray,
+    *,
+    min_rows: int = 2,
+    min_cols: int = 2,
+    max_rows: int = 6,
+    max_cols: int = 6,
+) -> tuple[list[tuple[int, int, int, int]], list[int], list[int], np.ndarray] | None:
+    """检测带黑色实线分隔的规则网格图。"""
+    if source_img.ndim != 3:
+        return None
+
+    h, w = source_img.shape[:2]
+    if h < 200 or w < 200:
+        return None
+
+    gray = cv2.cvtColor(source_img[:, :, :3], cv2.COLOR_BGR2GRAY)
+    border_samples = np.concatenate(
+        [gray[0, :], gray[-1, :], gray[:, 0], gray[:, -1]]
+    ).astype(np.float32)
+    bg_level = float(np.quantile(border_samples, 0.75))
+    ink_level = float(np.quantile(gray.astype(np.float32), 0.08))
+    contrast = max(0.0, bg_level - ink_level)
+    white_ratio = float((gray >= bg_level - max(8.0, contrast * 0.08)).mean())
+    if white_ratio < 0.22 or contrast < 48.0:
+        return None
+
+    dark_thr = bg_level - max(10.0, contrast * 0.58)
+    dark = ((gray <= dark_thr) * 255).astype(np.uint8)
+    h_kernel = cv2.getStructuringElement(
+        cv2.MORPH_RECT,
+        (max(31, w // 4), 1),
+    )
+    v_kernel = cv2.getStructuringElement(
+        cv2.MORPH_RECT,
+        (1, max(31, h // 4)),
+    )
+    hori = cv2.morphologyEx(dark, cv2.MORPH_OPEN, h_kernel)
+    vert = cv2.morphologyEx(dark, cv2.MORPH_OPEN, v_kernel)
+
+    hproj = hori.mean(axis=1).astype(np.float32)
+    vproj = vert.mean(axis=0).astype(np.float32)
+
+    h_pos = hproj[hproj > 0]
+    v_pos = vproj[vproj > 0]
+    if len(h_pos) == 0 or len(v_pos) == 0:
+        return None
+
+    h_support = float(len(h_pos)) / float(len(hproj))
+    v_support = float(len(v_pos)) / float(len(vproj))
+    h_q = min(0.999, max(0.9, 1.0 - h_support * 0.75))
+    v_q = min(0.999, max(0.9, 1.0 - v_support * 0.75))
+    h_thresh = max(float(hproj.max()) * 0.5, float(np.quantile(hproj, h_q)))
+    v_thresh = max(float(vproj.max()) * 0.5, float(np.quantile(vproj, v_q)))
+    hbands = _collect_projection_bands(
+        hproj,
+        h_thresh,
+    )
+    vbands = _collect_projection_bands(
+        vproj,
+        v_thresh,
+    )
+
+    edge_margin_y = max(4, int(round(h * 0.02)))
+    edge_margin_x = max(4, int(round(w * 0.02)))
+    hbands = [band for band in hbands if edge_margin_y < band[2] < h - edge_margin_y]
+    vbands = [band for band in vbands if edge_margin_x < band[2] < w - edge_margin_x]
+    hbands = sorted(hbands, key=lambda item: item[2])
+    vbands = sorted(vbands, key=lambda item: item[2])
+
+    row_count = len(hbands) + 1
+    col_count = len(vbands) + 1
+    if row_count < min_rows or col_count < min_cols:
+        return None
+    if row_count > max_rows or col_count > max_cols:
+        return None
+
+    row_lines = [0, *[band[2] for band in hbands], h]
+    col_lines = [0, *[band[2] for band in vbands], w]
+    row_heights = np.diff(np.array(row_lines, dtype=np.float32))
+    col_widths = np.diff(np.array(col_lines, dtype=np.float32))
+    if np.min(row_heights) < h * 0.08 or np.min(col_widths) < w * 0.08:
+        return None
+    row_cv = float(np.std(row_heights) / (np.mean(row_heights) + 1e-6))
+    col_cv = float(np.std(col_widths) / (np.mean(col_widths) + 1e-6))
+    allowed_cv = 0.1 + 0.08 / max(1, min(row_count, col_count) - 1)
+    if row_cv > allowed_cv or col_cv > allowed_cv:
+        return None
+
+    median_h_band = float(
+        np.median([band_end - band_start + 1 for band_start, band_end, _, _ in hbands])
+    )
+    median_v_band = float(
+        np.median([band_end - band_start + 1 for band_start, band_end, _, _ in vbands])
+    )
+    band_pad_y = max(1, int(round(median_h_band * 0.35)))
+    band_pad_x = max(1, int(round(median_v_band * 0.35)))
+
+    row_spans: list[tuple[int, int]] = []
+    prev_end = 0
+    for band_start, band_end, _, _ in hbands:
+        safe_start = max(prev_end, band_start - band_pad_y)
+        row_spans.append((prev_end, safe_start))
+        prev_end = min(h, band_end + 1 + band_pad_y)
+    row_spans.append((prev_end, h))
+
+    col_spans: list[tuple[int, int]] = []
+    prev_end = 0
+    for band_start, band_end, _, _ in vbands:
+        safe_start = max(prev_end, band_start - band_pad_x)
+        col_spans.append((prev_end, safe_start))
+        prev_end = min(w, band_end + 1 + band_pad_x)
+    col_spans.append((prev_end, w))
+
+    if any((y2 - y1) <= h * 0.06 for y1, y2 in row_spans):
+        return None
+    if any((x2 - x1) <= w * 0.06 for x1, x2 in col_spans):
+        return None
+
+    boxes: list[tuple[int, int, int, int]] = []
+    for y1, y2 in row_spans:
+        for x1, x2 in col_spans:
+            boxes.append((int(x1), int(y1), int(x2 - x1), int(y2 - y1)))
+
+    if len(boxes) != row_count * col_count:
+        return None
+
+    return (
+        boxes,
+        row_lines,
+        col_lines,
+        _build_grid_debug_image(
+            source_img,
+            boxes,
+            row_lines,
+            col_lines,
+        ),
+    )
+
+
 def _detect_dashed_grid_boxes(
     source_img: np.ndarray,
     *,
@@ -1146,11 +1286,16 @@ def _detect_dashed_grid_boxes(
     if len(boxes) != target_rows * target_cols:
         return None
 
-    return boxes, row_lines, col_lines, _build_grid_debug_image(
-        source_img,
+    return (
         boxes,
         row_lines,
         col_lines,
+        _build_grid_debug_image(
+            source_img,
+            boxes,
+            row_lines,
+            col_lines,
+        ),
     )
 
 
@@ -1451,6 +1596,14 @@ def split_image(
                 boxes = precomputed_grid_boxes
                 logger.debug(
                     f"检测到显式网格表情包，优先使用网格切分，共 {len(boxes)} 个裁剪框"
+                )
+
+        if not boxes:
+            solid_grid = _detect_solid_grid_boxes(img)
+            if solid_grid is not None:
+                boxes, grid_row_lines, grid_col_lines, grid_debug = solid_grid
+                logger.debug(
+                    f"检测到黑色实线规则表情包，优先使用显式网格切分，共 {len(boxes)} 个裁剪框"
                 )
 
         # 手动切割优先级：外部裁剪框 > 手动指定 > AI > 智能切分
