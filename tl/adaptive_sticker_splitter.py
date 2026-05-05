@@ -1200,8 +1200,19 @@ class AdaptiveStickerSplitter:
                     + (y_above**2) * 0.2
                 )
 
-                if gy0 > body_y0 + body_h * 0.2 and x_overreach > body_w * 0.18:
+                # Keep nearby vertical text attached to its panel unless it is
+                # clearly detached far below the body and far outside the body width.
+                if (
+                    gy0 > body_y1 + max(18.0, body_h * 0.28)
+                    and x_overreach > body_w * 0.35
+                ):
                     continue
+                if gx0 >= body_x1 and gx0 - body_x1 <= max(28.0, body_w * 0.22):
+                    score *= 0.55
+                if gx1 <= body_x0 and body_x0 - gx1 <= max(20.0, body_w * 0.16):
+                    score *= 0.8
+                if gy1 <= body_y0 and body_y0 - gy1 <= max(20.0, body_h * 0.16):
+                    score *= 0.85
                 candidates.append((score, li))
 
             if candidates:

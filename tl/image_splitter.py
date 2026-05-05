@@ -1020,6 +1020,39 @@ def split_image(
             logger.error(f"无法读取图像: {image_path}")
             return []
 
+        def trim_viewer_chrome(source_img: np.ndarray) -> np.ndarray:
+            """裁掉截图中明显的上下看图器黑边/工具栏，避免整图被当成前景。"""
+            if source_img.ndim != 3 or source_img.shape[0] < 200:
+                return source_img
+
+            gray = cv2.cvtColor(source_img[:, :, :3], cv2.COLOR_BGR2GRAY)
+            h, w = gray.shape
+            white_ratio = (gray >= 245).mean(axis=1)
+            content_rows = np.where(white_ratio > 0.18)[0]
+            if len(content_rows) == 0:
+                return source_img
+
+            y0 = int(content_rows.min())
+            y1 = int(content_rows.max()) + 1
+
+            # 仅在上下确实存在较厚非内容条带时才裁，避免误伤正常图。
+            if y0 < max(24, int(h * 0.02)) and (h - y1) < max(24, int(h * 0.02)):
+                return source_img
+
+            if y0 <= 0 and y1 >= h:
+                return source_img
+
+            if y0 >= int(h * 0.18) or (h - y1) >= int(h * 0.18):
+                return source_img
+
+            trimmed = source_img[y0:y1].copy()
+            logger.debug(
+                f"检测到截图上下边框，自动裁边: y0={y0}, y1={y1}, 原始尺寸={w}x{h}, 新尺寸={trimmed.shape[1]}x{trimmed.shape[0]}"
+            )
+            return trimmed
+
+        img = trim_viewer_chrome(img)
+
         sticker_crops: list[np.ndarray] | None = None
         sticker_debug: np.ndarray | None = None
 
@@ -1087,6 +1120,56 @@ def split_image(
                         manual_boxes.append((x1, y1, box_w, box_h))
             return manual_boxes
 
+        def looks_like_dense_sticker_sheet(source_img: np.ndarray) -> bool:
+            """判断是否像规则表情包大图，适合优先尝试 4x4 网格。"""
+            h, w = source_img.shape[:2]
+            if h < 600 or w < 900:
+                return False
+
+            gray = cv2.cvtColor(source_img[:, :, :3], cv2.COLOR_BGR2GRAY)
+            dark = gray < 220
+            row_dark = dark.mean(axis=1)
+            col_dark = dark.mean(axis=0)
+            strong_rows = int(np.count_nonzero(row_dark > 0.12))
+            strong_cols = int(np.count_nonzero(col_dark > 0.12))
+            return strong_rows >= 2 and strong_cols >= 3
+
+        def looks_like_explicit_grid_sheet(
+            source_img: np.ndarray,
+            detected_boxes: list[tuple[int, int, int, int]],
+            row_lines: list[int],
+            col_lines: list[int],
+        ) -> bool:
+            """判断图像是否是带明显分隔线的规则网格表情包。"""
+            if len(detected_boxes) < 9 or len(row_lines) < 4 or len(col_lines) < 4:
+                return False
+
+            widths = np.diff(np.array(col_lines, dtype=np.float32))
+            heights = np.diff(np.array(row_lines, dtype=np.float32))
+            areas = np.array([w * h for _, _, w, h in detected_boxes], dtype=np.float32)
+            if len(widths) == 0 or len(heights) == 0 or len(areas) == 0:
+                return False
+
+            width_cv = float(np.std(widths) / (np.mean(widths) + 1e-6))
+            height_cv = float(np.std(heights) / (np.mean(heights) + 1e-6))
+            area_cv = float(np.std(areas) / (np.mean(areas) + 1e-6))
+            if width_cv > 0.25 or height_cv > 0.2 or area_cv > 0.25:
+                return False
+
+            gray = cv2.cvtColor(source_img[:, :, :3], cv2.COLOR_BGR2GRAY)
+            dark = gray < 220
+            line_scores: list[float] = []
+            for y in row_lines[1:-1]:
+                y0 = max(0, y - 1)
+                y1 = min(gray.shape[0], y + 2)
+                line_scores.append(float(dark[y0:y1, :].mean()))
+            for x in col_lines[1:-1]:
+                x0 = max(0, x - 1)
+                x1 = min(gray.shape[1], x + 2)
+                line_scores.append(float(dark[:, x0:x1].mean()))
+
+            return bool(line_scores) and max(line_scores) < 0.02
+
         # 若传入外部裁剪框则优先使用，避免重复跑智能切分
         boxes: list[tuple[int, int, int, int]] = []
         if bboxes:
@@ -1119,11 +1202,32 @@ def split_image(
             if boxes:
                 logger.debug(f"使用外部提供的裁剪框，共 {len(boxes)} 个")
 
+        precomputed_grid_boxes: list[tuple[int, int, int, int]] = []
+        if not boxes and not (manual_rows and manual_cols):
+            grid_splitter = SmartMemeSplitter()
+            precomputed_grid_boxes = grid_splitter.detect_grid(img, debug=True)
+            if looks_like_explicit_grid_sheet(
+                img,
+                precomputed_grid_boxes,
+                grid_splitter.last_row_lines,
+                grid_splitter.last_col_lines,
+            ):
+                boxes = precomputed_grid_boxes
+                logger.debug(
+                    f"检测到显式网格表情包，优先使用网格切分，共 {len(boxes)} 个裁剪框"
+                )
+
         # 手动切割优先级：外部裁剪框 > 手动指定 > AI > 智能切分
         if not boxes and manual_rows and manual_cols:
             boxes = generate_manual_boxes(manual_rows, manual_cols)
             if boxes:
                 logger.debug(f"使用手动网格裁剪: {manual_cols} x {manual_rows}")
+
+        if not boxes and looks_like_dense_sticker_sheet(img):
+            forced_grid_boxes = generate_manual_boxes(4, 4)
+            if forced_grid_boxes:
+                boxes = forced_grid_boxes
+                logger.debug("检测到规则表情包大图，优先使用 4x4 网格切分")
 
         # AI 行列切割（可选），在没有手动网格时尝试
         if not boxes and ai_rows and ai_cols and ai_rows > 0 and ai_cols > 0:
@@ -1156,8 +1260,11 @@ def split_image(
 
         # 如果没有外部裁剪框或手动网格，则使用 SmartMemeSplitter 进行智能切分
         if not boxes and not sticker_crops:
-            splitter = SmartMemeSplitter()
-            boxes = splitter.detect_grid(img, debug=True)
+            if precomputed_grid_boxes:
+                boxes = precomputed_grid_boxes
+            else:
+                splitter = SmartMemeSplitter()
+                boxes = splitter.detect_grid(img, debug=True)
 
         # 网格切分仍失败时，再次尝试黑描边自适应切分
         if not boxes and not sticker_crops:
