@@ -360,8 +360,9 @@ class AdaptiveStickerSplitter:
             for y, x in zip(uy, ux):
                 best_li = min(
                     centroids,
-                    key=lambda li: (x - centroids[li][0]) ** 2
-                    + (y - centroids[li][1]) ** 2,
+                    key=lambda li: (
+                        (x - centroids[li][0]) ** 2 + (y - centroids[li][1]) ** 2
+                    ),
                 )
                 result[y, x] = best_li
 
@@ -1208,8 +1209,9 @@ class AdaptiveStickerSplitter:
             else:
                 best_li = min(
                     centroids,
-                    key=lambda li: (gcx - centroids[li][0]) ** 2
-                    + (gcy - centroids[li][1]) ** 2,
+                    key=lambda li: (
+                        (gcx - centroids[li][0]) ** 2 + (gcy - centroids[li][1]) ** 2
+                    ),
                 )
 
             for i in group:
