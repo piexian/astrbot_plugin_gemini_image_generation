@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 import cv2
 import numpy as np
+from astrbot.api import logger
 
 # (x1, y1, x2, y2)
 Box = tuple[int, int, int, int]
@@ -429,6 +430,19 @@ class StickerCutter:
 
     def process_image(self, img: np.ndarray, debug: bool = False):
         """处理单张图片，返回裁剪结果与调试图"""
+        try:
+            from .adaptive_sticker_splitter import AdaptiveStickerSplitter
+
+            adaptive = AdaptiveStickerSplitter()
+            adaptive_crops, adaptive_debug = adaptive.process_image(img, debug=debug)
+            if adaptive_crops:
+                logger.debug(
+                    f"使用自适应黑描边分割，共 {len(adaptive_crops)} 个裁剪结果"
+                )
+                return adaptive_crops, adaptive_debug
+        except Exception as e:
+            logger.debug(f"自适应黑描边分割失败，回退主体吸附算法: {e}")
+
         h, w = img.shape[:2]
         fg = self._prepare_foreground(img)
         regions = self._find_all_regions(fg)

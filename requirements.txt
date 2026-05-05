@@ -2,3 +2,5 @@ PyYAML
 opencv-python-headless
 numpy
 aiohttp-socks
+scipy
+scikit-image

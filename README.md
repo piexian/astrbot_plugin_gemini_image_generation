@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/Version-v1.10.2-blue)
+![Version](https://img.shields.io/badge/Version-v1.10.4-blue)
 ![License](https://img.shields.io/badge/License-AGPL--3.0-orange)
 
 **强大的 AstrBot 图像生成插件，支持生图、改图、头像参考、表情包切分和 LLM 工具调用。**
@@ -18,7 +18,7 @@
 - **智能参考图**：自动读取消息图片、引用图片、合并转发、群文件，以及用户头像和 @ 对象头像。
 - **多供应商支持**：Google Gemini、OpenAI 兼容、OpenAI Images、xAI Images、MiniMax、阶跃星辰、Zai、grok2api、豆包。
 - **LLM 工具集成**：支持自然语言触发生图，前台短等待，超时后自动转后台发送。
-- **表情包切分**：内置 SmartMemeSplitter v4，并提供手动网格、视觉识别、主体吸附等兜底路径。
+- **表情包切分**：内置 SmartMemeSplitter v4，默认优先走自适应黑描边贴纸切分，并保留手动网格、视觉识别等兜底路径。
 - **限流与缓存**：支持群白名单/黑名单、周期限流、KV 持久化、临时文件自动清理。
 
 ## 快速安装
@@ -106,7 +106,7 @@ astrbot_plugin_gemini_image_generation/
 - [@MliKiowa](https://github.com/MliKiowa) - 图像切割算法
 - [@exynos967](https://github.com/exynos967) - 限流设置、手办化功能、OpenAI 兼容、Zai 供应商、快速模式配置
 - [@zouyonghe](https://github.com/zouyonghe) - 代理支持、保留参考图尺寸、空格参数支持
-- [@vmoranv](https://github.com/vmoranv) - 表情包提示词优化
+- [@vmoranv](https://github.com/vmoranv) - 表情包提示词优化、自适应黑描边贴纸切分
 - [@itismygo](https://github.com/itismygo) - grok2api 适配
 - [@xunxiing](https://github.com/xunxiing) - OpenAI Images 端点支持、配置提示修复
 - [@Clhikari](https://github.com/Clhikari) - 快速生图修复

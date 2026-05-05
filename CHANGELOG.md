@@ -2,6 +2,23 @@
 
 > **升级提示**：v1.9.0 以后的配置文件格式不兼容旧版本。升级后如遇配置模板显示错误，请查看 [配置迁移说明](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/troubleshooting.md#配置迁移说明)。
 
+## [1.10.4] - 2026-05-05
+
+### Added
+
+- 新增 `tl/adaptive_sticker_splitter.py`，用于对白底动漫贴纸做黑描边感知的自适应分割，并输出透明裁剪图。
+
+### Changed
+
+- `split_image()` 默认优先尝试自适应贴纸切分，再回退到 SmartMemeSplitter；保留 `use_sticker_cutter` 作为兼容参数。
+- `StickerCutter.process_image()` 现在先走自适应黑描边分割，失败后再回退旧的主体吸附算法。
+- 保存切片时会按源图背景对透明结果做扁平化处理，避免输出透明 PNG 时背景不一致。
+- 新增 `scipy` 和 `scikit-image` 依赖，用于自适应贴纸切分流程。
+
+### Docs
+
+- `README.md` 更新了切图说明、版本徽章和贡献鸣谢。
+
 ## [1.10.3] - 2026-05-01
 
 ### Changed

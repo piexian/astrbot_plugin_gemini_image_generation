@@ -1174,7 +1174,7 @@ class GeminiImageGenerationPlugin(Star):
 
         if "吸附" in grid_text:
             use_sticker_cutter = True
-            logger.info("检测到吸附关键词，启用主体吸附分割")
+            logger.info("检测到吸附关键词，优先使用自适应贴纸切分")
 
         if grid_text:
             try:
@@ -1225,9 +1225,9 @@ class GeminiImageGenerationPlugin(Star):
                 f"🤖 AI 识别到 {ai_cols}x{ai_rows} 网格，优先切割..."
             )
         elif use_sticker_cutter:
-            yield event.plain_result("✂️ 使用主体吸附分割算法切图...")
+            yield event.plain_result("✂️ 使用自适应贴纸切分算法切图...")
         else:
-            yield event.plain_result("✂️ 正在切割图片...")
+            yield event.plain_result("✂️ 正在使用自适应贴纸切分算法...")
 
         split_files: list[str] = []
         try:

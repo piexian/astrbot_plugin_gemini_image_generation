@@ -985,17 +985,17 @@ def split_image(
     ai_cols: int | None = None,
 ) -> list[str]:
     """
-    使用 SmartMemeSplitter 智能切分图片
+    智能切分图片。
 
     Args:
         image_path: 源图片路径
-        rows: 保留参数以兼容旧接口（智能切割默认值）
-        cols: 保留参数以兼容旧接口（智能切割默认值）
+        rows: 保留参数以兼容旧接口（网格切分默认值）
+        cols: 保留参数以兼容旧接口（网格切分默认值）
         output_dir: 输出目录，如果不指定则使用插件数据目录下的 split_output
         bboxes: 外部提供的裁剪框（x,y,width,height），优先使用
         manual_rows: 手动指定的纵向切割数（行数）
         manual_cols: 手动指定的横向切割数（列数）
-        use_sticker_cutter: 是否使用主体+附件吸附分割算法（可选）
+        use_sticker_cutter: 兼容旧接口的开关名，当前默认也会优先尝试黑描边自适应切分
 
     Returns:
         List[str]: 切分后的图片文件路径列表，按顺序排列
@@ -1022,6 +1022,49 @@ def split_image(
 
         sticker_crops: list[np.ndarray] | None = None
         sticker_debug: np.ndarray | None = None
+
+        def estimate_global_background_color(source_img: np.ndarray) -> np.ndarray:
+            """从整张源图估计统一背景色，供所有切片共用。"""
+            if source_img.ndim == 2:
+                gray_val = float(np.median(source_img))
+                return np.array([gray_val, gray_val, gray_val], dtype=np.float32)
+
+            bgr = source_img[:, :, :3].astype(np.float32)
+            gray = cv2.cvtColor(source_img[:, :, :3], cv2.COLOR_BGR2GRAY)
+            h, w = gray.shape
+
+            border = np.zeros((h, w), dtype=bool)
+            border[0, :] = True
+            border[-1, :] = True
+            border[:, 0] = True
+            border[:, -1] = True
+
+            border_pixels = bgr[border]
+            border_gray = gray[border]
+            near_white = border_pixels[border_gray >= 245]
+            if len(near_white) > 0:
+                return np.median(near_white, axis=0)
+
+            if len(border_pixels) > 0:
+                return np.median(border_pixels, axis=0)
+            return np.array([255.0, 255.0, 255.0], dtype=np.float32)
+
+        global_bg_color = estimate_global_background_color(img)
+
+        def flatten_crop_background(
+            crop: np.ndarray,
+            bg_color: np.ndarray,
+        ) -> np.ndarray:
+            """将带 alpha 的切片按统一背景色回填为不透明结果。"""
+            if crop.ndim != 3 or crop.shape[2] != 4:
+                return crop
+
+            alpha = crop[:, :, 3].astype(np.float32) / 255.0
+            rgb = crop[:, :, :3].astype(np.float32)
+
+            alpha_3 = alpha[:, :, None]
+            composed = rgb * alpha_3 + bg_color[None, None, :] * (1.0 - alpha_3)
+            return np.clip(composed, 0, 255).astype(np.uint8)
 
         def generate_manual_boxes(
             target_rows: int, target_cols: int
@@ -1091,7 +1134,7 @@ def split_image(
                 return ai_files
 
         def run_sticker_cutter(debug: bool = True):
-            """执行主体+附件吸附分割"""
+            """执行自适应贴纸分割"""
             nonlocal sticker_crops, sticker_debug
             try:
                 from .sticker_cutter import StickerCutter
@@ -1100,14 +1143,15 @@ def split_image(
                 sticker_crops, sticker_debug = cutter.process_image(img, debug=debug)
                 if sticker_crops:
                     logger.debug(
-                        f"使用主体吸附分割，共 {len(sticker_crops)} 个裁剪结果"
+                        f"使用自适应贴纸分割，共 {len(sticker_crops)} 个裁剪结果"
                     )
             except Exception as e:
-                logger.debug(f"主体吸附分割失败: {e}")
+                logger.debug(f"自适应贴纸分割失败: {e}")
                 sticker_crops = None
+                sticker_debug = None
 
-        # 启用可选的主体+附件吸附分割算法
-        if not boxes and use_sticker_cutter:
+        # 默认优先使用黑描边自适应切分，网格切分仅作为兜底
+        if not boxes:
             run_sticker_cutter(debug=True)
 
         # 如果没有外部裁剪框或手动网格，则使用 SmartMemeSplitter 进行智能切分
@@ -1115,29 +1159,31 @@ def split_image(
             splitter = SmartMemeSplitter()
             boxes = splitter.detect_grid(img, debug=True)
 
-        # 智能切分仍失败时，自动使用主体吸附兜底
+        # 网格切分仍失败时，再次尝试黑描边自适应切分
         if not boxes and not sticker_crops:
-            logger.debug("智能切分未检测到网格，尝试主体吸附分割兜底")
-            run_sticker_cutter(debug=False)
+            logger.debug("网格切分未检测到有效区域，再次尝试自适应贴纸分割")
+            run_sticker_cutter(debug=True)
 
         if not boxes and not sticker_crops:
             logger.warning("智能切分未检测到网格")
             return []
 
-        # 直接保存主体吸附分割的结果
+        # 直接保存自适应切分结果，并保留调试图
         if sticker_crops:
             try:
                 for idx, crop in enumerate(sticker_crops, 1):
                     file_name = f"{base_name}_{idx:03d}.png"
                     file_path = final_output_dir / file_name
-                    cv2.imwrite(str(file_path), crop)
+                    cv2.imwrite(
+                        str(file_path),
+                        flatten_crop_background(crop, global_bg_color),
+                    )
                     output_files.append(str(file_path))
-
                 if sticker_debug is not None:
                     debug_file = final_output_dir / f"{base_name}_debug.png"
                     cv2.imwrite(str(debug_file), sticker_debug)
             except Exception as e:
-                logger.debug(f"保存主体吸附分割结果失败: {e}")
+                logger.debug(f"保存自适应贴纸分割结果失败: {e}")
                 output_files.clear()
         else:
             # 生成掩码预览（便于调试网格线）

@@ -415,7 +415,7 @@ prompt + use_reference_images + include_user_avatar + resolution + aspect_ratio 
 `split_image()` 优先级：
 
 ```text
-bboxes -> manual_rows/manual_cols -> ai_rows/ai_cols -> SmartMemeSplitter -> StickerCutter fallback
+bboxes -> manual_rows/manual_cols -> ai_rows/ai_cols -> 自适应贴纸切分 -> SmartMemeSplitter -> StickerCutter fallback
 ```
 
 ### `sticker_cutter.py`
@@ -424,7 +424,8 @@ bboxes -> manual_rows/manual_cols -> ai_rows/ai_cols -> SmartMemeSplitter -> Sti
 |------|------|
 | `Region` | 检测区域数据类，包含 `box`、`area`、`center`、`is_main` |
 | `StickerCutter` | 主体 + 附件吸附切分算法 |
-| `StickerCutter.process_image(img, debug=False)` | 返回裁剪后的透明背景图片列表和调试图 |
+| `AdaptiveStickerSplitter` | 自适应黑描边贴纸切分器，优先输出透明裁剪图 |
+| `StickerCutter.process_image(img, debug=False)` | 先尝试 `AdaptiveStickerSplitter`，失败后回退主体吸附算法，返回裁剪图和调试图 |
 
 `StickerCutter` 内部流程：
 
