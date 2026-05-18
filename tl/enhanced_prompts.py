@@ -133,20 +133,6 @@ def get_modification_prompt(prompt: str) -> str:
 - 确保修改后的图像与原图有可区分的差异"""
 
 
-def get_auto_modification_prompt(prompt: str) -> str:
-    """获取自动改图提示词（用于快捷模式中的自动判断）"""
-    return f"""图像修改任务：{prompt}
-
-请严格按照用户要求修改参考图像，确保：
-1. 必须基于提供的参考图像进行修改
-2. 保持主要对象和构图，只修改用户要求的部分
-3. 修改后的图像要与原图有明显区别
-4. 不要返回完全相同的原图
-5. 修改要自然、合理，保持图像质量
-
-重要：这是一项图像修改任务，不是生成新图像，必须基于参考图像进行修改！"""
-
-
 def get_style_change_prompt(style: str, prompt: str = "") -> str:
     """获取风格转换提示词"""
     full_prompt = f"将参考图像改为{style}风格"
@@ -178,11 +164,6 @@ def get_vision_crop_system_prompt() -> str:
     )
 
 
-def enhance_prompt_for_figure(prompt: str) -> str:
-    """兼容旧接口"""
-    return get_figure_prompt(prompt, style_type=1)
-
-
 def get_q_version_sticker_prompt(
     prompt: str = "", *, rows: int = 4, cols: int = 4
 ) -> str:
@@ -212,36 +193,3 @@ def get_grid_detect_prompt() -> str:
         "Rows/cols must be positive integers (1-20). "
         'If the image cannot be expressed as an N x N (or N x M) grid, respond {"rows":0,"cols":0} (i.e., 0x0).'
     )
-
-
-def build_quick_prompt(
-    prompt: str, *, skip_figure_enhance: bool = False
-) -> tuple[str, bool]:
-    """快捷模式统一提示词构建，返回(增强后的提示词, 是否判定为改图)"""
-    modify_keywords = [
-        "修改",
-        "改图",
-        "改成",
-        "变成",
-        "调整",
-        "优化",
-        "重做",
-        "更换",
-        "替换",
-        "删除",
-        "添加",
-    ]
-    figure_keywords = ["手办", "figure", "模型", "手办化", "手办模型"]
-
-    is_modification_request = any(keyword in prompt for keyword in modify_keywords)
-
-    if (not skip_figure_enhance) and any(
-        keyword in prompt.lower() for keyword in figure_keywords
-    ):
-        enhanced_prompt = enhance_prompt_for_figure(prompt)
-    elif is_modification_request:
-        enhanced_prompt = get_auto_modification_prompt(prompt)
-    else:
-        enhanced_prompt = prompt
-
-    return enhanced_prompt, is_modification_request

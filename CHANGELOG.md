@@ -2,6 +2,17 @@
 
 > **升级提示**：v1.9.0 以后的配置文件格式不兼容旧版本。升级后如遇配置模板显示错误，请查看 [配置迁移说明](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/troubleshooting.md#配置迁移说明)。
 
+## [1.10.6] - 2026-05-19
+
+### Fixed
+
+- **移除 `/生图` 内自动关键词检测，修复误触手办化 / 改图提示词注入**（#80）
+  - 删除 `build_quick_prompt()` 及 `modify_keywords` / `figure_keywords` 子串扫描逻辑，`/生图` 不再对用户 prompt 做意图猜测，手办化请用 `/快速 手办化`，改图请用 `/改图`
+  - 删除 `get_auto_modification_prompt()` 和 `enhance_prompt_for_figure()` 死代码
+- **`/改图`、`/换风格` 增加参考图缺失拦截**：无参考图时不再静默退化为纯文本生图，改为提示用户附带图片
+- `/改图` 显式传入 `is_modification=True`，不再依赖关键词扫描驱动 `preserve_reference_image_size`
+- 提取 `_NO_REF_IMAGE_MSG` 通用常量，统一 `/改图`、`/换风格`、`/表情包` 三处的参考图缺失提示
+
 ## [1.10.5] - 2026-05-05
 
 ### Fixed
