@@ -43,7 +43,6 @@ from .tl import (
 )
 from .tl.api import normalize_api_type
 from .tl.enhanced_prompts import (
-    build_quick_prompt,
     get_avatar_prompt,
     get_card_prompt,
     get_figure_prompt,
@@ -71,6 +70,12 @@ PROVIDER_SETTINGS_ATTR_MAP: dict[str, str] = {
     "xai": "xai_settings",
     "openai_images": "openai_images_settings",
 }
+
+_NO_REF_IMAGE_MSG = (
+    "❌ {mode}模式需要参考图。\n"
+    "🧐 可能原因：消息中未附带图片，或图片格式/大小不被支持。\n"
+    "✅ 建议：{suggestion}"
+)
 
 
 class GeminiImageGenerationPlugin(Star):
@@ -538,7 +543,7 @@ class GeminiImageGenerationPlugin(Star):
         event: AstrMessageEvent,
         prompt: str,
         use_avatar: bool = False,
-        skip_figure_enhance: bool = False,
+        is_modification: bool = False,
         override_resolution: str | None = None,
         override_aspect_ratio: str | None = None,
     ):
@@ -569,9 +574,17 @@ class GeminiImageGenerationPlugin(Star):
                     )
                 )
 
-            enhanced_prompt, is_modification_request = build_quick_prompt(
-                prompt, skip_figure_enhance=skip_figure_enhance
-            )
+            enhanced_prompt = prompt
+            is_modification_request = is_modification
+
+            if is_modification_request and not all_ref_images:
+                yield event.plain_result(
+                    _NO_REF_IMAGE_MSG.format(
+                        mode="改图",
+                        suggestion="请附上一张参考图片后再使用 /改图 指令。",
+                    )
+                )
+                return
 
             effective_resolution = (
                 override_resolution
@@ -860,7 +873,6 @@ class GeminiImageGenerationPlugin(Star):
             "手办化",
             "figure",
             None,
-            skip_figure_enhance=True,
         ):
             yield result
 
@@ -897,9 +909,10 @@ class GeminiImageGenerationPlugin(Star):
 
         if not reference_images:
             yield event.plain_result(
-                "❌ 表情包模式需要参考图才能生成一致的角色。\n"
-                "🧐 可能原因：消息中未附带图片，或图片格式/大小不被支持。\n"
-                "✅ 建议：请附上一张清晰的角色参考图（如头像或原表情）后再试。"
+                _NO_REF_IMAGE_MSG.format(
+                    mode="表情包",
+                    suggestion="请附上一张清晰的角色参考图（如头像或原表情）后再试。",
+                )
             )
             return
 
@@ -1406,7 +1419,7 @@ class GeminiImageGenerationPlugin(Star):
         use_avatar = await self.avatar_handler.should_use_avatar(event)
 
         async for result in self._quick_generate_image(
-            event, modification_prompt, use_avatar
+            event, modification_prompt, use_avatar, is_modification=True
         ):
             yield result
 
@@ -1443,6 +1456,15 @@ class GeminiImageGenerationPlugin(Star):
         ) = await self.image_handler.fetch_images_from_event(
             event, include_at_avatars=use_avatar
         )
+
+        if not reference_images and not avatar_reference:
+            yield event.plain_result(
+                _NO_REF_IMAGE_MSG.format(
+                    mode="换风格",
+                    suggestion="请附上一张参考图片后再使用 /换风格 指令。",
+                )
+            )
+            return
 
         yield event.plain_result("🎨 开始转换风格...")
 
