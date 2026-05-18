@@ -71,11 +71,14 @@ PROVIDER_SETTINGS_ATTR_MAP: dict[str, str] = {
     "openai_images": "openai_images_settings",
 }
 
-_NO_REF_IMAGE_MSG = (
-    "❌ {mode}模式需要参考图。\n"
-    "🧐 可能原因：消息中未附带图片，或图片格式/大小不被支持。\n"
-    "✅ 建议：{suggestion}"
-)
+
+def _build_no_ref_msg(mode: str, suggestion: str) -> str:
+    """构建缺少参考图的统一提示"""
+    return (
+        f"❌ {mode}模式需要参考图。\n"
+        "🧐 可能原因：消息中未附带图片，或图片格式/大小不被支持。\n"
+        f"✅ 建议：{suggestion}"
+    )
 
 
 class GeminiImageGenerationPlugin(Star):
@@ -544,6 +547,8 @@ class GeminiImageGenerationPlugin(Star):
         prompt: str,
         use_avatar: bool = False,
         is_modification: bool = False,
+        # 置 True 表示改图请求：参考图缺失时立即拦截；
+        # 配合 preserve_reference_image_size 时保留原图尺寸。
         override_resolution: str | None = None,
         override_aspect_ratio: str | None = None,
     ):
@@ -579,9 +584,9 @@ class GeminiImageGenerationPlugin(Star):
 
             if is_modification_request and not all_ref_images:
                 yield event.plain_result(
-                    _NO_REF_IMAGE_MSG.format(
-                        mode="改图",
-                        suggestion="请附上一张参考图片后再使用 /改图 指令。",
+                    _build_no_ref_msg(
+                        "改图",
+                        "请附上一张参考图片后再使用 /改图 指令。",
                     )
                 )
                 return
@@ -902,16 +907,22 @@ class GeminiImageGenerationPlugin(Star):
         ) = await self.image_handler.fetch_images_from_event(
             event, include_at_avatars=use_avatar
         )
+        valid_reference_images = self.image_handler.filter_valid_reference_images(
+            reference_images, source="消息图片"
+        )
+        valid_avatar_reference = self.image_handler.filter_valid_reference_images(
+            avatar_reference, source="头像"
+        )
 
         stripped_prompt = (prompt or "").strip()
         simple_mode = stripped_prompt.startswith("简单")
         user_prompt = stripped_prompt[len("简单") :].strip() if simple_mode else prompt
 
-        if not reference_images:
+        if not valid_reference_images and not valid_avatar_reference:
             yield event.plain_result(
-                _NO_REF_IMAGE_MSG.format(
-                    mode="表情包",
-                    suggestion="请附上一张清晰的角色参考图（如头像或原表情）后再试。",
+                _build_no_ref_msg(
+                    "表情包",
+                    "请附上一张清晰的角色参考图（如头像或原表情）后再试。",
                 )
             )
             return
@@ -972,8 +983,8 @@ class GeminiImageGenerationPlugin(Star):
             success, result_data = await self.image_generator.generate_image_core(
                 event=event,
                 prompt=full_prompt,
-                reference_images=reference_images,
-                avatar_reference=avatar_reference,
+                reference_images=valid_reference_images,
+                avatar_reference=valid_avatar_reference,
                 override_resolution=sticker_resolution,
                 override_aspect_ratio=sticker_aspect_ratio,
             )
@@ -1459,9 +1470,9 @@ class GeminiImageGenerationPlugin(Star):
 
         if not reference_images and not avatar_reference:
             yield event.plain_result(
-                _NO_REF_IMAGE_MSG.format(
-                    mode="换风格",
-                    suggestion="请附上一张参考图片后再使用 /换风格 指令。",
+                _build_no_ref_msg(
+                    "换风格",
+                    "请附上一张参考图片后再使用 /换风格 指令。",
                 )
             )
             return
