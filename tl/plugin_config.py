@@ -14,7 +14,6 @@ from .openai_image_size import (
     validate_custom_size,
 )
 from .provider_metadata import (
-    PROVIDER_TYPES,
     is_known_api_type,
     normalize_api_type,
     supports_image_edit,
