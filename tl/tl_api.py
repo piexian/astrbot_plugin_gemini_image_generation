@@ -25,7 +25,10 @@ from astrbot.api import logger
 from .api import get_api_provider, normalize_api_type, supports_image_edit
 from .api_headers import apply_api_key_to_headers, extract_api_key_from_headers
 from .api_types import APIError, ApiRequestConfig
-from .openai_image_size import derive_custom_size_from_preset_params, normalize_size_mode
+from .openai_image_size import (
+    derive_custom_size_from_preset_params,
+    normalize_size_mode,
+)
 
 try:
     from .tl_utils import (
@@ -314,7 +317,9 @@ class GeminiAPIClient:
                 or base_config.aspect_ratio is not None
             )
             if has_request_size_override:
-                resolution = base_config.resolution or settings.get("resolution") or "1K"
+                resolution = (
+                    base_config.resolution or settings.get("resolution") or "1K"
+                )
                 aspect_ratio = (
                     base_config.aspect_ratio or settings.get("aspect_ratio") or "1:1"
                 )
@@ -382,8 +387,7 @@ class GeminiAPIClient:
             str(settings.get("resolution_param_name") or "").strip() or "image_size"
         )
         aspect_ratio_param_name = (
-            str(settings.get("aspect_ratio_param_name") or "").strip()
-            or "aspect_ratio"
+            str(settings.get("aspect_ratio_param_name") or "").strip() or "aspect_ratio"
         )
 
         return replace(
@@ -704,7 +708,9 @@ class GeminiAPIClient:
 
             candidate_config = self._build_candidate_config(config, candidate)
             self._apply_candidate_settings(candidate)
-            await self.set_proxy(self._candidate_proxy(candidate) or self._default_proxy)
+            await self.set_proxy(
+                self._candidate_proxy(candidate) or self._default_proxy
+            )
 
             logger.info(
                 "[provider_polling] 尝试供应商候选 %s (%s), 模型=%s",

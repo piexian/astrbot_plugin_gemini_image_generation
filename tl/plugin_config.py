@@ -506,10 +506,7 @@ class ConfigLoader:
                     continue
 
                 edit_capable = supports_image_edit(template_key)
-                if (
-                    template_key == "openai_images"
-                    and settings.get("generations_only")
-                ):
+                if template_key == "openai_images" and settings.get("generations_only"):
                     edit_capable = False
 
                 candidate_index = len(candidates_by_type.get(template_key, [])) + 1
@@ -547,7 +544,9 @@ class ConfigLoader:
 
         if not polling:
             polling = [
-                api_type for api_type in PROVIDER_TYPES if api_type in candidates_by_type
+                api_type
+                for api_type in PROVIDER_TYPES
+                if api_type in candidates_by_type
             ]
 
         ordered_candidates: list[ProviderCandidate] = []
@@ -565,9 +564,7 @@ class ConfigLoader:
             candidate.id: candidate.settings for candidate in ordered_candidates
         }
 
-        config.doubao_settings = self._first_settings_for(
-            ordered_candidates, "doubao"
-        )
+        config.doubao_settings = self._first_settings_for(ordered_candidates, "doubao")
         config.minimax_settings = self._first_settings_for(
             ordered_candidates, "minimax"
         )

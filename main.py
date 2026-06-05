@@ -206,7 +206,10 @@ class GeminiImageGenerationPlugin(Star):
 
     def _get_openai_images_settings(self) -> dict[str, Any]:
         for candidate in getattr(self.cfg, "provider_candidates", []) or []:
-            if normalize_api_type(getattr(candidate, "api_type", "")) == "openai_images":
+            if (
+                normalize_api_type(getattr(candidate, "api_type", ""))
+                == "openai_images"
+            ):
                 settings = getattr(candidate, "settings", None)
                 return settings if isinstance(settings, dict) else {}
 
@@ -343,7 +346,9 @@ class GeminiImageGenerationPlugin(Star):
 
         candidates = list(getattr(self.cfg, "provider_candidates", []) or [])
         usable_candidates = [
-            candidate for candidate in candidates if getattr(candidate, "api_keys", None)
+            candidate
+            for candidate in candidates
+            if getattr(candidate, "api_keys", None)
         ]
 
         if not usable_candidates:
@@ -1190,9 +1195,7 @@ class GeminiImageGenerationPlugin(Star):
         avatar_status = "✓ 启用" if self.cfg.auto_avatar_reference else "✗ 禁用"
         first_candidate = self._first_generation_candidate()
         first_settings = (
-            getattr(first_candidate, "settings", None) or {}
-            if first_candidate
-            else {}
+            getattr(first_candidate, "settings", None) or {} if first_candidate else {}
         )
         provider_summary = (
             ", ".join(
@@ -1230,7 +1233,9 @@ class GeminiImageGenerationPlugin(Star):
         template_data = {
             "title": f"Gemini 图像生成插件 {self.version}",
             "model": provider_summary,
-            "api_type": getattr(first_candidate, "api_type", "") if first_candidate else "",
+            "api_type": getattr(first_candidate, "api_type", "")
+            if first_candidate
+            else "",
             "resolution": first_settings.get("resolution") or "1K",
             "aspect_ratio": first_settings.get("aspect_ratio") or "1:1",
             "api_keys_count": sum(

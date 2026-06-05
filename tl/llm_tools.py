@@ -78,10 +78,7 @@ def _is_openai_images_custom_size_mode(plugin: Any) -> bool:
         return False
 
     has_openai_images = any(
-        str(getattr(candidate, "api_type", "") or "")
-        .strip()
-        .lower()
-        .replace("-", "_")
+        str(getattr(candidate, "api_type", "") or "").strip().lower().replace("-", "_")
         == "openai_images"
         for candidate in (getattr(plugin.cfg, "provider_candidates", []) or [])
     )
