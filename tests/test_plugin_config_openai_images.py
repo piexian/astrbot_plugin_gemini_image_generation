@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 import types
+from pathlib import Path
 
 
 class _DummyLogger:
@@ -43,6 +45,30 @@ def test_invalid_custom_size_does_not_block_plugin_load() -> None:
     assert settings["size_mode"] == "custom"
     assert settings["custom_size"] == "2048x1080"
     assert any("16 的倍数" in message for message in logger.warnings)
+
+
+def test_custom_size_mode_is_valid() -> None:
+    logger = _DummyLogger()
+    plugin_config = _import_plugin_config_module(logger)
+    settings = {"size_mode": "custom", "custom_size": "1024×1024"}
+
+    plugin_config._validate_openai_images_settings(settings)
+
+    assert settings["size_mode"] == "custom"
+    assert settings["custom_size"] == "1024x1024"
+
+
+def test_schema_hides_openai_images_resolution_fields_in_size_mode() -> None:
+    schema_path = Path(__file__).resolve().parents[1] / "_conf_schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    items = schema["provider_settings"]["items"]["provider_overrides"]["templates"][
+        "openai_images"
+    ]["items"]
+
+    assert items["size_mode"]["options"] == ["preset", "custom"]
+    assert items["resolution"]["condition"] == {"size_mode": "preset"}
+    assert items["aspect_ratio"]["condition"] == {"size_mode": "preset"}
+    assert items["custom_size"]["condition"] == {"size_mode": "custom"}
 
 
 def test_provider_settings_polling_deduplicates_and_reports_unknown() -> None:

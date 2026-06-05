@@ -25,7 +25,7 @@ from astrbot.api import logger
 from .api import get_api_provider, normalize_api_type, supports_image_edit
 from .api_headers import apply_api_key_to_headers, extract_api_key_from_headers
 from .api_types import APIError, ApiRequestConfig
-from .openai_image_size import derive_custom_size_from_preset_params
+from .openai_image_size import derive_custom_size_from_preset_params, normalize_size_mode
 
 try:
     from .tl_utils import (
@@ -302,6 +302,40 @@ class GeminiAPIClient:
     ) -> tuple[str | None, str | None]:
         settings = getattr(candidate, "settings", None) or {}
         api_type = normalize_api_type(getattr(candidate, "api_type", ""))
+        size_mode = (
+            normalize_size_mode(settings.get("size_mode"))
+            if api_type == "openai_images"
+            else "preset"
+        )
+
+        if api_type == "openai_images" and size_mode == "custom":
+            has_request_size_override = (
+                base_config.resolution is not None
+                or base_config.aspect_ratio is not None
+            )
+            if has_request_size_override:
+                resolution = base_config.resolution or settings.get("resolution") or "1K"
+                aspect_ratio = (
+                    base_config.aspect_ratio or settings.get("aspect_ratio") or "1:1"
+                )
+                if resolution and aspect_ratio:
+                    try:
+                        return (
+                            derive_custom_size_from_preset_params(
+                                resolution,
+                                aspect_ratio,
+                                resolution_field_name="provider.resolution",
+                                aspect_ratio_field_name="provider.aspect_ratio",
+                            ),
+                            "",
+                        )
+                    except ValueError as exc:
+                        logger.warning(
+                            "[openai_images] 根据预设参数生成 custom size 失败，回退配置 custom_size: %s",
+                            exc,
+                        )
+            return settings.get("custom_size") or None, ""
+
         resolution = (
             base_config.resolution
             if base_config.resolution is not None
@@ -312,28 +346,6 @@ class GeminiAPIClient:
             if base_config.aspect_ratio is not None
             else (settings.get("aspect_ratio") or "1:1")
         )
-
-        if (
-            api_type == "openai_images"
-            and str(settings.get("size_mode") or "").strip().lower() == "custom"
-            and resolution
-            and aspect_ratio
-        ):
-            try:
-                return (
-                    derive_custom_size_from_preset_params(
-                        resolution,
-                        aspect_ratio,
-                        resolution_field_name="provider.resolution",
-                        aspect_ratio_field_name="provider.aspect_ratio",
-                    ),
-                    "",
-                )
-            except ValueError as exc:
-                logger.warning(
-                    "[openai_images] 根据预设参数生成 custom size 失败，回退原参数: %s",
-                    exc,
-                )
 
         return resolution, aspect_ratio
 

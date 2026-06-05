@@ -11,6 +11,7 @@
 - 新增 `provider_settings.provider_polling` 轮询表，按列表从上到下尝试生成；重复供应商名称自动去重，未知名称记录配置错误但不影响其他有效供应商使用。
 - `provider_overrides` 支持多个相同供应商模板，同类型配置按 `priority` 从高到低尝试；相同优先级按配置表顺序尝试。
 - `resolution`、`aspect_ratio`、`max_reference_images` 移入每个供应商条目；Google 的 `enable_text_response`、`enable_grounding` 也移入 Google 条目；OpenAI/OpenAI 兼容的 `force_resolution`、参数名设置移入对应供应商条目。
+- OpenAI Images 在 `size_mode=custom` 时，配置界面会隐藏 `resolution` 和 `aspect_ratio`，只显示 `custom_size`。
 
 ## [1.10.6] - 2026-05-19
 

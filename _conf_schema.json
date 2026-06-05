@@ -807,7 +807,10 @@
                   "1K",
                   "2K",
                   "4K"
-                ]
+                ],
+                "condition": {
+                  "size_mode": "preset"
+                }
               },
               "aspect_ratio": {
                 "description": "长宽比",
@@ -825,7 +828,10 @@
                   "21:9",
                   "3:4",
                   "2:3"
-                ]
+                ],
+                "condition": {
+                  "size_mode": "preset"
+                }
               },
               "max_reference_images": {
                 "description": "最大参考图片数量",
@@ -861,7 +867,7 @@
               "size_mode": {
                 "description": "尺寸模式",
                 "type": "string",
-                "hint": "preset 使用该供应商条目的分辨率映射；custom 使用下方 custom_size 直接透传到 OpenAI Images API。快速模式会用其预设 resolution + aspect_ratio 自动换算合法尺寸",
+                "hint": "preset 使用该供应商条目的分辨率和长宽比；custom 使用下方 custom_size 直接透传到 OpenAI Images API，并自动隐藏 resolution/aspect_ratio。快速模式会用其预设 resolution + aspect_ratio 自动换算合法尺寸。",
                 "default": "preset",
                 "options": [
                   "preset",
