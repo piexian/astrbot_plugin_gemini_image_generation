@@ -177,19 +177,37 @@ class GeminiAPIClient:
             return None
         return self.proxy
 
+    def _detach_sessions(self) -> list[aiohttp.ClientSession]:
+        sessions: list[aiohttp.ClientSession] = []
+        if self._session and not self._session.closed:
+            sessions.append(self._session)
+        sessions.extend(
+            session for session in self._proxy_sessions.values() if not session.closed
+        )
+        self._session = None
+        self._proxy_sessions = {}
+        return sessions
+
+    @staticmethod
+    async def _close_sessions(sessions: list[aiohttp.ClientSession]) -> None:
+        for session in sessions:
+            if not session.closed:
+                await session.close()
+
     def invalidate_session(self):
         """标记 session 需要重建（下次 _get_session 时自动创建新 session）"""
-        self._session = None
+        sessions = self._detach_sessions()
+        if not sessions:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._close_sessions(sessions))
 
     async def close(self):
         """关闭内部复用的 aiohttp 会话"""
-        if self._session and not self._session.closed:
-            await self._session.close()
-        for session in list(self._proxy_sessions.values()):
-            if not session.closed:
-                await session.close()
-        self._proxy_sessions = {}
-        self._session = None
+        await self._close_sessions(self._detach_sessions())
 
     def set_key_manager(self, key_manager) -> None:
         """设置 KeyManager 实例（用于多 Key 轮换和每日限额）"""

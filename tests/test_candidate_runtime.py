@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 import pytest
@@ -30,6 +31,14 @@ class _Candidate:
 @dataclass
 class _Config:
     provider_overrides: dict[str, dict]
+
+
+class _FakeSession:
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 @pytest.mark.asyncio
@@ -189,3 +198,20 @@ def test_candidate_config_uses_request_level_settings_and_proxy() -> None:
 
     assert candidate_config.provider_settings is candidate.settings
     assert candidate_config.proxy == "http://proxy.local:8080"
+
+
+@pytest.mark.asyncio
+async def test_invalidate_session_closes_proxy_sessions() -> None:
+    client = GeminiAPIClient(["fallback"])
+    default_session = _FakeSession()
+    proxy_session = _FakeSession()
+    client._session = default_session  # type: ignore[assignment]
+    client._proxy_sessions["socks5://127.0.0.1:1080"] = proxy_session  # type: ignore[assignment]
+
+    client.invalidate_session()
+    await asyncio.sleep(0)
+
+    assert client._session is None
+    assert client._proxy_sessions == {}
+    assert default_session.closed is True
+    assert proxy_session.closed is True
