@@ -37,7 +37,7 @@ tl/api/
 | `zai` | `ZaiProvider` | Zai 兼容接口 |
 | `grok2api` | `Grok2ApiProvider` | grok2api 兼容接口 |
 | `doubao` | `DoubaoProvider` | 火山引擎 Ark / 豆包 |
-| 未知值 | `OpenAICompatProvider` | 默认兜底 |
+| 未知值 | - | 配置加载阶段记录错误并跳过，不进入轮询候选 |
 
 ## 核心接口
 
@@ -206,7 +206,7 @@ _PROVIDERS: Final[dict[str, ApiProvider]] = {
 }
 ```
 
-`get_api_provider()` 本身是一行查表：`_PROVIDERS.get(normalize_api_type(api_type), _OPENAI)`，未知 `api_type` 默认回退到 OpenAI 兼容实现。
+`get_api_provider()` 仍保留 OpenAI 兼容兜底，便于内部调用容错；但 v1.2.0 的配置加载会先校验 `provider_settings.provider_overrides` 模板名，未知供应商会记录错误并跳过，不会进入实际轮询候选。
 
 > **只使用 canonical key**：所有 canonical `api_type` 名称必须与 `_conf_schema.json` 中 `provider_settings.provider_overrides.templates` 严格一致（全小写、下划线分隔）；代码内不再维护其他别名。`normalize_api_type()` 仅做小写、去空格、`-` 转 `_` 三项面向输入的宽容处理。
 

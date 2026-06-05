@@ -1,5 +1,14 @@
 # 使用指南
 
+## 生图供应商选择
+
+v1.2.0 起，插件只使用 `provider_settings.provider_overrides` 中配置的生图供应商，不再复用 AstrBot 本体供应商。
+
+- `provider_polling` 留空时，插件会按有效供应商配置自动尝试。
+- `provider_polling` 填写后，插件按列表从上到下尝试；重复供应商自动去重，未知供应商会记录错误并跳过。
+- 同类型多条供应商配置按 `priority` 从高到低尝试；相同优先级按配置表顺序尝试。
+- 带参考图的 `/改图`、`/换风格`、头像参考等请求会自动跳过不支持改图的供应商。
+
 ## 命令列表
 
 | 命令 | 说明 | 示例 |
@@ -80,6 +89,7 @@ LLM 工具会根据当前 `tool_call_timeout` 和 `llm_tool_timeout_reserve_perc
 - LLM 工具仅接受 `size` 参数，格式 `WxH`。
 - 不再接受 `resolution` 和 `aspect_ratio`。
 - 未显式传入 `size` 时，使用 `provider_settings.provider_overrides` 中 `openai_images` 模板的 `custom_size`。
+- WebUI 中会隐藏 `resolution` 和 `aspect_ratio`，只显示 `custom_size`。
 
 其他供应商或非 custom 模式继续使用 `resolution` / `aspect_ratio`。
 

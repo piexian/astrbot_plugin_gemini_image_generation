@@ -2,6 +2,8 @@
 
 本文档记录插件的完整配置项。README 只保留最小配置和常用入口。
 
+> v1.2.0 起，生图 API 配置统一移动到 `provider_settings`。插件不再复用 AstrBot 本体供应商，也不再提供旧 `api_settings.api_type` 入口。
+
 ## 必填配置
 
 | 配置项 | 说明 |
@@ -35,13 +37,20 @@
 | `aspect_ratio` | `1:1` | 该供应商默认长宽比；快速模式覆盖值优先 |
 | `max_reference_images` | `6` | 该供应商最多使用的参考图数量 |
 
+加载规则：
+
+- 缺少供应商名称、未知模板、缺少模型或缺少 `api_keys` 的条目会记录配置错误并跳过。
+- 只要至少有一个有效供应商候选，插件仍可继续使用；如果没有任何有效候选，加载时会记录 `未找到任何有效供应商配置`。
+- 同类型多条配置先按 `priority` 从高到低排序；优先级相同时按配置表从上到下排序。
+- 改图或参考图请求会跳过不支持参考图的候选，例如 `sensenova` 或开启 `generations_only` 的 `openai_images`。
+
 `provider_polling` 只填写供应商名称，例如：
 
 ```text
 google / openai_images / minimax
 ```
 
-列表按从上到下尝试生成，重复名称会自动去重；未知名称会记录配置错误并跳过。只要至少有一个有效供应商配置，插件仍可使用。改图或参考图请求会跳过不支持参考图的供应商，例如 `sensenova` 或开启 `generations_only` 的 `openai_images`。
+列表按从上到下尝试生成，重复名称会自动去重；未知名称会记录配置错误并跳过。留空时按插件内置供应商顺序，从有效配置中自动生成轮询列表。
 
 支持的模板：
 
@@ -180,6 +189,8 @@ NapCat v4.8.115+ 支持 Stream API。插件默认仍先按 `max_inline_image_siz
 | 普通生图/改图 | 直接使用配置中的 `custom_size` |
 | 快速模式 | 根据模式预设的 `resolution + aspect_ratio` 自动换算，例如 `2K + 16:9 -> 2048x1152` |
 | LLM 工具调用 | LLM 显式传入 `size` 时以该值为准，否则使用配置中的 `custom_size` |
+
+WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会自动隐藏，仅保留 `custom_size`；切回 `preset` 后再显示预设分辨率和长宽比。
 
 `size_mode=custom` 时，LLM 工具仅暴露 `size` 参数，不再接受 `resolution` / `aspect_ratio`。传入非法值时会直接返回校验错误。
 
