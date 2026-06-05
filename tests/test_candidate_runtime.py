@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import pytest
 
 from tl.api_types import ApiRequestConfig
+from tl.api_types import APIError
 from tl.key_manager import KeyManager
 from tl.tl_api import GeminiAPIClient
 
@@ -95,6 +96,41 @@ async def test_candidate_polling_copies_stats_back_to_original_config() -> None:
     assert original_config.token_usage == {"total_tokens": 11}
     assert original_config.retry_note == "重试 2 次后成功"
     assert original_config.api_type == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_type", ["cancelled", "timeout"])
+async def test_candidate_polling_stops_on_framework_timeout_errors(
+    error_type: str,
+) -> None:
+    client = GeminiAPIClient(["fallback"])
+    first = _Candidate(
+        id="google#1",
+        api_type="google",
+        model="gemini-3-pro-image-preview",
+        settings={"api_keys": ["candidate-key"]},
+    )
+    second = _Candidate(
+        id="openai#1",
+        api_type="openai",
+        model="gpt-image",
+        settings={"api_keys": ["candidate-key"]},
+    )
+    client.set_provider_candidates([first, second])
+    original_config = ApiRequestConfig(model="", prompt="test", api_type="")
+    attempted: list[str] = []
+
+    async def fake_generate_image_single(**kwargs):
+        attempted.append(kwargs["config"].candidate_id)
+        raise APIError("stop", None, error_type)
+
+    client._generate_image_single = fake_generate_image_single  # type: ignore[method-assign]
+
+    with pytest.raises(APIError, match="stop") as exc_info:
+        await client._generate_image_with_candidates(original_config)
+
+    assert exc_info.value.error_type == error_type
+    assert attempted == ["google#1"]
 
 
 def test_candidate_config_uses_request_level_settings_and_proxy() -> None:

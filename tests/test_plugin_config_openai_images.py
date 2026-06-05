@@ -5,6 +5,7 @@ import json
 import sys
 import types
 from pathlib import Path
+from types import SimpleNamespace
 
 
 class _DummyLogger:
@@ -233,6 +234,37 @@ def test_provider_settings_allows_zero_max_reference_images() -> None:
     assert cfg.provider_candidates[0].settings["max_reference_images"] == 0
 
 
+def test_max_configured_reference_images_preserves_zero_when_all_disabled() -> None:
+    logger = _DummyLogger()
+    plugin_config = _import_plugin_config_module(logger)
+
+    assert (
+        plugin_config.max_configured_reference_images(
+            [
+                SimpleNamespace(settings={"max_reference_images": 0}),
+                SimpleNamespace(settings={"max_reference_images": "bad"}),
+            ]
+        )
+        == 0
+    )
+
+
+def test_max_configured_reference_images_uses_largest_candidate_limit() -> None:
+    logger = _DummyLogger()
+    plugin_config = _import_plugin_config_module(logger)
+
+    assert (
+        plugin_config.max_configured_reference_images(
+            [
+                SimpleNamespace(settings={"max_reference_images": 0}),
+                SimpleNamespace(settings={"max_reference_images": "3"}),
+                SimpleNamespace(settings={"max_reference_images": 2}),
+            ]
+        )
+        == 3
+    )
+
+
 def test_no_valid_provider_records_error() -> None:
     logger = _DummyLogger()
     plugin_config = _import_plugin_config_module(logger)
@@ -248,7 +280,9 @@ def test_no_valid_provider_records_error() -> None:
     ).load()
 
     assert cfg.provider_candidates == []
-    assert any("未找到任何有效供应商配置" in message for message in cfg.provider_config_errors)
+    assert any(
+        "未找到任何有效供应商配置" in message for message in cfg.provider_config_errors
+    )
 
 
 def test_provider_entries_require_name_model_and_keys() -> None:

@@ -55,6 +55,7 @@ from .tl.enhanced_prompts import (
     get_wallpaper_prompt,
 )
 from .tl.llm_tools import GeminiImageGenerationTool
+from .tl.plugin_config import max_configured_reference_images
 from .tl.tl_api import APIClient, ApiRequestConfig, get_api_client
 from .tl.tl_utils import AvatarManager, cleanup_old_images, format_error_message
 
@@ -224,15 +225,9 @@ class GeminiImageGenerationPlugin(Star):
         return override_settings if isinstance(override_settings, dict) else {}
 
     def _max_configured_reference_images(self) -> int:
-        candidates = getattr(self.cfg, "provider_candidates", []) or []
-        max_refs = 1
-        for candidate in candidates:
-            settings = getattr(candidate, "settings", None) or {}
-            try:
-                max_refs = max(max_refs, int(settings.get("max_reference_images") or 1))
-            except (TypeError, ValueError):
-                continue
-        return max_refs
+        return max_configured_reference_images(
+            getattr(self.cfg, "provider_candidates", None)
+        )
 
     def _any_candidate_text_response_enabled(self) -> bool:
         for candidate in getattr(self.cfg, "provider_candidates", []) or []:

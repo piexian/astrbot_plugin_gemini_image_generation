@@ -196,6 +196,21 @@ class PluginConfig:
     max_cache_files: int = 100
 
 
+def max_configured_reference_images(candidates: Any) -> int:
+    """Return the largest configured reference-image limit across candidates."""
+    max_refs = 0
+    for candidate in candidates or []:
+        settings = getattr(candidate, "settings", None) or {}
+        try:
+            max_refs = max(
+                max_refs,
+                int(settings.get("max_reference_images", 0)),
+            )
+        except (TypeError, ValueError):
+            continue
+    return max_refs
+
+
 # 快速模式键列表
 QUICK_MODES = (
     "avatar",

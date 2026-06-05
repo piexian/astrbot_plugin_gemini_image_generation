@@ -752,17 +752,18 @@ class GeminiAPIClient:
                 return result
             except APIError as e:
                 last_error = e
+                if e.error_type in {"cancelled", "timeout"}:
+                    logger.warning(
+                        f"[provider_polling] 候选 {candidate_id} 因 {e.error_type} 中止：{e.message}"
+                    )
+                    raise
                 logger.warning(
-                    "[provider_polling] 候选 %s 生成失败，继续尝试下一个：%s",
-                    candidate_id,
-                    e.message,
+                    f"[provider_polling] 候选 {candidate_id} 生成失败，继续尝试下一个：{e.message}"
                 )
             except Exception as e:
                 last_error = APIError(str(e), None, "unknown")
                 logger.warning(
-                    "[provider_polling] 候选 %s 生成异常，继续尝试下一个：%s",
-                    candidate_id,
-                    e,
+                    f"[provider_polling] 候选 {candidate_id} 生成异常，继续尝试下一个：{e}"
                 )
 
         if last_error:
