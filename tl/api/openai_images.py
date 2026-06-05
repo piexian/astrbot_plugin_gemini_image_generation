@@ -137,7 +137,11 @@ class OpenAIImagesProvider:
     async def build_request(
         self, *, client: Any, config: ApiRequestConfig
     ) -> ProviderRequest:  # noqa: ANN401
-        settings: dict[str, Any] = getattr(client, "openai_images_settings", None) or {}
+        settings: dict[str, Any] = (
+            getattr(config, "provider_settings", None)
+            or getattr(client, "openai_images_settings", None)
+            or {}
+        )
         api_base = (config.api_base or "").rstrip("/")
         default_base = "https://api.openai.com"
 

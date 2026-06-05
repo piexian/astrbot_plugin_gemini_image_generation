@@ -143,7 +143,11 @@ class SenseNovaProvider:
     async def build_request(
         self, *, client: Any, config: ApiRequestConfig
     ) -> ProviderRequest:  # noqa: ANN401
-        settings: dict[str, Any] = getattr(client, "sensenova_settings", None) or {}
+        settings: dict[str, Any] = (
+            getattr(config, "provider_settings", None)
+            or getattr(client, "sensenova_settings", None)
+            or {}
+        )
 
         api_base = config.api_base or settings.get("api_base") or _DEFAULT_API_BASE
         url = _ensure_v1_endpoint(str(api_base))

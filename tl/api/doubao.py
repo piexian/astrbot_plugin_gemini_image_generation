@@ -139,8 +139,11 @@ class DoubaoProvider:
         config: ApiRequestConfig,
         is_retry: bool = False,
     ) -> ProviderRequest:  # noqa: ANN401
-        # Read doubao_settings from client for API configuration
-        doubao_settings = getattr(client, "doubao_settings", None) or {}
+        doubao_settings = (
+            getattr(config, "provider_settings", None)
+            or getattr(client, "doubao_settings", None)
+            or {}
+        )
 
         # Determine API base: doubao_settings > config.api_base > default
         api_base = (
@@ -202,7 +205,11 @@ class DoubaoProvider:
         is_retry: bool = False,
     ) -> dict[str, Any]:  # noqa: ANN401
         if doubao_settings is None:
-            doubao_settings = getattr(client, "doubao_settings", None) or {}
+            doubao_settings = (
+                getattr(config, "provider_settings", None)
+                or getattr(client, "doubao_settings", None)
+                or {}
+            )
 
         logger.debug(
             "[doubao] _prepare_payload: doubao_settings keys=%s default_size=%s",

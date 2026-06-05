@@ -29,6 +29,7 @@ from .openai_image_size import (
     normalize_size_mode,
     validate_custom_size,
 )
+from .provider_metadata import normalize_api_type
 from .thought_signature import log_thought_signature_debug
 from .tl_utils import encode_file_to_base64, format_error_message
 
@@ -54,15 +55,21 @@ VALID_RESOLUTIONS = set(RESOLUTION_OPTIONS)
 VALID_ASPECT_RATIOS = set(ASPECT_RATIO_OPTIONS)
 
 
+def _first_provider_candidate(plugin: Any) -> Any | None:
+    if not plugin or not getattr(plugin, "cfg", None):
+        return None
+    candidates = getattr(plugin.cfg, "provider_candidates", []) or []
+    return candidates[0] if candidates else None
+
+
 def _get_openai_images_settings(plugin: Any) -> dict[str, Any]:
     if not plugin or not getattr(plugin, "cfg", None):
         return {}
 
-    for candidate in getattr(plugin.cfg, "provider_candidates", []) or []:
-        api_type = str(getattr(candidate, "api_type", "") or "").strip().lower()
-        if api_type.replace("-", "_") == "openai_images":
-            settings = getattr(candidate, "settings", None)
-            return settings if isinstance(settings, dict) else {}
+    candidate = _first_provider_candidate(plugin)
+    if normalize_api_type(getattr(candidate, "api_type", "")) == "openai_images":
+        settings = getattr(candidate, "settings", None)
+        return settings if isinstance(settings, dict) else {}
 
     settings = getattr(plugin.cfg, "openai_images_settings", None)
     if isinstance(settings, dict) and settings:
@@ -77,12 +84,8 @@ def _is_openai_images_custom_size_mode(plugin: Any) -> bool:
     if not plugin or not getattr(plugin, "cfg", None):
         return False
 
-    has_openai_images = any(
-        str(getattr(candidate, "api_type", "") or "").strip().lower().replace("-", "_")
-        == "openai_images"
-        for candidate in (getattr(plugin.cfg, "provider_candidates", []) or [])
-    )
-    if not has_openai_images:
+    candidate = _first_provider_candidate(plugin)
+    if normalize_api_type(getattr(candidate, "api_type", "")) != "openai_images":
         return False
 
     try:

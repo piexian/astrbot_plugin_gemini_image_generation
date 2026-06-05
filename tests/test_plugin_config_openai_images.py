@@ -71,6 +71,41 @@ def test_schema_hides_openai_images_resolution_fields_in_size_mode() -> None:
     assert items["custom_size"]["condition"] == {"size_mode": "custom"}
 
 
+def test_provider_settings_default_polling_order_from_overrides_only() -> None:
+    logger = _DummyLogger()
+    plugin_config = _import_plugin_config_module(logger)
+    raw_config = {
+        "provider_settings": {
+            "provider_overrides": [
+                {
+                    "__template_key": "google",
+                    "api_keys": [" g1 "],
+                    "model": "gemini-3-pro-image-preview",
+                },
+                {
+                    "__template_key": "openai",
+                    "api_keys": [" o1 "],
+                    "model": "gpt-image",
+                },
+                {
+                    "__template_key": "openai_images",
+                    "api_keys": [" i1 "],
+                    "model": "gpt-image-1",
+                },
+            ]
+        }
+    }
+
+    cfg = plugin_config.ConfigLoader(raw_config).load()
+
+    assert cfg.provider_polling == ["google", "openai", "openai_images"]
+    assert [candidate.api_type for candidate in cfg.provider_candidates] == [
+        "google",
+        "openai",
+        "openai_images",
+    ]
+
+
 def test_provider_settings_polling_deduplicates_and_reports_unknown() -> None:
     logger = _DummyLogger()
     plugin_config = _import_plugin_config_module(logger)
@@ -113,6 +148,34 @@ def test_provider_settings_polling_deduplicates_and_reports_unknown() -> None:
     assert any("bad_provider" in message for message in logger.errors)
 
 
+def test_provider_settings_reports_valid_provider_missing_from_polling() -> None:
+    logger = _DummyLogger()
+    plugin_config = _import_plugin_config_module(logger)
+    cfg = plugin_config.ConfigLoader(
+        {
+            "provider_settings": {
+                "provider_polling": ["google"],
+                "provider_overrides": [
+                    {
+                        "__template_key": "google",
+                        "api_keys": ["g1"],
+                        "model": "gemini-3-pro-image-preview",
+                    },
+                    {
+                        "__template_key": "openai",
+                        "api_keys": ["o1"],
+                        "model": "gpt-image",
+                    },
+                ],
+            }
+        }
+    ).load()
+
+    assert [candidate.api_type for candidate in cfg.provider_candidates] == ["google"]
+    assert any("供应商配置未加入轮询表" in msg for msg in cfg.provider_config_errors)
+    assert any("openai" in msg for msg in cfg.provider_config_errors)
+
+
 def test_same_provider_candidates_sort_by_priority() -> None:
     logger = _DummyLogger()
     plugin_config = _import_plugin_config_module(logger)
@@ -147,6 +210,27 @@ def test_same_provider_candidates_sort_by_priority() -> None:
         "low-model",
     ]
     assert list(cfg.provider_overrides) == ["google#2", "google#1"]
+
+
+def test_provider_settings_allows_zero_max_reference_images() -> None:
+    logger = _DummyLogger()
+    plugin_config = _import_plugin_config_module(logger)
+    cfg = plugin_config.ConfigLoader(
+        {
+            "provider_settings": {
+                "provider_overrides": [
+                    {
+                        "__template_key": "google",
+                        "api_keys": ["g1"],
+                        "model": "gemini-3-pro-image-preview",
+                        "max_reference_images": 0,
+                    }
+                ]
+            }
+        }
+    ).load()
+
+    assert cfg.provider_candidates[0].settings["max_reference_images"] == 0
 
 
 def test_no_valid_provider_records_error() -> None:
@@ -214,3 +298,25 @@ def test_openai_images_generations_only_marks_candidate_not_edit_capable() -> No
     assert len(cfg.provider_candidates) == 1
     assert cfg.provider_candidates[0].api_type == "openai_images"
     assert cfg.provider_candidates[0].supports_image_edit is False
+
+
+def test_google_candidate_edit_capable_by_default() -> None:
+    logger = _DummyLogger()
+    plugin_config = _import_plugin_config_module(logger)
+    cfg = plugin_config.ConfigLoader(
+        {
+            "provider_settings": {
+                "provider_overrides": [
+                    {
+                        "__template_key": "google",
+                        "api_keys": ["img-key"],
+                        "model": "test-image-model",
+                    }
+                ]
+            }
+        }
+    ).load()
+
+    assert len(cfg.provider_candidates) == 1
+    assert cfg.provider_candidates[0].api_type == "google"
+    assert cfg.provider_candidates[0].supports_image_edit is True

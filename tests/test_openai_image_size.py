@@ -73,6 +73,18 @@ def test_resolve_openai_custom_size_falls_back_to_config() -> None:
     )
 
 
+def test_resolve_openai_custom_size_invalid_custom_size_raises_value_error() -> None:
+    settings = {"size_mode": "custom", "custom_size": "2048×1080"}
+
+    with pytest.raises(ValueError, match="16 的倍数"):
+        resolve_openai_custom_size(
+            None,
+            None,
+            None,
+            settings,
+        )
+
+
 def test_resolve_openai_custom_size_from_explicit_size() -> None:
     settings = {"size_mode": "custom", "custom_size": "1024x1024"}
 
@@ -156,3 +168,88 @@ def test_client_custom_mode_derives_size_from_request_override() -> None:
 
     assert candidate_config.resolution == "2048x1152"
     assert candidate_config.aspect_ratio == ""
+
+
+def test_client_custom_mode_keeps_explicit_wxh_request_override() -> None:
+    from tl.tl_api import GeminiAPIClient
+
+    candidate = type(
+        "Candidate",
+        (),
+        {
+            "id": "openai_images#1",
+            "api_type": "openai_images",
+            "model": "gpt-image-1",
+            "api_base": "",
+            "settings": {
+                "size_mode": "custom",
+                "custom_size": "1024x1024",
+            },
+        },
+    )()
+    client = GeminiAPIClient(["key"])
+    config = ApiRequestConfig(
+        model="",
+        prompt="test",
+        api_type="",
+        resolution="1536x1024",
+    )
+
+    candidate_config = client._build_candidate_config(config, candidate)
+
+    assert candidate_config.resolution == "1536x1024"
+    assert candidate_config.aspect_ratio == ""
+
+
+def test_build_candidate_config_truncates_reference_images() -> None:
+    from tl.tl_api import GeminiAPIClient
+
+    candidate = type(
+        "Candidate",
+        (),
+        {
+            "id": "google#1",
+            "api_type": "google",
+            "model": "gemini-3-pro-image-preview",
+            "api_base": "",
+            "settings": {"max_reference_images": 2},
+        },
+    )()
+    client = GeminiAPIClient(["key"])
+    config = ApiRequestConfig(
+        model="",
+        prompt="test",
+        api_type="",
+        reference_images=["a", "b", "c", "d"],
+    )
+
+    candidate_config = client._build_candidate_config(config, candidate)
+
+    assert candidate_config.reference_images == ["a", "b"]
+
+
+def test_build_candidate_config_drops_reference_images_when_disabled() -> None:
+    from tl.tl_api import GeminiAPIClient
+
+    candidate = type(
+        "Candidate",
+        (),
+        {
+            "id": "google#1",
+            "api_type": "google",
+            "model": "gemini-3-pro-image-preview",
+            "api_base": "",
+            "settings": {"max_reference_images": 0},
+        },
+    )()
+    client = GeminiAPIClient(["key"])
+    config = ApiRequestConfig(
+        model="",
+        prompt="test",
+        api_type="",
+        reference_images=["a", "b"],
+    )
+
+    candidate_config = client._build_candidate_config(config, candidate)
+
+    assert candidate_config.reference_images is None

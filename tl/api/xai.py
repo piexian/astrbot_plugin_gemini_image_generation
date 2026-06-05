@@ -34,7 +34,11 @@ class XAIProvider:
     async def build_request(
         self, *, client: Any, config: ApiRequestConfig
     ) -> ProviderRequest:  # noqa: ANN401
-        settings: dict[str, Any] = getattr(client, "xai_settings", None) or {}
+        settings: dict[str, Any] = (
+            getattr(config, "provider_settings", None)
+            or getattr(client, "xai_settings", None)
+            or {}
+        )
         raw_api_base = config.api_base or settings.get("api_base") or ""
         base = self._normalize_api_base(raw_api_base) or "https://api.x.ai"
 

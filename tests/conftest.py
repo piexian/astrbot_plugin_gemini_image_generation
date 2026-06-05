@@ -33,7 +33,15 @@ if "tl.tl_utils" not in sys.modules:
     def _save_base64_image(*args, **kwargs):
         return None
 
+    def _encode_file_to_base64(*args, **kwargs):
+        return ""
+
+    def _format_error_message(message, *args, **kwargs):
+        return str(message)
+
     tl_utils_module.save_base64_image = _save_base64_image
+    tl_utils_module.encode_file_to_base64 = _encode_file_to_base64
+    tl_utils_module.format_error_message = _format_error_message
     sys.modules["tl.tl_utils"] = tl_utils_module
 
 
@@ -42,6 +50,12 @@ class _BootstrapLogger:
         return None
 
     def debug(self, message: str) -> None:
+        return None
+
+    def info(self, message: str) -> None:
+        return None
+
+    def error(self, message: str) -> None:
         return None
 
 

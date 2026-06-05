@@ -29,6 +29,8 @@ class ApiRequestConfig:
     enable_text_response: bool = False  # 文本响应开关
     force_resolution: bool = False  # 强制传递分辨率参数
     image_input_mode: str = "force_base64"  # 参考图统一转 base64
+    provider_settings: dict | None = None  # 当前候选供应商的请求级配置
+    proxy: str | None = None  # 当前请求使用的代理
 
     # 官方文档推荐参数
     temperature: float = 0.7  # 控制生成随机性，0.0-1.0

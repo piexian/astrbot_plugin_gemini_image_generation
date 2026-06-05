@@ -71,7 +71,11 @@ class MiniMaxProvider:
         is_retry: bool = False,
         retry_error: APIError | None = None,
     ) -> ProviderRequest:  # noqa: ANN401
-        settings: dict[str, Any] = getattr(client, "minimax_settings", None) or {}
+        settings: dict[str, Any] = (
+            getattr(config, "provider_settings", None)
+            or getattr(client, "minimax_settings", None)
+            or {}
+        )
         raw_api_base = config.api_base or settings.get("api_base")
         base = self._normalize_api_base(raw_api_base)
         url = f"{base}/v1/image_generation"

@@ -26,8 +26,8 @@ from .api import get_api_provider, normalize_api_type, supports_image_edit
 from .api_headers import apply_api_key_to_headers, extract_api_key_from_headers
 from .api_types import APIError, ApiRequestConfig
 from .openai_image_size import (
-    derive_custom_size_from_preset_params,
     normalize_size_mode,
+    resolve_openai_custom_size,
 )
 
 try:
@@ -128,6 +128,7 @@ class GeminiAPIClient:
             logger.debug(f"检测到代理配置，使用代理: {self.proxy}")
         logger.debug(f"API 客户端已初始化，支持 {len(self.api_keys)} 个 API 密钥")
         self._session: aiohttp.ClientSession | None = None
+        self._proxy_sessions: dict[str, aiohttp.ClientSession] = {}
         self._session_lock = asyncio.Lock()
 
         # KeyManager 实例（由主插件注入，用于多 Key 轮换和每日限额）
@@ -137,26 +138,36 @@ class GeminiAPIClient:
         self._candidate_key_indices: dict[str, int] = {}
         self._default_proxy = self.proxy
 
-    async def _get_session(self) -> aiohttp.ClientSession:
+    async def _get_session(self, proxy: str | None = None) -> aiohttp.ClientSession:
         """获取或创建可复用的 aiohttp 会话"""
+        proxy = proxy or self.proxy
+        if proxy and proxy.lower().startswith("socks"):
+            existing = self._proxy_sessions.get(proxy)
+            if existing and not existing.closed:
+                return existing
+            async with self._session_lock:
+                existing = self._proxy_sessions.get(proxy)
+                if existing and not existing.closed:
+                    return existing
+                try:
+                    from aiohttp_socks import ProxyConnector
+
+                    connector = ProxyConnector.from_url(proxy)
+                    session = aiohttp.ClientSession(connector=connector)
+                except ImportError:
+                    logger.error(
+                        "SOCKS 代理需要安装 aiohttp-socks: pip install aiohttp-socks"
+                    )
+                    session = aiohttp.ClientSession()
+                self._proxy_sessions[proxy] = session
+                return session
+
         if self._session and not self._session.closed:
             return self._session
         async with self._session_lock:
             if self._session and not self._session.closed:
                 return self._session
-            if self.proxy and self.proxy.lower().startswith("socks"):
-                try:
-                    from aiohttp_socks import ProxyConnector
-
-                    connector = ProxyConnector.from_url(self.proxy)
-                    self._session = aiohttp.ClientSession(connector=connector)
-                except ImportError:
-                    logger.error(
-                        "SOCKS 代理需要安装 aiohttp-socks: pip install aiohttp-socks"
-                    )
-                    self._session = aiohttp.ClientSession()
-            else:
-                self._session = aiohttp.ClientSession()
+            self._session = aiohttp.ClientSession()
             return self._session
 
     @property
@@ -174,6 +185,10 @@ class GeminiAPIClient:
         """关闭内部复用的 aiohttp 会话"""
         if self._session and not self._session.closed:
             await self._session.close()
+        for session in list(self._proxy_sessions.values()):
+            if not session.closed:
+                await session.close()
+        self._proxy_sessions = {}
         self._session = None
 
     def set_key_manager(self, key_manager) -> None:
@@ -316,30 +331,36 @@ class GeminiAPIClient:
                 base_config.resolution is not None
                 or base_config.aspect_ratio is not None
             )
+            resolution_candidate = None
+            aspect_ratio_candidate = None
             if has_request_size_override:
-                resolution = (
+                resolution_candidate = (
                     base_config.resolution or settings.get("resolution") or "1K"
                 )
-                aspect_ratio = (
+                aspect_ratio_candidate = (
                     base_config.aspect_ratio or settings.get("aspect_ratio") or "1:1"
                 )
-                if resolution and aspect_ratio:
-                    try:
-                        return (
-                            derive_custom_size_from_preset_params(
-                                resolution,
-                                aspect_ratio,
-                                resolution_field_name="provider.resolution",
-                                aspect_ratio_field_name="provider.aspect_ratio",
-                            ),
-                            "",
-                        )
-                    except ValueError as exc:
-                        logger.warning(
-                            "[openai_images] 根据预设参数生成 custom size 失败，回退配置 custom_size: %s",
-                            exc,
-                        )
-            return settings.get("custom_size") or None, ""
+            try:
+                return (
+                    resolve_openai_custom_size(
+                        base_config.resolution,
+                        resolution_candidate,
+                        aspect_ratio_candidate,
+                        settings,
+                        size_field_name="size",
+                        resolution_field_name="provider.resolution",
+                        aspect_ratio_field_name="provider.aspect_ratio",
+                    ),
+                    "",
+                )
+            except ValueError as exc:
+                if has_request_size_override:
+                    logger.warning(
+                        f"[openai_images] 根据请求参数解析 custom size 失败，"
+                        f"回退配置 custom_size: {exc}"
+                    )
+                    return settings.get("custom_size") or None, ""
+                raise
 
         resolution = (
             base_config.resolution
@@ -367,11 +388,9 @@ class GeminiAPIClient:
         if reference_images and max_refs > 0:
             if len(reference_images) > max_refs:
                 logger.warning(
-                    "参考图片数量 (%s) 超过 %s 的限制 (%s)，将截取前 %s 张",
-                    len(reference_images),
-                    getattr(candidate, "id", api_type),
-                    max_refs,
-                    max_refs,
+                    f"参考图片数量 ({len(reference_images)}) 超过 "
+                    f"{getattr(candidate, 'id', api_type)} 的限制 ({max_refs})，"
+                    f"将截取前 {max_refs} 张"
                 )
             reference_images = reference_images[:max_refs]
         elif reference_images and max_refs <= 0:
@@ -406,7 +425,17 @@ class GeminiAPIClient:
             resolution_param_name=resolution_param_name,
             aspect_ratio_param_name=aspect_ratio_param_name,
             reference_images=reference_images if reference_images else None,
+            provider_settings=settings,
+            proxy=self._candidate_proxy(candidate) or self._default_proxy,
         )
+
+    @staticmethod
+    def _copy_request_stats(
+        source: ApiRequestConfig, target: ApiRequestConfig
+    ) -> None:
+        target.retry_count = source.retry_count
+        target.token_usage = source.token_usage
+        target.retry_note = source.retry_note
 
     def _candidate_key_count(self, key_scope: str) -> int:
         if self._key_manager and self._key_manager.has_provider(key_scope):
@@ -697,36 +726,32 @@ class GeminiAPIClient:
             ):
                 reason = f"{candidate_id} 不支持参考图/改图"
                 skipped_reasons.append(reason)
-                logger.info("[provider_polling] 跳过候选：%s", reason)
+                logger.info(f"[provider_polling] 跳过候选：{reason}")
                 continue
 
             if not getattr(candidate, "api_keys", None):
                 reason = f"{candidate_id} 未配置 API Key"
                 skipped_reasons.append(reason)
-                logger.error("[provider_polling] 跳过候选：%s", reason)
+                logger.error(f"[provider_polling] 跳过候选：{reason}")
                 continue
 
             candidate_config = self._build_candidate_config(config, candidate)
-            self._apply_candidate_settings(candidate)
-            await self.set_proxy(
-                self._candidate_proxy(candidate) or self._default_proxy
-            )
 
             logger.info(
-                "[provider_polling] 尝试供应商候选 %s (%s), 模型=%s",
-                candidate_id,
-                api_type,
-                candidate_config.model,
+                f"[provider_polling] 尝试供应商候选 {candidate_id} ({api_type}), "
+                f"模型={candidate_config.model}"
             )
 
             try:
-                return await self._generate_image_single(
+                result = await self._generate_image_single(
                     config=candidate_config,
                     max_retries=max_retries,
                     total_timeout=total_timeout,
                     per_retry_timeout=per_retry_timeout,
                     max_total_time=max_total_time,
                 )
+                self._copy_request_stats(candidate_config, config)
+                return result
             except APIError as e:
                 last_error = e
                 logger.warning(
@@ -776,8 +801,6 @@ class GeminiAPIClient:
             key = await self.get_key_for_api_type(key_scope)
             if key is None:
                 # 所有 Key 今日额度已用尽
-                from .api_types import APIError
-
                 raise APIError(
                     f"{key_scope} 的所有 API Key 今日额度已用尽，请明天再试或添加更多 Key。",
                     None,
@@ -869,7 +892,10 @@ class GeminiAPIClient:
             if mt > 0:
                 max_total_time_int = mt
 
-        session = await self._get_session()
+        request_proxy = config.proxy if config and config.proxy else None
+        if not request_proxy:
+            request_proxy = self.proxy
+        session = await self._get_session(request_proxy)
         loop = asyncio.get_running_loop()
         started_at = loop.time()
         last_error: APIError | None = None
@@ -1152,9 +1178,17 @@ class GeminiAPIClient:
         if is_multipart and form_data is not None:
             send_headers.pop("Content-Type", None)
 
+        request_proxy = (
+            request_config.proxy if request_config and request_config.proxy else None
+        )
+        if request_proxy and request_proxy.lower().startswith("socks"):
+            request_proxy = None
+        elif not request_proxy:
+            request_proxy = self._http_proxy
+
         post_kwargs: dict[str, Any] = {
             "headers": send_headers,
-            "proxy": self._http_proxy,
+            "proxy": request_proxy,
             "timeout": timeout,
         }
         if is_multipart and form_data is not None:
