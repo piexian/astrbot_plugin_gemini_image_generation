@@ -25,18 +25,7 @@ class ImageGenerator:
         self,
         context: Context,
         api_client: APIClient | None = None,
-        model: str = "",
-        api_type: str = "",
-        api_base: str = "",
-        resolution: str = "1K",
-        aspect_ratio: str = "1:1",
-        enable_grounding: bool = False,
         enable_smart_retry: bool = True,
-        enable_text_response: bool = False,
-        force_resolution: bool = False,
-        resolution_param_name: str = "image_size",
-        aspect_ratio_param_name: str = "aspect_ratio",
-        max_reference_images: int = 6,
         total_timeout: int = 120,
         max_attempts_per_key: int = 3,
         filter_valid_fn=None,
@@ -46,18 +35,7 @@ class ImageGenerator:
         Args:
             context: AstrBot Context 实例
             api_client: API 客户端实例
-            model: 模型名称
-            api_type: API 类型
-            api_base: API 基础地址
-            resolution: 分辨率
-            aspect_ratio: 宽高比
-            enable_grounding: 是否启用 grounding
             enable_smart_retry: 是否启用智能重试
-            enable_text_response: 是否启用文本响应
-            force_resolution: 是否强制分辨率
-            resolution_param_name: 分辨率参数名
-            aspect_ratio_param_name: 宽高比参数名
-            max_reference_images: 最大参考图片数
             total_timeout: 总超时时间
             max_attempts_per_key: 每个密钥最大尝试次数
             filter_valid_fn: 过滤有效参考图片的函数
@@ -65,18 +43,7 @@ class ImageGenerator:
         """
         self.context = context
         self.api_client = api_client
-        self.model = model
-        self.api_type = api_type
-        self.api_base = api_base
-        self.resolution = resolution
-        self.aspect_ratio = aspect_ratio
-        self.enable_grounding = enable_grounding
         self.enable_smart_retry = enable_smart_retry
-        self.enable_text_response = enable_text_response
-        self.force_resolution = force_resolution
-        self.resolution_param_name = resolution_param_name
-        self.aspect_ratio_param_name = aspect_ratio_param_name
-        self.max_reference_images = max_reference_images
         self.total_timeout = total_timeout
         self.max_attempts_per_key = max_attempts_per_key
         self._filter_valid_fn = filter_valid_fn
@@ -256,7 +223,6 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
             )
             error_msg = f"❌ 图像生成失败{status_part}：{e.message}"
             message_lower = (e.message or "").lower()
-            api_base_lower = (self.api_base or "").lower()
             if e.error_type in ("timeout", "cancelled"):
                 if is_tool_call:
                     error_msg += "\n🧐 可能原因：图像生成耗时超出框架工具调用限制。\n✅ 建议：在框架配置中增加 tool_call_timeout 到 90-120 秒，或简化提示词。"
@@ -276,7 +242,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
             elif e.status_code and 500 <= e.status_code < 600:
                 error_msg += "\n🧐 可能原因：上游服务暂时不可用。\n✅ 建议：稍后重试，若频繁出现请联系服务提供方确认故障。"
                 # t2i 公共服务繁忙提示
-                if ("t2i" in message_lower) or ("t2i" in api_base_lower):
+                if "t2i" in message_lower:
                     error_msg += (
                         "\n⚠️ t2i 公共服务器当前可能繁忙，建议稍后再试；"
                         "如需稳定产能可参考 https://docs.astrbot.app/others/self-host-t2i.html 自建。"
