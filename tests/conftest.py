@@ -17,19 +17,14 @@ if "tl" not in sys.modules:
 if "tl.api" not in sys.modules:
     tl_api_module = types.ModuleType("tl.api")
     tl_api_module.__path__ = [str(ROOT / "tl" / "api")]
-
-    def _normalize_api_type(api_type: str | None) -> str:
-        return (api_type or "").strip().lower().replace("-", "_")
+    from tl.provider_metadata import normalize_api_type, supports_image_edit
 
     def _get_api_provider(api_type: str | None):
         raise NotImplementedError("provider registry is not needed in unit tests")
 
-    def _supports_image_edit(api_type: str | None) -> bool:
-        return _normalize_api_type(api_type) != "sensenova"
-
-    tl_api_module.normalize_api_type = _normalize_api_type
+    tl_api_module.normalize_api_type = normalize_api_type
     tl_api_module.get_api_provider = _get_api_provider
-    tl_api_module.supports_image_edit = _supports_image_edit
+    tl_api_module.supports_image_edit = supports_image_edit
     sys.modules["tl.api"] = tl_api_module
 
 if "tl.tl_utils" not in sys.modules:

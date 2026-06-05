@@ -13,50 +13,16 @@ from .openai_image_size import (
     normalize_size_mode,
     validate_custom_size,
 )
+from .provider_metadata import (
+    PROVIDER_TYPES,
+    is_known_api_type,
+    normalize_api_type,
+    supports_image_edit,
+)
 
 # 豆包组图数量限制常量
 DOUBAO_SEQUENTIAL_IMAGES_MIN = 2
 DOUBAO_SEQUENTIAL_IMAGES_MAX = 15
-
-PROVIDER_TYPES = (
-    "google",
-    "openai",
-    "openai_images",
-    "xai",
-    "minimax",
-    "stepfun",
-    "sensenova",
-    "zai",
-    "grok2api",
-    "doubao",
-)
-IMAGE_EDIT_CAPABLE_TYPES = frozenset(
-    {
-        "google",
-        "openai",
-        "openai_images",
-        "xai",
-        "minimax",
-        "stepfun",
-        "zai",
-        "grok2api",
-        "doubao",
-    }
-)
-
-
-def normalize_api_type(api_type: Any) -> str:
-    """规范化 API 类型字符串（小写 + 去空格 + 连字符转下划线）。"""
-    return str(api_type or "").strip().lower().replace("-", "_")
-
-
-def is_known_api_type(api_type: Any) -> bool:
-    return normalize_api_type(api_type) in PROVIDER_TYPES
-
-
-def supports_image_edit(api_type: Any) -> bool:
-    return normalize_api_type(api_type) in IMAGE_EDIT_CAPABLE_TYPES
-
 
 def _validate_openai_images_settings(settings: dict[str, Any]) -> None:
     """校验 openai_images 覆盖配置。"""
@@ -465,7 +431,7 @@ class ConfigLoader:
                     settings.get("daily_limit_per_key")
                 )
                 settings["priority"] = _clean_priority(settings.get("priority"))
-                settings["max_reference_images"] = _clean_positive_int(
+                settings["max_reference_images"] = _clean_non_negative_int(
                     settings.get("max_reference_images"), 6
                 )
                 for key in (
@@ -545,9 +511,20 @@ class ConfigLoader:
         if not polling:
             polling = [
                 api_type
-                for api_type in PROVIDER_TYPES
+                for api_type in candidates_by_type
                 if api_type in candidates_by_type
             ]
+        else:
+            missing_from_polling = [
+                api_type for api_type in candidates_by_type if api_type not in seen
+            ]
+            if missing_from_polling:
+                message = (
+                    "供应商配置未加入轮询表，已忽略: "
+                    + ", ".join(missing_from_polling)
+                )
+                config.provider_config_errors.append(message)
+                logger.error(f"[配置加载] {message}")
 
         ordered_candidates: list[ProviderCandidate] = []
         for api_type in polling:
