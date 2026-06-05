@@ -18,6 +18,45 @@ from .openai_image_size import (
 DOUBAO_SEQUENTIAL_IMAGES_MIN = 2
 DOUBAO_SEQUENTIAL_IMAGES_MAX = 15
 
+PROVIDER_TYPES = (
+    "google",
+    "openai",
+    "openai_images",
+    "xai",
+    "minimax",
+    "stepfun",
+    "sensenova",
+    "zai",
+    "grok2api",
+    "doubao",
+)
+IMAGE_EDIT_CAPABLE_TYPES = frozenset(
+    {
+        "google",
+        "openai",
+        "openai_images",
+        "xai",
+        "minimax",
+        "stepfun",
+        "zai",
+        "grok2api",
+        "doubao",
+    }
+)
+
+
+def normalize_api_type(api_type: Any) -> str:
+    """规范化 API 类型字符串（小写 + 去空格 + 连字符转下划线）。"""
+    return str(api_type or "").strip().lower().replace("-", "_")
+
+
+def is_known_api_type(api_type: Any) -> bool:
+    return normalize_api_type(api_type) in PROVIDER_TYPES
+
+
+def supports_image_edit(api_type: Any) -> bool:
+    return normalize_api_type(api_type) in IMAGE_EDIT_CAPABLE_TYPES
+
 
 def _validate_openai_images_settings(settings: dict[str, Any]) -> None:
     """校验 openai_images 覆盖配置。"""
@@ -41,6 +80,76 @@ def _validate_openai_images_settings(settings: dict[str, Any]) -> None:
         settings["custom_size"] = normalize_custom_size_input(custom_size)
 
 
+def _clean_string(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _clean_api_keys(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+
+def _clean_non_negative_int(value: Any, default: int = 0) -> int:
+    if value is None:
+        return default
+    try:
+        return max(int(value), 0)
+    except (TypeError, ValueError):
+        return default
+
+
+def _clean_positive_int(value: Any, default: int) -> int:
+    if value is None:
+        return default
+    try:
+        return max(int(value), 1)
+    except (TypeError, ValueError):
+        return default
+
+
+def _clean_priority(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _entry_model(api_type: str, settings: dict[str, Any]) -> str:
+    if api_type == "doubao":
+        return _clean_string(settings.get("endpoint_id"))
+    return _clean_string(settings.get("model"))
+
+
+@dataclass(frozen=True)
+class ProviderCandidate:
+    """单条供应商候选配置。"""
+
+    id: str
+    api_type: str
+    settings: dict[str, Any]
+    priority: int = 0
+    order: int = 0
+    supports_image_edit: bool = True
+
+    @property
+    def api_keys(self) -> list[str]:
+        return self.settings.get("api_keys") or []
+
+    @property
+    def model(self) -> str:
+        return _entry_model(self.api_type, self.settings)
+
+    @property
+    def api_base(self) -> str:
+        return _clean_string(self.settings.get("api_base"))
+
+    @property
+    def proxy(self) -> str | None:
+        proxy = self.settings.get("proxy")
+        return proxy if isinstance(proxy, str) and proxy else None
+
+
 @dataclass
 class PluginConfig:
     """插件配置数据类"""
@@ -61,8 +170,11 @@ class PluginConfig:
     sensenova_settings: dict[str, Any] = field(default_factory=dict)
 
     # 供应商配置覆盖
-    # 结构：{api_type: {api_keys: [...], daily_limit_per_key: int, ...}}
+    # 结构：{candidate_id: {api_keys: [...], daily_limit_per_key: int, ...}}
     provider_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
+    provider_candidates: list[ProviderCandidate] = field(default_factory=list)
+    provider_polling: list[str] = field(default_factory=list)
+    provider_config_errors: list[str] = field(default_factory=list)
 
     # 图像生成设置
     resolution: str = "1K"
@@ -328,6 +440,177 @@ class ConfigLoader:
 
         return migrated
 
+    def _parse_provider_settings(self, config: PluginConfig) -> None:
+        provider_settings = self.raw_config.get("provider_settings") or {}
+        if not isinstance(provider_settings, dict):
+            provider_settings = {}
+
+        config.vision_provider_id = provider_settings.get("vision_provider_id") or ""
+        config.vision_model = (provider_settings.get("vision_model") or "").strip()
+        config.proxy = str(provider_settings.get("proxy") or "").strip() or None
+
+        provider_overrides = provider_settings.get("provider_overrides") or []
+        candidates_by_type: dict[str, list[ProviderCandidate]] = {}
+
+        if isinstance(provider_overrides, list):
+            for order, override in enumerate(provider_overrides):
+                if not isinstance(override, dict):
+                    continue
+                template_key = normalize_api_type(override.get("__template_key"))
+                if not template_key:
+                    continue
+                if not is_known_api_type(template_key):
+                    message = f"未知供应商配置: {template_key}"
+                    config.provider_config_errors.append(message)
+                    logger.error(f"[配置加载] {message}")
+                    continue
+
+                settings = override.copy()
+                settings.pop("__template_key", None)
+                settings["api_keys"] = _clean_api_keys(settings.get("api_keys"))
+                settings["daily_limit_per_key"] = _clean_non_negative_int(
+                    settings.get("daily_limit_per_key")
+                )
+                settings["priority"] = _clean_priority(settings.get("priority"))
+                settings["max_reference_images"] = _clean_positive_int(
+                    settings.get("max_reference_images"), 6
+                )
+                for key in (
+                    "model",
+                    "endpoint_id",
+                    "api_base",
+                    "resolution",
+                    "aspect_ratio",
+                    "resolution_param_name",
+                    "aspect_ratio_param_name",
+                    "default_size",
+                    "optimize_prompt_mode",
+                    "sequential_image_generation",
+                ):
+                    if isinstance(settings.get(key), str):
+                        settings[key] = settings[key].strip()
+
+                proxy_val = settings.get("proxy")
+                settings["proxy"] = (
+                    proxy_val.strip() if isinstance(proxy_val, str) else None
+                )
+                if template_key == "openai_images":
+                    _validate_openai_images_settings(settings)
+                if template_key == "doubao":
+                    self._normalize_doubao_settings(settings)
+
+                edit_capable = supports_image_edit(template_key)
+                if (
+                    template_key == "openai_images"
+                    and settings.get("generations_only")
+                ):
+                    edit_capable = False
+
+                candidate_index = len(candidates_by_type.get(template_key, [])) + 1
+                candidate = ProviderCandidate(
+                    id=f"{template_key}#{candidate_index}",
+                    api_type=template_key,
+                    settings=settings,
+                    priority=settings["priority"],
+                    order=order,
+                    supports_image_edit=edit_capable,
+                )
+                candidates_by_type.setdefault(template_key, []).append(candidate)
+
+        for api_type, candidates in list(candidates_by_type.items()):
+            candidates_by_type[api_type] = sorted(
+                candidates,
+                key=lambda item: (-item.priority, item.order),
+            )
+
+        polling_raw = provider_settings.get("provider_polling") or []
+        polling: list[str] = []
+        seen: set[str] = set()
+        if isinstance(polling_raw, list):
+            for value in polling_raw:
+                api_type = normalize_api_type(value)
+                if not api_type or api_type in seen:
+                    continue
+                seen.add(api_type)
+                if not is_known_api_type(api_type):
+                    message = f"轮询表包含未知供应商: {api_type}"
+                    config.provider_config_errors.append(message)
+                    logger.error(f"[配置加载] {message}")
+                    continue
+                polling.append(api_type)
+
+        if not polling:
+            polling = [
+                api_type for api_type in PROVIDER_TYPES if api_type in candidates_by_type
+            ]
+
+        ordered_candidates: list[ProviderCandidate] = []
+        for api_type in polling:
+            ordered_candidates.extend(candidates_by_type.get(api_type, []))
+
+        if not ordered_candidates:
+            message = "未找到任何有效供应商配置"
+            config.provider_config_errors.append(message)
+            logger.error(f"[配置加载] {message}")
+
+        config.provider_polling = polling
+        config.provider_candidates = ordered_candidates
+        config.provider_overrides = {
+            candidate.id: candidate.settings for candidate in ordered_candidates
+        }
+
+        first = ordered_candidates[0] if ordered_candidates else None
+        if first:
+            config.api_type = first.api_type
+            config.api_base = first.api_base
+            config.model = first.model
+            config.api_keys = list(first.api_keys)
+
+        config.doubao_settings = self._first_settings_for(
+            ordered_candidates, "doubao"
+        )
+        config.minimax_settings = self._first_settings_for(
+            ordered_candidates, "minimax"
+        )
+        config.stepfun_settings = self._first_settings_for(
+            ordered_candidates, "stepfun"
+        )
+        config.sensenova_settings = self._first_settings_for(
+            ordered_candidates, "sensenova"
+        )
+
+    @staticmethod
+    def _first_settings_for(
+        candidates: list[ProviderCandidate], api_type: str
+    ) -> dict[str, Any]:
+        for candidate in candidates:
+            if candidate.api_type == api_type:
+                return candidate.settings
+        return {}
+
+    def _normalize_doubao_settings(self, settings: dict[str, Any]) -> None:
+        if not settings.get("optimize_prompt_mode"):
+            settings["optimize_prompt_mode"] = "standard"
+
+        max_images = settings.get("sequential_max_images")
+        if max_images is None:
+            return
+        try:
+            max_images_int = int(max_images)
+            if (
+                max_images_int < DOUBAO_SEQUENTIAL_IMAGES_MIN
+                or max_images_int > DOUBAO_SEQUENTIAL_IMAGES_MAX
+            ):
+                raise ValueError(
+                    f"sequential_max_images 必须在 {DOUBAO_SEQUENTIAL_IMAGES_MIN}-"
+                    f"{DOUBAO_SEQUENTIAL_IMAGES_MAX} 之间，当前值: {max_images_int}"
+                )
+            settings["sequential_max_images"] = max_images_int
+        except (TypeError, ValueError) as e:
+            if isinstance(e, ValueError) and "必须在" in str(e):
+                raise
+            raise ValueError(f"sequential_max_images 配置无效: {max_images}") from e
+
     def load(self) -> PluginConfig:
         """加载配置并返回 PluginConfig 实例"""
         # 先执行配置迁移
@@ -335,146 +618,7 @@ class ConfigLoader:
 
         config = PluginConfig()
 
-        # API 设置
-        api_settings = self.raw_config.get("api_settings", {})
-        config.vision_provider_id = api_settings.get("vision_provider_id") or ""
-        config.vision_model = (api_settings.get("vision_model") or "").strip()
-        config.api_type = (api_settings.get("api_type") or "").strip()
-        config.api_base = (api_settings.get("custom_api_base") or "").strip()
-        config.model = (api_settings.get("model") or "").strip()
-        config.proxy = str(api_settings.get("proxy") or "").strip() or None
-
-        provider_overrides = api_settings.get("provider_overrides") or []
-        doubao_settings = {}
-
-        # 从 provider_overrides 中查找 doubao 配置
-        if isinstance(provider_overrides, list):
-            for override in provider_overrides:
-                if (
-                    isinstance(override, dict)
-                    and override.get("__template_key") == "doubao"
-                ):
-                    doubao_settings = override.copy()
-                    doubao_settings.pop("__template_key", None)
-                    break
-
-        # 兼容旧的 doubao_settings 配置（如果存在）
-        if not doubao_settings:
-            doubao_settings_raw = self.raw_config.get("doubao_settings")
-            if isinstance(doubao_settings_raw, list) and len(doubao_settings_raw) > 0:
-                doubao_settings = doubao_settings_raw[0].copy()
-                doubao_settings.pop("__template_key", None)
-            elif isinstance(doubao_settings_raw, dict):
-                doubao_settings = doubao_settings_raw.copy()
-
-        # 处理 api_keys（新格式：列表）
-        if "api_keys" in doubao_settings:
-            api_keys = doubao_settings.get("api_keys") or []
-            if isinstance(api_keys, list):
-                # 清理并过滤空字符串
-                doubao_settings["api_keys"] = [
-                    k.strip() for k in api_keys if isinstance(k, str) and k.strip()
-                ]
-            else:
-                doubao_settings["api_keys"] = []
-        # 兼容旧的 api_key（单个 key）
-        elif "api_key" in doubao_settings and isinstance(
-            doubao_settings["api_key"], str
-        ):
-            key = doubao_settings["api_key"].strip()
-            doubao_settings["api_keys"] = [key] if key else []
-            doubao_settings.pop("api_key", None)
-        else:
-            doubao_settings["api_keys"] = []
-
-        # 处理 daily_limit_per_key
-        daily_limit = doubao_settings.get("daily_limit_per_key")
-        if daily_limit is not None:
-            try:
-                doubao_settings["daily_limit_per_key"] = max(int(daily_limit), 0)
-            except (TypeError, ValueError):
-                doubao_settings["daily_limit_per_key"] = 0
-        else:
-            doubao_settings["daily_limit_per_key"] = 0
-
-        # 清理字符串类型的配置项
-        for key in (
-            "endpoint_id",
-            "api_base",
-            "default_size",
-            "optimize_prompt_mode",
-            "sequential_image_generation",
-        ):
-            if isinstance(doubao_settings.get(key), str):
-                doubao_settings[key] = doubao_settings[key].strip()
-
-        # 确保 optimize_prompt_mode 默认为 standard
-        if not doubao_settings.get("optimize_prompt_mode"):
-            doubao_settings["optimize_prompt_mode"] = "standard"
-
-        # 处理 sequential_max_images 类型容错
-        max_images = doubao_settings.get("sequential_max_images")
-        if max_images is not None:
-            try:
-                max_images_int = int(max_images)
-                if (
-                    max_images_int < DOUBAO_SEQUENTIAL_IMAGES_MIN
-                    or max_images_int > DOUBAO_SEQUENTIAL_IMAGES_MAX
-                ):
-                    raise ValueError(
-                        f"sequential_max_images 必须在 {DOUBAO_SEQUENTIAL_IMAGES_MIN}-"
-                        f"{DOUBAO_SEQUENTIAL_IMAGES_MAX} 之间，当前值: {max_images_int}"
-                    )
-                doubao_settings["sequential_max_images"] = max_images_int
-            except (TypeError, ValueError) as e:
-                if isinstance(e, ValueError) and "必须在" in str(e):
-                    raise
-                raise ValueError(f"sequential_max_images 配置无效: {max_images}") from e
-
-        config.doubao_settings = doubao_settings
-
-        # 解析所有 provider_overrides 并存入 config.provider_overrides
-        all_overrides: dict[str, dict[str, Any]] = {}
-        if isinstance(provider_overrides, list):
-            for override in provider_overrides:
-                if isinstance(override, dict):
-                    template_key = override.get("__template_key")
-                    if template_key:
-                        override_copy = override.copy()
-                        override_copy.pop("__template_key", None)
-                        # 统一处理 api_keys
-                        if "api_keys" in override_copy:
-                            api_keys = override_copy.get("api_keys") or []
-                            if isinstance(api_keys, list):
-                                override_copy["api_keys"] = [
-                                    k.strip()
-                                    for k in api_keys
-                                    if isinstance(k, str) and k.strip()
-                                ]
-                            else:
-                                override_copy["api_keys"] = []
-                        # 统一处理 daily_limit_per_key
-                        daily_limit = override_copy.get("daily_limit_per_key")
-                        if daily_limit is not None:
-                            try:
-                                override_copy["daily_limit_per_key"] = max(
-                                    int(daily_limit), 0
-                                )
-                            except (TypeError, ValueError):
-                                override_copy["daily_limit_per_key"] = 0
-                        # 清理 proxy 字段
-                        proxy_val = override_copy.get("proxy")
-                        if isinstance(proxy_val, str):
-                            override_copy["proxy"] = proxy_val.strip() or None
-                        else:
-                            override_copy["proxy"] = None
-                        if template_key == "openai_images":
-                            _validate_openai_images_settings(override_copy)
-                        all_overrides[template_key] = override_copy
-        config.provider_overrides = all_overrides
-        config.minimax_settings = all_overrides.get("minimax", {})
-        config.stepfun_settings = all_overrides.get("stepfun", {})
-        config.sensenova_settings = all_overrides.get("sensenova", {})
+        self._parse_provider_settings(config)
 
         # 图像生成设置
         image_settings = self.raw_config.get("image_generation_settings") or {}

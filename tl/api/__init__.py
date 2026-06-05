@@ -5,4 +5,7 @@
 """
 
 from .registry import get_api_provider as get_api_provider
+from .registry import is_known_api_type as is_known_api_type
+from .registry import iter_api_types as iter_api_types
 from .registry import normalize_api_type as normalize_api_type
+from .registry import supports_image_edit as supports_image_edit

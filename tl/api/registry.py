@@ -44,6 +44,20 @@ _PROVIDERS: Final[dict[str, ApiProvider]] = {
     "doubao": _DOUBAO,
 }
 
+_IMAGE_EDIT_CAPABLE: Final[frozenset[str]] = frozenset(
+    {
+        "google",
+        "openai",
+        "openai_images",
+        "xai",
+        "minimax",
+        "stepfun",
+        "zai",
+        "grok2api",
+        "doubao",
+    }
+)
+
 
 def normalize_api_type(api_type: str | None) -> str:
     """规范化 API 类型字符串（小写 + 去空格 + 连字符转下划线）。"""
@@ -56,3 +70,18 @@ def get_api_provider(api_type: str | None) -> ApiProvider:
     未知值回退到 ``OpenAICompatProvider``。
     """
     return _PROVIDERS.get(normalize_api_type(api_type), _OPENAI)
+
+
+def is_known_api_type(api_type: str | None) -> bool:
+    """检查是否为已注册的 canonical API 类型。"""
+    return normalize_api_type(api_type) in _PROVIDERS
+
+
+def iter_api_types() -> tuple[str, ...]:
+    """返回已注册 API 类型，顺序与注册表一致。"""
+    return tuple(_PROVIDERS.keys())
+
+
+def supports_image_edit(api_type: str | None) -> bool:
+    """检查供应商是否支持带参考图的改图请求。"""
+    return normalize_api_type(api_type) in _IMAGE_EDIT_CAPABLE
