@@ -15,15 +15,17 @@ import re
 import tempfile
 import urllib.parse
 import urllib.request
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import aiohttp
 from astrbot.api import logger
 
-from .api import get_api_provider, normalize_api_type
+from .api import get_api_provider, normalize_api_type, supports_image_edit
 from .api_headers import apply_api_key_to_headers, extract_api_key_from_headers
 from .api_types import APIError, ApiRequestConfig
+from .openai_image_size import derive_custom_size_from_preset_params
 
 try:
     from .tl_utils import (
@@ -127,6 +129,10 @@ class GeminiAPIClient:
 
         # KeyManager 实例（由主插件注入，用于多 Key 轮换和每日限额）
         self._key_manager = None
+        self.provider_candidates: list[Any] = []
+        self._candidate_key_pools: dict[str, list[str]] = {}
+        self._candidate_key_indices: dict[str, int] = {}
+        self._default_proxy = self.proxy
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """获取或创建可复用的 aiohttp 会话"""
@@ -171,6 +177,28 @@ class GeminiAPIClient:
         """设置 KeyManager 实例（用于多 Key 轮换和每日限额）"""
         self._key_manager = key_manager
 
+    def set_provider_candidates(self, candidates: list[Any]) -> None:
+        """设置当前可用的供应商候选列表。"""
+        self.provider_candidates = list(candidates or [])
+        self._candidate_key_pools = {}
+        for candidate in self.provider_candidates:
+            candidate_id = str(
+                getattr(candidate, "id", None)
+                or normalize_api_type(getattr(candidate, "api_type", ""))
+            )
+            api_keys = list(getattr(candidate, "api_keys", []) or [])
+            if candidate_id and api_keys:
+                self._candidate_key_pools[candidate_id] = api_keys
+                self._candidate_key_indices.setdefault(candidate_id, 0)
+
+    async def set_proxy(self, proxy: str | None) -> None:
+        """切换代理配置，变化时关闭旧 session 以便下次重建。"""
+        proxy = proxy or None
+        if self.proxy == proxy:
+            return
+        await self.close()
+        self.proxy = proxy
+
     async def get_key_for_api_type(self, api_type: str) -> str | None:
         """从 KeyManager 获取指定 API 类型的可用 Key
 
@@ -190,8 +218,186 @@ class GeminiAPIClient:
             # KeyManager 返回 None 表示所有 Key 已耗尽
             logger.warning(f"[KeyManager] {api_type} 所有 Key 今日额度已用尽")
             return None
+        if api_type in self._candidate_key_pools:
+            pool = self._candidate_key_pools[api_type]
+            index = self._candidate_key_indices.get(api_type, 0)
+            return pool[index % len(pool)]
         # 回退到默认 Key
         return await self.get_next_api_key()
+
+    async def rotate_key_for_scope(self, key_scope: str) -> str | None:
+        if key_scope in self._candidate_key_pools:
+            pool = self._candidate_key_pools[key_scope]
+            if not pool:
+                return None
+            index = (self._candidate_key_indices.get(key_scope, 0) + 1) % len(pool)
+            self._candidate_key_indices[key_scope] = index
+            return pool[index]
+
+        await self.rotate_api_key()
+        return await self.get_next_api_key()
+
+    def _provider_setting_attr(self, api_type: str) -> str | None:
+        mapping = {
+            "doubao": "doubao_settings",
+            "minimax": "minimax_settings",
+            "stepfun": "stepfun_settings",
+            "sensenova": "sensenova_settings",
+            "xai": "xai_settings",
+            "openai_images": "openai_images_settings",
+        }
+        return mapping.get(normalize_api_type(api_type))
+
+    def _apply_candidate_settings(self, candidate: Any) -> None:
+        attr = self._provider_setting_attr(getattr(candidate, "api_type", ""))
+        if attr:
+            setattr(self, attr, getattr(candidate, "settings", None) or {})
+
+    @staticmethod
+    def _candidate_model(candidate: Any) -> str:
+        model = getattr(candidate, "model", "")
+        if model:
+            return str(model)
+        settings = getattr(candidate, "settings", None) or {}
+        if normalize_api_type(getattr(candidate, "api_type", "")) == "doubao":
+            return str(settings.get("endpoint_id") or "")
+        return str(settings.get("model") or "")
+
+    @staticmethod
+    def _candidate_api_base(candidate: Any) -> str | None:
+        api_base = getattr(candidate, "api_base", "")
+        if api_base:
+            return str(api_base)
+        settings = getattr(candidate, "settings", None) or {}
+        value = settings.get("api_base")
+        return str(value).strip() if value else None
+
+    @staticmethod
+    def _candidate_proxy(candidate: Any) -> str | None:
+        proxy = getattr(candidate, "proxy", None)
+        if proxy:
+            return str(proxy)
+        settings = getattr(candidate, "settings", None) or {}
+        value = settings.get("proxy")
+        return str(value).strip() if value else None
+
+    @staticmethod
+    def _candidate_supports_image_edit(candidate: Any) -> bool:
+        support_flag = getattr(candidate, "supports_image_edit", None)
+        if support_flag is not None:
+            return bool(support_flag)
+        api_type = getattr(candidate, "api_type", "")
+        return supports_image_edit(api_type)
+
+    @staticmethod
+    def _coerce_max_reference_images(value: Any) -> int:
+        try:
+            return max(int(value), 0)
+        except (TypeError, ValueError):
+            return 6
+
+    @staticmethod
+    def _candidate_resolution_values(
+        base_config: ApiRequestConfig, candidate: Any
+    ) -> tuple[str | None, str | None]:
+        settings = getattr(candidate, "settings", None) or {}
+        api_type = normalize_api_type(getattr(candidate, "api_type", ""))
+        resolution = (
+            base_config.resolution
+            if base_config.resolution is not None
+            else (settings.get("resolution") or "1K")
+        )
+        aspect_ratio = (
+            base_config.aspect_ratio
+            if base_config.aspect_ratio is not None
+            else (settings.get("aspect_ratio") or "1:1")
+        )
+
+        if (
+            api_type == "openai_images"
+            and str(settings.get("size_mode") or "").strip().lower() == "custom"
+            and resolution
+            and aspect_ratio
+        ):
+            try:
+                return (
+                    derive_custom_size_from_preset_params(
+                        resolution,
+                        aspect_ratio,
+                        resolution_field_name="provider.resolution",
+                        aspect_ratio_field_name="provider.aspect_ratio",
+                    ),
+                    "",
+                )
+            except ValueError as exc:
+                logger.warning(
+                    "[openai_images] 根据预设参数生成 custom size 失败，回退原参数: %s",
+                    exc,
+                )
+
+        return resolution, aspect_ratio
+
+    def _build_candidate_config(
+        self, base_config: ApiRequestConfig, candidate: Any
+    ) -> ApiRequestConfig:
+        settings = getattr(candidate, "settings", None) or {}
+        api_type = normalize_api_type(getattr(candidate, "api_type", ""))
+
+        max_refs = self._coerce_max_reference_images(
+            settings.get("max_reference_images", 6)
+        )
+        reference_images = base_config.reference_images
+        if reference_images and max_refs > 0:
+            if len(reference_images) > max_refs:
+                logger.warning(
+                    "参考图片数量 (%s) 超过 %s 的限制 (%s)，将截取前 %s 张",
+                    len(reference_images),
+                    getattr(candidate, "id", api_type),
+                    max_refs,
+                    max_refs,
+                )
+            reference_images = reference_images[:max_refs]
+        elif reference_images and max_refs <= 0:
+            reference_images = []
+
+        resolution, aspect_ratio = self._candidate_resolution_values(
+            base_config, candidate
+        )
+        enable_text_response = bool(settings.get("enable_text_response", False))
+        response_modalities = "TEXT_IMAGE" if enable_text_response else "IMAGE"
+
+        resolution_param_name = (
+            str(settings.get("resolution_param_name") or "").strip() or "image_size"
+        )
+        aspect_ratio_param_name = (
+            str(settings.get("aspect_ratio_param_name") or "").strip()
+            or "aspect_ratio"
+        )
+
+        return replace(
+            base_config,
+            model=self._candidate_model(candidate) or base_config.model,
+            api_type=api_type,
+            api_base=self._candidate_api_base(candidate) or base_config.api_base,
+            api_key=None,
+            candidate_id=getattr(candidate, "id", None) or api_type,
+            resolution=resolution,
+            aspect_ratio=aspect_ratio,
+            enable_grounding=bool(settings.get("enable_grounding", False)),
+            enable_text_response=enable_text_response,
+            response_modalities=response_modalities,
+            force_resolution=bool(settings.get("force_resolution", False)),
+            resolution_param_name=resolution_param_name,
+            aspect_ratio_param_name=aspect_ratio_param_name,
+            reference_images=reference_images if reference_images else None,
+        )
+
+    def _candidate_key_count(self, key_scope: str) -> int:
+        if self._key_manager and self._key_manager.has_provider(key_scope):
+            return self._key_manager.key_count(key_scope)
+        if key_scope in self._candidate_key_pools:
+            return len(self._candidate_key_pools[key_scope])
+        return len(self.api_keys)
 
     @staticmethod
     def _coerce_supported_image_bytes(
@@ -434,18 +640,128 @@ class GeminiAPIClient:
         Returns:
             (image_urls, image_paths, text_content, thought_signature)，如果失败则返回空列表和None
         """
+        if self.provider_candidates:
+            return await self._generate_image_with_candidates(
+                config=config,
+                max_retries=max_retries,
+                total_timeout=total_timeout,
+                per_retry_timeout=per_retry_timeout,
+                max_total_time=max_total_time,
+            )
+
+        return await self._generate_image_single(
+            config=config,
+            max_retries=max_retries,
+            total_timeout=total_timeout,
+            per_retry_timeout=per_retry_timeout,
+            max_total_time=max_total_time,
+        )
+
+    async def _generate_image_with_candidates(
+        self,
+        config: ApiRequestConfig,
+        max_retries: int = 3,
+        total_timeout: int = 120,
+        per_retry_timeout: int = None,
+        max_total_time: int = None,
+    ) -> tuple[list[str], list[str], str | None, str | None]:
+        has_reference_images = bool(config.reference_images)
+        last_error: APIError | None = None
+        skipped_reasons: list[str] = []
+
+        for candidate in self.provider_candidates:
+            candidate_id = str(
+                getattr(candidate, "id", None)
+                or normalize_api_type(getattr(candidate, "api_type", ""))
+            )
+            api_type = normalize_api_type(getattr(candidate, "api_type", ""))
+
+            if has_reference_images and not self._candidate_supports_image_edit(
+                candidate
+            ):
+                reason = f"{candidate_id} 不支持参考图/改图"
+                skipped_reasons.append(reason)
+                logger.info("[provider_polling] 跳过候选：%s", reason)
+                continue
+
+            if not getattr(candidate, "api_keys", None):
+                reason = f"{candidate_id} 未配置 API Key"
+                skipped_reasons.append(reason)
+                logger.error("[provider_polling] 跳过候选：%s", reason)
+                continue
+
+            candidate_config = self._build_candidate_config(config, candidate)
+            self._apply_candidate_settings(candidate)
+            await self.set_proxy(self._candidate_proxy(candidate) or self._default_proxy)
+
+            logger.info(
+                "[provider_polling] 尝试供应商候选 %s (%s), 模型=%s",
+                candidate_id,
+                api_type,
+                candidate_config.model,
+            )
+
+            try:
+                return await self._generate_image_single(
+                    config=candidate_config,
+                    max_retries=max_retries,
+                    total_timeout=total_timeout,
+                    per_retry_timeout=per_retry_timeout,
+                    max_total_time=max_total_time,
+                )
+            except APIError as e:
+                last_error = e
+                logger.warning(
+                    "[provider_polling] 候选 %s 生成失败，继续尝试下一个：%s",
+                    candidate_id,
+                    e.message,
+                )
+            except Exception as e:
+                last_error = APIError(str(e), None, "unknown")
+                logger.warning(
+                    "[provider_polling] 候选 %s 生成异常，继续尝试下一个：%s",
+                    candidate_id,
+                    e,
+                )
+
+        if last_error:
+            raise APIError(
+                f"所有可用供应商候选均生成失败，最后错误：{last_error.message}",
+                last_error.status_code,
+                last_error.error_type,
+                last_error.error_code,
+                last_error.retryable,
+            ) from None
+
+        reason_text = "；".join(skipped_reasons) if skipped_reasons else "没有候选配置"
+        raise APIError(
+            f"没有可用于本次请求的供应商候选：{reason_text}",
+            None,
+            "no_available_provider",
+            retryable=False,
+        )
+
+    async def _generate_image_single(
+        self,
+        config: ApiRequestConfig,
+        max_retries: int = 3,
+        total_timeout: int = 120,
+        per_retry_timeout: int = None,
+        max_total_time: int = None,
+    ) -> tuple[list[str], list[str], str | None, str | None]:
         if not self.api_keys:
             raise ValueError("未配置 API 密钥")
 
         # 使用 KeyManager 获取 Key（支持多 Key 轮换和每日限额）
         if not config.api_key:
-            key = await self.get_key_for_api_type(config.api_type)
+            key_scope = config.candidate_id or config.api_type
+            key = await self.get_key_for_api_type(key_scope)
             if key is None:
                 # 所有 Key 今日额度已用尽
                 from .api_types import APIError
 
                 raise APIError(
-                    "所有 API Key 今日额度已用尽，请明天再试或添加更多 Key。",
+                    f"{key_scope} 的所有 API Key 今日额度已用尽，请明天再试或添加更多 Key。",
                     None,
                     "quota_exhausted",
                     retryable=False,
@@ -539,10 +855,11 @@ class GeminiAPIClient:
         loop = asyncio.get_running_loop()
         started_at = loop.time()
         last_error: APIError | None = None
+        key_scope = config.candidate_id if config and config.candidate_id else api_type
 
         async def rotate_key_if_possible(err: APIError) -> str | None:
             """在可用多 Key 且错误可能与 Key 相关时轮换，并更新 headers。"""
-            if not enable_smart_retry or len(self.api_keys) <= 1:
+            if not enable_smart_retry or self._candidate_key_count(key_scope) <= 1:
                 return None
 
             status = err.status_code
@@ -551,17 +868,16 @@ class GeminiAPIClient:
 
             try:
                 # 使用 KeyManager 轮换（支持每日限额，会预扣除额度）
-                if self._key_manager and self._key_manager.has_provider(api_type):
-                    new_key = await self._key_manager.rotate_key(api_type)
+                if self._key_manager and self._key_manager.has_provider(key_scope):
+                    new_key = await self._key_manager.rotate_key(key_scope)
                     if not new_key:
                         logger.warning(
-                            f"[KeyManager] {api_type} 轮换失败，所有 Key 今日额度已用尽"
+                            f"[KeyManager] {key_scope} 轮换失败，所有 Key 今日额度已用尽"
                         )
                         return None
                 else:
                     # 无 KeyManager 配置时使用默认轮换
-                    await self.rotate_api_key()
-                    new_key = await self.get_next_api_key()
+                    new_key = await self.rotate_key_for_scope(key_scope)
             except Exception as e:
                 logger.debug(f"轮换 API Key 失败，将继续使用当前 Key: {e}")
                 return None
@@ -618,7 +934,7 @@ class GeminiAPIClient:
             if status == 429:
                 return True
             if status in {401, 402, 403}:
-                return len(self.api_keys) > 1
+                return self._candidate_key_count(key_scope) > 1
             return False
 
         for attempt in range(effective_max_retries):

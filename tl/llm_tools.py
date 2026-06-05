@@ -58,12 +58,18 @@ def _get_openai_images_settings(plugin: Any) -> dict[str, Any]:
     if not plugin or not getattr(plugin, "cfg", None):
         return {}
 
+    for candidate in getattr(plugin.cfg, "provider_candidates", []) or []:
+        api_type = str(getattr(candidate, "api_type", "") or "").strip().lower()
+        if api_type.replace("-", "_") == "openai_images":
+            settings = getattr(candidate, "settings", None)
+            return settings if isinstance(settings, dict) else {}
+
     settings = getattr(plugin.cfg, "openai_images_settings", None)
     if isinstance(settings, dict) and settings:
         return settings
 
     overrides = getattr(plugin.cfg, "provider_overrides", None) or {}
-    candidate = overrides.get("openai_images", {})
+    candidate = overrides.get("openai_images#1") or overrides.get("openai_images", {})
     return candidate if isinstance(candidate, dict) else {}
 
 
@@ -71,9 +77,15 @@ def _is_openai_images_custom_size_mode(plugin: Any) -> bool:
     if not plugin or not getattr(plugin, "cfg", None):
         return False
 
-    api_type = str(getattr(plugin.cfg, "api_type", "") or "").strip().lower()
-    api_type = api_type.replace("-", "_")
-    if api_type != "openai_images":
+    has_openai_images = any(
+        str(getattr(candidate, "api_type", "") or "")
+        .strip()
+        .lower()
+        .replace("-", "_")
+        == "openai_images"
+        for candidate in (getattr(plugin.cfg, "provider_candidates", []) or [])
+    )
+    if not has_openai_images:
         return False
 
     try:

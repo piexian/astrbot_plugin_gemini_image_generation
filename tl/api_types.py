@@ -17,6 +17,7 @@ class ApiRequestConfig:
     api_type: str = "openai"
     api_base: str | None = None
     api_key: str | None = None
+    candidate_id: str | None = None
     resolution: str | None = None
     aspect_ratio: str | None = None
     enable_grounding: bool = False

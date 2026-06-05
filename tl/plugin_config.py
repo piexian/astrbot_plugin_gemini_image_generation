@@ -168,6 +168,8 @@ class PluginConfig:
     minimax_settings: dict[str, Any] = field(default_factory=dict)
     stepfun_settings: dict[str, Any] = field(default_factory=dict)
     sensenova_settings: dict[str, Any] = field(default_factory=dict)
+    xai_settings: dict[str, Any] = field(default_factory=dict)
+    openai_images_settings: dict[str, Any] = field(default_factory=dict)
 
     # 供应商配置覆盖
     # 结构：{candidate_id: {api_keys: [...], daily_limit_per_key: int, ...}}
@@ -458,6 +460,9 @@ class ConfigLoader:
                     continue
                 template_key = normalize_api_type(override.get("__template_key"))
                 if not template_key:
+                    message = f"第 {order + 1} 条供应商配置缺少供应商名称"
+                    config.provider_config_errors.append(message)
+                    logger.error(f"[配置加载] {message}")
                     continue
                 if not is_known_api_type(template_key):
                     message = f"未知供应商配置: {template_key}"
@@ -498,6 +503,19 @@ class ConfigLoader:
                     _validate_openai_images_settings(settings)
                 if template_key == "doubao":
                     self._normalize_doubao_settings(settings)
+
+                model_name = _entry_model(template_key, settings)
+                if not model_name:
+                    message = f"{template_key} 第 {len(candidates_by_type.get(template_key, [])) + 1} 条配置缺少模型"
+                    config.provider_config_errors.append(message)
+                    logger.error(f"[配置加载] {message}")
+                    continue
+
+                if not settings["api_keys"]:
+                    message = f"{template_key} 第 {len(candidates_by_type.get(template_key, [])) + 1} 条配置缺少 api_keys"
+                    config.provider_config_errors.append(message)
+                    logger.error(f"[配置加载] {message}")
+                    continue
 
                 edit_capable = supports_image_edit(template_key)
                 if (
@@ -577,6 +595,10 @@ class ConfigLoader:
         )
         config.sensenova_settings = self._first_settings_for(
             ordered_candidates, "sensenova"
+        )
+        config.xai_settings = self._first_settings_for(ordered_candidates, "xai")
+        config.openai_images_settings = self._first_settings_for(
+            ordered_candidates, "openai_images"
         )
 
     @staticmethod

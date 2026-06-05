@@ -149,15 +149,6 @@ class ImageGenerator:
         )
         all_reference_images = valid_msg_images + valid_avatar_images
 
-        if (
-            all_reference_images
-            and len(all_reference_images) > self.max_reference_images
-        ):
-            logger.warning(
-                f"参考图片数量 ({len(all_reference_images)}) 超过限制 ({self.max_reference_images})，将截取前 {self.max_reference_images} 张"
-            )
-            all_reference_images = all_reference_images[: self.max_reference_images]
-
         # 计算截断后的数量
         final_msg_count = min(len(valid_msg_images), len(all_reference_images))
         final_avatar_count = len(all_reference_images) - final_msg_count
@@ -168,36 +159,19 @@ class ImageGenerator:
 [System Note]
 The last {final_avatar_count} image(s) provided are User Avatars (marked as optional reference). You may use them for character consistency if needed, but they are NOT mandatory if they conflict with the requested style."""
 
-        response_modalities = "TEXT_IMAGE" if self.enable_text_response else "IMAGE"
-        effective_resolution = (
-            override_resolution if override_resolution is not None else self.resolution
-        )
-        effective_aspect_ratio = (
-            override_aspect_ratio
-            if override_aspect_ratio is not None
-            else self.aspect_ratio
-        )
         request_config = ApiRequestConfig(
-            model=self.model,
+            model="",
             prompt=prompt,
-            api_type=self.api_type,
-            api_base=self.api_base,
-            resolution=effective_resolution,
-            aspect_ratio=effective_aspect_ratio,
-            enable_grounding=self.enable_grounding,
-            response_modalities=response_modalities,
+            api_type="",
+            api_base=None,
+            resolution=override_resolution,
+            aspect_ratio=override_aspect_ratio,
             reference_images=all_reference_images if all_reference_images else None,
             enable_smart_retry=self.enable_smart_retry,
-            enable_text_response=self.enable_text_response,
-            force_resolution=self.force_resolution,
             image_input_mode="force_base64",
-            resolution_param_name=self.resolution_param_name,
-            aspect_ratio_param_name=self.aspect_ratio_param_name,
         )
 
         logger.info("图像生成请求:")
-        logger.info(f"  模型: {self.model}")
-        logger.info(f"  API 类型: {self.api_type}")
         logger.info(
             f"  参考图片: {len(all_reference_images) if all_reference_images else 0} 张"
         )

@@ -99,6 +99,11 @@ class KeyManager:
         """检查是否有指定供应商的 Key 配置"""
         return api_type in self._providers
 
+    def key_count(self, api_type: str) -> int:
+        """返回指定供应商配置的 Key 数量。"""
+        provider = self._providers.get(api_type)
+        return len(provider.api_keys) if provider else 0
+
     async def _load_from_kv(self) -> None:
         """从 KV 存储加载使用记录"""
         if self._loaded or not self._get_kv:
