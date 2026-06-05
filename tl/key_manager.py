@@ -177,7 +177,14 @@ class KeyManager:
                 if key in provider.key_records:
                     record = provider.key_records[key]
                     saved_date = str(key_data.get("last_reset_date", ""))
-                    saved_usage = int(key_data.get("usage_count", 0) or 0)
+                    saved_raw = key_data.get("usage_count", 0)
+                    try:
+                        saved_usage = int(saved_raw or 0)
+                    except (TypeError, ValueError):
+                        logger.warning(
+                            f"[KeyManager] 无法解析 usage_count={saved_raw!r}，已重置为 0"
+                        )
+                        saved_usage = 0
                     if saved_date > record.last_reset_date:
                         record.last_reset_date = saved_date
                         record.usage_count = saved_usage

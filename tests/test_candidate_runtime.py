@@ -69,6 +69,43 @@ async def test_key_manager_keeps_same_key_separate_across_provider_types() -> No
 
 
 @pytest.mark.asyncio
+async def test_key_manager_ignores_malformed_persisted_usage_count() -> None:
+    async def get_kv(key, default):
+        return {
+            "google#1": {
+                "keys": {
+                    "bad-key": {
+                        "usage_count": "not-a-number",
+                        "last_reset_date": "2026-06-06",
+                    },
+                    "good-key": {
+                        "usage_count": "3",
+                        "last_reset_date": "2026-06-06",
+                    },
+                }
+            }
+        }
+
+    manager = KeyManager(
+        _Config(
+            provider_overrides={
+                "google#1": {
+                    "api_keys": ["bad-key", "good-key"],
+                    "daily_limit_per_key": 10,
+                },
+            }
+        ),
+        get_kv=get_kv,
+    )
+
+    await manager._load_from_kv()
+    status = manager.get_key_status("google#1")
+
+    assert status["keys"][0]["usage_today"] == 0
+    assert status["keys"][1]["usage_today"] == 3
+
+
+@pytest.mark.asyncio
 async def test_candidate_polling_copies_stats_back_to_original_config() -> None:
     client = GeminiAPIClient(["fallback"])
     candidate = _Candidate(
