@@ -430,9 +430,7 @@ class GeminiAPIClient:
         )
 
     @staticmethod
-    def _copy_request_stats(
-        source: ApiRequestConfig, target: ApiRequestConfig
-    ) -> None:
+    def _copy_request_stats(source: ApiRequestConfig, target: ApiRequestConfig) -> None:
         target.retry_count = source.retry_count
         target.token_usage = source.token_usage
         target.retry_note = source.retry_note

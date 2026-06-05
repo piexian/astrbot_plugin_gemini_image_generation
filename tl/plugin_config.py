@@ -23,6 +23,7 @@ from .provider_metadata import (
 DOUBAO_SEQUENTIAL_IMAGES_MIN = 2
 DOUBAO_SEQUENTIAL_IMAGES_MAX = 15
 
+
 def _validate_openai_images_settings(settings: dict[str, Any]) -> None:
     """校验 openai_images 覆盖配置。"""
     try:
@@ -518,9 +519,8 @@ class ConfigLoader:
                 api_type for api_type in candidates_by_type if api_type not in seen
             ]
             if missing_from_polling:
-                message = (
-                    "供应商配置未加入轮询表，已忽略: "
-                    + ", ".join(missing_from_polling)
+                message = "供应商配置未加入轮询表，已忽略: " + ", ".join(
+                    missing_from_polling
                 )
                 config.provider_config_errors.append(message)
                 logger.error(f"[配置加载] {message}")
