@@ -46,7 +46,6 @@ class PluginConfig:
     """插件配置数据类"""
 
     # API 设置
-    provider_id: str = ""
     vision_provider_id: str = ""
     vision_model: str = ""
     api_type: str = ""
@@ -338,7 +337,6 @@ class ConfigLoader:
 
         # API 设置
         api_settings = self.raw_config.get("api_settings", {})
-        config.provider_id = api_settings.get("provider_id") or ""
         config.vision_provider_id = api_settings.get("vision_provider_id") or ""
         config.vision_model = (api_settings.get("vision_model") or "").strip()
         config.api_type = (api_settings.get("api_type") or "").strip()

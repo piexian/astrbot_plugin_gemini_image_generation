@@ -6,23 +6,22 @@
 
 | 配置项 | 说明 |
 |--------|------|
-| `api_settings.provider_id` | 生图模型提供商，从 AstrBot 提供商列表选择；豆包可不填 |
 | `api_settings.api_type` | API 类型：`google` / `openai` / `openai_images` / `xai` / `minimax` / `stepfun` / `sensenova` / `zai` / `grok2api` / `doubao` |
+| `api_settings.provider_overrides` | 生图 API 供应商配置，选择与 `api_type` 同名模板并填写 `api_keys` |
 
 ## api_settings
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
-| `provider_id` | - | 生图模型提供商 |
 | `api_type` | `openai` | API 类型 |
-| `model` | - | 可选，覆盖提供商模型名称 |
+| `model` | - | 可选通用模型名；`provider_overrides` 同名模板中的模型配置优先于此项 |
 | `proxy` | - | 全局代理地址，支持 `http://`、`https://`、`socks5://`；留空读取环境变量 |
 | `vision_provider_id` | - | 可选，用于切图前 AI 识别网格行列 |
-| `provider_overrides` | `[]` | 可选，按 API 类型覆盖密钥、模型、端点、代理和每日限额 |
+| `provider_overrides` | `[]` | 按 API 类型配置密钥、模型、端点、代理和每日限额 |
 
 ## api_settings.provider_overrides
 
-`provider_overrides` 是 `template_list` 配置项。选择对应模板后，该模板内的配置会优先于 AstrBot 提供商配置：
+`provider_overrides` 是 `template_list` 配置项。选择与 `api_type` 对应的模板后，插件会从该模板读取生图 API 配置：
 
 | 通用配置项 | 默认值 | 说明 |
 |------------|--------|------|

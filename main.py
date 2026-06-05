@@ -21,7 +21,6 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import Image as AstrImage
 from astrbot.api.message_components import Node, Plain
 from astrbot.api.star import Context, Star
-from astrbot.core.provider.entities import ProviderType
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
 from .tl import (
@@ -60,8 +59,8 @@ from .tl.openai_image_size import derive_custom_size_from_preset_params
 from .tl.tl_api import APIClient, ApiRequestConfig, get_api_client
 from .tl.tl_utils import AvatarManager, cleanup_old_images, format_error_message
 
-# 各 provider 的 settings 字段在 cfg / api_client 上的属性名映射。
-# 新增 provider 时只需在此 map 中追加一行即可被 _load_provider_from_context 自动绑定。
+# 各插件内 API provider 的 settings 字段在 cfg / api_client 上的属性名映射。
+# 新增 provider 时只需在此 map 中追加一行即可被 _load_api_client_from_config 自动绑定。
 PROVIDER_SETTINGS_ATTR_MAP: dict[str, str] = {
     "doubao": "doubao_settings",
     "minimax": "minimax_settings",
@@ -109,7 +108,7 @@ class GeminiImageGenerationPlugin(Star):
         self._init_modules()
 
         # 尝试加载 API 客户端（支持插件重载场景）
-        self._load_provider_from_context(quiet=True)
+        self._load_api_client_from_config(quiet=True)
 
         # 注册 LLM 工具
         self._register_llm_tools()
@@ -343,20 +342,19 @@ class GeminiImageGenerationPlugin(Star):
         """确保 API 客户端已初始化"""
         if self.api_client:
             return True
-        self._load_provider_from_context(quiet=quiet)
+        self._load_api_client_from_config(quiet=quiet)
         if not self.api_client:
             if not quiet:
-                logger.error("API 客户端仍未初始化，请检查 AstrBot 提供商配置")
+                logger.error("API 客户端仍未初始化，请检查插件 API 配置")
             return False
         return True
 
-    def _load_provider_from_context(self, *, quiet: bool = False):
-        """从 AstrBot 提供商读取模型/密钥并初始化客户端"""
+    def _load_api_client_from_config(self, *, quiet: bool = False):
+        """从插件配置读取模型/密钥并初始化客户端"""
         if not quiet:
-            logger.debug("尝试读取 AstrBot 提供商配置")
+            logger.debug("尝试读取插件 API 配置")
 
         api_settings = self.raw_config.get("api_settings", {})
-        provider_id = api_settings.get("provider_id") or self.cfg.provider_id
         manual_api_type = (api_settings.get("api_type") or "").strip()
         manual_api_base = (api_settings.get("custom_api_base") or "").strip()
         manual_model = (api_settings.get("model") or "").strip()
@@ -376,53 +374,7 @@ class GeminiImageGenerationPlugin(Star):
         if manual_model and not self.cfg.model:
             self.cfg.model = manual_model
 
-        try:
-            provider_mgr = getattr(self.context, "provider_manager", None)
-            provider = None
-            if provider_mgr:
-                if provider_id and hasattr(provider_mgr, "inst_map"):
-                    provider = provider_mgr.inst_map.get(provider_id)
-                if not provider:
-                    provider = provider_mgr.get_using_provider(
-                        ProviderType.CHAT_COMPLETION, None
-                    )
-
-            if provider:
-                if not self.cfg.provider_id:
-                    self.cfg.provider_id = provider.provider_config.get("id", "")
-
-                prov_model = provider.get_model() or provider.provider_config.get(
-                    "model_config", {}
-                ).get("model")
-                if prov_model and not manual_model and not self.cfg.model:
-                    self.cfg.model = prov_model
-
-                prov_keys = provider.get_keys() or []
-                if not self.cfg.api_keys:
-                    self.cfg.api_keys = [
-                        str(k).strip() for k in prov_keys if str(k).strip()
-                    ]
-
-                prov_base = provider.provider_config.get("api_base")
-                if prov_base and not manual_api_base and not self.cfg.api_base:
-                    # 去掉末尾的 /v1，因为插件内部会自动根据 API 类型添加正确的版本前缀
-                    if prov_base.rstrip("/").endswith("/v1"):
-                        prov_base = prov_base.rstrip("/").removesuffix("/v1")
-                        logger.debug(f"已去除 api_base 末尾的 /v1: {prov_base}")
-                    self.cfg.api_base = prov_base
-
-                logger.info(
-                    f"✓ 已从 AstrBot 提供商读取配置，类型={self.cfg.api_type} 模型={self.cfg.model} 密钥={len(self.cfg.api_keys)}"
-                )
-            else:
-                if not quiet:
-                    logger.error(
-                        "未找到可用的 AstrBot 提供商，无法读取模型/密钥，请在主配置中选择提供商"
-                    )
-        except Exception as e:
-            logger.error(f"读取 AstrBot 提供商配置失败: {e}")
-
-        # provider_overrides 中的配置优先于 AstrBot 提供商配置
+        # 生图凭据只从插件 provider_overrides 读取，不再复用 AstrBot 本体提供商。
         api_type_norm = normalize_api_type(self.cfg.api_type)
         overrides = getattr(self.cfg, "provider_overrides", None) or {}
         override_settings = overrides.get(api_type_norm, {})
@@ -453,6 +405,10 @@ class GeminiImageGenerationPlugin(Star):
             # 日志显示覆盖来源
             logger.info(
                 f"✓ 已从 provider_overrides[{api_type_norm}] 读取配置，模型={self.cfg.model} 密钥={len(self.cfg.api_keys)}"
+            )
+        elif not quiet:
+            logger.error(
+                f"未配置 provider_overrides[{api_type_norm}]，无法读取生图 API 密钥"
             )
 
         if self.cfg.api_keys:
@@ -508,29 +464,31 @@ class GeminiImageGenerationPlugin(Star):
                 logger.info(f"  - 代理: {self.api_client.proxy}")
         else:
             if not quiet:
-                logger.debug("启动阶段未读取到 API 密钥，等待 AstrBot 加载完成后再尝试")
+                logger.error(
+                    "未配置生图 API 密钥，请在 api_settings.provider_overrides 中添加当前 api_type 对应模板并填写 api_keys"
+                )
 
     # ===== 事件处理 =====
 
     @filter.on_astrbot_loaded()
     async def on_astrbot_loaded(self):
-        """AstrBot 完成初始化后加载提供商"""
+        """AstrBot 完成初始化后加载插件 API 配置"""
         # 初始化时尝试加载
-        self._load_provider_from_context(quiet=True)
+        self._load_api_client_from_config(quiet=True)
         if self.llm_image_tool:
             self.llm_image_tool.refresh_from_plugin()
         if self.cfg.help_render_mode == "local":
             asyncio.create_task(self._ensure_font_for_local_mode())
 
         if not self.api_client:
-            self._load_provider_from_context()
+            self._load_api_client_from_config()
             if self.llm_image_tool:
                 self.llm_image_tool.refresh_from_plugin()
 
         if self.api_client:
             logger.info("Gemini 图像生成插件已加载")
         else:
-            logger.error("API 客户端未初始化，请检查提供商配置")
+            logger.error("API 客户端未初始化，请检查插件 API 配置")
 
     async def _ensure_font_for_local_mode(self):
         """确保 local 渲染模式所需的字体已下载"""
@@ -556,8 +514,8 @@ class GeminiImageGenerationPlugin(Star):
         if not self._ensure_api_client():
             yield event.plain_result(
                 "❌ API 客户端未初始化。\n"
-                "🧐 可能原因：服务启动过快，提供商尚未加载或密钥缺失。\n"
-                "✅ 建议：确认 AstrBot 主配置已选择提供商并填写密钥后重试。"
+                "🧐 可能原因：未在插件 provider_overrides 中配置当前 API 类型的密钥。\n"
+                "✅ 建议：在 api_settings.provider_overrides 中添加当前 api_type 对应模板并填写 api_keys 后重试。"
             )
             return
 

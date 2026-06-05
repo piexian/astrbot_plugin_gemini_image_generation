@@ -43,13 +43,10 @@ https://github.com/piexian/astrbot_plugin_gemini_image_generation
 
 ## 最小配置
 
-至少需要配置一个可用的图像模型供应商。以下两种方式 **二选一**：
+至少需要配置一个可用的图像模型供应商：
 
-- **方式 A：复用 AstrBot 提供商**
-  - 在 `api_settings.provider_id` 中选择已在 AstrBot 中配置好的提供商，并把 `api_settings.api_type` 设为对应类型（`google` / `openai` 等）。
-- **方式 B：使用插件内置覆盖配置**
-  - 在 `api_settings.api_type` 中选择目标类型；
-  - 在 `api_settings.provider_overrides` 中添加同名模板（如 `google`），填入 `api_keys`、`model`、`api_base` 等字段；
+- 在 `api_settings.api_type` 中选择目标类型；
+- 在 `api_settings.provider_overrides` 中添加同名模板（如 `google`），填入 `api_keys`、`model`、`api_base` 等字段；
 
 常用配置入口：
 

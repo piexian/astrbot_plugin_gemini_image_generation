@@ -4,13 +4,6 @@
     "type": "object",
     "hint": "配置 API 端点和相关设置",
     "items": {
-      "provider_id": {
-        "description": "生图模型提供商（可选）",
-        "type": "string",
-        "hint": "从 AstrBot 提供商列表中选择，插件自动读取模型/密钥/端点；不选将无法调用",
-        "_special": "select_provider",
-        "default": ""
-      },
       "api_type": {
         "description": "API 类型（必选）",
         "type": "string",
@@ -32,7 +25,7 @@
       "model": {
         "description": "模型名称（可选）",
         "type": "string",
-        "hint": "如需覆盖 AstrBot 提供商的模型，可在此填写。例如 gemini-3-pro-image-preview 或 OpenAI 兼容模型名。留空使用提供商默认模型",
+        "hint": "可填写通用模型名。例如 gemini-3-pro-image-preview 或 OpenAI 兼容模型名。provider_overrides 同名模板中的模型配置优先于此项",
         "default": ""
       },
       "proxy": {
@@ -49,9 +42,9 @@
         "default": ""
       },
       "provider_overrides": {
-        "description": "供应商配置覆盖（和上面的供应商2选一）",
+        "description": "生图 API 供应商配置",
         "type": "template_list",
-        "hint": "覆盖特定 API 类型的配置（多 Key 轮换、每日限额等），优先于 AstrBot 提供商配置",
+        "hint": "按 API 类型配置生图密钥、模型、端点、代理、多 Key 轮换和每日限额",
         "default": [],
         "templates": {
           "google": {
@@ -757,7 +750,7 @@
       "llm_tool_timeout_reserve_percent": {
         "name": "LLM Tool Timeout Reserve Percent",
         "description": "LLM 工具超时预留百分比",
-        "hint": "LLM 工具触发生图时，会从当前本体配置中按比例预留安全时间。剩余时间用于前台同步等待；超出后转为后台发送。默认 50%，即默认 60 秒超时下，前台最多等待约 30 秒。",
+        "hint": "LLM 工具触发生图时，会从当前聊天工具超时配置中按比例预留安全时间。剩余时间用于前台同步等待；超出后转为后台发送。默认 50%，即默认 60 秒超时下，前台最多等待约 30 秒。",
         "type": "int",
         "default": 50,
         "slider": {"min": 1, "max": 100, "step": 1}
