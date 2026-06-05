@@ -6,7 +6,11 @@
 
 ### Changed
 
-- 生图 API 客户端不再复用 AstrBot 本体提供商配置；请在 `api_settings.provider_overrides` 中选择与 `api_type` 对应的模板并填写 `api_keys`、`model`、`api_base` 等字段。
+- 生图 API 客户端不再复用 AstrBot 本体提供商配置；请在 `provider_settings.provider_overrides` 中添加供应商模板并填写 `api_keys`、`model`、`api_base` 等字段。
+- 原 `api_settings` 主题移除，新增 `provider_settings` 作为供应商配置大主题；`api_type` 全局字段移除，供应商类型由 `provider_overrides` 模板自身决定。
+- 新增 `provider_settings.provider_polling` 轮询表，按列表从上到下尝试生成；重复供应商名称自动去重，未知名称记录配置错误但不影响其他有效供应商使用。
+- `provider_overrides` 支持多个相同供应商模板，同类型配置按 `priority` 从高到低尝试；相同优先级按配置表顺序尝试。
+- `resolution`、`aspect_ratio`、`max_reference_images` 移入每个供应商条目；Google 的 `enable_text_response`、`enable_grounding` 也移入 Google 条目；OpenAI/OpenAI 兼容的 `force_resolution`、参数名设置移入对应供应商条目。
 
 ## [1.10.6] - 2026-05-19
 

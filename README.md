@@ -45,8 +45,8 @@ https://github.com/piexian/astrbot_plugin_gemini_image_generation
 
 至少需要配置一个可用的图像模型供应商：
 
-- 在 `api_settings.api_type` 中选择目标类型；
-- 在 `api_settings.provider_overrides` 中添加同名模板（如 `google`），填入 `api_keys`、`model`、`api_base` 等字段；
+- 在 `provider_settings.provider_overrides` 中添加供应商模板（如 `google`），填入 `api_keys`、`model`、`api_base` 等字段；
+- 可选配置 `provider_settings.provider_polling`，按列表从上到下自动尝试生成；重复供应商会自动去重，同类型多条配置按 `priority` 排序。
 
 常用配置入口：
 

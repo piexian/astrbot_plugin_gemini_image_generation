@@ -157,10 +157,6 @@ class PluginConfig:
     # API 设置
     vision_provider_id: str = ""
     vision_model: str = ""
-    api_type: str = ""
-    api_base: str = ""
-    model: str = ""
-    api_keys: list[str] = field(default_factory=list)
     proxy: str | None = None
 
     # 供应商特定设置
@@ -179,18 +175,10 @@ class PluginConfig:
     provider_config_errors: list[str] = field(default_factory=list)
 
     # 图像生成设置
-    resolution: str = "1K"
-    aspect_ratio: str = "1:1"
-    enable_grounding: bool = False
-    max_reference_images: int = 6
-    enable_text_response: bool = False
     enable_sticker_split: bool = True
     enable_sticker_zip: bool = False
     preserve_reference_image_size: bool = False
     enable_llm_crop: bool = True
-    force_resolution: bool = False
-    resolution_param_name: str = "image_size"
-    aspect_ratio_param_name: str = "aspect_ratio"
     image_input_mode: str = "force_base64"
     max_inline_image_size_mb: float = 2.0  # 本地图片 base64 编码阈值（MB）
     llm_tool_timeout_reserve_percent: int = 50
@@ -577,13 +565,6 @@ class ConfigLoader:
             candidate.id: candidate.settings for candidate in ordered_candidates
         }
 
-        first = ordered_candidates[0] if ordered_candidates else None
-        if first:
-            config.api_type = first.api_type
-            config.api_base = first.api_base
-            config.model = first.model
-            config.api_keys = list(first.api_keys)
-
         config.doubao_settings = self._first_settings_for(
             ordered_candidates, "doubao"
         )
@@ -644,20 +625,12 @@ class ConfigLoader:
 
         # 图像生成设置
         image_settings = self.raw_config.get("image_generation_settings") or {}
-        config.resolution = image_settings.get("resolution") or "1K"
-        config.aspect_ratio = image_settings.get("aspect_ratio") or "1:1"
-        config.enable_grounding = image_settings.get("enable_grounding") or False
-        config.max_reference_images = image_settings.get("max_reference_images") or 6
-        config.enable_text_response = (
-            image_settings.get("enable_text_response") or False
-        )
         config.enable_sticker_split = image_settings.get("enable_sticker_split", True)
         config.enable_sticker_zip = image_settings.get("enable_sticker_zip") or False
         config.preserve_reference_image_size = (
             image_settings.get("preserve_reference_image_size") or False
         )
         config.enable_llm_crop = image_settings.get("enable_llm_crop", True)
-        config.force_resolution = image_settings.get("force_resolution") or False
         max_size = image_settings.get("max_inline_image_size_mb")
         if max_size is not None:
             try:
@@ -677,14 +650,6 @@ class ConfigLoader:
                 config.llm_tool_timeout_reserve_percent = (
                     PluginConfig().llm_tool_timeout_reserve_percent
                 )
-
-        # 自定义参数名
-        _res_param = (image_settings.get("resolution_param_name") or "").strip()
-        config.resolution_param_name = _res_param if _res_param else "image_size"
-        _aspect_param = (image_settings.get("aspect_ratio_param_name") or "").strip()
-        config.aspect_ratio_param_name = (
-            _aspect_param if _aspect_param else "aspect_ratio"
-        )
 
         # 表情包网格设置
         grid_raw = str(image_settings.get("sticker_grid") or "4x4").strip()

@@ -6,30 +6,42 @@
 
 | 配置项 | 说明 |
 |--------|------|
-| `api_settings.api_type` | API 类型：`google` / `openai` / `openai_images` / `xai` / `minimax` / `stepfun` / `sensenova` / `zai` / `grok2api` / `doubao` |
-| `api_settings.provider_overrides` | 生图 API 供应商配置，选择与 `api_type` 同名模板并填写 `api_keys` |
+| `provider_settings.provider_overrides` | 生图供应商配置表，至少添加一条有效模板并填写 `api_keys` 和模型字段 |
+| `provider_settings.provider_polling` | 可选轮询顺序；留空时按有效配置自动尝试 |
 
-## api_settings
+## provider_settings
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
-| `api_type` | `openai` | API 类型 |
-| `model` | - | 可选通用模型名；`provider_overrides` 同名模板中的模型配置优先于此项 |
 | `proxy` | - | 全局代理地址，支持 `http://`、`https://`、`socks5://`；留空读取环境变量 |
 | `vision_provider_id` | - | 可选，用于切图前 AI 识别网格行列 |
-| `provider_overrides` | `[]` | 按 API 类型配置密钥、模型、端点、代理和每日限额 |
+| `vision_model` | - | 可选，视觉识别模型名 |
+| `provider_polling` | `[]` | 供应商轮询表，按列表从上到下尝试；重复项自动去重 |
+| `provider_overrides` | `[]` | 生图供应商配置表，可添加多个相同类型模板 |
 
-## api_settings.provider_overrides
+## provider_settings.provider_overrides
 
-`provider_overrides` 是 `template_list` 配置项。选择与 `api_type` 对应的模板后，插件会从该模板读取生图 API 配置：
+`provider_overrides` 是 `template_list` 配置项。每条模板自带供应商类型，插件会从表中读取生图 API 配置，不再使用全局 `api_type`：
 
 | 通用配置项 | 默认值 | 说明 |
 |------------|--------|------|
+| `priority` | `0` | 同类型多条配置按优先级从高到低尝试；相同优先级按配置表从上到下 |
 | `api_keys` | `[]` | API Key 列表，支持多 Key 轮换 |
 | `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
 | `model` | - | 模型名称；豆包使用 `endpoint_id` |
 | `api_base` | - | API 端点地址 |
 | `proxy` | - | 独立代理地址，优先级高于全局代理和环境变量 |
+| `resolution` | `1K` | 该供应商默认分辨率；快速模式覆盖值优先 |
+| `aspect_ratio` | `1:1` | 该供应商默认长宽比；快速模式覆盖值优先 |
+| `max_reference_images` | `6` | 该供应商最多使用的参考图数量 |
+
+`provider_polling` 只填写供应商名称，例如：
+
+```text
+google / openai_images / minimax
+```
+
+列表按从上到下尝试生成，重复名称会自动去重；未知名称会记录配置错误并跳过。只要至少有一个有效供应商配置，插件仍可使用。改图或参考图请求会跳过不支持参考图的供应商，例如 `sensenova` 或开启 `generations_only` 的 `openai_images`。
 
 支持的模板：
 
@@ -37,26 +49,20 @@
 google / openai / zai / grok2api / xai / minimax / stepfun / sensenova / openai_images / doubao
 ```
 
-下方 `doubao_settings`、`openai_images_settings`、`xai_settings`、`minimax_settings`、`stepfun_settings`、`sensenova_settings` 章节对应这些模板的专用字段。配置时在 `api_settings.provider_overrides` 中选择相应模板。
+下方 `doubao_settings`、`openai_images_settings`、`xai_settings`、`minimax_settings`、`stepfun_settings`、`sensenova_settings` 章节对应这些模板的专用字段。配置时在 `provider_settings.provider_overrides` 中选择相应模板。
 
 ## image_generation_settings
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
-| `resolution` | `1K` | 分辨率：`1K` / `2K` / `4K` |
-| `aspect_ratio` | `1:1` | 长宽比：`1:1` / `16:9` / `4:3` / `3:2` / `9:16` / `4:5` / `5:4` / `21:9` / `3:4` / `2:3` |
 | `enable_sticker_split` | `true` | 表情包自动切割 |
 | `enable_sticker_zip` | `false` | 切分后打包 ZIP 发送 |
 | `sticker_grid` | `4x4` | 表情包提示词网格描述 |
 | `preserve_reference_image_size` | `false` | 改图时保留参考图尺寸 |
-| `enable_grounding` | `false` | Gemini 搜索接地 |
-| `max_reference_images` | `6` | 最大参考图数量 |
-| `enable_text_response` | `false` | 同时返回文本说明 |
-| `force_resolution` | `false` | 强制传分辨率参数 |
-| `resolution_param_name` | `image_size` | 自定义分辨率参数名 |
-| `aspect_ratio_param_name` | `aspect_ratio` | 自定义长宽比参数名 |
 | `max_inline_image_size_mb` | `2.0` | 本地图片 base64 编码阈值 |
 | `llm_tool_timeout_reserve_percent` | `50` | 为 `tool_call_timeout` 预留的百分比，剩余时间用于前台同步等待 |
+
+分辨率、长宽比、最大参考图数量、Google 文本响应、Google 搜索接地、OpenAI/OpenAI 兼容参数名等均在 `provider_settings.provider_overrides` 的各供应商条目内配置。
 
 ## quick_mode_settings
 
@@ -116,7 +122,7 @@ NapCat v4.8.115+ 支持 Stream API。插件默认仍先按 `max_inline_image_siz
 
 ## doubao_settings（豆包生图专用配置）
 
-配置路径：`api_settings.provider_overrides` 中选择 `doubao` 模板。
+配置路径：`provider_settings.provider_overrides` 中选择 `doubao` 模板。
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
@@ -134,7 +140,7 @@ NapCat v4.8.115+ 支持 Stream API。插件默认仍先按 `max_inline_image_siz
 
 ## openai_images_settings（OpenAI Images API 专用配置）
 
-配置路径：`api_settings.provider_overrides` 中选择 `openai_images` 模板。
+配置路径：`provider_settings.provider_overrides` 中选择 `openai_images` 模板。
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
@@ -144,7 +150,7 @@ NapCat v4.8.115+ 支持 Stream API。插件默认仍先按 `max_inline_image_siz
 | `api_base` | - | API 端点地址，留空使用 OpenAI 官方 |
 | `quality` | - | 图像质量。GPT image：`auto` / `high` / `medium` / `low`；dall-e-3：`hd` / `standard` |
 | `response_format` | `b64_json` | 响应格式：`b64_json` / `url` |
-| `size_mode` | `preset` | 尺寸模式：`preset` 使用全局分辨率映射；`custom` 使用 `custom_size` |
+| `size_mode` | `preset` | 尺寸模式：`preset` 使用供应商分辨率映射；`custom` 使用 `custom_size` |
 | `custom_size` | `1024x1024` | 自定义尺寸，仅 `size_mode=custom` 生效。格式 `WxH`，支持 `x` 或 `×` |
 | `style` | - | 图像风格，仅 dall-e-3：`vivid` / `natural` |
 | `background` | - | 背景透明度，仅 GPT image：`auto` / `transparent` / `opaque` |
@@ -179,7 +185,7 @@ NapCat v4.8.115+ 支持 Stream API。插件默认仍先按 `max_inline_image_siz
 
 ## xai_settings（xAI Images API 专用配置）
 
-配置路径：`api_settings.provider_overrides` 中选择 `xai` 模板。
+配置路径：`provider_settings.provider_overrides` 中选择 `xai` 模板。
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
@@ -201,7 +207,7 @@ NapCat v4.8.115+ 支持 Stream API。插件默认仍先按 `max_inline_image_siz
 
 ## minimax_settings（MiniMax 图片生成 API 专用配置）
 
-配置路径：`api_settings.provider_overrides` 中选择 `minimax` 模板。
+配置路径：`provider_settings.provider_overrides` 中选择 `minimax` 模板。
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
@@ -224,7 +230,7 @@ NapCat v4.8.115+ 支持 Stream API。插件默认仍先按 `max_inline_image_siz
 - 文生图：`POST /v1/image_generation`
 - 图生图：同一端点，通过 `subject_reference[].image_file` 传入参考图
 
-全局 `resolution` 和 `aspect_ratio` 的适配规则：
+供应商条目的 `resolution` 和 `aspect_ratio` 的适配规则：
 
 | 场景 | resolution | aspect_ratio | 实际行为 |
 |------|-----------|-------------|---------|
@@ -244,7 +250,7 @@ NapCat v4.8.115+ 支持 Stream API。插件默认仍先按 `max_inline_image_siz
 
 ## stepfun_settings（StepFun 图片生成 API 专用配置）
 
-配置路径：`api_settings.provider_overrides` 中选择 `stepfun` 模板。仅完全适配 `step-image-edit-2` 模型参数，其他模型名可填写但参数会按 step-image-edit-2 的格式透传。
+配置路径：`provider_settings.provider_overrides` 中选择 `stepfun` 模板。仅完全适配 `step-image-edit-2` 模型参数，其他模型名可填写但参数会按 step-image-edit-2 的格式透传。
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
@@ -296,7 +302,7 @@ NapCat v4.8.115+ 支持 Stream API。插件默认仍先按 `max_inline_image_siz
 
 ## sensenova_settings（SenseNova（商汤日日新）专用配置）
 
-配置路径：`api_settings.provider_overrides` 中选择 `sensenova` 模板。仅支持文生图，尺寸限定为 11 种官方预设。
+配置路径：`provider_settings.provider_overrides` 中选择 `sensenova` 模板。仅支持文生图，尺寸限定为 11 种官方预设。
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
@@ -312,7 +318,7 @@ NapCat v4.8.115+ 支持 Stream API。插件默认仍先按 `max_inline_image_siz
 - 文生图：`POST /v1/images/generations`
 - 不支持图生图（由 provider 在 `build_request()` 阶段报错）
 
-官方支持的 11 种固定尺寸（全局 `aspect_ratio` 会被映射到最接近的预设）：
+官方支持的 11 种固定尺寸（供应商条目的 `aspect_ratio` 会被映射到最接近的预设）：
 
 | 尺寸 | 近似比例 |
 |------|---------|

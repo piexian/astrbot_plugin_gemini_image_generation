@@ -1,32 +1,14 @@
 {
-  "api_settings": {
-    "description": "API 设置",
+  "provider_settings": {
+    "description": "供应商配置",
     "type": "object",
-    "hint": "配置 API 端点和相关设置",
+    "hint": "配置生图供应商、轮询顺序、视觉识别提供商和代理。生图不再复用 AstrBot 本体供应商。",
     "items": {
-      "api_type": {
-        "description": "API 类型（必选）",
-        "type": "string",
-        "hint": "必须选择 API 类型。 不同提供商支持的类型不同，请参考提供商说明",
-        "default": "openai",
-        "options": [
-          "google",
-          "openai",
-          "openai_images",
-          "xai",
-          "minimax",
-          "stepfun",
-          "sensenova",
-          "zai",
-          "grok2api",
-          "doubao"
-        ]
-      },
-      "model": {
-        "description": "模型名称（可选）",
-        "type": "string",
-        "hint": "可填写通用模型名。例如 gemini-3-pro-image-preview 或 OpenAI 兼容模型名。provider_overrides 同名模板中的模型配置优先于此项",
-        "default": ""
+      "provider_polling": {
+        "description": "供应商轮询顺序",
+        "type": "list",
+        "hint": "按列表从上到下尝试生成。填写供应商名称，如 google/openai/openai_images/xai/minimax/stepfun/sensenova/zai/grok2api/doubao。重复项会自动去重；未知名称会报错并跳过。留空时按配置表中的有效供应商顺序尝试。",
+        "default": []
       },
       "proxy": {
         "description": "全局代理地址",
@@ -41,16 +23,28 @@
         "_special": "select_provider",
         "default": ""
       },
+      "vision_model": {
+        "description": "视觉行列检测模型（可选）",
+        "type": "string",
+        "hint": "用于切图前 AI 识别网格行列的模型名，留空使用所选 AstrBot 视觉提供商默认模型",
+        "default": ""
+      },
       "provider_overrides": {
-        "description": "生图 API 供应商配置",
+        "description": "供应商配置表",
         "type": "template_list",
-        "hint": "按 API 类型配置生图密钥、模型、端点、代理、多 Key 轮换和每日限额",
+        "hint": "按表从上到下添加供应商配置；可添加多个同类型模板，同类型按 priority 排序后尝试。未知供应商会记录错误并跳过。",
         "default": [],
         "templates": {
           "google": {
             "description": "Google/Gemini API 覆盖配置",
             "hint": "配置 Google Gemini 官方 API 的密钥和端点",
             "items": {
+              "priority": {
+                "description": "优先级",
+                "type": "int",
+                "hint": "同类型供应商配置多条时按优先级从高到低尝试；相同优先级按配置表从上到下尝试。",
+                "default": 0
+              },
               "api_keys": {
                 "description": "API Key 列表",
                 "type": "list",
@@ -80,6 +74,71 @@
                 "type": "string",
                 "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式。优先级高于全局代理和环境变量",
                 "default": ""
+              },
+              "resolution": {
+                "description": "图像分辨率",
+                "type": "string",
+                "hint": "该供应商默认图像分辨率。快速模式传入覆盖值时优先使用快速模式。",
+                "default": "1K",
+                "options": [
+                  "1K",
+                  "2K",
+                  "4K"
+                ]
+              },
+              "aspect_ratio": {
+                "description": "长宽比",
+                "type": "string",
+                "hint": "该供应商默认长宽比。快速模式传入覆盖值时优先使用快速模式。",
+                "default": "1:1",
+                "options": [
+                  "1:1",
+                  "16:9",
+                  "4:3",
+                  "3:2",
+                  "9:16",
+                  "4:5",
+                  "5:4",
+                  "21:9",
+                  "3:4",
+                  "2:3"
+                ]
+              },
+              "max_reference_images": {
+                "description": "最大参考图片数量",
+                "type": "int",
+                "hint": "该供应商本次请求最多使用的参考图片数量；超过后按顺序截取。文生图-only 供应商可保持默认。",
+                "default": 6
+              },
+              "force_resolution": {
+                "description": "强制传递分辨率参数",
+                "type": "bool",
+                "hint": "启用后强制向该供应商请求体写入分辨率字段。",
+                "default": false
+              },
+              "resolution_param_name": {
+                "description": "分辨率参数名",
+                "type": "string",
+                "hint": "该供应商请求体中的分辨率字段名，例如 image_size、imageSize。留空使用 image_size。",
+                "default": "image_size"
+              },
+              "aspect_ratio_param_name": {
+                "description": "长宽比参数名",
+                "type": "string",
+                "hint": "该供应商请求体中的长宽比字段名，例如 aspect_ratio、aspectRatio。留空使用 aspect_ratio。",
+                "default": "aspect_ratio"
+              },
+              "enable_text_response": {
+                "description": "启用文本响应",
+                "type": "bool",
+                "hint": "启用后 Google/Gemini 在返回图片的同时返回文本说明。",
+                "default": false
+              },
+              "enable_grounding": {
+                "description": "启用 Google 搜索接地",
+                "type": "bool",
+                "hint": "启用后该 Google/Gemini 候选可使用 Google 搜索接地。仅确认模型支持时开启。",
+                "default": false
               }
             }
           },
@@ -87,6 +146,12 @@
             "description": "OpenAI 兼容 API 覆盖配置",
             "hint": "配置 OpenAI 兼容格式的 API 密钥和端点",
             "items": {
+              "priority": {
+                "description": "优先级",
+                "type": "int",
+                "hint": "同类型供应商配置多条时按优先级从高到低尝试；相同优先级按配置表从上到下尝试。",
+                "default": 0
+              },
               "api_keys": {
                 "description": "API Key 列表",
                 "type": "list",
@@ -116,6 +181,59 @@
                 "type": "string",
                 "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式。优先级高于全局代理和环境变量",
                 "default": ""
+              },
+              "resolution": {
+                "description": "图像分辨率",
+                "type": "string",
+                "hint": "该供应商默认图像分辨率。快速模式传入覆盖值时优先使用快速模式。",
+                "default": "1K",
+                "options": [
+                  "1K",
+                  "2K",
+                  "4K"
+                ]
+              },
+              "aspect_ratio": {
+                "description": "长宽比",
+                "type": "string",
+                "hint": "该供应商默认长宽比。快速模式传入覆盖值时优先使用快速模式。",
+                "default": "1:1",
+                "options": [
+                  "1:1",
+                  "16:9",
+                  "4:3",
+                  "3:2",
+                  "9:16",
+                  "4:5",
+                  "5:4",
+                  "21:9",
+                  "3:4",
+                  "2:3"
+                ]
+              },
+              "max_reference_images": {
+                "description": "最大参考图片数量",
+                "type": "int",
+                "hint": "该供应商本次请求最多使用的参考图片数量；超过后按顺序截取。文生图-only 供应商可保持默认。",
+                "default": 6
+              },
+              "force_resolution": {
+                "description": "强制传递分辨率参数",
+                "type": "bool",
+                "hint": "启用后强制向该供应商请求体写入分辨率字段。",
+                "default": false
+              },
+              "resolution_param_name": {
+                "description": "分辨率参数名",
+                "type": "string",
+                "hint": "该供应商请求体中的分辨率字段名，例如 image_size、imageSize。留空使用 image_size。",
+                "default": "image_size"
+              },
+              "aspect_ratio_param_name": {
+                "description": "长宽比参数名",
+                "type": "string",
+                "hint": "该供应商请求体中的长宽比字段名，例如 aspect_ratio、aspectRatio。留空使用 aspect_ratio。",
+                "default": "aspect_ratio"
               }
             }
           },
@@ -123,6 +241,12 @@
             "description": "Zai API 覆盖配置",
             "hint": "配置 Zai.is 的 API 密钥和端点",
             "items": {
+              "priority": {
+                "description": "优先级",
+                "type": "int",
+                "hint": "同类型供应商配置多条时按优先级从高到低尝试；相同优先级按配置表从上到下尝试。",
+                "default": 0
+              },
               "api_keys": {
                 "description": "API Key 列表",
                 "type": "list",
@@ -152,6 +276,41 @@
                 "type": "string",
                 "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式。优先级高于全局代理和环境变量",
                 "default": ""
+              },
+              "resolution": {
+                "description": "图像分辨率",
+                "type": "string",
+                "hint": "该供应商默认图像分辨率。快速模式传入覆盖值时优先使用快速模式。",
+                "default": "1K",
+                "options": [
+                  "1K",
+                  "2K",
+                  "4K"
+                ]
+              },
+              "aspect_ratio": {
+                "description": "长宽比",
+                "type": "string",
+                "hint": "该供应商默认长宽比。快速模式传入覆盖值时优先使用快速模式。",
+                "default": "1:1",
+                "options": [
+                  "1:1",
+                  "16:9",
+                  "4:3",
+                  "3:2",
+                  "9:16",
+                  "4:5",
+                  "5:4",
+                  "21:9",
+                  "3:4",
+                  "2:3"
+                ]
+              },
+              "max_reference_images": {
+                "description": "最大参考图片数量",
+                "type": "int",
+                "hint": "该供应商本次请求最多使用的参考图片数量；超过后按顺序截取。文生图-only 供应商可保持默认。",
+                "default": 6
               }
             }
           },
@@ -159,6 +318,12 @@
             "description": "grok2api 覆盖配置",
             "hint": "配置 grok2api 的 API 密钥和端点",
             "items": {
+              "priority": {
+                "description": "优先级",
+                "type": "int",
+                "hint": "同类型供应商配置多条时按优先级从高到低尝试；相同优先级按配置表从上到下尝试。",
+                "default": 0
+              },
               "api_keys": {
                 "description": "API Key 列表",
                 "type": "list",
@@ -188,6 +353,41 @@
                 "type": "string",
                 "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式。优先级高于全局代理和环境变量",
                 "default": ""
+              },
+              "resolution": {
+                "description": "图像分辨率",
+                "type": "string",
+                "hint": "该供应商默认图像分辨率。快速模式传入覆盖值时优先使用快速模式。",
+                "default": "1K",
+                "options": [
+                  "1K",
+                  "2K",
+                  "4K"
+                ]
+              },
+              "aspect_ratio": {
+                "description": "长宽比",
+                "type": "string",
+                "hint": "该供应商默认长宽比。快速模式传入覆盖值时优先使用快速模式。",
+                "default": "1:1",
+                "options": [
+                  "1:1",
+                  "16:9",
+                  "4:3",
+                  "3:2",
+                  "9:16",
+                  "4:5",
+                  "5:4",
+                  "21:9",
+                  "3:4",
+                  "2:3"
+                ]
+              },
+              "max_reference_images": {
+                "description": "最大参考图片数量",
+                "type": "int",
+                "hint": "该供应商本次请求最多使用的参考图片数量；超过后按顺序截取。文生图-only 供应商可保持默认。",
+                "default": 6
               }
             }
           },
@@ -195,6 +395,12 @@
             "description": "xAI Images API 覆盖配置",
             "hint": "配置 xAI /v1/images/generations 和 /v1/images/edits 端点的密钥和参数",
             "items": {
+              "priority": {
+                "description": "优先级",
+                "type": "int",
+                "hint": "同类型供应商配置多条时按优先级从高到低尝试；相同优先级按配置表从上到下尝试。",
+                "default": 0
+              },
               "api_keys": {
                 "description": "API Key 列表",
                 "type": "list",
@@ -219,31 +425,74 @@
                 "hint": "xAI API 地址，留空使用默认 https://api.x.ai",
                 "default": "https://api.x.ai"
               },
+              "proxy": {
+                "description": "代理地址",
+                "type": "string",
+                "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式。优先级高于全局代理和环境变量",
+                "default": ""
+              },
+              "resolution": {
+                "description": "图像分辨率",
+                "type": "string",
+                "hint": "该供应商默认图像分辨率。快速模式传入覆盖值时优先使用快速模式。",
+                "default": "1K",
+                "options": [
+                  "1K",
+                  "2K",
+                  "4K"
+                ]
+              },
+              "aspect_ratio": {
+                "description": "长宽比",
+                "type": "string",
+                "hint": "该供应商默认长宽比。快速模式传入覆盖值时优先使用快速模式。",
+                "default": "1:1",
+                "options": [
+                  "1:1",
+                  "16:9",
+                  "4:3",
+                  "3:2",
+                  "9:16",
+                  "4:5",
+                  "5:4",
+                  "21:9",
+                  "3:4",
+                  "2:3"
+                ]
+              },
+              "max_reference_images": {
+                "description": "最大参考图片数量",
+                "type": "int",
+                "hint": "该供应商本次请求最多使用的参考图片数量；超过后按顺序截取。文生图-only 供应商可保持默认。",
+                "default": 6
+              },
               "response_format": {
                 "description": "响应格式",
                 "type": "string",
                 "hint": "url 返回临时链接，b64_json 返回 base64 编码。",
                 "default": "url",
-                "options": ["url", "b64_json"]
+                "options": [
+                  "url",
+                  "b64_json"
+                ]
               },
               "quality": {
                 "description": "图像质量",
                 "type": "string",
                 "hint": "透传给 xAI 图片接口，留空不传。建议仅在已确认接口支持时使用。",
                 "default": "",
-                "options": ["", "low", "medium", "high"]
+                "options": [
+                  "",
+                  "low",
+                  "medium",
+                  "high"
+                ]
               },
               "n": {
                 "description": "生成数量",
                 "type": "int",
                 "hint": "单次请求生成的图片数量，xAI 当前单次最多 10 张",
                 "default": 1
-              },
-              "proxy": {
-                "description": "代理地址",
-                "type": "string",
-                "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式。优先级高于全局代理和环境变量",
-                "default": ""
               }
             }
           },
@@ -251,6 +500,12 @@
             "description": "MiniMax 图片生成 API 覆盖配置",
             "hint": "配置 MiniMax /v1/image_generation 端点的密钥和参数，支持文生图和 subject_reference 图生图",
             "items": {
+              "priority": {
+                "description": "优先级",
+                "type": "int",
+                "hint": "同类型供应商配置多条时按优先级从高到低尝试；相同优先级按配置表从上到下尝试。",
+                "default": 0
+              },
               "api_keys": {
                 "description": "API Key 列表",
                 "type": "list",
@@ -275,19 +530,67 @@
                 "hint": "MiniMax API 地址，留空使用默认 https://api.minimaxi.com；插件会统一调用 /v1/image_generation",
                 "default": "https://api.minimaxi.com"
               },
+              "proxy": {
+                "description": "代理地址",
+                "type": "string",
+                "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式。优先级高于全局代理和环境变量",
+                "default": ""
+              },
+              "resolution": {
+                "description": "图像分辨率",
+                "type": "string",
+                "hint": "该供应商默认图像分辨率。快速模式传入覆盖值时优先使用快速模式。",
+                "default": "1K",
+                "options": [
+                  "1K",
+                  "2K",
+                  "4K"
+                ]
+              },
+              "aspect_ratio": {
+                "description": "长宽比",
+                "type": "string",
+                "hint": "该供应商默认长宽比。快速模式传入覆盖值时优先使用快速模式。",
+                "default": "1:1",
+                "options": [
+                  "1:1",
+                  "16:9",
+                  "4:3",
+                  "3:2",
+                  "9:16",
+                  "4:5",
+                  "5:4",
+                  "21:9",
+                  "3:4",
+                  "2:3"
+                ]
+              },
+              "max_reference_images": {
+                "description": "最大参考图片数量",
+                "type": "int",
+                "hint": "该供应商本次请求最多使用的参考图片数量；超过后按顺序截取。文生图-only 供应商可保持默认。",
+                "default": 6
+              },
               "response_format": {
                 "description": "响应格式",
                 "type": "string",
                 "hint": "url 返回 24 小时临时链接，base64 返回编码图片并由插件保存到本地。",
                 "default": "base64",
-                "options": ["base64", "url"]
+                "options": [
+                  "base64",
+                  "url"
+                ]
               },
               "n": {
                 "description": "生成数量",
                 "type": "int",
                 "hint": "单次请求生成图片数量，MiniMax 官方范围 1-9",
                 "default": 1,
-                "slider": {"min": 1, "max": 9, "step": 1}
+                "slider": {
+                  "min": 1,
+                  "max": 9,
+                  "step": 1
+                }
               },
               "prompt_optimizer": {
                 "description": "提示词自动优化",
@@ -306,7 +609,11 @@
                 "type": "string",
                 "hint": "auto 对 URL 直接透传、对本地/base64 转 data URI；base64 强制内联；url 要求参考图必须是公开 URL",
                 "default": "auto",
-                "options": ["auto", "base64", "url"]
+                "options": [
+                  "auto",
+                  "base64",
+                  "url"
+                ]
               },
               "subject_reference_type": {
                 "description": "参考主体类型",
@@ -331,12 +638,6 @@
                 "type": "int",
                 "hint": "固定 seed 可生成相近结果，0 表示不传",
                 "default": 0
-              },
-              "proxy": {
-                "description": "代理地址",
-                "type": "string",
-                "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式。优先级高于全局代理和环境变量",
-                "default": ""
               }
             }
           },
@@ -344,6 +645,12 @@
             "description": "阶跃星辰图片生成 API 覆盖配置",
             "hint": "仅完全适配 step-image-edit-2 模型参数",
             "items": {
+              "priority": {
+                "description": "优先级",
+                "type": "int",
+                "hint": "同类型供应商配置多条时按优先级从高到低尝试；相同优先级按配置表从上到下尝试。",
+                "default": 0
+              },
               "api_keys": {
                 "description": "API Key 列表",
                 "type": "list",
@@ -368,12 +675,56 @@
                 "hint": "StepFun API 地址，留空使用默认 https://api.stepfun.com",
                 "default": "https://api.stepfun.com"
               },
+              "proxy": {
+                "description": "代理地址",
+                "type": "string",
+                "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式。优先级高于全局代理和环境变量",
+                "default": ""
+              },
+              "resolution": {
+                "description": "图像分辨率",
+                "type": "string",
+                "hint": "该供应商默认图像分辨率。快速模式传入覆盖值时优先使用快速模式。",
+                "default": "1K",
+                "options": [
+                  "1K",
+                  "2K",
+                  "4K"
+                ]
+              },
+              "aspect_ratio": {
+                "description": "长宽比",
+                "type": "string",
+                "hint": "该供应商默认长宽比。快速模式传入覆盖值时优先使用快速模式。",
+                "default": "1:1",
+                "options": [
+                  "1:1",
+                  "16:9",
+                  "4:3",
+                  "3:2",
+                  "9:16",
+                  "4:5",
+                  "5:4",
+                  "21:9",
+                  "3:4",
+                  "2:3"
+                ]
+              },
+              "max_reference_images": {
+                "description": "最大参考图片数量",
+                "type": "int",
+                "hint": "该供应商本次请求最多使用的参考图片数量；超过后按顺序截取。文生图-only 供应商可保持默认。",
+                "default": 6
+              },
               "response_format": {
                 "description": "响应格式",
                 "type": "string",
                 "hint": "url 返回临时链接，b64_json 返回 base64 编码并由插件保存到本地",
                 "default": "url",
-                "options": ["url", "b64_json"]
+                "options": [
+                  "url",
+                  "b64_json"
+                ]
               },
               "steps": {
                 "description": "采样步数",
@@ -404,12 +755,6 @@
                 "type": "int",
                 "hint": "固定 seed 可生成相近结果，0 表示不传",
                 "default": 0
-              },
-              "proxy": {
-                "description": "代理地址",
-                "type": "string",
-                "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式。优先级高于全局代理和环境变量",
-                "default": ""
               }
             }
           },
@@ -417,6 +762,12 @@
             "description": "OpenAI Images API 覆盖配置",
             "hint": "配置 OpenAI /v1/images/generations 和 /v1/images/edits 端点的密钥和参数",
             "items": {
+              "priority": {
+                "description": "优先级",
+                "type": "int",
+                "hint": "同类型供应商配置多条时按优先级从高到低尝试；相同优先级按配置表从上到下尝试。",
+                "default": 0
+              },
               "api_keys": {
                 "description": "API Key 列表",
                 "type": "list",
@@ -441,80 +792,152 @@
                 "hint": "OpenAI Images API 地址，留空使用默认 https://api.openai.com",
                 "default": ""
               },
+              "proxy": {
+                "description": "代理地址",
+                "type": "string",
+                "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式。优先级高于全局代理和环境变量",
+                "default": ""
+              },
+              "resolution": {
+                "description": "图像分辨率",
+                "type": "string",
+                "hint": "该供应商默认图像分辨率。快速模式传入覆盖值时优先使用快速模式。",
+                "default": "1K",
+                "options": [
+                  "1K",
+                  "2K",
+                  "4K"
+                ]
+              },
+              "aspect_ratio": {
+                "description": "长宽比",
+                "type": "string",
+                "hint": "该供应商默认长宽比。快速模式传入覆盖值时优先使用快速模式。",
+                "default": "1:1",
+                "options": [
+                  "1:1",
+                  "16:9",
+                  "4:3",
+                  "3:2",
+                  "9:16",
+                  "4:5",
+                  "5:4",
+                  "21:9",
+                  "3:4",
+                  "2:3"
+                ]
+              },
+              "max_reference_images": {
+                "description": "最大参考图片数量",
+                "type": "int",
+                "hint": "该供应商本次请求最多使用的参考图片数量；超过后按顺序截取。文生图-only 供应商可保持默认。",
+                "default": 6
+              },
               "quality": {
                 "description": "图像质量",
                 "type": "string",
                 "hint": "GPT image 模型: auto/high/medium/low；dall-e-3: hd/standard；dall-e-2: standard。留空使用默认值",
                 "default": "",
-                "options": ["", "auto", "high", "medium", "low", "hd", "standard"]
+                "options": [
+                  "",
+                  "auto",
+                  "high",
+                  "medium",
+                  "low",
+                  "hd",
+                  "standard"
+                ]
               },
               "response_format": {
                 "description": "响应格式",
                 "type": "string",
                 "hint": "url 返回临时链接（60分钟有效），b64_json 返回 base64 编码。",
                 "default": "b64_json",
-                "options": ["b64_json", "url"]
+                "options": [
+                  "b64_json",
+                  "url"
+                ]
               },
               "size_mode": {
                 "description": "尺寸模式",
                 "type": "string",
-                "hint": "preset 使用全局分辨率映射；custom 使用下方 custom_size 直接透传到 OpenAI Images API。快速模式会用其预设 resolution + aspect_ratio 自动换算合法尺寸",
+                "hint": "preset 使用该供应商条目的分辨率映射；custom 使用下方 custom_size 直接透传到 OpenAI Images API。快速模式会用其预设 resolution + aspect_ratio 自动换算合法尺寸",
                 "default": "preset",
-                "options": ["preset", "custom"]
+                "options": [
+                  "preset",
+                  "custom"
+                ]
               },
               "custom_size": {
                 "description": "自定义尺寸",
                 "type": "string",
                 "hint": "仅在 size_mode=custom 时生效。普通生图/改图默认直接使用当前值；快速模式会按预设 resolution + aspect_ratio 自动换算。具体限制与示例请查看 README。",
                 "default": "1024x1024",
-                "condition": {"size_mode": "custom"}
+                "condition": {
+                  "size_mode": "custom"
+                }
               },
               "style": {
                 "description": "图像风格（仅 dall-e-3）",
                 "type": "string",
                 "hint": "vivid 生成超现实戏剧性图像，natural 生成更自然的图像。仅 dall-e-3 支持，留空不传",
                 "default": "",
-                "options": ["", "vivid", "natural"]
+                "options": [
+                  "",
+                  "vivid",
+                  "natural"
+                ]
               },
               "background": {
                 "description": "背景透明度（仅 GPT image 模型）",
                 "type": "string",
                 "hint": "transparent 透明背景，opaque 不透明，auto 自动。仅 GPT image 模型支持，留空不传",
                 "default": "",
-                "options": ["", "auto", "transparent", "opaque"]
+                "options": [
+                  "",
+                  "auto",
+                  "transparent",
+                  "opaque"
+                ]
               },
               "output_format": {
                 "description": "输出图像格式（仅 GPT image 模型）",
                 "type": "string",
                 "hint": "png 支持透明背景，jpeg 文件更小，webp 兼顾两者。仅 GPT image 模型支持，留空不传",
                 "default": "",
-                "options": ["", "png", "jpeg", "webp"]
+                "options": [
+                  "",
+                  "png",
+                  "jpeg",
+                  "webp"
+                ]
               },
               "output_compression": {
                 "description": "输出压缩率（仅 GPT image 模型）",
                 "type": "int",
                 "hint": "仅在 output_format 为 jpeg 或 webp 时有效。0 表示不传（使用服务端默认值），1-100 为自定义压缩率",
                 "default": 0,
-                "slider": {"min": 0, "max": 100, "step": 1}
+                "slider": {
+                  "min": 0,
+                  "max": 100,
+                  "step": 1
+                }
               },
               "moderation": {
                 "description": "审核模式（仅 GPT image 模型）",
                 "type": "string",
                 "hint": "审核策略配置，如 low。仅 GPT image 模型支持，留空不传",
                 "default": "",
-                "options": ["", "low"]
+                "options": [
+                  "",
+                  "low"
+                ]
               },
               "generations_only": {
                 "description": "仅使用文生图",
                 "type": "bool",
                 "hint": "开启后丢去所有参考图仅输入文本提示词进行生成。",
                 "default": false
-              },
-              "proxy": {
-                "description": "代理地址",
-                "type": "string",
-                "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式。优先级高于全局代理和环境变量",
-                "default": ""
               }
             }
           },
@@ -522,6 +945,12 @@
             "description": "豆包 API 覆盖配置",
             "hint": "配置豆包专用的多 Key 轮换和每日限额",
             "items": {
+              "priority": {
+                "description": "优先级",
+                "type": "int",
+                "hint": "同类型供应商配置多条时按优先级从高到低尝试；相同优先级按配置表从上到下尝试。",
+                "default": 0
+              },
               "api_keys": {
                 "description": "API Key 列表",
                 "type": "list",
@@ -552,12 +981,50 @@
                 "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式。优先级高于全局代理和环境变量",
                 "default": ""
               },
+              "resolution": {
+                "description": "图像分辨率",
+                "type": "string",
+                "hint": "该供应商默认图像分辨率。快速模式传入覆盖值时优先使用快速模式。",
+                "default": "1K",
+                "options": [
+                  "1K",
+                  "2K",
+                  "4K"
+                ]
+              },
+              "aspect_ratio": {
+                "description": "长宽比",
+                "type": "string",
+                "hint": "该供应商默认长宽比。快速模式传入覆盖值时优先使用快速模式。",
+                "default": "1:1",
+                "options": [
+                  "1:1",
+                  "16:9",
+                  "4:3",
+                  "3:2",
+                  "9:16",
+                  "4:5",
+                  "5:4",
+                  "21:9",
+                  "3:4",
+                  "2:3"
+                ]
+              },
+              "max_reference_images": {
+                "description": "最大参考图片数量",
+                "type": "int",
+                "hint": "该供应商本次请求最多使用的参考图片数量；超过后按顺序截取。文生图-only 供应商可保持默认。",
+                "default": 6
+              },
               "default_size": {
                 "description": "默认尺寸",
                 "type": "string",
                 "hint": "默认生成图片尺寸",
                 "default": "2K",
-                "options": ["2K", "4K"]
+                "options": [
+                  "2K",
+                  "4K"
+                ]
               },
               "watermark": {
                 "description": "添加水印",
@@ -570,14 +1037,20 @@
                 "type": "string",
                 "hint": "standard：质量更高；fast：速度更快",
                 "default": "standard",
-                "options": ["standard", "fast"]
+                "options": [
+                  "standard",
+                  "fast"
+                ]
               },
               "sequential_image_generation": {
                 "description": "组图生成模式",
                 "type": "string",
                 "hint": "auto：模型自主判断；disabled：只生成一张",
                 "default": "disabled",
-                "options": ["disabled", "auto"]
+                "options": [
+                  "disabled",
+                  "auto"
+                ]
               },
               "sequential_max_images": {
                 "description": "组图最大数量",
@@ -591,6 +1064,12 @@
             "description": "SenseNova（商汤日日新）API 覆盖配置",
             "hint": "配置 SenseNova U1 Fast 文生图 API 的密钥与端点",
             "items": {
+              "priority": {
+                "description": "优先级",
+                "type": "int",
+                "hint": "同类型供应商配置多条时按优先级从高到低尝试；相同优先级按配置表从上到下尝试。",
+                "default": 0
+              },
               "api_keys": {
                 "description": "API Key 列表",
                 "type": "list",
@@ -608,13 +1087,56 @@
                 "type": "string",
                 "hint": "SenseNova 图像生成模型，目前固定为 sensenova-u1-fast",
                 "default": "sensenova-u1-fast",
-                "options": ["sensenova-u1-fast"]
+                "options": [
+                  "sensenova-u1-fast"
+                ]
               },
               "api_base": {
                 "description": "API 端点地址",
                 "type": "string",
                 "hint": "SenseNova API 地址，留空使用默认值 https://token.sensenova.cn",
                 "default": "https://token.sensenova.cn"
+              },
+              "proxy": {
+                "description": "代理地址",
+                "type": "string",
+                "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式",
+                "default": ""
+              },
+              "resolution": {
+                "description": "图像分辨率",
+                "type": "string",
+                "hint": "该供应商默认图像分辨率。快速模式传入覆盖值时优先使用快速模式。",
+                "default": "1K",
+                "options": [
+                  "1K",
+                  "2K",
+                  "4K"
+                ]
+              },
+              "aspect_ratio": {
+                "description": "长宽比",
+                "type": "string",
+                "hint": "该供应商默认长宽比。快速模式传入覆盖值时优先使用快速模式。",
+                "default": "1:1",
+                "options": [
+                  "1:1",
+                  "16:9",
+                  "4:3",
+                  "3:2",
+                  "9:16",
+                  "4:5",
+                  "5:4",
+                  "21:9",
+                  "3:4",
+                  "2:3"
+                ]
+              },
+              "max_reference_images": {
+                "description": "最大参考图片数量",
+                "type": "int",
+                "hint": "SenseNova 当前仅支持文生图；改图/参考图请求会跳过该供应商。保留此项用于统一配置表。",
+                "default": 6
               },
               "default_size": {
                 "description": "默认图像尺寸",
@@ -634,12 +1156,6 @@
                   "3072x1376",
                   "1344x3136"
                 ]
-              },
-              "proxy": {
-                "description": "代理地址",
-                "type": "string",
-                "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式",
-                "default": ""
               }
             }
           }
@@ -648,39 +1164,10 @@
     }
   },
   "image_generation_settings": {
-    "description": "图像生成参数",
+    "description": "图像生成行为",
     "type": "object",
-    "hint": "配置图像生成的参数，将根据模型能力自动调整",
+    "hint": "配置表情包、参考图保留、LLM 工具等待和图片发送阈值；供应商尺寸和能力参数在 provider_settings 中配置。",
     "items": {
-      "resolution": {
-        "description": "图像分辨率",
-        "type": "string",
-        "hint": "生成图像的分辨率。不同模型支持的分辨率不同，请参考官方文档",
-        "default": "1K",
-        "options": [
-          "1K",
-          "2K",
-          "4K"
-        ]
-      },
-      "aspect_ratio": {
-        "description": "长宽比",
-        "type": "string",
-        "hint": "图像的长宽比例。不同模型支持的比例不同，请参考官方文档",
-        "default": "1:1",
-        "options": [
-          "1:1",
-          "16:9",
-          "4:3",
-          "3:2",
-          "9:16",
-          "4:5",
-          "5:4",
-          "21:9",
-          "3:4",
-          "2:3"
-        ]
-      },
       "enable_sticker_split": {
         "description": "启用表情包切割",
         "type": "bool",
@@ -705,42 +1192,6 @@
         "hint": "启用后，改图/换风格等基于参考图的请求将不强制设置分辨率和长宽比，尽量沿用参考图尺寸。",
         "default": false
       },
-      "enable_grounding": {
-        "description": "启用 Google 搜索接地",
-        "type": "bool",
-        "hint": "启用后模型可以使用 Google 搜索验证事实并基于实时数据生成图片（如天气、股票、新闻等）。仅 gemini-3-pro-image-preview 模型支持",
-        "default": false
-      },
-      "max_reference_images": {
-        "description": "最大参考图片数量",
-        "type": "int",
-        "hint": "允许使用的最大参考图片数量。不同模型支持的数量不同（Gemini 3: 最多14张，Gemini 2.5: 建议不超过4张）。超出限制的将自动忽略",
-        "default": 6
-      },
-      "enable_text_response": {
-        "description": "启用文本响应",
-        "type": "bool",
-        "hint": "启用后模型将在返回图片的同时返回文本说明。关闭后只返回图片（仅限 gemini 3 有效）",
-        "default": false
-      },
-      "force_resolution": {
-        "description": "强制传递分辨率参数",
-        "type": "bool",
-        "hint": "启用后，无论模型名称是什么，都强制传递 image_size 参数给 API。如果使用非 gemini-3-pro-image-preview 模型但支持分辨率参数，请开启此选项。",
-        "default": false
-      },
-      "resolution_param_name": {
-        "description": "分辨率参数名",
-        "type": "string",
-        "hint": "API 请求中分辨率参数的字段名，不同 API 可能使用不同名称（如 image_size、size、imageSize 等）。留空使用默认值 image_size",
-        "default": "image_size"
-      },
-      "aspect_ratio_param_name": {
-        "description": "长宽比参数名",
-        "type": "string",
-        "hint": "API 请求中长宽比参数的字段名，不同 API 可能使用不同名称（如 aspect_ratio、aspectRatio、image_aspect_ratio 等）。留空使用默认值 aspect_ratio",
-        "default": "aspect_ratio"
-      },
       "max_inline_image_size_mb": {
         "description": "本地图片 base64 编码阈值（MB）",
         "type": "float",
@@ -753,7 +1204,11 @@
         "hint": "LLM 工具触发生图时，会从当前聊天工具超时配置中按比例预留安全时间。剩余时间用于前台同步等待；超出后转为后台发送。默认 50%，即默认 60 秒超时下，前台最多等待约 30 秒。",
         "type": "int",
         "default": 50,
-        "slider": {"min": 1, "max": 100, "step": 1}
+        "slider": {
+          "min": 1,
+          "max": 100,
+          "step": 1
+        }
       }
     }
   },
@@ -772,14 +1227,29 @@
             "type": "string",
             "hint": "覆盖头像模式的分辨率",
             "default": "1K",
-            "options": ["1K", "2K", "4K"]
+            "options": [
+              "1K",
+              "2K",
+              "4K"
+            ]
           },
           "aspect_ratio": {
             "description": "长宽比",
             "type": "string",
             "hint": "覆盖头像模式的长宽比",
             "default": "1:1",
-            "options": ["1:1", "16:9", "4:3", "3:2", "9:16", "4:5", "5:4", "21:9", "3:4", "2:3"]
+            "options": [
+              "1:1",
+              "16:9",
+              "4:3",
+              "3:2",
+              "9:16",
+              "4:5",
+              "5:4",
+              "21:9",
+              "3:4",
+              "2:3"
+            ]
           }
         }
       },
@@ -792,14 +1262,29 @@
             "type": "string",
             "hint": "覆盖海报模式的分辨率",
             "default": "2K",
-            "options": ["1K", "2K", "4K"]
+            "options": [
+              "1K",
+              "2K",
+              "4K"
+            ]
           },
           "aspect_ratio": {
             "description": "长宽比",
             "type": "string",
             "hint": "覆盖海报模式的长宽比",
             "default": "16:9",
-            "options": ["1:1", "16:9", "4:3", "3:2", "9:16", "4:5", "5:4", "21:9", "3:4", "2:3"]
+            "options": [
+              "1:1",
+              "16:9",
+              "4:3",
+              "3:2",
+              "9:16",
+              "4:5",
+              "5:4",
+              "21:9",
+              "3:4",
+              "2:3"
+            ]
           }
         }
       },
@@ -812,14 +1297,29 @@
             "type": "string",
             "hint": "覆盖壁纸模式的分辨率",
             "default": "4K",
-            "options": ["1K", "2K", "4K"]
+            "options": [
+              "1K",
+              "2K",
+              "4K"
+            ]
           },
           "aspect_ratio": {
             "description": "长宽比",
             "type": "string",
             "hint": "覆盖壁纸模式的长宽比",
             "default": "16:9",
-            "options": ["1:1", "16:9", "4:3", "3:2", "9:16", "4:5", "5:4", "21:9", "3:4", "2:3"]
+            "options": [
+              "1:1",
+              "16:9",
+              "4:3",
+              "3:2",
+              "9:16",
+              "4:5",
+              "5:4",
+              "21:9",
+              "3:4",
+              "2:3"
+            ]
           }
         }
       },
@@ -832,14 +1332,29 @@
             "type": "string",
             "hint": "覆盖卡片模式的分辨率",
             "default": "1K",
-            "options": ["1K", "2K", "4K"]
+            "options": [
+              "1K",
+              "2K",
+              "4K"
+            ]
           },
           "aspect_ratio": {
             "description": "长宽比",
             "type": "string",
             "hint": "覆盖卡片模式的长宽比",
             "default": "3:2",
-            "options": ["1:1", "16:9", "4:3", "3:2", "9:16", "4:5", "5:4", "21:9", "3:4", "2:3"]
+            "options": [
+              "1:1",
+              "16:9",
+              "4:3",
+              "3:2",
+              "9:16",
+              "4:5",
+              "5:4",
+              "21:9",
+              "3:4",
+              "2:3"
+            ]
           }
         }
       },
@@ -852,14 +1367,29 @@
             "type": "string",
             "hint": "覆盖手机模式的分辨率",
             "default": "2K",
-            "options": ["1K", "2K", "4K"]
+            "options": [
+              "1K",
+              "2K",
+              "4K"
+            ]
           },
           "aspect_ratio": {
             "description": "长宽比",
             "type": "string",
             "hint": "覆盖手机模式的长宽比",
             "default": "9:16",
-            "options": ["1:1", "16:9", "4:3", "3:2", "9:16", "4:5", "5:4", "21:9", "3:4", "2:3"]
+            "options": [
+              "1:1",
+              "16:9",
+              "4:3",
+              "3:2",
+              "9:16",
+              "4:5",
+              "5:4",
+              "21:9",
+              "3:4",
+              "2:3"
+            ]
           }
         }
       },
@@ -872,14 +1402,29 @@
             "type": "string",
             "hint": "覆盖手办化模式的分辨率",
             "default": "2K",
-            "options": ["1K", "2K", "4K"]
+            "options": [
+              "1K",
+              "2K",
+              "4K"
+            ]
           },
           "aspect_ratio": {
             "description": "长宽比",
             "type": "string",
             "hint": "覆盖手办化模式的长宽比",
             "default": "3:2",
-            "options": ["1:1", "16:9", "4:3", "3:2", "9:16", "4:5", "5:4", "21:9", "3:4", "2:3"]
+            "options": [
+              "1:1",
+              "16:9",
+              "4:3",
+              "3:2",
+              "9:16",
+              "4:5",
+              "5:4",
+              "21:9",
+              "3:4",
+              "2:3"
+            ]
           }
         }
       },
@@ -892,14 +1437,29 @@
             "type": "string",
             "hint": "覆盖表情包模式的分辨率",
             "default": "2K",
-            "options": ["1K", "2K", "4K"]
+            "options": [
+              "1K",
+              "2K",
+              "4K"
+            ]
           },
           "aspect_ratio": {
             "description": "长宽比",
             "type": "string",
             "hint": "覆盖表情包模式的长宽比",
             "default": "1:1",
-            "options": ["1:1", "16:9", "4:3", "3:2", "9:16", "4:5", "5:4", "21:9", "3:4", "2:3"]
+            "options": [
+              "1:1",
+              "16:9",
+              "4:3",
+              "3:2",
+              "9:16",
+              "4:5",
+              "5:4",
+              "21:9",
+              "3:4",
+              "2:3"
+            ]
           }
         }
       }

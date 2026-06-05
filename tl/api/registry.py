@@ -30,7 +30,7 @@ _STEPFUN: Final[StepfunProvider] = StepfunProvider()
 _XAI: Final[XAIProvider] = XAIProvider()
 _ZAI: Final[ZaiProvider] = ZaiProvider()
 
-# canonical api_type -> provider 映射表（与 _conf_schema.json 中 api_type.options 严格一致）
+# canonical api_type -> provider 映射表（与 _conf_schema.json 中 provider 模板名一致）
 _PROVIDERS: Final[dict[str, ApiProvider]] = {
     "google": _GOOGLE,
     "openai": _OPENAI,
