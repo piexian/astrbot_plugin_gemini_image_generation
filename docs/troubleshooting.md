@@ -2,7 +2,7 @@
 
 ## 配置迁移说明
 
-v1.2.0 重构了生图供应商配置，`api_settings` 和旧的全局 `api_type` 不再作为生图入口。升级后需要在 `provider_settings.provider_overrides` 中添加至少一个有效供应商模板。
+v2.0.0 重构了生图供应商配置，`api_settings` 和旧的全局 `api_type` 不再作为生图入口。升级后需要在 `供应商配置` 中添加至少一个有效供应商模板。
 
 本次不会继续复用 AstrBot 本体供应商配置。请在插件配置里填写供应商自己的 `api_keys`、`model`、`api_base` 等字段。
 
