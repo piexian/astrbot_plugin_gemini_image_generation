@@ -31,6 +31,21 @@ def test_resolve_size_value_uses_config_custom_size_for_preset_resolution() -> N
     assert _resolve_size_value("gpt-image-2", "2K", settings) == "2048x1152"
 
 
+def test_resolve_size_value_skips_custom_size_when_resolution_suppressed() -> None:
+    settings = {"size_mode": "custom", "custom_size": "2048×1152"}
+
+    assert (
+        _resolve_size_value(
+            "gpt-image-2",
+            None,
+            settings,
+            ref_image_dims=(1600, 900),
+            suppress_resolution=True,
+        )
+        is None
+    )
+
+
 def test_resolve_size_value_uses_explicit_custom_size_when_it_is_wxh() -> None:
     settings = {"size_mode": "custom", "custom_size": "1024x1024"}
 

@@ -338,6 +338,9 @@ class GeminiAPIClient:
     def _candidate_resolution_values(
         base_config: ApiRequestConfig, candidate: Any
     ) -> tuple[str | None, str | None]:
+        if base_config.suppress_resolution:
+            return None, None
+
         settings = getattr(candidate, "settings", None) or {}
         api_type = normalize_api_type(getattr(candidate, "api_type", ""))
         size_mode = (

@@ -69,6 +69,7 @@ def _resolve_size_value(
     settings: dict[str, Any],
     *,
     ref_image_dims: tuple[int, int] | None = None,
+    suppress_resolution: bool = False,
 ) -> str | None:
     """根据配置和请求参数决定最终传给 OpenAI Images API 的 size。
 
@@ -80,6 +81,9 @@ def _resolve_size_value(
         size_mode = normalize_size_mode(settings.get("size_mode"))
     except ValueError as e:
         raise APIError(str(e), None, "invalid_size_mode", retryable=False) from e
+
+    if suppress_resolution:
+        return None
 
     # 保留参考图尺寸场景：resolution 被显式置空
     if not resolution and ref_image_dims is not None:
@@ -333,6 +337,7 @@ class OpenAIImagesProvider:
             model,
             config.resolution,
             settings,
+            suppress_resolution=config.suppress_resolution,
         )
         if size_value:
             payload["size"] = size_value
@@ -445,13 +450,14 @@ class OpenAIImagesProvider:
 
         # ---- size ----
         ref_dims: tuple[int, int] | None = None
-        if not config.resolution:
+        if not config.suppress_resolution and not config.resolution:
             ref_dims = self._probe_image_dims(image_data)
         size_value = _resolve_size_value(
             model,
             config.resolution,
             settings,
             ref_image_dims=ref_dims,
+            suppress_resolution=config.suppress_resolution,
         )
         if size_value:
             form.add_field("size", size_value)

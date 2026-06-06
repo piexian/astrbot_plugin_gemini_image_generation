@@ -291,6 +291,35 @@ def test_candidate_config_uses_request_level_settings_and_proxy() -> None:
     assert candidate_config.proxy == "http://proxy.local:8080"
 
 
+def test_candidate_config_preserves_suppressed_reference_image_size() -> None:
+    client = GeminiAPIClient(["fallback"])
+    candidate = _Candidate(
+        id="google#1",
+        api_type="google",
+        model="gemini-3-pro-image-preview",
+        settings={
+            "api_keys": ["candidate-key"],
+            "resolution": "2K",
+            "aspect_ratio": "16:9",
+        },
+    )
+    config = ApiRequestConfig(
+        model="",
+        prompt="test",
+        api_type="",
+        resolution=None,
+        aspect_ratio=None,
+        reference_images=["ref"],
+        suppress_resolution=True,
+    )
+
+    candidate_config = client._build_candidate_config(config, candidate)
+
+    assert candidate_config.resolution is None
+    assert candidate_config.aspect_ratio is None
+    assert candidate_config.suppress_resolution is True
+
+
 @pytest.mark.asyncio
 async def test_invalidate_session_closes_proxy_sessions() -> None:
     client = GeminiAPIClient(["fallback"])

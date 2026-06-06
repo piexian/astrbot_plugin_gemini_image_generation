@@ -479,6 +479,7 @@ class GeminiImageGenerationPlugin(Star):
 
             effective_resolution = override_resolution
             effective_aspect_ratio = override_aspect_ratio
+            suppress_resolution = False
 
             if (
                 self.cfg.preserve_reference_image_size
@@ -487,6 +488,7 @@ class GeminiImageGenerationPlugin(Star):
             ):
                 effective_resolution = None
                 effective_aspect_ratio = None
+                suppress_resolution = True
                 logger.debug("[MODIFY_DEBUG] 保留参考图尺寸，不覆盖分辨率/比例")
 
             config = ApiRequestConfig(
@@ -496,6 +498,7 @@ class GeminiImageGenerationPlugin(Star):
                 api_base=None,
                 resolution=effective_resolution,
                 aspect_ratio=effective_aspect_ratio,
+                suppress_resolution=suppress_resolution,
                 reference_images=all_ref_images if all_ref_images else None,
                 enable_smart_retry=self.cfg.enable_smart_retry,
                 image_input_mode="force_base64",
