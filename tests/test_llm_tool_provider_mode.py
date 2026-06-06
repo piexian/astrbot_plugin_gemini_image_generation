@@ -49,7 +49,7 @@ sys.modules["astrbot.core.agent.run_context"] = run_context_module
 sys.modules["astrbot.core.agent.tool"] = tool_module
 sys.modules["astrbot.core.astr_agent_context"] = context_module
 
-from tl.llm_tools import (
+from tl.llm_tools import (  # noqa: E402
     _build_tool_parameters,
     _is_openai_images_custom_size_mode,
 )

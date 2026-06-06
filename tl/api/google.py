@@ -64,10 +64,14 @@ class GoogleProvider:
         session: aiohttp.ClientSession,
         api_base: str | None = None,
         http_status: int | None = None,
+        request_config: ApiRequestConfig | None = None,
     ) -> tuple[list[str], list[str], str | None, str | None]:  # noqa: ANN401
         # 解析逻辑在本文件内实现，但会复用 client 上的通用能力。
         return await self._parse_gresponse(
-            client=client, response_data=response_data, session=session
+            client=client,
+            response_data=response_data,
+            session=session,
+            request_config=request_config,
         )
 
     async def _prepare_payload(
@@ -272,6 +276,7 @@ class GoogleProvider:
         client: Any,
         response_data: dict[str, Any],
         session: aiohttp.ClientSession,
+        request_config: ApiRequestConfig | None = None,
     ) -> tuple[list[str], list[str], str | None, str | None]:  # noqa: ANN401
         parse_start = asyncio.get_running_loop().time()
         logger.debug("开始解析API响应数据...")
@@ -289,7 +294,11 @@ class GoogleProvider:
             appended = False
             if fallback_texts:
                 appended = await client._append_images_from_texts(
-                    fallback_texts, image_urls, image_paths
+                    fallback_texts,
+                    image_urls,
+                    image_paths,
+                    session=session,
+                    request_config=request_config,
                 )
             if appended and (image_urls or image_paths):
                 text_content = (
@@ -435,7 +444,11 @@ class GoogleProvider:
 
         if not (image_paths or image_urls) and fallback_texts:
             appended = await client._append_images_from_texts(
-                fallback_texts, image_urls, image_paths
+                fallback_texts,
+                image_urls,
+                image_paths,
+                session=session,
+                request_config=request_config,
             )
             if appended and not text_content:
                 text_content = (

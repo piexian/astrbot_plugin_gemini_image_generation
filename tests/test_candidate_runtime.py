@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
-from tl.api_types import ApiRequestConfig
-from tl.api_types import APIError
+from tl.api_types import APIError, ApiRequestConfig
 from tl.key_manager import KeyManager
 from tl.tl_api import GeminiAPIClient
 
@@ -39,6 +39,18 @@ class _FakeSession:
 
     async def close(self) -> None:
         self.closed = True
+
+
+def test_gitignore_does_not_hide_tests_directory() -> None:
+    gitignore = Path(__file__).resolve().parents[1] / ".gitignore"
+    ignored_entries = {
+        line.strip()
+        for line in gitignore.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+    assert "tests/" not in ignored_entries
+    assert "tests" not in ignored_entries
 
 
 @pytest.mark.asyncio
@@ -142,6 +154,39 @@ async def test_candidate_polling_copies_stats_back_to_original_config() -> None:
     assert original_config.token_usage == {"total_tokens": 11}
     assert original_config.retry_note == "重试 2 次后成功"
     assert original_config.api_type == ""
+
+
+@pytest.mark.asyncio
+async def test_candidate_proxy_is_used_for_response_image_downloads() -> None:
+    client = GeminiAPIClient(["fallback"])
+    captured: dict[str, str | None] = {}
+    config = ApiRequestConfig(
+        model="gpt-image",
+        prompt="test",
+        api_type="openai",
+        proxy="http://candidate-proxy.local:8080",
+    )
+    response_data = {"data": [{"url": "https://cdn.example/image.png"}]}
+
+    async def fake_download_image(image_url, session, use_cache=False, proxy=None):
+        captured["url"] = image_url
+        captured["proxy"] = proxy
+        return "/tmp/generated.png", "/tmp/generated.png"
+
+    client._download_image = fake_download_image  # type: ignore[method-assign]
+
+    image_urls, image_paths, _, _ = await client._parse_openai_response(
+        response_data,
+        session=None,  # type: ignore[arg-type]
+        request_config=config,
+    )
+
+    assert captured == {
+        "url": "https://cdn.example/image.png",
+        "proxy": "http://candidate-proxy.local:8080",
+    }
+    assert image_urls == ["/tmp/generated.png"]
+    assert image_paths == ["/tmp/generated.png"]
 
 
 @pytest.mark.asyncio

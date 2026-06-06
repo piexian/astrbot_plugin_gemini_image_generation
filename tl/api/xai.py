@@ -76,6 +76,7 @@ class XAIProvider:
         session: aiohttp.ClientSession,
         api_base: str | None = None,
         http_status: int | None = None,
+        request_config: ApiRequestConfig | None = None,
     ) -> tuple[list[str], list[str], str | None, str | None]:  # noqa: ANN401
         image_urls: list[str] = []
         image_paths: list[str] = []
@@ -141,6 +142,17 @@ class XAIProvider:
             if "url" in image_item:
                 image_url = image_item["url"]
                 if isinstance(image_url, str) and image_url:
+                    if client._request_has_proxy(request_config):
+                        _, image_path = await client._download_image(
+                            image_url,
+                            session,
+                            use_cache=False,
+                            proxy=client._request_http_proxy(request_config),
+                        )
+                        if image_path:
+                            image_paths.append(image_path)
+                            image_urls.append(image_path)
+                        continue
                     image_urls.append(image_url)
                     logger.debug("[xai] 图片 URL: %s...", image_url[:80])
             elif "b64_json" in image_item:

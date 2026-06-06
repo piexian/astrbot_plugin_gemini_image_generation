@@ -221,6 +221,7 @@ class SenseNovaProvider:
         session: aiohttp.ClientSession,
         api_base: str | None = None,
         http_status: int | None = None,
+        request_config: ApiRequestConfig | None = None,
     ) -> tuple[list[str], list[str], str | None, str | None]:  # noqa: ANN401
         image_urls: list[str] = []
         image_paths: list[str] = []
@@ -253,6 +254,17 @@ class SenseNovaProvider:
                 continue
             url = item.get("url")
             if isinstance(url, str) and url:
+                if client._request_has_proxy(request_config):
+                    _, image_path = await client._download_image(
+                        url,
+                        session,
+                        use_cache=False,
+                        proxy=client._request_http_proxy(request_config),
+                    )
+                    if image_path:
+                        image_urls.append(image_path)
+                        image_paths.append(image_path)
+                    continue
                 image_urls.append(url)
                 logger.debug("[sensenova] 图片 URL: %s...", url[:80])
                 continue

@@ -112,6 +112,7 @@ class MiniMaxProvider:
         session: aiohttp.ClientSession,
         api_base: str | None = None,
         http_status: int | None = None,
+        request_config: ApiRequestConfig | None = None,
     ) -> tuple[list[str], list[str], str | None, str | None]:  # noqa: ANN401
         self._raise_for_base_resp(response_data, http_status)
 
@@ -126,7 +127,14 @@ class MiniMaxProvider:
                 retryable=True,
             )
 
-        await self._collect_image_data(data, image_urls, image_paths)
+        await self._collect_image_data(
+            client,
+            session,
+            data,
+            image_urls,
+            image_paths,
+            request_config,
+        )
 
         metadata = response_data.get("metadata")
         if isinstance(metadata, dict):
@@ -302,11 +310,25 @@ class MiniMaxProvider:
 
     async def _collect_image_data(
         self,
+        client: Any,
+        session: aiohttp.ClientSession,
         data: dict[str, Any],
         image_urls: list[str],
         image_paths: list[str],
+        request_config: ApiRequestConfig | None,
     ) -> None:
         for image_url in self._iter_string_list(data.get("image_urls")):
+            if client._request_has_proxy(request_config):
+                _, image_path = await client._download_image(
+                    image_url,
+                    session,
+                    use_cache=False,
+                    proxy=client._request_http_proxy(request_config),
+                )
+                if image_path:
+                    image_urls.append(image_path)
+                    image_paths.append(image_path)
+                continue
             image_urls.append(image_url)
             logger.debug("[minimax] 图片 URL: %s...", image_url[:80])
 

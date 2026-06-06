@@ -460,6 +460,20 @@ class GeminiAPIClient:
             return len(self._candidate_key_pools[key_scope])
         return len(self.api_keys)
 
+    def _request_http_proxy(
+        self, request_config: ApiRequestConfig | None
+    ) -> str | None:
+        request_proxy = (
+            request_config.proxy if request_config and request_config.proxy else None
+        )
+        if request_proxy:
+            return None if request_proxy.lower().startswith("socks") else request_proxy
+        return self._http_proxy
+
+    @staticmethod
+    def _request_has_proxy(request_config: ApiRequestConfig | None) -> bool:
+        return bool(request_config and request_config.proxy)
+
     @staticmethod
     def _coerce_supported_image_bytes(
         mime_type: str | None, raw_bytes: bytes
@@ -1195,13 +1209,7 @@ class GeminiAPIClient:
         if is_multipart and form_data is not None:
             send_headers.pop("Content-Type", None)
 
-        request_proxy = (
-            request_config.proxy if request_config and request_config.proxy else None
-        )
-        if request_proxy and request_proxy.lower().startswith("socks"):
-            request_proxy = None
-        elif not request_proxy:
-            request_proxy = self._http_proxy
+        request_proxy = self._request_http_proxy(request_config)
 
         post_kwargs: dict[str, Any] = {
             "headers": send_headers,
@@ -1249,7 +1257,9 @@ class GeminiAPIClient:
             if response.status == 200:
                 logger.debug("API 调用成功")
                 if api_type == "google":
-                    return await self._parse_gresponse(response_data, session)
+                    return await self._parse_gresponse(
+                        response_data, session, request_config=request_config
+                    )
                 else:  # openai 兼容格式
                     # 豆包使用专门的解析方法
                     if normalize_api_type(api_type) == "doubao":
@@ -1261,6 +1271,7 @@ class GeminiAPIClient:
                             api_base,
                             response.status,
                             is_retry=is_retry,
+                            request_config=request_config,
                         )
                     # OpenAI Images / xAI Images 使用 provider 自身的解析方法
                     if normalize_api_type(api_type) in {
@@ -1277,9 +1288,13 @@ class GeminiAPIClient:
                             session=session,
                             api_base=api_base,
                             http_status=response.status,
+                            request_config=request_config,
                         )
                     return await self._parse_openai_response(
-                        response_data, session, api_base
+                        response_data,
+                        session,
+                        api_base,
+                        request_config=request_config,
                     )
             elif response.status in [429, 402, 403]:
                 # 豆包 API 使用专门的错误处理
@@ -1291,6 +1306,7 @@ class GeminiAPIClient:
                         api_base,
                         response.status,
                         is_retry=is_retry,
+                        request_config=request_config,
                     )
                 error_msg = response_data.get("error", {}).get(
                     "message", f"HTTP {response.status}"
@@ -1319,6 +1335,7 @@ class GeminiAPIClient:
                         api_base,
                         response.status,
                         is_retry=is_retry,
+                        request_config=request_config,
                     )
                 error_msg = response_data.get("error", {}).get(
                     "message", f"HTTP {response.status}"
@@ -1464,12 +1481,19 @@ class GeminiAPIClient:
         return events[-1]
 
     async def _parse_gresponse(
-        self, response_data: dict, session: aiohttp.ClientSession
+        self,
+        response_data: dict,
+        session: aiohttp.ClientSession,
+        *,
+        request_config: ApiRequestConfig | None = None,
     ) -> tuple[list[str], list[str], str | None, str | None]:
         """解析 Google 官方 API 响应"""
         provider = get_api_provider("google")
         return await provider.parse_response(
-            client=self, response_data=response_data, session=session
+            client=self,
+            response_data=response_data,
+            session=session,
+            request_config=request_config,
         )
 
     async def _parse_doubao_response(
@@ -1479,6 +1503,7 @@ class GeminiAPIClient:
         api_base: str | None = None,
         http_status: int | None = None,
         is_retry: bool = False,
+        request_config: ApiRequestConfig | None = None,
     ) -> tuple[list[str], list[str], str | None, str | None]:
         """解析豆包 API 响应"""
         provider = get_api_provider("doubao")
@@ -1489,10 +1514,16 @@ class GeminiAPIClient:
             api_base=api_base,
             http_status=http_status,
             is_retry=is_retry,
+            request_config=request_config,
         )
 
     async def _parse_openai_response(
-        self, response_data: dict, session: aiohttp.ClientSession, api_base: str = None
+        self,
+        response_data: dict,
+        session: aiohttp.ClientSession,
+        api_base: str = None,
+        *,
+        request_config: ApiRequestConfig | None = None,
     ) -> tuple[list[str], list[str], str | None, str | None]:
         """解析 OpenAI API 响应"""
 
@@ -1502,6 +1533,8 @@ class GeminiAPIClient:
         thought_signature = None
         fail_reasons: list[str] = []
         fallback_texts = self._collect_fallback_texts(response_data)
+        download_proxy = self._request_http_proxy(request_config)
+        has_request_proxy = self._request_has_proxy(request_config)
 
         message: dict[str, Any] | None = None
         if "choices" in response_data and response_data["choices"]:
@@ -1596,7 +1629,10 @@ class GeminiAPIClient:
                                 f"[grok2api 适配] 相对路径转换并下载: {candidate_url} -> {full_url}"
                             )
                             image_url, image_path = await self._download_image(
-                                full_url, session, use_cache=False
+                                full_url,
+                                session,
+                                use_cache=False,
+                                proxy=download_proxy,
                             )
                             # 只保留本地路径
                             if image_path:
@@ -1615,12 +1651,15 @@ class GeminiAPIClient:
                             "/images/users-" in candidate_url
                             or "/temp/image/" in candidate_url
                         )
-                        if is_temp_cache or self.proxy:
+                        if is_temp_cache or has_request_proxy or self.proxy:
                             logger.debug(
                                 f"[openai] {'临时缓存' if is_temp_cache else '代理模式'}，强制下载: {candidate_url}"
                             )
                             image_url, image_path = await self._download_image(
-                                candidate_url, session, use_cache=False
+                                candidate_url,
+                                session,
+                                use_cache=False,
+                                proxy=download_proxy,
                             )
                             if image_path:
                                 image_paths.append(image_path)
@@ -1634,7 +1673,10 @@ class GeminiAPIClient:
                         )
                         continue
                     image_url, image_path = await self._download_image(
-                        candidate_url, session, use_cache=False
+                        candidate_url,
+                        session,
+                        use_cache=False,
+                        proxy=download_proxy,
                     )
                 else:
                     logger.warning(f"跳过非字符串类型的图像URL: {type(candidate_url)}")
@@ -1676,6 +1718,16 @@ class GeminiAPIClient:
                             f"[grok2api 适配] 跳过文本中的临时缓存 URL（已下载）: {url}"
                         )
                         continue
+                    if has_request_proxy:
+                        _, image_path = await self._download_image(
+                            url,
+                            session,
+                            use_cache=False,
+                            proxy=download_proxy,
+                        )
+                        if image_path and image_path not in image_paths:
+                            image_paths.append(image_path)
+                        continue
                     if url not in image_urls:
                         image_urls.append(url)
 
@@ -1705,7 +1757,11 @@ class GeminiAPIClient:
 
         if not (image_urls or image_paths) and fallback_texts:
             fallback_added = await self._append_images_from_texts(
-                fallback_texts, image_urls, image_paths
+                fallback_texts,
+                image_urls,
+                image_paths,
+                session=session,
+                request_config=request_config,
             )
             if fallback_added and not text_content:
                 text_content = (
@@ -1718,7 +1774,10 @@ class GeminiAPIClient:
             for image_item in response_data["data"]:
                 if "url" in image_item:
                     image_url, image_path = await self._download_image(
-                        image_item["url"], session, use_cache=False
+                        image_item["url"],
+                        session,
+                        use_cache=False,
+                        proxy=download_proxy,
                     )
                     if image_url:
                         image_urls.append(image_url)
@@ -1891,16 +1950,32 @@ class GeminiAPIClient:
         texts: list[str],
         image_urls: list[str],
         image_paths: list[str],
+        *,
+        session: aiohttp.ClientSession | None = None,
+        request_config: ApiRequestConfig | None = None,
     ) -> bool:
         """从额外的文本字段中提取 http(s)/data URI 图像"""
 
         appended = False
+        download_proxy = self._request_http_proxy(request_config)
+        should_download_http = bool(session and self._request_has_proxy(request_config))
         for text in texts:
             if not text:
                 continue
 
             http_urls = self._find_image_urls_in_text(text)
             for url in http_urls:
+                if should_download_http:
+                    _, image_path = await self._download_image(
+                        url,
+                        session,
+                        use_cache=False,
+                        proxy=download_proxy,
+                    )
+                    if image_path and image_path not in image_paths:
+                        image_paths.append(image_path)
+                        appended = True
+                    continue
                 if url not in image_urls:
                     image_urls.append(url)
                     appended = True
@@ -2014,6 +2089,7 @@ class GeminiAPIClient:
         image_url: str,
         session: aiohttp.ClientSession,
         use_cache: bool = False,
+        proxy: str | None = None,
     ) -> tuple[str | None, str | None]:
         """下载并保存图像，可选择是否使用缓存（默认关闭以避免返回旧图）"""
         cleaned_url = (
@@ -2065,7 +2141,7 @@ class GeminiAPIClient:
                 async with session.get(
                     cleaned_url,
                     timeout=aiohttp.ClientTimeout(total=30),
-                    proxy=self._http_proxy,
+                    proxy=proxy if proxy is not None else self._http_proxy,
                     headers=headers or None,
                 ) as response:
                     if response.status != 200:

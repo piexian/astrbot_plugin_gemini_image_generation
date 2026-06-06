@@ -482,6 +482,7 @@ class DoubaoProvider:
         api_base: str | None = None,
         http_status: int | None = None,
         is_retry: bool = False,
+        request_config: ApiRequestConfig | None = None,
     ) -> tuple[list[str], list[str], str | None, str | None]:  # noqa: ANN401
         # 防御性检查：response_data 必须是 dict
         if not isinstance(response_data, dict):
@@ -548,6 +549,17 @@ class DoubaoProvider:
                     continue
                 url = item.get("url")
                 if isinstance(url, str) and url:
+                    if client._request_has_proxy(request_config):
+                        _, image_path = await client._download_image(
+                            url,
+                            session,
+                            use_cache=False,
+                            proxy=client._request_http_proxy(request_config),
+                        )
+                        if image_path:
+                            image_urls.append(image_path)
+                            image_paths.append(image_path)
+                        continue
                     image_urls.append(url)
                     continue
                 b64_json = item.get("b64_json")

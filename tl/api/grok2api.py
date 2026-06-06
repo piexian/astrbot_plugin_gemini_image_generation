@@ -17,6 +17,7 @@ from typing import Any
 import aiohttp
 from astrbot.api import logger
 
+from ..api_types import ApiRequestConfig
 from .openai_compat import OpenAICompatProvider
 
 
@@ -68,6 +69,7 @@ class Grok2ApiProvider(OpenAICompatProvider):
         image_urls: list[str],
         image_paths: list[str],
         api_base: str | None,
+        request_config: ApiRequestConfig | None,
         state: dict[str, Any],
     ) -> bool:  # noqa: ANN401
         seen: set[str] = state.setdefault("seen_special_urls", set())
@@ -96,7 +98,10 @@ class Grok2ApiProvider(OpenAICompatProvider):
                 full_url,
             )
             _, image_path = await client._download_image(
-                full_url, session, use_cache=False
+                full_url,
+                session,
+                use_cache=False,
+                proxy=client._request_http_proxy(request_config),
             )
             if image_path and image_path not in image_paths:
                 image_paths.append(image_path)
@@ -108,7 +113,10 @@ class Grok2ApiProvider(OpenAICompatProvider):
             seen.add(candidate_url)
             logger.debug("[grok2api] 检测到临时缓存 URL，强制下载: %s", candidate_url)
             _, image_path = await client._download_image(
-                candidate_url, session, use_cache=False
+                candidate_url,
+                session,
+                use_cache=False,
+                proxy=client._request_http_proxy(request_config),
             )
             if image_path and image_path not in image_paths:
                 image_paths.append(image_path)
