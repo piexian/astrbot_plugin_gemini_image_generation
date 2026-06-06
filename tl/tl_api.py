@@ -30,6 +30,8 @@ from .openai_image_size import (
     resolve_openai_custom_size,
 )
 
+_DOWNLOAD_PROXY_DEFAULT = object()
+
 try:
     from .tl_utils import (
         IMAGE_CACHE_DIR,
@@ -2089,7 +2091,7 @@ class GeminiAPIClient:
         image_url: str,
         session: aiohttp.ClientSession,
         use_cache: bool = False,
-        proxy: str | None = None,
+        proxy: str | None | object = _DOWNLOAD_PROXY_DEFAULT,
     ) -> tuple[str | None, str | None]:
         """下载并保存图像，可选择是否使用缓存（默认关闭以避免返回旧图）"""
         cleaned_url = (
@@ -2138,10 +2140,14 @@ class GeminiAPIClient:
                     f"正在下载图像: {cleaned_url[:100]}... 尝试 {attempt}/{max_retries}"
                 )
 
+                request_proxy = (
+                    self._http_proxy if proxy is _DOWNLOAD_PROXY_DEFAULT else proxy
+                )
+
                 async with session.get(
                     cleaned_url,
                     timeout=aiohttp.ClientTimeout(total=30),
-                    proxy=proxy if proxy is not None else self._http_proxy,
+                    proxy=request_proxy,
                     headers=headers or None,
                 ) as response:
                     if response.status != 200:

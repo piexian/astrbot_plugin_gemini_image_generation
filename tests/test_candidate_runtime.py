@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -39,6 +40,27 @@ class _FakeSession:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class _FakeImageResponse:
+    status = 200
+    headers = {"Content-Type": "image/png"}
+    content = object()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _FakeImageDownloadSession:
+    def __init__(self) -> None:
+        self.proxy_seen: Any = None
+
+    def get(self, *args, **kwargs):
+        self.proxy_seen = kwargs.get("proxy")
+        return _FakeImageResponse()
 
 
 def test_gitignore_does_not_hide_tests_directory() -> None:
@@ -187,6 +209,30 @@ async def test_candidate_proxy_is_used_for_response_image_downloads() -> None:
     }
     assert image_urls == ["/tmp/generated.png"]
     assert image_paths == ["/tmp/generated.png"]
+
+
+@pytest.mark.asyncio
+async def test_download_image_respects_explicit_none_proxy_for_socks_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = GeminiAPIClient(["fallback"])
+    client.proxy = "http://global-proxy.local:8080"
+    session = _FakeImageDownloadSession()
+
+    async def fake_save_image_stream(*args, **kwargs):
+        return "/tmp/generated.png"
+
+    monkeypatch.setattr("tl.tl_api.save_image_stream", fake_save_image_stream)
+
+    _, image_path = await client._download_image(
+        "https://cdn.example/image.png",
+        session,  # type: ignore[arg-type]
+        use_cache=False,
+        proxy=None,
+    )
+
+    assert image_path == "/tmp/generated.png"
+    assert session.proxy_seen is None
 
 
 @pytest.mark.asyncio
