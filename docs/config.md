@@ -2,7 +2,6 @@
 
 本文档记录插件的完整配置项。README 只保留最小配置和常用入口。
 
-> v1.2.0 起，生图 API 配置统一移动到 `provider_settings`。插件不再复用 AstrBot 本体供应商，也不再提供旧 `api_settings.api_type` 入口。
 
 ## 必填配置
 
