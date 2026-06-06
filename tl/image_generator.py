@@ -11,6 +11,8 @@ from astrbot.api import logger
 from .thought_signature import log_thought_signature_debug
 from .tl_api import APIError, ApiRequestConfig
 
+DEFAULT_MAX_REFERENCE_IMAGES = 6
+
 if TYPE_CHECKING:
     from astrbot.api.event import AstrMessageEvent
     from astrbot.api.star import Context
@@ -28,6 +30,7 @@ class ImageGenerator:
         enable_smart_retry: bool = True,
         total_timeout: int = 120,
         max_attempts_per_key: int = 3,
+        max_reference_images: int = DEFAULT_MAX_REFERENCE_IMAGES,
         filter_valid_fn=None,
         get_tool_timeout_fn=None,
     ):
@@ -38,6 +41,7 @@ class ImageGenerator:
             enable_smart_retry: 是否启用智能重试
             total_timeout: 总超时时间
             max_attempts_per_key: 每个密钥最大尝试次数
+            max_reference_images: 最大参考图片数量
             filter_valid_fn: 过滤有效参考图片的函数
             get_tool_timeout_fn: 获取工具超时的函数
         """
@@ -46,6 +50,9 @@ class ImageGenerator:
         self.enable_smart_retry = enable_smart_retry
         self.total_timeout = total_timeout
         self.max_attempts_per_key = max_attempts_per_key
+        self.max_reference_images = self._coerce_max_reference_images(
+            max_reference_images
+        )
         self._filter_valid_fn = filter_valid_fn
         self._get_tool_timeout_fn = get_tool_timeout_fn
         self.last_request_stats: dict[str, object] = {
@@ -58,7 +65,16 @@ class ImageGenerator:
         """更新配置"""
         for key, value in kwargs.items():
             if hasattr(self, key) and value is not None:
+                if key == "max_reference_images":
+                    value = self._coerce_max_reference_images(value)
                 setattr(self, key, value)
+
+    @staticmethod
+    def _coerce_max_reference_images(value) -> int:
+        try:
+            return max(int(value), 0)
+        except (TypeError, ValueError):
+            return DEFAULT_MAX_REFERENCE_IMAGES
 
     def _filter_valid_reference_images(
         self, images: list[str] | None, source: str
@@ -114,11 +130,16 @@ class ImageGenerator:
         valid_avatar_images = self._filter_valid_reference_images(
             avatar_reference, source="头像"
         )
+        max_images = self.max_reference_images
+        if len(valid_msg_images) > max_images:
+            valid_msg_images = valid_msg_images[:max_images]
+        remaining_slots = max(max_images - len(valid_msg_images), 0)
+        if len(valid_avatar_images) > remaining_slots:
+            valid_avatar_images = valid_avatar_images[:remaining_slots]
+
         all_reference_images = valid_msg_images + valid_avatar_images
 
-        # 计算截断后的数量
-        final_msg_count = min(len(valid_msg_images), len(all_reference_images))
-        final_avatar_count = len(all_reference_images) - final_msg_count
+        final_avatar_count = len(valid_avatar_images)
 
         if final_avatar_count > 0:
             prompt += f"""

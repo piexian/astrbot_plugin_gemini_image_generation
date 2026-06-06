@@ -26,6 +26,7 @@ from .api import get_api_provider, normalize_api_type, supports_image_edit
 from .api_headers import apply_api_key_to_headers, extract_api_key_from_headers
 from .api_types import APIError, ApiRequestConfig
 from .openai_image_size import (
+    CUSTOM_SIZE_DEFAULT,
     normalize_size_mode,
     resolve_openai_custom_size,
 )
@@ -382,7 +383,23 @@ class GeminiAPIClient:
                         f"[openai_images] 根据请求参数解析 custom size 失败，"
                         f"回退配置 custom_size: {exc}"
                     )
-                    return settings.get("custom_size") or None, ""
+                    try:
+                        return (
+                            resolve_openai_custom_size(
+                                None,
+                                None,
+                                None,
+                                settings,
+                                custom_size_field_name="openai_images.custom_size",
+                            ),
+                            "",
+                        )
+                    except ValueError as config_exc:
+                        logger.warning(
+                            "[openai_images] 配置 custom_size 也非法，"
+                            f"回退默认尺寸 {CUSTOM_SIZE_DEFAULT}: {config_exc}"
+                        )
+                        return CUSTOM_SIZE_DEFAULT, ""
                 raise
 
         resolution = (

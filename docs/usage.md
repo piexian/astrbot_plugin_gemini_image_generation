@@ -82,20 +82,17 @@ LLM 工具会根据当前 `tool_call_timeout` 和 `llm_tool_timeout_reserve_perc
 
 代理模式下，前台和后台都会通过代理下载远程图片，保证链路一致。
 
-### 参数动态切换
+### 工具参数
 
-使用 `openai_images` 且启用 `size_mode=custom` 时：
+LLM 工具固定暴露 `resolution` / `aspect_ratio` 作为可选尺寸控制参数：
 
-- LLM 工具仅接受 `size` 参数，格式 `WxH`。
-- 不再接受 `resolution` 和 `aspect_ratio`。
-- 未显式传入 `size` 时，使用 `provider_settings.provider_overrides` 中 `openai_images` 模板的 `custom_size`。
-- WebUI 中会隐藏 `resolution` 和 `aspect_ratio`，只显示 `custom_size`。
-
-其他供应商或非 custom 模式继续使用 `resolution` / `aspect_ratio`。
+- `resolution`：仅支持 `1K` / `2K` / `4K`。
+- `aspect_ratio`：仅支持 `1:1` / `16:9` / `4:3` / `3:2` / `9:16` / `4:5` / `5:4` / `21:9` / `3:4` / `2:3`。
+- 未传入时使用插件配置或供应商默认值。
 
 ### 参数校验
 
-LLM 传入非法 `resolution`、`aspect_ratio` 或 `size` 时，工具会直接返回错误并要求模型修正后重试，不会静默回退默认值。
+LLM 传入非法 `resolution` 或 `aspect_ratio` 时，工具会记录警告并回退为默认配置。
 
 ### Gemini thought_signature 处理
 

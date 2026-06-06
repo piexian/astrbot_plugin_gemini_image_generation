@@ -331,13 +331,7 @@ grok2api provider，继承 `OpenAICompatProvider`。
 | `_build_call_tool_result()` | 将图片结果封装为 `CallToolResult`，包含 `ImageContent` / `TextContent` |
 | `_background_generate_and_send()` | 后台生成完成后发送结果 |
 
-OpenAI Images 自定义尺寸模式下，工具参数会切换为：
-
-```text
-prompt + use_reference_images + include_user_avatar + size + for_forum
-```
-
-其他模式下，工具参数为：
+工具参数固定为：
 
 ```text
 prompt + use_reference_images + include_user_avatar + resolution + aspect_ratio + for_forum

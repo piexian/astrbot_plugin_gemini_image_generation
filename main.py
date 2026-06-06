@@ -174,6 +174,7 @@ class GeminiImageGenerationPlugin(Star):
             enable_smart_retry=self.cfg.enable_smart_retry,
             total_timeout=self.cfg.total_timeout,
             max_attempts_per_key=self.cfg.max_attempts_per_key,
+            max_reference_images=self._max_configured_reference_images(),
             filter_valid_fn=self.image_handler.filter_valid_reference_images,
             get_tool_timeout_fn=self.get_tool_timeout,
         )
@@ -203,6 +204,7 @@ class GeminiImageGenerationPlugin(Star):
                 enable_smart_retry=self.cfg.enable_smart_retry,
                 total_timeout=self.cfg.total_timeout,
                 max_attempts_per_key=self.cfg.max_attempts_per_key,
+                max_reference_images=self._max_configured_reference_images(),
             )
 
     def _get_openai_images_settings(self) -> dict[str, Any]:

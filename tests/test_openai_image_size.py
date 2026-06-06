@@ -5,6 +5,7 @@ import pytest
 from tl.api.openai_images import _resolve_size_value
 from tl.api_types import ApiRequestConfig
 from tl.openai_image_size import (
+    CUSTOM_SIZE_DEFAULT,
     derive_custom_size_from_preset_params,
     normalize_size_mode,
     resolve_openai_custom_size,
@@ -182,6 +183,72 @@ def test_client_custom_mode_derives_size_from_request_override() -> None:
     candidate_config = client._build_candidate_config(config, candidate)
 
     assert candidate_config.resolution == "2048x1152"
+    assert candidate_config.aspect_ratio == ""
+
+
+def test_client_custom_mode_falls_back_to_config_size_when_override_invalid() -> None:
+    from tl.tl_api import GeminiAPIClient
+
+    candidate = type(
+        "Candidate",
+        (),
+        {
+            "id": "openai_images#1",
+            "api_type": "openai_images",
+            "model": "gpt-image-1",
+            "api_base": "",
+            "settings": {
+                "size_mode": "custom",
+                "custom_size": "1536x1024",
+            },
+        },
+    )()
+    client = GeminiAPIClient(["key"])
+    config = ApiRequestConfig(
+        model="",
+        prompt="test",
+        api_type="",
+        resolution="2K",
+        aspect_ratio="17:10",
+    )
+
+    candidate_config = client._build_candidate_config(config, candidate)
+
+    assert candidate_config.resolution == "1536x1024"
+    assert candidate_config.aspect_ratio == ""
+
+
+def test_client_custom_mode_falls_back_to_default_when_override_and_config_invalid() -> (
+    None
+):
+    from tl.tl_api import GeminiAPIClient
+
+    candidate = type(
+        "Candidate",
+        (),
+        {
+            "id": "openai_images#1",
+            "api_type": "openai_images",
+            "model": "gpt-image-1",
+            "api_base": "",
+            "settings": {
+                "size_mode": "custom",
+                "custom_size": "2048x1080",
+            },
+        },
+    )()
+    client = GeminiAPIClient(["key"])
+    config = ApiRequestConfig(
+        model="",
+        prompt="test",
+        api_type="",
+        resolution="2K",
+        aspect_ratio="17:10",
+    )
+
+    candidate_config = client._build_candidate_config(config, candidate)
+
+    assert candidate_config.resolution == CUSTOM_SIZE_DEFAULT
     assert candidate_config.aspect_ratio == ""
 
 

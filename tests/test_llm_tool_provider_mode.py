@@ -52,7 +52,9 @@ sys.modules["astrbot.core.astr_agent_context"] = context_module
 from tl.llm_tools import (  # noqa: E402
     _build_tool_parameters,
     _is_openai_images_custom_size_mode,
+    _resolve_tool_size_params,
 )
+from tl.openai_image_size import CUSTOM_SIZE_DEFAULT  # noqa: E402
 
 
 def _plugin_with_candidates(*candidates):
@@ -94,6 +96,78 @@ def test_openai_custom_size_tool_mode_uses_first_candidate_settings() -> None:
 
     params = _build_tool_parameters(plugin)
 
-    assert "size" in params["properties"]
-    assert "resolution" not in params["properties"]
-    assert "aspect_ratio" not in params["properties"]
+    assert "size" not in params["properties"]
+    assert "resolution" in params["properties"]
+    assert "aspect_ratio" in params["properties"]
+
+
+def test_openai_custom_size_tool_params_keep_preset_controls() -> None:
+    plugin = _plugin_with_candidates(
+        _candidate(
+            "openai_images",
+            {"size_mode": "custom", "custom_size": "1536x1024"},
+        )
+    )
+
+    resolution, aspect_ratio, notice = _resolve_tool_size_params(
+        plugin,
+        resolution="2k",
+        aspect_ratio="16:9",
+    )
+
+    assert resolution == "2K"
+    assert aspect_ratio == "16:9"
+    assert notice is None
+
+
+def test_openai_custom_size_tool_params_fallback_to_default_on_invalid_inputs() -> None:
+    plugin = _plugin_with_candidates(
+        _candidate(
+            "openai_images",
+            {"size_mode": "custom", "custom_size": "1536x1024"},
+        )
+    )
+
+    resolution, aspect_ratio, notice = _resolve_tool_size_params(
+        plugin,
+        resolution="bad",
+        aspect_ratio="bad",
+    )
+
+    assert resolution == "1536x1024"
+    assert aspect_ratio is None
+    assert notice is None
+
+
+def test_openai_custom_size_tool_params_fallback_when_one_input_is_invalid() -> None:
+    plugin = _plugin_with_candidates(
+        _candidate(
+            "openai_images",
+            {"size_mode": "custom", "custom_size": "1536x1024"},
+        )
+    )
+
+    resolution, aspect_ratio, notice = _resolve_tool_size_params(
+        plugin,
+        resolution="2K",
+        aspect_ratio="bad",
+    )
+
+    assert resolution == "1536x1024"
+    assert aspect_ratio is None
+    assert notice is None
+
+
+def test_openai_custom_size_tool_params_fallback_when_config_invalid() -> None:
+    plugin = _plugin_with_candidates(
+        _candidate(
+            "openai_images",
+            {"size_mode": "custom", "custom_size": "2048x1080"},
+        )
+    )
+
+    resolution, aspect_ratio, notice = _resolve_tool_size_params(plugin)
+
+    assert resolution == CUSTOM_SIZE_DEFAULT
+    assert aspect_ratio is None
+    assert notice is None
