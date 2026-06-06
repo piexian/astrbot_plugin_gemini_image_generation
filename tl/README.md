@@ -160,7 +160,7 @@ generate_image()
 | `normalize_api_type(api_type)` | 小写、去空格、`-` 转 `_` |
 | `get_api_provider(api_type)` | 返回对应 provider 单例（字典查表，未知值回退 `OpenAICompatProvider`） |
 
-当前映射（与 `_conf_schema.json` 中 `api_settings.api_type.options` 严格一致，不再提供别名）：
+当前映射（与 `_conf_schema.json` 中 `provider_settings.provider_overrides.templates` 严格一致，不再提供别名）：
 
 | `api_type` | Provider |
 |------------|----------|
@@ -245,7 +245,7 @@ MiniMax 图片生成官方 provider。
 | `MiniMaxProvider.build_request()` | 构造 `/v1/image_generation` JSON 请求 |
 | `MiniMaxProvider.parse_response()` | 解析 `data.image_urls` / `data.image_base64` 响应 |
 | `_prepare_payload()` | 组装模型、比例、生成数量、水印、提示词优化和参考图；根据 `resolution` 和 `aspect_ratio` 自动选择 `aspect_ratio` 或显式 `width`/`height` |
-| `_map_resolution()` | 全局 `resolution`（1K/2K/4K）映射为目标像素尺寸（4K 降级为 2048） |
+| `_map_resolution()` | 供应商条目的 `resolution`（1K/2K/4K）映射为目标像素尺寸（4K 降级为 2048） |
 | `_compute_dimensions_from_ratio()` | 从 W:H 比例和目标长边计算 `width`/`height`，自动对齐 8 的倍数并钳制 512-2048 |
 | `_build_subject_reference()` | 构造 MiniMax `subject_reference` |
 | `_to_image_file()` | 参考图按配置透传 URL 或转为 `data URI` |
@@ -331,13 +331,7 @@ grok2api provider，继承 `OpenAICompatProvider`。
 | `_build_call_tool_result()` | 将图片结果封装为 `CallToolResult`，包含 `ImageContent` / `TextContent` |
 | `_background_generate_and_send()` | 后台生成完成后发送结果 |
 
-OpenAI Images 自定义尺寸模式下，工具参数会切换为：
-
-```text
-prompt + use_reference_images + include_user_avatar + size + for_forum
-```
-
-其他模式下，工具参数为：
+工具参数固定为：
 
 ```text
 prompt + use_reference_images + include_user_avatar + resolution + aspect_ratio + for_forum

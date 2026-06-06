@@ -127,7 +127,11 @@ class StepfunProvider:
     async def build_request(
         self, *, client: Any, config: ApiRequestConfig
     ) -> ProviderRequest:  # noqa: ANN401
-        settings: dict[str, Any] = getattr(client, "stepfun_settings", None) or {}
+        settings: dict[str, Any] = (
+            getattr(config, "provider_settings", None)
+            or getattr(client, "stepfun_settings", None)
+            or {}
+        )
 
         api_base = (
             (config.api_base or "").strip()
@@ -186,6 +190,7 @@ class StepfunProvider:
         session: aiohttp.ClientSession,
         api_base: str | None = None,
         http_status: int | None = None,
+        request_config: ApiRequestConfig | None = None,
     ) -> tuple[list[str], list[str], str | None, str | None]:  # noqa: ANN401
         """解析 StepFun Images API 响应"""
         image_urls: list[str] = []
@@ -225,6 +230,17 @@ class StepfunProvider:
 
             url_value = image_item.get("url")
             if isinstance(url_value, str) and url_value:
+                if client._request_has_proxy(request_config):
+                    _, image_path = await client._download_image(
+                        url_value,
+                        session,
+                        use_cache=False,
+                        proxy=client._request_http_proxy(request_config),
+                    )
+                    if image_path:
+                        image_urls.append(image_path)
+                        image_paths.append(image_path)
+                    continue
                 image_urls.append(url_value)
                 logger.debug(f"[stepfun] 图片 URL: {url_value[:80]}...")
                 continue

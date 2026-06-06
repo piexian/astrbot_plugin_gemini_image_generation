@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Final
 
+from ..provider_metadata import normalize_api_type
 from .base import ApiProvider
 from .doubao import DoubaoProvider
 from .google import GoogleProvider
@@ -30,7 +31,7 @@ _STEPFUN: Final[StepfunProvider] = StepfunProvider()
 _XAI: Final[XAIProvider] = XAIProvider()
 _ZAI: Final[ZaiProvider] = ZaiProvider()
 
-# canonical api_type -> provider 映射表（与 _conf_schema.json 中 api_type.options 严格一致）
+# canonical api_type -> provider 映射表（与 _conf_schema.json 中 provider 模板名一致）
 _PROVIDERS: Final[dict[str, ApiProvider]] = {
     "google": _GOOGLE,
     "openai": _OPENAI,
@@ -43,11 +44,6 @@ _PROVIDERS: Final[dict[str, ApiProvider]] = {
     "grok2api": _GROK2API,
     "doubao": _DOUBAO,
 }
-
-
-def normalize_api_type(api_type: str | None) -> str:
-    """规范化 API 类型字符串（小写 + 去空格 + 连字符转下划线）。"""
-    return (api_type or "").strip().lower().replace("-", "_")
 
 
 def get_api_provider(api_type: str | None) -> ApiProvider:

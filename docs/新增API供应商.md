@@ -1,6 +1,6 @@
 # 新增 API 供应商（适配器开发指南）
 
-本插件通过 `api_type` 选择不同的 API 供应商实现。供应商代码集中在 `tl/api/`，对外统一由 `tl/tl_api.py` 调用。
+本插件通过 `provider_settings.provider_overrides` 中的供应商模板生成候选配置，每个候选携带 canonical `api_type`，再由 registry 查表选择供应商实现。供应商代码集中在 `tl/api/`，对外统一由 `tl/tl_api.py` 调用。
 
 ## 架构概览
 
@@ -23,7 +23,7 @@ tl/api/
 └── data_uri.py         # data URI / base64 助手(共享)
 ```
 
-当前注册映射（与 `_conf_schema.json` 中 `api_settings.api_type.options` 严格一致，不再提供别名）：
+当前注册映射（与 `_conf_schema.json` 中 `provider_settings.provider_overrides.templates` 严格一致，不再提供别名）：
 
 | `api_type` | Provider | 说明 |
 |------------|----------|------|
@@ -37,7 +37,7 @@ tl/api/
 | `zai` | `ZaiProvider` | Zai 兼容接口 |
 | `grok2api` | `Grok2ApiProvider` | grok2api 兼容接口 |
 | `doubao` | `DoubaoProvider` | 火山引擎 Ark / 豆包 |
-| 未知值 | `OpenAICompatProvider` | 默认兜底 |
+| 未知值 | - | 配置加载阶段记录错误并跳过，不进入轮询候选 |
 
 ## 核心接口
 
@@ -206,9 +206,9 @@ _PROVIDERS: Final[dict[str, ApiProvider]] = {
 }
 ```
 
-`get_api_provider()` 本身是一行查表：`_PROVIDERS.get(normalize_api_type(api_type), _OPENAI)`，未知 `api_type` 默认回退到 OpenAI 兼容实现。
+`get_api_provider()` 仍保留 OpenAI 兼容兜底，便于内部调用容错；但 v1.2.0 的配置加载会先校验 `provider_settings.provider_overrides` 模板名，未知供应商会记录错误并跳过，不会进入实际轮询候选。
 
-> **只使用 canonical key**：所有 canonical `api_type` 名称必须与 `_conf_schema.json` 中 `api_settings.api_type.options` 严格一致（全小写、下划线分隔）；代码内不再维护其他别名。`normalize_api_type()` 仅做小写、去空格、`-` 转 `_` 三项面向输入的宽容处理。
+> **只使用 canonical key**：所有 canonical `api_type` 名称必须与 `_conf_schema.json` 中 `provider_settings.provider_overrides.templates` 严格一致（全小写、下划线分隔）；代码内不再维护其他别名。`normalize_api_type()` 仅做小写、去空格、`-` 转 `_` 三项面向输入的宽容处理。
 
 ## 更新配置和文档
 
@@ -216,7 +216,7 @@ _PROVIDERS: Final[dict[str, ApiProvider]] = {
 
 | 文件 | 需要更新的内容 |
 |------|----------------|
-| `_conf_schema.json` | `api_settings.api_type.options` 和 `provider_overrides` 模板 |
+| `_conf_schema.json` | `provider_settings.provider_overrides.templates` 中新增模板 |
 | `docs/config.md` | 配置项说明、默认值、供应商行为差异 |
 | `README.md` | 多供应商列表和最小配置说明 |
 | `CHANGELOG.md` | 新增供应商、行为变更和兼容性说明 |
@@ -225,17 +225,24 @@ _PROVIDERS: Final[dict[str, ApiProvider]] = {
 
 ```json
 {
-  "api_type": {
-    "options": [
-      "google",
-      "openai",
-      "openai_images",
-      "xai",
-      "zai",
-      "grok2api",
-      "doubao",
-      "my_provider"
-    ]
+  "provider_settings": {
+    "items": {
+      "provider_overrides": {
+        "templates": {
+          "my_provider": {
+            "description": "My Provider 配置",
+            "items": {
+              "priority": {"type": "int", "default": 0},
+              "api_keys": {"type": "list", "default": []},
+              "model": {"type": "string", "default": "my-image-model"},
+              "resolution": {"type": "string", "default": "1K"},
+              "aspect_ratio": {"type": "string", "default": "1:1"},
+              "max_reference_images": {"type": "int", "default": 6}
+            }
+          }
+        }
+      }
+    }
   }
 }
 ```
@@ -255,7 +262,7 @@ _PROVIDERS: Final[dict[str, ApiProvider]] = {
 
 | 问题 | 原因 | 处理 |
 |------|------|------|
-| 新 `api_type` 没生效 | 未注册或 canonical 名称与 `_conf_schema.json` 不一致 | 检查 `registry.py` 中 `_PROVIDERS` 字典和 `_conf_schema.json` 中 `api_type.options` |
+| 新 `api_type` 没生效 | 未注册或 canonical 名称与 `_conf_schema.json` 不一致 | 检查 `registry.py` 中 `_PROVIDERS` 字典和 `_conf_schema.json` 中 provider 模板名 |
 | 图片重复发送 | 响应结构和文本回退都提取到同一张图 | 在 provider 内做去重，或避免无条件文本扫描 |
 | URL 过期 | 返回的是临时缓存链接 | 在 provider 内立即下载并返回 `image_paths` |
 | 相对路径无法访问 | 响应只给 `/images/...` | 使用 `api_base` 拼接 origin 后下载 |

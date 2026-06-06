@@ -17,6 +17,7 @@ class ApiRequestConfig:
     api_type: str = "openai"
     api_base: str | None = None
     api_key: str | None = None
+    candidate_id: str | None = None
     resolution: str | None = None
     aspect_ratio: str | None = None
     enable_grounding: bool = False
@@ -27,7 +28,10 @@ class ApiRequestConfig:
     enable_smart_retry: bool = True  # 智能重试开关
     enable_text_response: bool = False  # 文本响应开关
     force_resolution: bool = False  # 强制传递分辨率参数
+    suppress_resolution: bool = False  # 显式不发送分辨率/比例参数
     image_input_mode: str = "force_base64"  # 参考图统一转 base64
+    provider_settings: dict | None = None  # 当前候选供应商的请求级配置
+    proxy: str | None = None  # 当前请求使用的代理
 
     # 官方文档推荐参数
     temperature: float = 0.7  # 控制生成随机性，0.0-1.0

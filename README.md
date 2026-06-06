@@ -2,14 +2,14 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/Version-v1.10.6-blue)
+![Version](https://img.shields.io/badge/Version-v1.2.0-blue)
 ![License](https://img.shields.io/badge/License-AGPL--3.0-orange)
 
 **强大的 AstrBot 图像生成插件，支持生图、改图、头像参考、表情包切分和 LLM 工具调用。**
 
 </div>
 
-> **升级提示**：v1.9.0 以后的配置文件格式不兼容 v1.8.x 及更早版本。升级后如遇配置模板显示错误，请查看 [配置迁移说明](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/troubleshooting.md#配置迁移说明)。
+> **升级提示**：v1.2.0 重构了生图供应商配置，不再复用 AstrBot 本体供应商，也不再读取旧 `api_settings`。升级后请在 `provider_settings.provider_overrides` 中重新添加供应商模板。
 
 ## 功能概览
 
@@ -17,6 +17,7 @@
 - **快速预设**：头像、海报、壁纸、卡片、手机壁纸、手办化、表情包一键生成。
 - **智能参考图**：自动读取消息图片、引用图片、合并转发、群文件，以及用户头像和 @ 对象头像。
 - **多供应商支持**：Google Gemini、OpenAI 兼容、OpenAI Images、xAI Images、MiniMax、阶跃星辰、Zai、grok2api、豆包。
+- **供应商轮询**：在插件内配置生图供应商、轮询顺序和同类型优先级，失败时按配置顺序自动尝试下一个候选。
 - **LLM 工具集成**：支持自然语言触发生图，前台短等待，超时后自动转后台发送。
 - **表情包切分**：内置 SmartMemeSplitter v4，默认优先走自适应黑描边贴纸切分，并保留手动网格、视觉识别等兜底路径。
 - **限流与缓存**：支持群白名单/黑名单、周期限流、KV 持久化、临时文件自动清理。
@@ -43,13 +44,12 @@ https://github.com/piexian/astrbot_plugin_gemini_image_generation
 
 ## 最小配置
 
-至少需要配置一个可用的图像模型供应商。以下两种方式 **二选一**：
+至少需要配置一个可用的图像模型供应商。v1.2.0 起生图不再使用 AstrBot 本体供应商，必须在本插件配置中添加：
 
-- **方式 A：复用 AstrBot 提供商**
-  - 在 `api_settings.provider_id` 中选择已在 AstrBot 中配置好的提供商，并把 `api_settings.api_type` 设为对应类型（`google` / `openai` 等）。
-- **方式 B：使用插件内置覆盖配置**
-  - 在 `api_settings.api_type` 中选择目标类型；
-  - 在 `api_settings.provider_overrides` 中添加同名模板（如 `google`），填入 `api_keys`、`model`、`api_base` 等字段；
+- 在 `provider_settings.provider_overrides` 中添加供应商模板（如 `google` / `openai_images`），填入 `api_keys`、`model`、`api_base` 等字段；
+- 同类型可添加多条模板，通过 `priority` 控制优先级；相同优先级按配置表顺序尝试；
+- 可选配置 `provider_settings.provider_polling`，按列表从上到下自动尝试生成；重复供应商会自动去重，未知供应商会记录错误并跳过；
+- 使用 `openai_images` 且 `size_mode=custom` 时，配置界面只显示 `custom_size`，自动隐藏 `resolution` 和 `aspect_ratio`。
 
 常用配置入口：
 

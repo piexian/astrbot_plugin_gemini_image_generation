@@ -148,7 +148,9 @@ data/
 *.png
 !logo.png
 .serena
+CLAUDE.md
 .claude
 tmp
 .ace-tool/
 plans/
+.codegraph/

@@ -11,6 +11,8 @@ from astrbot.api import logger
 from .thought_signature import log_thought_signature_debug
 from .tl_api import APIError, ApiRequestConfig
 
+DEFAULT_MAX_REFERENCE_IMAGES = 6
+
 if TYPE_CHECKING:
     from astrbot.api.event import AstrMessageEvent
     from astrbot.api.star import Context
@@ -25,20 +27,10 @@ class ImageGenerator:
         self,
         context: Context,
         api_client: APIClient | None = None,
-        model: str = "",
-        api_type: str = "",
-        api_base: str = "",
-        resolution: str = "1K",
-        aspect_ratio: str = "1:1",
-        enable_grounding: bool = False,
         enable_smart_retry: bool = True,
-        enable_text_response: bool = False,
-        force_resolution: bool = False,
-        resolution_param_name: str = "image_size",
-        aspect_ratio_param_name: str = "aspect_ratio",
-        max_reference_images: int = 6,
         total_timeout: int = 120,
         max_attempts_per_key: int = 3,
+        max_reference_images: int = DEFAULT_MAX_REFERENCE_IMAGES,
         filter_valid_fn=None,
         get_tool_timeout_fn=None,
     ):
@@ -46,39 +38,21 @@ class ImageGenerator:
         Args:
             context: AstrBot Context 实例
             api_client: API 客户端实例
-            model: 模型名称
-            api_type: API 类型
-            api_base: API 基础地址
-            resolution: 分辨率
-            aspect_ratio: 宽高比
-            enable_grounding: 是否启用 grounding
             enable_smart_retry: 是否启用智能重试
-            enable_text_response: 是否启用文本响应
-            force_resolution: 是否强制分辨率
-            resolution_param_name: 分辨率参数名
-            aspect_ratio_param_name: 宽高比参数名
-            max_reference_images: 最大参考图片数
             total_timeout: 总超时时间
             max_attempts_per_key: 每个密钥最大尝试次数
+            max_reference_images: 最大参考图片数量
             filter_valid_fn: 过滤有效参考图片的函数
             get_tool_timeout_fn: 获取工具超时的函数
         """
         self.context = context
         self.api_client = api_client
-        self.model = model
-        self.api_type = api_type
-        self.api_base = api_base
-        self.resolution = resolution
-        self.aspect_ratio = aspect_ratio
-        self.enable_grounding = enable_grounding
         self.enable_smart_retry = enable_smart_retry
-        self.enable_text_response = enable_text_response
-        self.force_resolution = force_resolution
-        self.resolution_param_name = resolution_param_name
-        self.aspect_ratio_param_name = aspect_ratio_param_name
-        self.max_reference_images = max_reference_images
         self.total_timeout = total_timeout
         self.max_attempts_per_key = max_attempts_per_key
+        self.max_reference_images = self._coerce_max_reference_images(
+            max_reference_images
+        )
         self._filter_valid_fn = filter_valid_fn
         self._get_tool_timeout_fn = get_tool_timeout_fn
         self.last_request_stats: dict[str, object] = {
@@ -91,7 +65,16 @@ class ImageGenerator:
         """更新配置"""
         for key, value in kwargs.items():
             if hasattr(self, key) and value is not None:
+                if key == "max_reference_images":
+                    value = self._coerce_max_reference_images(value)
                 setattr(self, key, value)
+
+    @staticmethod
+    def _coerce_max_reference_images(value) -> int:
+        try:
+            return max(int(value), 0)
+        except (TypeError, ValueError):
+            return DEFAULT_MAX_REFERENCE_IMAGES
 
     def _filter_valid_reference_images(
         self, images: list[str] | None, source: str
@@ -147,20 +130,16 @@ class ImageGenerator:
         valid_avatar_images = self._filter_valid_reference_images(
             avatar_reference, source="头像"
         )
+        max_images = self.max_reference_images
+        if len(valid_msg_images) > max_images:
+            valid_msg_images = valid_msg_images[:max_images]
+        remaining_slots = max(max_images - len(valid_msg_images), 0)
+        if len(valid_avatar_images) > remaining_slots:
+            valid_avatar_images = valid_avatar_images[:remaining_slots]
+
         all_reference_images = valid_msg_images + valid_avatar_images
 
-        if (
-            all_reference_images
-            and len(all_reference_images) > self.max_reference_images
-        ):
-            logger.warning(
-                f"参考图片数量 ({len(all_reference_images)}) 超过限制 ({self.max_reference_images})，将截取前 {self.max_reference_images} 张"
-            )
-            all_reference_images = all_reference_images[: self.max_reference_images]
-
-        # 计算截断后的数量
-        final_msg_count = min(len(valid_msg_images), len(all_reference_images))
-        final_avatar_count = len(all_reference_images) - final_msg_count
+        final_avatar_count = len(valid_avatar_images)
 
         if final_avatar_count > 0:
             prompt += f"""
@@ -168,36 +147,19 @@ class ImageGenerator:
 [System Note]
 The last {final_avatar_count} image(s) provided are User Avatars (marked as optional reference). You may use them for character consistency if needed, but they are NOT mandatory if they conflict with the requested style."""
 
-        response_modalities = "TEXT_IMAGE" if self.enable_text_response else "IMAGE"
-        effective_resolution = (
-            override_resolution if override_resolution is not None else self.resolution
-        )
-        effective_aspect_ratio = (
-            override_aspect_ratio
-            if override_aspect_ratio is not None
-            else self.aspect_ratio
-        )
         request_config = ApiRequestConfig(
-            model=self.model,
+            model="",
             prompt=prompt,
-            api_type=self.api_type,
-            api_base=self.api_base,
-            resolution=effective_resolution,
-            aspect_ratio=effective_aspect_ratio,
-            enable_grounding=self.enable_grounding,
-            response_modalities=response_modalities,
+            api_type="",
+            api_base=None,
+            resolution=override_resolution,
+            aspect_ratio=override_aspect_ratio,
             reference_images=all_reference_images if all_reference_images else None,
             enable_smart_retry=self.enable_smart_retry,
-            enable_text_response=self.enable_text_response,
-            force_resolution=self.force_resolution,
             image_input_mode="force_base64",
-            resolution_param_name=self.resolution_param_name,
-            aspect_ratio_param_name=self.aspect_ratio_param_name,
         )
 
         logger.info("图像生成请求:")
-        logger.info(f"  模型: {self.model}")
-        logger.info(f"  API 类型: {self.api_type}")
         logger.info(
             f"  参考图片: {len(all_reference_images) if all_reference_images else 0} 张"
         )
@@ -282,7 +244,6 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
             )
             error_msg = f"❌ 图像生成失败{status_part}：{e.message}"
             message_lower = (e.message or "").lower()
-            api_base_lower = (self.api_base or "").lower()
             if e.error_type in ("timeout", "cancelled"):
                 if is_tool_call:
                     error_msg += "\n🧐 可能原因：图像生成耗时超出框架工具调用限制。\n✅ 建议：在框架配置中增加 tool_call_timeout 到 90-120 秒，或简化提示词。"
@@ -302,7 +263,7 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
             elif e.status_code and 500 <= e.status_code < 600:
                 error_msg += "\n🧐 可能原因：上游服务暂时不可用。\n✅ 建议：稍后重试，若频繁出现请联系服务提供方确认故障。"
                 # t2i 公共服务繁忙提示
-                if ("t2i" in message_lower) or ("t2i" in api_base_lower):
+                if "t2i" in message_lower:
                     error_msg += (
                         "\n⚠️ t2i 公共服务器当前可能繁忙，建议稍后再试；"
                         "如需稳定产能可参考 https://docs.astrbot.app/others/self-host-t2i.html 自建。"

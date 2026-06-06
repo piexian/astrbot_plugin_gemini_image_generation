@@ -68,12 +68,14 @@ class OpenAICompatProvider:
         session: aiohttp.ClientSession,
         api_base: str | None = None,
         http_status: int | None = None,
+        request_config: ApiRequestConfig | None = None,
     ) -> tuple[list[str], list[str], str | None, str | None]:  # noqa: ANN401
         return await self._parse_openai_response(
             client=client,
             response_data=response_data,
             session=session,
             api_base=api_base,
+            request_config=request_config,
         )
 
     async def _handle_special_candidate_url(
@@ -85,6 +87,7 @@ class OpenAICompatProvider:
         image_urls: list[str],
         image_paths: list[str],
         api_base: str | None,
+        request_config: ApiRequestConfig | None,
         state: dict[str, Any],
     ) -> bool:  # noqa: ANN401
         """子类钩子：处理特殊图片 URL（如相对路径/临时缓存），返回是否已处理。"""
@@ -346,6 +349,7 @@ class OpenAICompatProvider:
         response_data: dict[str, Any],
         session: aiohttp.ClientSession,
         api_base: str | None = None,
+        request_config: ApiRequestConfig | None = None,
     ) -> tuple[list[str], list[str], str | None, str | None]:  # noqa: ANN401
         image_urls: list[str] = []
         image_paths: list[str] = []
@@ -354,6 +358,8 @@ class OpenAICompatProvider:
         fail_reasons: list[str] = []
         fallback_texts = client._collect_fallback_texts(response_data)
         special_state: dict[str, Any] = {}
+        download_proxy = client._request_http_proxy(request_config)
+        has_request_proxy = client._request_has_proxy(request_config)
 
         message: dict[str, Any] | None = None
         if "choices" in response_data and response_data["choices"]:
@@ -443,19 +449,35 @@ class OpenAICompatProvider:
                         image_urls=image_urls,
                         image_paths=image_paths,
                         api_base=api_base,
+                        request_config=request_config,
                         state=special_state,
                     ):
                         continue
                     if cleaned_candidate.startswith(
                         "http://"
                     ) or cleaned_candidate.startswith("https://"):
+                        if has_request_proxy:
+                            image_url, image_path = await client._download_image(
+                                cleaned_candidate,
+                                session,
+                                use_cache=False,
+                                proxy=download_proxy,
+                            )
+                            if image_url:
+                                image_urls.append(image_url)
+                            if image_path:
+                                image_paths.append(image_path)
+                            continue
                         image_urls.append(cleaned_candidate)
                         logger.debug(
                             f"🖼️ OpenAI 返回可直接访问的图像链接: {cleaned_candidate}"
                         )
                         continue
                     image_url, image_path = await client._download_image(
-                        cleaned_candidate, session, use_cache=False
+                        cleaned_candidate,
+                        session,
+                        use_cache=False,
+                        proxy=download_proxy,
                     )
                 else:
                     logger.warning(f"跳过非字符串类型的图像URL: {type(candidate_url)}")
@@ -497,8 +519,21 @@ class OpenAICompatProvider:
                         image_urls=image_urls,
                         image_paths=image_paths,
                         api_base=api_base,
+                        request_config=request_config,
                         state=special_state,
                     ):
+                        continue
+                    if has_request_proxy and cleaned_url.startswith(
+                        ("http://", "https://")
+                    ):
+                        _, image_path = await client._download_image(
+                            cleaned_url,
+                            session,
+                            use_cache=False,
+                            proxy=download_proxy,
+                        )
+                        if image_path and image_path not in image_paths:
+                            image_paths.append(image_path)
                         continue
                     if cleaned_url not in image_urls:
                         image_urls.append(cleaned_url)
@@ -528,8 +563,21 @@ class OpenAICompatProvider:
                         image_urls=image_urls,
                         image_paths=image_paths,
                         api_base=api_base,
+                        request_config=request_config,
                         state=special_state,
                     ):
+                        continue
+                    if has_request_proxy and cleaned_url.startswith(
+                        ("http://", "https://")
+                    ):
+                        _, image_path = await client._download_image(
+                            cleaned_url,
+                            session,
+                            use_cache=False,
+                            proxy=download_proxy,
+                        )
+                        if image_path and image_path not in image_paths:
+                            image_paths.append(image_path)
                         continue
                     if cleaned_url not in image_urls:
                         image_urls.append(cleaned_url)
@@ -558,7 +606,11 @@ class OpenAICompatProvider:
 
         if not (image_urls or image_paths) and fallback_texts:
             fallback_added = await client._append_images_from_texts(
-                fallback_texts, image_urls, image_paths
+                fallback_texts,
+                image_urls,
+                image_paths,
+                session=session,
+                request_config=request_config,
             )
             if fallback_added and not text_content:
                 text_content = (
@@ -570,7 +622,10 @@ class OpenAICompatProvider:
             for image_item in response_data["data"]:
                 if "url" in image_item:
                     image_url, image_path = await client._download_image(
-                        image_item["url"], session, use_cache=False
+                        image_item["url"],
+                        session,
+                        use_cache=False,
+                        proxy=download_proxy,
                     )
                     if image_url:
                         image_urls.append(image_url)

@@ -15,15 +15,23 @@ import re
 import tempfile
 import urllib.parse
 import urllib.request
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import aiohttp
 from astrbot.api import logger
 
-from .api import get_api_provider, normalize_api_type
+from .api import get_api_provider, normalize_api_type, supports_image_edit
 from .api_headers import apply_api_key_to_headers, extract_api_key_from_headers
 from .api_types import APIError, ApiRequestConfig
+from .openai_image_size import (
+    CUSTOM_SIZE_DEFAULT,
+    normalize_size_mode,
+    resolve_openai_custom_size,
+)
+
+_DOWNLOAD_PROXY_DEFAULT = object()
 
 try:
     from .tl_utils import (
@@ -123,31 +131,46 @@ class GeminiAPIClient:
             logger.debug(f"检测到代理配置，使用代理: {self.proxy}")
         logger.debug(f"API 客户端已初始化，支持 {len(self.api_keys)} 个 API 密钥")
         self._session: aiohttp.ClientSession | None = None
+        self._proxy_sessions: dict[str, aiohttp.ClientSession] = {}
         self._session_lock = asyncio.Lock()
 
         # KeyManager 实例（由主插件注入，用于多 Key 轮换和每日限额）
         self._key_manager = None
+        self.provider_candidates: list[Any] = []
+        self._candidate_key_pools: dict[str, list[str]] = {}
+        self._candidate_key_indices: dict[str, int] = {}
+        self._default_proxy = self.proxy
 
-    async def _get_session(self) -> aiohttp.ClientSession:
+    async def _get_session(self, proxy: str | None = None) -> aiohttp.ClientSession:
         """获取或创建可复用的 aiohttp 会话"""
+        proxy = proxy or self.proxy
+        if proxy and proxy.lower().startswith("socks"):
+            existing = self._proxy_sessions.get(proxy)
+            if existing and not existing.closed:
+                return existing
+            async with self._session_lock:
+                existing = self._proxy_sessions.get(proxy)
+                if existing and not existing.closed:
+                    return existing
+                try:
+                    from aiohttp_socks import ProxyConnector
+
+                    connector = ProxyConnector.from_url(proxy)
+                    session = aiohttp.ClientSession(connector=connector)
+                except ImportError:
+                    logger.error(
+                        "SOCKS 代理需要安装 aiohttp-socks: pip install aiohttp-socks"
+                    )
+                    session = aiohttp.ClientSession()
+                self._proxy_sessions[proxy] = session
+                return session
+
         if self._session and not self._session.closed:
             return self._session
         async with self._session_lock:
             if self._session and not self._session.closed:
                 return self._session
-            if self.proxy and self.proxy.lower().startswith("socks"):
-                try:
-                    from aiohttp_socks import ProxyConnector
-
-                    connector = ProxyConnector.from_url(self.proxy)
-                    self._session = aiohttp.ClientSession(connector=connector)
-                except ImportError:
-                    logger.error(
-                        "SOCKS 代理需要安装 aiohttp-socks: pip install aiohttp-socks"
-                    )
-                    self._session = aiohttp.ClientSession()
-            else:
-                self._session = aiohttp.ClientSession()
+            self._session = aiohttp.ClientSession()
             return self._session
 
     @property
@@ -157,19 +180,63 @@ class GeminiAPIClient:
             return None
         return self.proxy
 
+    def _detach_sessions(self) -> list[aiohttp.ClientSession]:
+        sessions: list[aiohttp.ClientSession] = []
+        if self._session and not self._session.closed:
+            sessions.append(self._session)
+        sessions.extend(
+            session for session in self._proxy_sessions.values() if not session.closed
+        )
+        self._session = None
+        self._proxy_sessions = {}
+        return sessions
+
+    @staticmethod
+    async def _close_sessions(sessions: list[aiohttp.ClientSession]) -> None:
+        for session in sessions:
+            if not session.closed:
+                await session.close()
+
     def invalidate_session(self):
         """标记 session 需要重建（下次 _get_session 时自动创建新 session）"""
-        self._session = None
+        sessions = self._detach_sessions()
+        if not sessions:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._close_sessions(sessions))
 
     async def close(self):
         """关闭内部复用的 aiohttp 会话"""
-        if self._session and not self._session.closed:
-            await self._session.close()
-        self._session = None
+        await self._close_sessions(self._detach_sessions())
 
     def set_key_manager(self, key_manager) -> None:
         """设置 KeyManager 实例（用于多 Key 轮换和每日限额）"""
         self._key_manager = key_manager
+
+    def set_provider_candidates(self, candidates: list[Any]) -> None:
+        """设置当前可用的供应商候选列表。"""
+        self.provider_candidates = list(candidates or [])
+        self._candidate_key_pools = {}
+        for candidate in self.provider_candidates:
+            candidate_id = str(
+                getattr(candidate, "id", None)
+                or normalize_api_type(getattr(candidate, "api_type", ""))
+            )
+            api_keys = list(getattr(candidate, "api_keys", []) or [])
+            if candidate_id and api_keys:
+                self._candidate_key_pools[candidate_id] = api_keys
+                self._candidate_key_indices.setdefault(candidate_id, 0)
+
+    async def set_proxy(self, proxy: str | None) -> None:
+        """切换代理配置，变化时关闭旧 session 以便下次重建。"""
+        proxy = proxy or None
+        if self.proxy == proxy:
+            return
+        await self.close()
+        self.proxy = proxy
 
     async def get_key_for_api_type(self, api_type: str) -> str | None:
         """从 KeyManager 获取指定 API 类型的可用 Key
@@ -190,8 +257,244 @@ class GeminiAPIClient:
             # KeyManager 返回 None 表示所有 Key 已耗尽
             logger.warning(f"[KeyManager] {api_type} 所有 Key 今日额度已用尽")
             return None
+        if api_type in self._candidate_key_pools:
+            pool = self._candidate_key_pools[api_type]
+            index = self._candidate_key_indices.get(api_type, 0)
+            return pool[index % len(pool)]
         # 回退到默认 Key
         return await self.get_next_api_key()
+
+    async def rotate_key_for_scope(self, key_scope: str) -> str | None:
+        if key_scope in self._candidate_key_pools:
+            pool = self._candidate_key_pools[key_scope]
+            if not pool:
+                return None
+            index = (self._candidate_key_indices.get(key_scope, 0) + 1) % len(pool)
+            self._candidate_key_indices[key_scope] = index
+            return pool[index]
+
+        await self.rotate_api_key()
+        return await self.get_next_api_key()
+
+    def _provider_setting_attr(self, api_type: str) -> str | None:
+        mapping = {
+            "doubao": "doubao_settings",
+            "minimax": "minimax_settings",
+            "stepfun": "stepfun_settings",
+            "sensenova": "sensenova_settings",
+            "xai": "xai_settings",
+            "openai_images": "openai_images_settings",
+        }
+        return mapping.get(normalize_api_type(api_type))
+
+    def _apply_candidate_settings(self, candidate: Any) -> None:
+        attr = self._provider_setting_attr(getattr(candidate, "api_type", ""))
+        if attr:
+            setattr(self, attr, getattr(candidate, "settings", None) or {})
+
+    @staticmethod
+    def _candidate_model(candidate: Any) -> str:
+        model = getattr(candidate, "model", "")
+        if model:
+            return str(model)
+        settings = getattr(candidate, "settings", None) or {}
+        if normalize_api_type(getattr(candidate, "api_type", "")) == "doubao":
+            return str(settings.get("endpoint_id") or "")
+        return str(settings.get("model") or "")
+
+    @staticmethod
+    def _candidate_api_base(candidate: Any) -> str | None:
+        api_base = getattr(candidate, "api_base", "")
+        if api_base:
+            return str(api_base)
+        settings = getattr(candidate, "settings", None) or {}
+        value = settings.get("api_base")
+        return str(value).strip() if value else None
+
+    @staticmethod
+    def _candidate_proxy(candidate: Any) -> str | None:
+        proxy = getattr(candidate, "proxy", None)
+        if proxy:
+            return str(proxy)
+        settings = getattr(candidate, "settings", None) or {}
+        value = settings.get("proxy")
+        return str(value).strip() if value else None
+
+    @staticmethod
+    def _candidate_supports_image_edit(candidate: Any) -> bool:
+        support_flag = getattr(candidate, "supports_image_edit", None)
+        if support_flag is not None:
+            return bool(support_flag)
+        api_type = getattr(candidate, "api_type", "")
+        return supports_image_edit(api_type)
+
+    @staticmethod
+    def _coerce_max_reference_images(value: Any) -> int:
+        try:
+            return max(int(value), 0)
+        except (TypeError, ValueError):
+            return 6
+
+    @staticmethod
+    def _candidate_resolution_values(
+        base_config: ApiRequestConfig, candidate: Any
+    ) -> tuple[str | None, str | None]:
+        if base_config.suppress_resolution:
+            return None, None
+
+        settings = getattr(candidate, "settings", None) or {}
+        api_type = normalize_api_type(getattr(candidate, "api_type", ""))
+        size_mode = (
+            normalize_size_mode(settings.get("size_mode"))
+            if api_type == "openai_images"
+            else "preset"
+        )
+
+        if api_type == "openai_images" and size_mode == "custom":
+            has_request_size_override = (
+                base_config.resolution is not None
+                or base_config.aspect_ratio is not None
+            )
+            resolution_candidate = None
+            aspect_ratio_candidate = None
+            if has_request_size_override:
+                resolution_candidate = (
+                    base_config.resolution or settings.get("resolution") or "1K"
+                )
+                aspect_ratio_candidate = (
+                    base_config.aspect_ratio or settings.get("aspect_ratio") or "1:1"
+                )
+            try:
+                return (
+                    resolve_openai_custom_size(
+                        base_config.resolution,
+                        resolution_candidate,
+                        aspect_ratio_candidate,
+                        settings,
+                        size_field_name="size",
+                        resolution_field_name="provider.resolution",
+                        aspect_ratio_field_name="provider.aspect_ratio",
+                    ),
+                    "",
+                )
+            except ValueError as exc:
+                if has_request_size_override:
+                    logger.warning(
+                        f"[openai_images] 根据请求参数解析 custom size 失败，"
+                        f"回退配置 custom_size: {exc}"
+                    )
+                    try:
+                        return (
+                            resolve_openai_custom_size(
+                                None,
+                                None,
+                                None,
+                                settings,
+                                custom_size_field_name="openai_images.custom_size",
+                            ),
+                            "",
+                        )
+                    except ValueError as config_exc:
+                        logger.warning(
+                            "[openai_images] 配置 custom_size 也非法，"
+                            f"回退默认尺寸 {CUSTOM_SIZE_DEFAULT}: {config_exc}"
+                        )
+                        return CUSTOM_SIZE_DEFAULT, ""
+                raise
+
+        resolution = (
+            base_config.resolution
+            if base_config.resolution is not None
+            else (settings.get("resolution") or "1K")
+        )
+        aspect_ratio = (
+            base_config.aspect_ratio
+            if base_config.aspect_ratio is not None
+            else (settings.get("aspect_ratio") or "1:1")
+        )
+
+        return resolution, aspect_ratio
+
+    def _build_candidate_config(
+        self, base_config: ApiRequestConfig, candidate: Any
+    ) -> ApiRequestConfig:
+        settings = getattr(candidate, "settings", None) or {}
+        api_type = normalize_api_type(getattr(candidate, "api_type", ""))
+
+        max_refs = self._coerce_max_reference_images(
+            settings.get("max_reference_images", 6)
+        )
+        reference_images = base_config.reference_images
+        if reference_images and max_refs > 0:
+            if len(reference_images) > max_refs:
+                logger.warning(
+                    f"参考图片数量 ({len(reference_images)}) 超过 "
+                    f"{getattr(candidate, 'id', api_type)} 的限制 ({max_refs})，"
+                    f"将截取前 {max_refs} 张"
+                )
+            reference_images = reference_images[:max_refs]
+        elif reference_images and max_refs <= 0:
+            reference_images = []
+
+        resolution, aspect_ratio = self._candidate_resolution_values(
+            base_config, candidate
+        )
+        enable_text_response = bool(settings.get("enable_text_response", False))
+        response_modalities = "TEXT_IMAGE" if enable_text_response else "IMAGE"
+
+        resolution_param_name = (
+            str(settings.get("resolution_param_name") or "").strip() or "image_size"
+        )
+        aspect_ratio_param_name = (
+            str(settings.get("aspect_ratio_param_name") or "").strip() or "aspect_ratio"
+        )
+
+        return replace(
+            base_config,
+            model=self._candidate_model(candidate) or base_config.model,
+            api_type=api_type,
+            api_base=self._candidate_api_base(candidate) or base_config.api_base,
+            api_key=None,
+            candidate_id=getattr(candidate, "id", None) or api_type,
+            resolution=resolution,
+            aspect_ratio=aspect_ratio,
+            enable_grounding=bool(settings.get("enable_grounding", False)),
+            enable_text_response=enable_text_response,
+            response_modalities=response_modalities,
+            force_resolution=bool(settings.get("force_resolution", False)),
+            resolution_param_name=resolution_param_name,
+            aspect_ratio_param_name=aspect_ratio_param_name,
+            reference_images=reference_images if reference_images else None,
+            provider_settings=settings,
+            proxy=self._candidate_proxy(candidate) or self._default_proxy,
+        )
+
+    @staticmethod
+    def _copy_request_stats(source: ApiRequestConfig, target: ApiRequestConfig) -> None:
+        target.retry_count = source.retry_count
+        target.token_usage = source.token_usage
+        target.retry_note = source.retry_note
+
+    def _candidate_key_count(self, key_scope: str) -> int:
+        if self._key_manager and self._key_manager.has_provider(key_scope):
+            return self._key_manager.key_count(key_scope)
+        if key_scope in self._candidate_key_pools:
+            return len(self._candidate_key_pools[key_scope])
+        return len(self.api_keys)
+
+    def _request_http_proxy(
+        self, request_config: ApiRequestConfig | None
+    ) -> str | None:
+        request_proxy = (
+            request_config.proxy if request_config and request_config.proxy else None
+        )
+        if request_proxy:
+            return None if request_proxy.lower().startswith("socks") else request_proxy
+        return self._http_proxy
+
+    @staticmethod
+    def _request_has_proxy(request_config: ApiRequestConfig | None) -> bool:
+        return bool(request_config and request_config.proxy)
 
     @staticmethod
     def _coerce_supported_image_bytes(
@@ -434,18 +737,125 @@ class GeminiAPIClient:
         Returns:
             (image_urls, image_paths, text_content, thought_signature)，如果失败则返回空列表和None
         """
+        if self.provider_candidates:
+            return await self._generate_image_with_candidates(
+                config=config,
+                max_retries=max_retries,
+                total_timeout=total_timeout,
+                per_retry_timeout=per_retry_timeout,
+                max_total_time=max_total_time,
+            )
+
+        return await self._generate_image_single(
+            config=config,
+            max_retries=max_retries,
+            total_timeout=total_timeout,
+            per_retry_timeout=per_retry_timeout,
+            max_total_time=max_total_time,
+        )
+
+    async def _generate_image_with_candidates(
+        self,
+        config: ApiRequestConfig,
+        max_retries: int = 3,
+        total_timeout: int = 120,
+        per_retry_timeout: int = None,
+        max_total_time: int = None,
+    ) -> tuple[list[str], list[str], str | None, str | None]:
+        has_reference_images = bool(config.reference_images)
+        last_error: APIError | None = None
+        skipped_reasons: list[str] = []
+
+        for candidate in self.provider_candidates:
+            candidate_id = str(
+                getattr(candidate, "id", None)
+                or normalize_api_type(getattr(candidate, "api_type", ""))
+            )
+            api_type = normalize_api_type(getattr(candidate, "api_type", ""))
+
+            if has_reference_images and not self._candidate_supports_image_edit(
+                candidate
+            ):
+                reason = f"{candidate_id} 不支持参考图/改图"
+                skipped_reasons.append(reason)
+                logger.info(f"[provider_polling] 跳过候选：{reason}")
+                continue
+
+            if not getattr(candidate, "api_keys", None):
+                reason = f"{candidate_id} 未配置 API Key"
+                skipped_reasons.append(reason)
+                logger.error(f"[provider_polling] 跳过候选：{reason}")
+                continue
+
+            try:
+                candidate_config = self._build_candidate_config(config, candidate)
+
+                logger.info(
+                    f"[provider_polling] 尝试供应商候选 {candidate_id} ({api_type}), "
+                    f"模型={candidate_config.model}"
+                )
+
+                result = await self._generate_image_single(
+                    config=candidate_config,
+                    max_retries=max_retries,
+                    total_timeout=total_timeout,
+                    per_retry_timeout=per_retry_timeout,
+                    max_total_time=max_total_time,
+                )
+                self._copy_request_stats(candidate_config, config)
+                return result
+            except APIError as e:
+                last_error = e
+                if e.error_type in {"cancelled", "timeout"}:
+                    logger.warning(
+                        f"[provider_polling] 候选 {candidate_id} 因 {e.error_type} 中止：{e.message}"
+                    )
+                    raise
+                logger.warning(
+                    f"[provider_polling] 候选 {candidate_id} 生成失败，继续尝试下一个：{e.message}"
+                )
+            except Exception as e:
+                last_error = APIError(str(e), None, "unknown")
+                logger.warning(
+                    f"[provider_polling] 候选 {candidate_id} 生成异常，继续尝试下一个：{e}"
+                )
+
+        if last_error:
+            raise APIError(
+                f"所有可用供应商候选均生成失败，最后错误：{last_error.message}",
+                last_error.status_code,
+                last_error.error_type,
+                last_error.error_code,
+                last_error.retryable,
+            ) from None
+
+        reason_text = "；".join(skipped_reasons) if skipped_reasons else "没有候选配置"
+        raise APIError(
+            f"没有可用于本次请求的供应商候选：{reason_text}",
+            None,
+            "no_available_provider",
+            retryable=False,
+        )
+
+    async def _generate_image_single(
+        self,
+        config: ApiRequestConfig,
+        max_retries: int = 3,
+        total_timeout: int = 120,
+        per_retry_timeout: int = None,
+        max_total_time: int = None,
+    ) -> tuple[list[str], list[str], str | None, str | None]:
         if not self.api_keys:
             raise ValueError("未配置 API 密钥")
 
         # 使用 KeyManager 获取 Key（支持多 Key 轮换和每日限额）
         if not config.api_key:
-            key = await self.get_key_for_api_type(config.api_type)
+            key_scope = config.candidate_id or config.api_type
+            key = await self.get_key_for_api_type(key_scope)
             if key is None:
                 # 所有 Key 今日额度已用尽
-                from .api_types import APIError
-
                 raise APIError(
-                    "所有 API Key 今日额度已用尽，请明天再试或添加更多 Key。",
+                    f"{key_scope} 的所有 API Key 今日额度已用尽，请明天再试或添加更多 Key。",
                     None,
                     "quota_exhausted",
                     retryable=False,
@@ -535,14 +945,18 @@ class GeminiAPIClient:
             if mt > 0:
                 max_total_time_int = mt
 
-        session = await self._get_session()
+        request_proxy = config.proxy if config and config.proxy else None
+        if not request_proxy:
+            request_proxy = self.proxy
+        session = await self._get_session(request_proxy)
         loop = asyncio.get_running_loop()
         started_at = loop.time()
         last_error: APIError | None = None
+        key_scope = config.candidate_id if config and config.candidate_id else api_type
 
         async def rotate_key_if_possible(err: APIError) -> str | None:
             """在可用多 Key 且错误可能与 Key 相关时轮换，并更新 headers。"""
-            if not enable_smart_retry or len(self.api_keys) <= 1:
+            if not enable_smart_retry or self._candidate_key_count(key_scope) <= 1:
                 return None
 
             status = err.status_code
@@ -551,17 +965,16 @@ class GeminiAPIClient:
 
             try:
                 # 使用 KeyManager 轮换（支持每日限额，会预扣除额度）
-                if self._key_manager and self._key_manager.has_provider(api_type):
-                    new_key = await self._key_manager.rotate_key(api_type)
+                if self._key_manager and self._key_manager.has_provider(key_scope):
+                    new_key = await self._key_manager.rotate_key(key_scope)
                     if not new_key:
                         logger.warning(
-                            f"[KeyManager] {api_type} 轮换失败，所有 Key 今日额度已用尽"
+                            f"[KeyManager] {key_scope} 轮换失败，所有 Key 今日额度已用尽"
                         )
                         return None
                 else:
                     # 无 KeyManager 配置时使用默认轮换
-                    await self.rotate_api_key()
-                    new_key = await self.get_next_api_key()
+                    new_key = await self.rotate_key_for_scope(key_scope)
             except Exception as e:
                 logger.debug(f"轮换 API Key 失败，将继续使用当前 Key: {e}")
                 return None
@@ -618,7 +1031,7 @@ class GeminiAPIClient:
             if status == 429:
                 return True
             if status in {401, 402, 403}:
-                return len(self.api_keys) > 1
+                return self._candidate_key_count(key_scope) > 1
             return False
 
         for attempt in range(effective_max_retries):
@@ -818,9 +1231,11 @@ class GeminiAPIClient:
         if is_multipart and form_data is not None:
             send_headers.pop("Content-Type", None)
 
+        request_proxy = self._request_http_proxy(request_config)
+
         post_kwargs: dict[str, Any] = {
             "headers": send_headers,
-            "proxy": self._http_proxy,
+            "proxy": request_proxy,
             "timeout": timeout,
         }
         if is_multipart and form_data is not None:
@@ -864,7 +1279,9 @@ class GeminiAPIClient:
             if response.status == 200:
                 logger.debug("API 调用成功")
                 if api_type == "google":
-                    return await self._parse_gresponse(response_data, session)
+                    return await self._parse_gresponse(
+                        response_data, session, request_config=request_config
+                    )
                 else:  # openai 兼容格式
                     # 豆包使用专门的解析方法
                     if normalize_api_type(api_type) == "doubao":
@@ -876,6 +1293,7 @@ class GeminiAPIClient:
                             api_base,
                             response.status,
                             is_retry=is_retry,
+                            request_config=request_config,
                         )
                     # OpenAI Images / xAI Images 使用 provider 自身的解析方法
                     if normalize_api_type(api_type) in {
@@ -892,9 +1310,13 @@ class GeminiAPIClient:
                             session=session,
                             api_base=api_base,
                             http_status=response.status,
+                            request_config=request_config,
                         )
                     return await self._parse_openai_response(
-                        response_data, session, api_base
+                        response_data,
+                        session,
+                        api_base,
+                        request_config=request_config,
                     )
             elif response.status in [429, 402, 403]:
                 # 豆包 API 使用专门的错误处理
@@ -906,6 +1328,7 @@ class GeminiAPIClient:
                         api_base,
                         response.status,
                         is_retry=is_retry,
+                        request_config=request_config,
                     )
                 error_msg = response_data.get("error", {}).get(
                     "message", f"HTTP {response.status}"
@@ -934,6 +1357,7 @@ class GeminiAPIClient:
                         api_base,
                         response.status,
                         is_retry=is_retry,
+                        request_config=request_config,
                     )
                 error_msg = response_data.get("error", {}).get(
                     "message", f"HTTP {response.status}"
@@ -1079,12 +1503,19 @@ class GeminiAPIClient:
         return events[-1]
 
     async def _parse_gresponse(
-        self, response_data: dict, session: aiohttp.ClientSession
+        self,
+        response_data: dict,
+        session: aiohttp.ClientSession,
+        *,
+        request_config: ApiRequestConfig | None = None,
     ) -> tuple[list[str], list[str], str | None, str | None]:
         """解析 Google 官方 API 响应"""
         provider = get_api_provider("google")
         return await provider.parse_response(
-            client=self, response_data=response_data, session=session
+            client=self,
+            response_data=response_data,
+            session=session,
+            request_config=request_config,
         )
 
     async def _parse_doubao_response(
@@ -1094,6 +1525,7 @@ class GeminiAPIClient:
         api_base: str | None = None,
         http_status: int | None = None,
         is_retry: bool = False,
+        request_config: ApiRequestConfig | None = None,
     ) -> tuple[list[str], list[str], str | None, str | None]:
         """解析豆包 API 响应"""
         provider = get_api_provider("doubao")
@@ -1104,10 +1536,16 @@ class GeminiAPIClient:
             api_base=api_base,
             http_status=http_status,
             is_retry=is_retry,
+            request_config=request_config,
         )
 
     async def _parse_openai_response(
-        self, response_data: dict, session: aiohttp.ClientSession, api_base: str = None
+        self,
+        response_data: dict,
+        session: aiohttp.ClientSession,
+        api_base: str = None,
+        *,
+        request_config: ApiRequestConfig | None = None,
     ) -> tuple[list[str], list[str], str | None, str | None]:
         """解析 OpenAI API 响应"""
 
@@ -1117,6 +1555,8 @@ class GeminiAPIClient:
         thought_signature = None
         fail_reasons: list[str] = []
         fallback_texts = self._collect_fallback_texts(response_data)
+        download_proxy = self._request_http_proxy(request_config)
+        has_request_proxy = self._request_has_proxy(request_config)
 
         message: dict[str, Any] | None = None
         if "choices" in response_data and response_data["choices"]:
@@ -1211,7 +1651,10 @@ class GeminiAPIClient:
                                 f"[grok2api 适配] 相对路径转换并下载: {candidate_url} -> {full_url}"
                             )
                             image_url, image_path = await self._download_image(
-                                full_url, session, use_cache=False
+                                full_url,
+                                session,
+                                use_cache=False,
+                                proxy=download_proxy,
                             )
                             # 只保留本地路径
                             if image_path:
@@ -1230,12 +1673,15 @@ class GeminiAPIClient:
                             "/images/users-" in candidate_url
                             or "/temp/image/" in candidate_url
                         )
-                        if is_temp_cache or self.proxy:
+                        if is_temp_cache or has_request_proxy or self.proxy:
                             logger.debug(
                                 f"[openai] {'临时缓存' if is_temp_cache else '代理模式'}，强制下载: {candidate_url}"
                             )
                             image_url, image_path = await self._download_image(
-                                candidate_url, session, use_cache=False
+                                candidate_url,
+                                session,
+                                use_cache=False,
+                                proxy=download_proxy,
                             )
                             if image_path:
                                 image_paths.append(image_path)
@@ -1249,7 +1695,10 @@ class GeminiAPIClient:
                         )
                         continue
                     image_url, image_path = await self._download_image(
-                        candidate_url, session, use_cache=False
+                        candidate_url,
+                        session,
+                        use_cache=False,
+                        proxy=download_proxy,
                     )
                 else:
                     logger.warning(f"跳过非字符串类型的图像URL: {type(candidate_url)}")
@@ -1291,6 +1740,16 @@ class GeminiAPIClient:
                             f"[grok2api 适配] 跳过文本中的临时缓存 URL（已下载）: {url}"
                         )
                         continue
+                    if has_request_proxy:
+                        _, image_path = await self._download_image(
+                            url,
+                            session,
+                            use_cache=False,
+                            proxy=download_proxy,
+                        )
+                        if image_path and image_path not in image_paths:
+                            image_paths.append(image_path)
+                        continue
                     if url not in image_urls:
                         image_urls.append(url)
 
@@ -1320,7 +1779,11 @@ class GeminiAPIClient:
 
         if not (image_urls or image_paths) and fallback_texts:
             fallback_added = await self._append_images_from_texts(
-                fallback_texts, image_urls, image_paths
+                fallback_texts,
+                image_urls,
+                image_paths,
+                session=session,
+                request_config=request_config,
             )
             if fallback_added and not text_content:
                 text_content = (
@@ -1333,7 +1796,10 @@ class GeminiAPIClient:
             for image_item in response_data["data"]:
                 if "url" in image_item:
                     image_url, image_path = await self._download_image(
-                        image_item["url"], session, use_cache=False
+                        image_item["url"],
+                        session,
+                        use_cache=False,
+                        proxy=download_proxy,
                     )
                     if image_url:
                         image_urls.append(image_url)
@@ -1506,16 +1972,32 @@ class GeminiAPIClient:
         texts: list[str],
         image_urls: list[str],
         image_paths: list[str],
+        *,
+        session: aiohttp.ClientSession | None = None,
+        request_config: ApiRequestConfig | None = None,
     ) -> bool:
         """从额外的文本字段中提取 http(s)/data URI 图像"""
 
         appended = False
+        download_proxy = self._request_http_proxy(request_config)
+        should_download_http = bool(session and self._request_has_proxy(request_config))
         for text in texts:
             if not text:
                 continue
 
             http_urls = self._find_image_urls_in_text(text)
             for url in http_urls:
+                if should_download_http:
+                    _, image_path = await self._download_image(
+                        url,
+                        session,
+                        use_cache=False,
+                        proxy=download_proxy,
+                    )
+                    if image_path and image_path not in image_paths:
+                        image_paths.append(image_path)
+                        appended = True
+                    continue
                 if url not in image_urls:
                     image_urls.append(url)
                     appended = True
@@ -1629,6 +2111,7 @@ class GeminiAPIClient:
         image_url: str,
         session: aiohttp.ClientSession,
         use_cache: bool = False,
+        proxy: str | None | object = _DOWNLOAD_PROXY_DEFAULT,
     ) -> tuple[str | None, str | None]:
         """下载并保存图像，可选择是否使用缓存（默认关闭以避免返回旧图）"""
         cleaned_url = (
@@ -1677,10 +2160,14 @@ class GeminiAPIClient:
                     f"正在下载图像: {cleaned_url[:100]}... 尝试 {attempt}/{max_retries}"
                 )
 
+                request_proxy = (
+                    self._http_proxy if proxy is _DOWNLOAD_PROXY_DEFAULT else proxy
+                )
+
                 async with session.get(
                     cleaned_url,
                     timeout=aiohttp.ClientTimeout(total=30),
-                    proxy=self._http_proxy,
+                    proxy=request_proxy,
                     headers=headers or None,
                 ) as response:
                     if response.status != 200:

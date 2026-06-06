@@ -21,7 +21,6 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import Image as AstrImage
 from astrbot.api.message_components import Node, Plain
 from astrbot.api.star import Context, Star
-from astrbot.core.provider.entities import ProviderType
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
 from .tl import (
@@ -56,20 +55,9 @@ from .tl.enhanced_prompts import (
     get_wallpaper_prompt,
 )
 from .tl.llm_tools import GeminiImageGenerationTool
-from .tl.openai_image_size import derive_custom_size_from_preset_params
+from .tl.plugin_config import max_configured_reference_images
 from .tl.tl_api import APIClient, ApiRequestConfig, get_api_client
 from .tl.tl_utils import AvatarManager, cleanup_old_images, format_error_message
-
-# 各 provider 的 settings 字段在 cfg / api_client 上的属性名映射。
-# 新增 provider 时只需在此 map 中追加一行即可被 _load_provider_from_context 自动绑定。
-PROVIDER_SETTINGS_ATTR_MAP: dict[str, str] = {
-    "doubao": "doubao_settings",
-    "minimax": "minimax_settings",
-    "stepfun": "stepfun_settings",
-    "sensenova": "sensenova_settings",
-    "xai": "xai_settings",
-    "openai_images": "openai_images_settings",
-}
 
 
 def _build_no_ref_msg(mode: str, suggestion: str) -> str:
@@ -109,7 +97,7 @@ class GeminiImageGenerationPlugin(Star):
         self._init_modules()
 
         # 尝试加载 API 客户端（支持插件重载场景）
-        self._load_provider_from_context(quiet=True)
+        self._load_api_client_from_config(quiet=True)
 
         # 注册 LLM 工具
         self._register_llm_tools()
@@ -153,13 +141,13 @@ class GeminiImageGenerationPlugin(Star):
         # 图片处理器
         self.image_handler = ImageHandler(
             api_client=self.api_client,
-            max_reference_images=self.cfg.max_reference_images,
+            max_reference_images=self._max_configured_reference_images(),
             log_debug_fn=logger.debug,
         )
 
         # 消息发送器
         self.message_sender = MessageSender(
-            enable_text_response=self.cfg.enable_text_response,
+            enable_text_response=self._any_candidate_text_response_enabled(),
             max_inline_image_size_mb=self.cfg.max_inline_image_size_mb,
             napcat_stream_threshold_mb=self.cfg.napcat_stream_threshold_mb,
             show_duration_stats=self.cfg.show_duration_stats,
@@ -183,20 +171,10 @@ class GeminiImageGenerationPlugin(Star):
         self.image_generator = ImageGenerator(
             context=self.context,
             api_client=self.api_client,
-            model=self.cfg.model,
-            api_type=self.cfg.api_type,
-            api_base=self.cfg.api_base,
-            resolution=self.cfg.resolution,
-            aspect_ratio=self.cfg.aspect_ratio,
-            enable_grounding=self.cfg.enable_grounding,
             enable_smart_retry=self.cfg.enable_smart_retry,
-            enable_text_response=self.cfg.enable_text_response,
-            force_resolution=self.cfg.force_resolution,
-            resolution_param_name=self.cfg.resolution_param_name,
-            aspect_ratio_param_name=self.cfg.aspect_ratio_param_name,
-            max_reference_images=self.cfg.max_reference_images,
             total_timeout=self.cfg.total_timeout,
             max_attempts_per_key=self.cfg.max_attempts_per_key,
+            max_reference_images=self._max_configured_reference_images(),
             filter_valid_fn=self.image_handler.filter_valid_reference_images,
             get_tool_timeout_fn=self.get_tool_timeout,
         )
@@ -207,9 +185,12 @@ class GeminiImageGenerationPlugin(Star):
     def _update_modules_api_client(self):
         """更新各模块的 API 客户端和相关配置"""
         if self.api_client:
-            self.image_handler.update_config(api_client=self.api_client)
+            self.image_handler.update_config(
+                api_client=self.api_client,
+                max_reference_images=self._max_configured_reference_images(),
+            )
             self.message_sender.update_config(
-                enable_text_response=self.cfg.enable_text_response,
+                enable_text_response=self._any_candidate_text_response_enabled(),
                 max_inline_image_size_mb=self.cfg.max_inline_image_size_mb,
                 napcat_stream_threshold_mb=self.cfg.napcat_stream_threshold_mb,
                 show_duration_stats=self.cfg.show_duration_stats,
@@ -220,21 +201,46 @@ class GeminiImageGenerationPlugin(Star):
             # 同步更新 ImageGenerator 的全部相关配置
             self.image_generator.update_config(
                 api_client=self.api_client,
-                model=self.cfg.model,
-                api_type=self.cfg.api_type,
-                api_base=self.cfg.api_base,
-                resolution=self.cfg.resolution,
-                aspect_ratio=self.cfg.aspect_ratio,
+                enable_smart_retry=self.cfg.enable_smart_retry,
+                total_timeout=self.cfg.total_timeout,
+                max_attempts_per_key=self.cfg.max_attempts_per_key,
+                max_reference_images=self._max_configured_reference_images(),
             )
 
     def _get_openai_images_settings(self) -> dict[str, Any]:
+        for candidate in getattr(self.cfg, "provider_candidates", []) or []:
+            if (
+                normalize_api_type(getattr(candidate, "api_type", ""))
+                == "openai_images"
+            ):
+                settings = getattr(candidate, "settings", None)
+                return settings if isinstance(settings, dict) else {}
+
         settings = getattr(self.cfg, "openai_images_settings", None)
         if isinstance(settings, dict):
             return settings
 
         overrides = getattr(self.cfg, "provider_overrides", None) or {}
-        override_settings = overrides.get("openai_images")
+        override_settings = overrides.get("openai_images#1") or overrides.get(
+            "openai_images"
+        )
         return override_settings if isinstance(override_settings, dict) else {}
+
+    def _max_configured_reference_images(self) -> int:
+        return max_configured_reference_images(
+            getattr(self.cfg, "provider_candidates", None)
+        )
+
+    def _any_candidate_text_response_enabled(self) -> bool:
+        for candidate in getattr(self.cfg, "provider_candidates", []) or []:
+            settings = getattr(candidate, "settings", None) or {}
+            if settings.get("enable_text_response"):
+                return True
+        return False
+
+    def _first_generation_candidate(self):
+        candidates = getattr(self.cfg, "provider_candidates", []) or []
+        return candidates[0] if candidates else None
 
     def _apply_openai_custom_size_runtime_defaults(self) -> None:
         return
@@ -244,27 +250,7 @@ class GeminiImageGenerationPlugin(Star):
         resolution: str | None,
         aspect_ratio: str | None,
     ) -> tuple[str | None, str | None]:
-        api_type_norm = normalize_api_type(self.cfg.api_type)
-        if api_type_norm != "openai_images":
-            return resolution, aspect_ratio
-
-        settings = self._get_openai_images_settings()
-        size_mode = str(settings.get("size_mode") or "").strip().lower()
-        if size_mode != "custom":
-            return resolution, aspect_ratio
-
-        try:
-            custom_size = derive_custom_size_from_preset_params(
-                resolution,
-                aspect_ratio,
-                resolution_field_name="quick_mode.resolution",
-                aspect_ratio_field_name="quick_mode.aspect_ratio",
-            )
-        except ValueError as exc:
-            logger.warning(f"[快捷模式] 根据预设参数生成 custom_size 失败: {exc}")
-            return resolution, aspect_ratio
-
-        return custom_size, ""
+        return resolution, aspect_ratio
 
     def _register_llm_tools(self):
         """注册 LLM 工具到 Context"""
@@ -343,194 +329,96 @@ class GeminiImageGenerationPlugin(Star):
         """确保 API 客户端已初始化"""
         if self.api_client:
             return True
-        self._load_provider_from_context(quiet=quiet)
+        self._load_api_client_from_config(quiet=quiet)
         if not self.api_client:
             if not quiet:
-                logger.error("API 客户端仍未初始化，请检查 AstrBot 提供商配置")
+                logger.error("API 客户端仍未初始化，请检查插件 API 配置")
             return False
         return True
 
-    def _load_provider_from_context(self, *, quiet: bool = False):
-        """从 AstrBot 提供商读取模型/密钥并初始化客户端"""
+    def _load_api_client_from_config(self, *, quiet: bool = False):
+        """从插件配置读取模型/密钥并初始化客户端"""
         if not quiet:
-            logger.debug("尝试读取 AstrBot 提供商配置")
+            logger.debug("尝试读取插件 API 配置")
 
-        api_settings = self.raw_config.get("api_settings", {})
-        provider_id = api_settings.get("provider_id") or self.cfg.provider_id
-        manual_api_type = (api_settings.get("api_type") or "").strip()
-        manual_api_base = (api_settings.get("custom_api_base") or "").strip()
-        manual_model = (api_settings.get("model") or "").strip()
+        candidates = list(getattr(self.cfg, "provider_candidates", []) or [])
+        usable_candidates = [
+            candidate
+            for candidate in candidates
+            if getattr(candidate, "api_keys", None)
+        ]
 
-        # 只按配置文件决定 API 类型
-        if manual_api_type and not self.cfg.api_type:
-            self.cfg.api_type = manual_api_type
-        elif not self.cfg.api_type:
+        if not usable_candidates:
             if not quiet:
+                for error in getattr(self.cfg, "provider_config_errors", []) or []:
+                    logger.error(f"供应商配置错误: {error}")
                 logger.error(
-                    "✗ 未配置 api_settings.api_type（google/openai/openai_images/xai/minimax/stepfun/sensenova/zai/grok2api/doubao），无法初始化 API 客户端"
+                    "未找到任何可用供应商配置，请在 provider_settings.provider_overrides 中填写供应商名称、模型和 api_keys"
                 )
             return
 
-        if manual_api_base and not self.cfg.api_base:
-            self.cfg.api_base = manual_api_base
-        if manual_model and not self.cfg.model:
-            self.cfg.model = manual_model
+        all_api_keys: list[str] = []
+        for candidate in usable_candidates:
+            all_api_keys.extend(list(getattr(candidate, "api_keys", []) or []))
 
-        try:
-            provider_mgr = getattr(self.context, "provider_manager", None)
-            provider = None
-            if provider_mgr:
-                if provider_id and hasattr(provider_mgr, "inst_map"):
-                    provider = provider_mgr.inst_map.get(provider_id)
-                if not provider:
-                    provider = provider_mgr.get_using_provider(
-                        ProviderType.CHAT_COMPLETION, None
-                    )
-
-            if provider:
-                if not self.cfg.provider_id:
-                    self.cfg.provider_id = provider.provider_config.get("id", "")
-
-                prov_model = provider.get_model() or provider.provider_config.get(
-                    "model_config", {}
-                ).get("model")
-                if prov_model and not manual_model and not self.cfg.model:
-                    self.cfg.model = prov_model
-
-                prov_keys = provider.get_keys() or []
-                if not self.cfg.api_keys:
-                    self.cfg.api_keys = [
-                        str(k).strip() for k in prov_keys if str(k).strip()
-                    ]
-
-                prov_base = provider.provider_config.get("api_base")
-                if prov_base and not manual_api_base and not self.cfg.api_base:
-                    # 去掉末尾的 /v1，因为插件内部会自动根据 API 类型添加正确的版本前缀
-                    if prov_base.rstrip("/").endswith("/v1"):
-                        prov_base = prov_base.rstrip("/").removesuffix("/v1")
-                        logger.debug(f"已去除 api_base 末尾的 /v1: {prov_base}")
-                    self.cfg.api_base = prov_base
-
-                logger.info(
-                    f"✓ 已从 AstrBot 提供商读取配置，类型={self.cfg.api_type} 模型={self.cfg.model} 密钥={len(self.cfg.api_keys)}"
-                )
-            else:
-                if not quiet:
-                    logger.error(
-                        "未找到可用的 AstrBot 提供商，无法读取模型/密钥，请在主配置中选择提供商"
-                    )
-        except Exception as e:
-            logger.error(f"读取 AstrBot 提供商配置失败: {e}")
-
-        # provider_overrides 中的配置优先于 AstrBot 提供商配置
-        api_type_norm = normalize_api_type(self.cfg.api_type)
-        overrides = getattr(self.cfg, "provider_overrides", None) or {}
-        override_settings = overrides.get(api_type_norm, {})
-
-        if override_settings:
-            # 通用字段：api_keys, model, api_base
-            api_keys = override_settings.get("api_keys") or []
-            if api_keys:
-                self.cfg.api_keys = api_keys
-
-            # doubao 使用 endpoint_id 作为模型名，其他类型使用 model
-            if api_type_norm == "doubao":
-                model_field = str(override_settings.get("endpoint_id") or "").strip()
-            else:
-                model_field = str(override_settings.get("model") or "").strip()
-            if model_field:
-                self.cfg.model = model_field
-
-            api_base = str(override_settings.get("api_base") or "").strip()
-            if api_base:
-                self.cfg.api_base = api_base
-
-            # 绑定完整 settings 供适配器使用
-            cfg_attr = PROVIDER_SETTINGS_ATTR_MAP.get(api_type_norm)
-            if cfg_attr:
-                setattr(self.cfg, cfg_attr, override_settings)
-
-            # 日志显示覆盖来源
-            logger.info(
-                f"✓ 已从 provider_overrides[{api_type_norm}] 读取配置，模型={self.cfg.model} 密钥={len(self.cfg.api_keys)}"
-            )
-
-        if self.cfg.api_keys:
-            self.api_client = get_api_client(self.cfg.api_keys)
-            # 绑定 provider settings 到 API client，供各 Provider 读取
-            client_attr = PROVIDER_SETTINGS_ATTR_MAP.get(api_type_norm)
-            if client_attr:
-                try:
-                    setattr(
-                        self.api_client,
-                        client_attr,
-                        getattr(self.cfg, client_attr, None) or {},
-                    )
-                except Exception as e:
-                    logger.debug(f"绑定 {client_attr} 到 API client 失败: {e}")
-
-            self._apply_openai_custom_size_runtime_defaults()
+        if all_api_keys:
+            self.api_client = get_api_client(all_api_keys)
+            self.api_client.api_keys = all_api_keys
+            self.api_client.set_provider_candidates(usable_candidates)
             # 绑定 KeyManager 到 API client（支持多 Key 轮换和每日限额）
             if hasattr(self, "key_manager") and self.key_manager:
                 self.api_client.set_key_manager(self.key_manager)
 
-            # 代理优先级：provider_overrides > api_settings 全局 > 环境变量
-            proxy_from_override = (
-                (override_settings.get("proxy") or "").strip()
-                if override_settings
-                else ""
-            )
             proxy_from_global = getattr(self.cfg, "proxy", None) or ""
-
-            if proxy_from_override:
-                self.api_client.proxy = proxy_from_override
-            elif proxy_from_global:
-                self.api_client.proxy = proxy_from_global
-            else:
-                self.api_client.proxy = (
-                    os.environ.get("HTTPS_PROXY")
-                    or os.environ.get("https_proxy")
-                    or os.environ.get("HTTP_PROXY")
-                    or os.environ.get("http_proxy")
-                )
-
-            # 代理变更后重建 session
+            self.api_client.proxy = (
+                proxy_from_global
+                or os.environ.get("HTTPS_PROXY")
+                or os.environ.get("https_proxy")
+                or os.environ.get("HTTP_PROXY")
+                or os.environ.get("http_proxy")
+            )
+            self.api_client._default_proxy = self.api_client.proxy
             self.api_client.invalidate_session()
 
             self._update_modules_api_client()
             logger.info("✓ API 客户端已初始化")
-            logger.info(f"  - 类型: {self.cfg.api_type}")
-            logger.info(f"  - 模型: {self.cfg.model}")
-            logger.info(f"  - 密钥数量: {len(self.cfg.api_keys)}")
-            if self.cfg.api_base:
-                logger.info(f"  - 自定义 API Base: {self.cfg.api_base}")
+            logger.info(
+                "  - 候选供应商: %s",
+                ", ".join(
+                    f"{getattr(candidate, 'id', '?')}({getattr(candidate, 'api_type', '?')})"
+                    for candidate in usable_candidates
+                ),
+            )
+            logger.info(f"  - 密钥数量: {len(all_api_keys)}")
             if self.api_client.proxy:
                 logger.info(f"  - 代理: {self.api_client.proxy}")
         else:
             if not quiet:
-                logger.debug("启动阶段未读取到 API 密钥，等待 AstrBot 加载完成后再尝试")
+                logger.error(
+                    "未配置生图 API 密钥，请在 provider_settings.provider_overrides 中填写 api_keys"
+                )
 
     # ===== 事件处理 =====
 
     @filter.on_astrbot_loaded()
     async def on_astrbot_loaded(self):
-        """AstrBot 完成初始化后加载提供商"""
+        """AstrBot 完成初始化后加载插件 API 配置"""
         # 初始化时尝试加载
-        self._load_provider_from_context(quiet=True)
+        self._load_api_client_from_config(quiet=True)
         if self.llm_image_tool:
             self.llm_image_tool.refresh_from_plugin()
         if self.cfg.help_render_mode == "local":
             asyncio.create_task(self._ensure_font_for_local_mode())
 
         if not self.api_client:
-            self._load_provider_from_context()
+            self._load_api_client_from_config()
             if self.llm_image_tool:
                 self.llm_image_tool.refresh_from_plugin()
 
         if self.api_client:
             logger.info("Gemini 图像生成插件已加载")
         else:
-            logger.error("API 客户端未初始化，请检查提供商配置")
+            logger.error("API 客户端未初始化，请检查插件 API 配置")
 
     async def _ensure_font_for_local_mode(self):
         """确保 local 渲染模式所需的字体已下载"""
@@ -556,8 +444,8 @@ class GeminiImageGenerationPlugin(Star):
         if not self._ensure_api_client():
             yield event.plain_result(
                 "❌ API 客户端未初始化。\n"
-                "🧐 可能原因：服务启动过快，提供商尚未加载或密钥缺失。\n"
-                "✅ 建议：确认 AstrBot 主配置已选择提供商并填写密钥后重试。"
+                "🧐 可能原因：未在插件供应商配置中填写有效模型或密钥。\n"
+                "✅ 建议：在 provider_settings.provider_overrides 中添加供应商条目并填写 api_keys 后重试。"
             )
             return
 
@@ -591,16 +479,9 @@ class GeminiImageGenerationPlugin(Star):
                 )
                 return
 
-            effective_resolution = (
-                override_resolution
-                if override_resolution is not None
-                else self.cfg.resolution
-            )
-            effective_aspect_ratio = (
-                override_aspect_ratio
-                if override_aspect_ratio is not None
-                else self.cfg.aspect_ratio
-            )
+            effective_resolution = override_resolution
+            effective_aspect_ratio = override_aspect_ratio
+            suppress_resolution = False
 
             if (
                 self.cfg.preserve_reference_image_size
@@ -609,23 +490,20 @@ class GeminiImageGenerationPlugin(Star):
             ):
                 effective_resolution = None
                 effective_aspect_ratio = None
+                suppress_resolution = True
                 logger.debug("[MODIFY_DEBUG] 保留参考图尺寸，不覆盖分辨率/比例")
 
             config = ApiRequestConfig(
-                model=self.cfg.model,
+                model="",
                 prompt=enhanced_prompt,
-                api_type=self.cfg.api_type,
-                api_base=self.cfg.api_base if self.cfg.api_base else None,
+                api_type="",
+                api_base=None,
                 resolution=effective_resolution,
                 aspect_ratio=effective_aspect_ratio,
-                enable_grounding=self.cfg.enable_grounding,
+                suppress_resolution=suppress_resolution,
                 reference_images=all_ref_images if all_ref_images else None,
                 enable_smart_retry=self.cfg.enable_smart_retry,
-                enable_text_response=self.cfg.enable_text_response,
-                force_resolution=self.cfg.force_resolution,
                 image_input_mode="force_base64",
-                resolution_param_name=self.cfg.resolution_param_name,
-                aspect_ratio_param_name=self.cfg.aspect_ratio_param_name,
             )
 
             yield event.plain_result("🎨  生成中...")
@@ -1313,9 +1191,24 @@ class GeminiImageGenerationPlugin(Star):
             ):
                 return
 
-        grounding_status = "✓ 启用" if self.cfg.enable_grounding else "✗ 禁用"
         smart_retry_status = "✓ 启用" if self.cfg.enable_smart_retry else "✗ 禁用"
         avatar_status = "✓ 启用" if self.cfg.auto_avatar_reference else "✗ 禁用"
+        first_candidate = self._first_generation_candidate()
+        first_settings = (
+            getattr(first_candidate, "settings", None) or {} if first_candidate else {}
+        )
+        provider_summary = (
+            ", ".join(
+                f"{getattr(candidate, 'id', '?')}:{getattr(candidate, 'model', '') or '?'}"
+                for candidate in (getattr(self.cfg, "provider_candidates", []) or [])
+            )
+            or "未配置"
+        )
+        grounding_enabled = any(
+            bool((getattr(candidate, "settings", None) or {}).get("enable_grounding"))
+            for candidate in (getattr(self.cfg, "provider_candidates", []) or [])
+        )
+        grounding_status = "✓ 启用" if grounding_enabled else "✗ 禁用"
 
         # 限流状态显示：优先显示规则数量，其次显示默认限流设置
         rate_limit_rules = self.cfg.rate_limit_rules
@@ -1339,11 +1232,16 @@ class GeminiImageGenerationPlugin(Star):
 
         template_data = {
             "title": f"Gemini 图像生成插件 {self.version}",
-            "model": self.cfg.model,
-            "api_type": self.cfg.api_type,
-            "resolution": self.cfg.resolution,
-            "aspect_ratio": self.cfg.aspect_ratio or "默认",
-            "api_keys_count": len(self.cfg.api_keys),
+            "model": provider_summary,
+            "api_type": getattr(first_candidate, "api_type", "")
+            if first_candidate
+            else "",
+            "resolution": first_settings.get("resolution") or "1K",
+            "aspect_ratio": first_settings.get("aspect_ratio") or "1:1",
+            "api_keys_count": sum(
+                len(getattr(candidate, "api_keys", []) or [])
+                for candidate in (getattr(self.cfg, "provider_candidates", []) or [])
+            ),
             "grounding_status": grounding_status,
             "avatar_status": avatar_status,
             "smart_retry_status": smart_retry_status,
