@@ -2,14 +2,14 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/Version-v1.2.0-blue)
+![Version](https://img.shields.io/badge/Version-v2.0.0-blue)
 ![License](https://img.shields.io/badge/License-AGPL--3.0-orange)
 
 **强大的 AstrBot 图像生成插件，支持生图、改图、头像参考、表情包切分和 LLM 工具调用。**
 
 </div>
 
-> **升级提示**：v1.2.0 重构了生图供应商配置，不再复用 AstrBot 本体供应商，也不再读取旧 `api_settings`。升级后请在 `provider_settings.provider_overrides` 中重新添加供应商模板。
+> **升级提示**：v2.0.0 重构了生图供应商配置，不再复用 AstrBot 本体供应商，也不再读取旧 `api_settings`。升级后请在 `供应商配置` 中重新添加供应商模板。
 
 ## 功能概览
 
@@ -44,7 +44,7 @@ https://github.com/piexian/astrbot_plugin_gemini_image_generation
 
 ## 最小配置
 
-至少需要配置一个可用的图像模型供应商。v1.2.0 起生图不再使用 AstrBot 本体供应商，必须在本插件配置中添加：
+插件配置中添加：
 
 - 在 `provider_settings.provider_overrides` 中添加供应商模板（如 `google` / `openai_images`），填入 `api_keys`、`model`、`api_base` 等字段；
 - 同类型可添加多条模板，通过 `priority` 控制优先级；相同优先级按配置表顺序尝试；
