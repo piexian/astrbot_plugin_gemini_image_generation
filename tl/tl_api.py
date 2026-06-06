@@ -770,14 +770,14 @@ class GeminiAPIClient:
                 logger.error(f"[provider_polling] 跳过候选：{reason}")
                 continue
 
-            candidate_config = self._build_candidate_config(config, candidate)
-
-            logger.info(
-                f"[provider_polling] 尝试供应商候选 {candidate_id} ({api_type}), "
-                f"模型={candidate_config.model}"
-            )
-
             try:
+                candidate_config = self._build_candidate_config(config, candidate)
+
+                logger.info(
+                    f"[provider_polling] 尝试供应商候选 {candidate_id} ({api_type}), "
+                    f"模型={candidate_config.model}"
+                )
+
                 result = await self._generate_image_single(
                     config=candidate_config,
                     max_retries=max_retries,

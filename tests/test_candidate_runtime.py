@@ -270,6 +270,42 @@ async def test_candidate_polling_stops_on_framework_timeout_errors(
     assert attempted == ["google#1"]
 
 
+@pytest.mark.asyncio
+async def test_candidate_polling_skips_config_build_errors() -> None:
+    client = GeminiAPIClient(["fallback"])
+    bad = _Candidate(
+        id="openai_images#bad",
+        api_type="openai_images",
+        model="gpt-image-1",
+        settings={
+            "api_keys": ["bad-key"],
+            "size_mode": "custom",
+            "custom_size": "2048x1080",
+        },
+    )
+    good = _Candidate(
+        id="google#1",
+        api_type="google",
+        model="gemini-3-pro-image-preview",
+        settings={"api_keys": ["good-key"]},
+    )
+    client.set_provider_candidates([bad, good])
+    original_config = ApiRequestConfig(model="", prompt="test", api_type="")
+    attempted: list[str] = []
+
+    async def fake_generate_image_single(**kwargs):
+        candidate_config = kwargs["config"]
+        attempted.append(candidate_config.candidate_id)
+        return ["url"], ["path"], "text", None
+
+    client._generate_image_single = fake_generate_image_single  # type: ignore[method-assign]
+
+    result = await client._generate_image_with_candidates(original_config)
+
+    assert result == (["url"], ["path"], "text", None)
+    assert attempted == ["google#1"]
+
+
 def test_candidate_config_uses_request_level_settings_and_proxy() -> None:
     client = GeminiAPIClient(["fallback"])
     candidate = _Candidate(
