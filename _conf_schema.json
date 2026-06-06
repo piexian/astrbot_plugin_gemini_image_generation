@@ -2,12 +2,12 @@
   "provider_settings": {
     "description": "供应商配置",
     "type": "object",
-    "hint": "配置生图供应商、轮询顺序、视觉识别提供商和代理。生图不再复用 AstrBot 本体供应商。",
+    "hint": "配置生图供应商、轮询顺序、视觉识别提供商和代理。",
     "items": {
       "provider_polling": {
         "description": "供应商轮询顺序",
         "type": "list",
-        "hint": "按列表从上到下尝试生成。填写供应商名称，如 google/openai/openai_images/xai/minimax/stepfun/sensenova/zai/grok2api/doubao。重复项会自动去重；未知名称会报错并跳过。留空时按配置表中的有效供应商顺序尝试。",
+        "hint": "按列表从上到下尝试生成。填写供应商名称，如 google/openai/openai_images。留空时按配置表中的有效供应商顺序尝试。",
         "default": []
       },
       "proxy": {
@@ -527,7 +527,7 @@
               "api_base": {
                 "description": "API 端点地址",
                 "type": "string",
-                "hint": "MiniMax API 地址，留空使用默认 https://api.minimaxi.com；插件会统一调用 /v1/image_generation",
+                "hint": "MiniMax API 地址，留空使用默认 https://api.minimaxi.com",
                 "default": "https://api.minimaxi.com"
               },
               "proxy": {
@@ -1172,7 +1172,7 @@
   "image_generation_settings": {
     "description": "图像生成行为",
     "type": "object",
-    "hint": "配置表情包、参考图保留、LLM 工具等待和图片发送阈值；供应商尺寸和能力参数在 provider_settings 中配置。",
+    "hint": "配置表情包、参考图保留、LLM 工具等待和图片发送阈值。",
     "items": {
       "enable_sticker_split": {
         "description": "启用表情包切割",
@@ -1207,9 +1207,9 @@
       "llm_tool_timeout_reserve_percent": {
         "name": "LLM Tool Timeout Reserve Percent",
         "description": "LLM 工具超时预留百分比",
-        "hint": "LLM 工具触发生图时，会从当前聊天工具超时配置中按比例预留安全时间。剩余时间用于前台同步等待；超出后转为后台发送。默认 50%，即默认 60 秒超时下，前台最多等待约 30 秒。",
+        "hint": "LLM 工具触发生图时，会从当前聊天工具超时配置中按比例预留安全时间。剩余时间用于前台同步等待；超出后转为后台发送。默认 75%，即默认 60 秒超时下，前台最多等待约 45 秒。",
         "type": "int",
-        "default": 50,
+        "default": 75,
         "slider": {
           "min": 1,
           "max": 100,
@@ -1221,7 +1221,7 @@
   "quick_mode_settings": {
     "description": "快速模式参数覆盖",
     "type": "template_list",
-    "hint": "可选：覆盖「快速」指令各模式的默认分辨率/长宽比。选择模式后可配置对应参数。",
+    "hint": "可选：覆盖「快速」指令各模式的默认分辨率/长宽比。",
     "default": [],
     "templates": {
       "avatar": {
@@ -1810,7 +1810,7 @@
         "description": "清理间隔（分钟）",
         "type": "int",
         "hint": "定时清理任务的执行间隔，设为 0 表示禁用定时清理",
-        "default": 30
+        "default": 1440
       },
       "max_cache_files": {
         "description": "缓存文件数量上限",
