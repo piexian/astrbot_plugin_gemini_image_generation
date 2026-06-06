@@ -2,7 +2,7 @@
 
 ## 生图供应商选择
 
-v1.2.0 起，插件只使用 `provider_settings.provider_overrides` 中配置的生图供应商，不再复用 AstrBot 本体供应商。
+v2.0.0 起，插件只使用 `供应商配置` 中配置的生图供应商，。
 
 - `provider_polling` 留空时，插件会按有效供应商配置自动尝试。
 - `provider_polling` 填写后，插件按列表从上到下尝试；重复供应商自动去重，未知供应商会记录错误并跳过。
