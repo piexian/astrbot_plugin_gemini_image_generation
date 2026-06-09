@@ -110,21 +110,24 @@ async def test_agnes_ai_reference_payload_uses_extra_body_image() -> None:
 async def test_agnes_ai_parse_url_response() -> None:
     provider = AgnesAIProvider()
 
-    image_urls, image_paths, text_content, thought_signature = (
-        await provider.parse_response(
-            client=_FakeClient(),
-            response_data={
-                "created": 1780000000,
-                "data": [
-                    {
-                        "url": "https://storage.example/image.png",
-                        "revised_prompt": "draw a cat",
-                    }
-                ],
-            },
-            session=None,
-            http_status=200,
-        )
+    (
+        image_urls,
+        image_paths,
+        text_content,
+        thought_signature,
+    ) = await provider.parse_response(
+        client=_FakeClient(),
+        response_data={
+            "created": 1780000000,
+            "data": [
+                {
+                    "url": "https://storage.example/image.png",
+                    "revised_prompt": "draw a cat",
+                }
+            ],
+        },
+        session=None,
+        http_status=200,
     )
 
     assert image_urls == ["https://storage.example/image.png"]
@@ -144,13 +147,16 @@ async def test_agnes_ai_parse_b64_response(monkeypatch: pytest.MonkeyPatch) -> N
 
     monkeypatch.setattr(agnes_module, "save_base64_image", _save_base64_image)
 
-    image_urls, image_paths, text_content, thought_signature = (
-        await provider.parse_response(
-            client=_FakeClient(),
-            response_data={"data": [{"b64_json": "BASE64DATA"}]},
-            session=None,
-            http_status=200,
-        )
+    (
+        image_urls,
+        image_paths,
+        text_content,
+        thought_signature,
+    ) = await provider.parse_response(
+        client=_FakeClient(),
+        response_data={"data": [{"b64_json": "BASE64DATA"}]},
+        session=None,
+        http_status=200,
     )
 
     assert image_urls == ["/tmp/generated.png"]

@@ -387,9 +387,9 @@ def test_provider_settings_accepts_agnes_ai_template() -> None:
 def test_schema_contains_agnes_ai_template() -> None:
     schema_path = Path(__file__).resolve().parents[1] / "_conf_schema.json"
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    template = schema["provider_settings"]["items"]["provider_overrides"][
-        "templates"
-    ]["agnes_ai"]
+    template = schema["provider_settings"]["items"]["provider_overrides"]["templates"][
+        "agnes_ai"
+    ]
 
     assert template["items"]["model"]["default"] == "agnes-image-2.1-flash"
     assert template["items"]["api_base"]["default"] == "https://apihub.agnes-ai.com"

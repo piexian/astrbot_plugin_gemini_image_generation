@@ -37,7 +37,11 @@ class AgnesAIProvider:
         )
         raw_api_base = config.api_base or settings.get("api_base")
         base = self._normalize_api_base(raw_api_base) or _DEFAULT_API_BASE
-        url = f"{base}/images/generations" if base.endswith("/v1") else f"{base}/v1/images/generations"
+        url = (
+            f"{base}/images/generations"
+            if base.endswith("/v1")
+            else f"{base}/v1/images/generations"
+        )
         payload = await self._prepare_payload(
             client=client,
             config=config,
@@ -263,9 +267,7 @@ class AgnesAIProvider:
         response_format = str(value or "url").strip().lower()
         if response_format in _SUPPORTED_RESPONSE_FORMATS:
             return response_format
-        logger.warning(
-            f"[agnes_ai] 忽略不支持的 response_format={value}，已回退为 url"
-        )
+        logger.warning(f"[agnes_ai] 忽略不支持的 response_format={value}，已回退为 url")
         return "url"
 
     @staticmethod
@@ -288,9 +290,7 @@ class AgnesAIProvider:
         long_edge = _RESOLUTION_MAP.get(resolution_key)
         if long_edge is None:
             if resolution_key:
-                logger.warning(
-                    f"[agnes_ai] 未知 resolution={resolution}，已回退为 1K"
-                )
+                logger.warning(f"[agnes_ai] 未知 resolution={resolution}，已回退为 1K")
             long_edge = _RESOLUTION_MAP["1K"]
 
         ratio = AgnesAIProvider._parse_ratio(aspect_ratio or "1:1")
@@ -330,7 +330,9 @@ class AgnesAIProvider:
         return width, height
 
     @staticmethod
-    def _compute_dimensions(ratio: tuple[float, float], long_edge: int) -> tuple[int, int]:
+    def _compute_dimensions(
+        ratio: tuple[float, float], long_edge: int
+    ) -> tuple[int, int]:
         ratio_width, ratio_height = ratio
         if ratio_width >= ratio_height:
             width = long_edge
@@ -338,7 +340,9 @@ class AgnesAIProvider:
         else:
             height = long_edge
             width = round(long_edge * ratio_width / ratio_height)
-        return AgnesAIProvider._align_dimension(width), AgnesAIProvider._align_dimension(height)
+        return AgnesAIProvider._align_dimension(
+            width
+        ), AgnesAIProvider._align_dimension(height)
 
     @staticmethod
     def _align_dimension(value: int) -> int:
@@ -357,7 +361,9 @@ class AgnesAIProvider:
         return None
 
     @staticmethod
-    def _request_has_proxy(client: Any, request_config: ApiRequestConfig | None) -> bool:
+    def _request_has_proxy(
+        client: Any, request_config: ApiRequestConfig | None
+    ) -> bool:
         has_proxy = getattr(client, "_request_has_proxy", None)
         return bool(has_proxy(request_config)) if callable(has_proxy) else False
 
