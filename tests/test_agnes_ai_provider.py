@@ -71,9 +71,7 @@ async def test_agnes_ai_custom_proxy_path_is_preserved() -> None:
 
     request = await provider.build_request(client=_FakeClient(), config=config)
 
-    assert request.url == (
-        "https://my-proxy.com/custom/path/v1/images/generations"
-    )
+    assert request.url == ("https://my-proxy.com/custom/path/v1/images/generations")
 
 
 @pytest.mark.asyncio
@@ -92,9 +90,7 @@ async def test_agnes_ai_full_endpoint_base_is_trimmed() -> None:
 
     request = await provider.build_request(client=_FakeClient(), config=config)
 
-    assert request.url == (
-        "https://my-proxy.com/custom/path/v1/images/generations"
-    )
+    assert request.url == ("https://my-proxy.com/custom/path/v1/images/generations")
 
 
 @pytest.mark.asyncio
