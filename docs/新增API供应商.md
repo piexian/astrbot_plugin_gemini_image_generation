@@ -11,6 +11,7 @@ tl/api/
 ├── openai_compat.py    # OpenAI Chat Completions 兼容基类
 ├── openai_images.py    # OpenAI Images 原生端点
 ├── google.py           # Google/Gemini 官方接口
+├── agnes_ai.py         # Agnes AI 图片生成接口
 ├── xai.py              # xAI Images 官方接口
 ├── minimax.py          # MiniMax 图片生成接口
 ├── doubao.py           # 火山引擎 Ark / 豆包 Seedream
@@ -30,6 +31,7 @@ tl/api/
 | `google` | `GoogleProvider` | Google/Gemini 官方接口 |
 | `openai` | `OpenAICompatProvider` | OpenAI Chat Completions 兼容格式（默认兜底） |
 | `openai_images` | `OpenAIImagesProvider` | OpenAI `/v1/images/generations` 与 `/v1/images/edits` |
+| `agnes_ai` | `AgnesAIProvider` | Agnes AI `/v1/images/generations` |
 | `xai` | `XAIProvider` | xAI 官方图像接口 |
 | `minimax` | `MiniMaxProvider` | MiniMax `/v1/image_generation` |
 | `stepfun` | `StepfunProvider` | StepFun `/v1/images/generations` 与 `/v1/images/edits` |

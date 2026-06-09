@@ -132,6 +132,7 @@ class PluginConfig:
     sensenova_settings: dict[str, Any] = field(default_factory=dict)
     xai_settings: dict[str, Any] = field(default_factory=dict)
     openai_images_settings: dict[str, Any] = field(default_factory=dict)
+    agnes_ai_settings: dict[str, Any] = field(default_factory=dict)
 
     # 供应商配置覆盖
     # 结构：{candidate_id: {api_keys: [...], daily_limit_per_key: int, ...}}
@@ -460,6 +461,8 @@ class ConfigLoader:
                     "default_size",
                     "optimize_prompt_mode",
                     "sequential_image_generation",
+                    "response_format",
+                    "reference_image_mode",
                 ):
                     if isinstance(settings.get(key), str):
                         settings[key] = settings[key].strip()
@@ -568,6 +571,9 @@ class ConfigLoader:
         config.xai_settings = self._first_settings_for(ordered_candidates, "xai")
         config.openai_images_settings = self._first_settings_for(
             ordered_candidates, "openai_images"
+        )
+        config.agnes_ai_settings = self._first_settings_for(
+            ordered_candidates, "agnes_ai"
         )
 
     @staticmethod

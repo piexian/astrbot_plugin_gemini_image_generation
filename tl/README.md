@@ -167,6 +167,7 @@ generate_image()
 | `google` | `GoogleProvider` |
 | `openai` | `OpenAICompatProvider`（默认兑底） |
 | `openai_images` | `OpenAIImagesProvider` |
+| `agnes_ai` | `AgnesAIProvider` |
 | `xai` | `XAIProvider` |
 | `minimax` | `MiniMaxProvider` |
 | `stepfun` | `StepfunProvider` |
@@ -223,6 +224,17 @@ OpenAI Images 原生端点 provider。
 | `_is_gpt_image_model(model)` | 判断 GPT image 系列 |
 | `_get_size_mapping(model)` | 按模型族选择预设尺寸映射 |
 | `_resolve_size_value(model, resolution, settings)` | 计算最终 `size` |
+
+### `api/agnes_ai.py`
+
+Agnes AI 图片生成 provider。
+
+| 接口 | 说明 |
+|------|------|
+| `AgnesAIProvider.build_request()` | 构造 `/v1/images/generations` JSON 请求 |
+| `AgnesAIProvider.parse_response()` | 解析 `data[].url` / `data[].b64_json` 图片响应 |
+| `_prepare_payload()` | 组装 `model`、`prompt`、`size` 和 `extra_body` |
+| `_to_image_input()` | 按 `reference_image_mode` 生成参考图 URL 或 data URI |
 
 ### `api/xai.py`
 

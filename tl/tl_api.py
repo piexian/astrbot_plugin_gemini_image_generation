@@ -284,6 +284,7 @@ class GeminiAPIClient:
             "sensenova": "sensenova_settings",
             "xai": "xai_settings",
             "openai_images": "openai_images_settings",
+            "agnes_ai": "agnes_ai_settings",
         }
         return mapping.get(normalize_api_type(api_type))
 
@@ -1298,6 +1299,7 @@ class GeminiAPIClient:
                     # OpenAI Images / xAI Images 使用 provider 自身的解析方法
                     if normalize_api_type(api_type) in {
                         "openai_images",
+                        "agnes_ai",
                         "xai",
                         "minimax",
                         "stepfun",
