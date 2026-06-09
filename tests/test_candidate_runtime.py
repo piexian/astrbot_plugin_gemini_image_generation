@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -113,17 +114,19 @@ async def test_key_manager_keeps_same_key_separate_across_provider_types() -> No
 
 @pytest.mark.asyncio
 async def test_key_manager_ignores_malformed_persisted_usage_count() -> None:
+    today = date.today().isoformat()
+
     async def get_kv(key, default):
         return {
             "google#1": {
                 "keys": {
                     "bad-key": {
                         "usage_count": "not-a-number",
-                        "last_reset_date": "2026-06-06",
+                        "last_reset_date": today,
                     },
                     "good-key": {
                         "usage_count": "3",
-                        "last_reset_date": "2026-06-06",
+                        "last_reset_date": today,
                     },
                 }
             }

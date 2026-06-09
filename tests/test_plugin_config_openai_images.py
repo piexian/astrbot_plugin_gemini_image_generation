@@ -354,3 +354,44 @@ def test_google_candidate_edit_capable_by_default() -> None:
     assert len(cfg.provider_candidates) == 1
     assert cfg.provider_candidates[0].api_type == "google"
     assert cfg.provider_candidates[0].supports_image_edit is True
+
+
+def test_provider_settings_accepts_agnes_ai_template() -> None:
+    logger = _DummyLogger()
+    plugin_config = _import_plugin_config_module(logger)
+    cfg = plugin_config.ConfigLoader(
+        {
+            "provider_settings": {
+                "provider_overrides": [
+                    {
+                        "__template_key": "agnes_ai",
+                        "api_keys": [" agnes-key "],
+                        "model": "agnes-image-2.1-flash",
+                        "response_format": " b64_json ",
+                        "reference_image_mode": " base64 ",
+                    }
+                ]
+            }
+        }
+    ).load()
+
+    assert cfg.provider_polling == ["agnes_ai"]
+    assert len(cfg.provider_candidates) == 1
+    assert cfg.provider_candidates[0].api_type == "agnes_ai"
+    assert cfg.provider_candidates[0].supports_image_edit is True
+    assert cfg.agnes_ai_settings["api_keys"] == ["agnes-key"]
+    assert cfg.agnes_ai_settings["response_format"] == "b64_json"
+    assert cfg.agnes_ai_settings["reference_image_mode"] == "base64"
+
+
+def test_schema_contains_agnes_ai_template() -> None:
+    schema_path = Path(__file__).resolve().parents[1] / "_conf_schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    template = schema["provider_settings"]["items"]["provider_overrides"][
+        "templates"
+    ]["agnes_ai"]
+
+    assert template["items"]["model"]["default"] == "agnes-image-2.1-flash"
+    assert template["items"]["api_base"]["default"] == "https://apihub.agnes-ai.com"
+    assert template["items"]["response_format"]["options"] == ["url", "b64_json"]
+    assert template["items"]["reference_image_mode"]["default"] == "base64"

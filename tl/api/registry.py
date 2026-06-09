@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Final
 
 from ..provider_metadata import normalize_api_type
+from .agnes_ai import AgnesAIProvider
 from .base import ApiProvider
 from .doubao import DoubaoProvider
 from .google import GoogleProvider
@@ -20,6 +21,7 @@ from .stepfun import StepfunProvider
 from .xai import XAIProvider
 from .zai import ZaiProvider
 
+_AGNES_AI: Final[AgnesAIProvider] = AgnesAIProvider()
 _DOUBAO: Final[DoubaoProvider] = DoubaoProvider()
 _GOOGLE: Final[GoogleProvider] = GoogleProvider()
 _GROK2API: Final[Grok2ApiProvider] = Grok2ApiProvider()
@@ -36,6 +38,7 @@ _PROVIDERS: Final[dict[str, ApiProvider]] = {
     "google": _GOOGLE,
     "openai": _OPENAI,
     "openai_images": _OPENAI_IMAGES,
+    "agnes_ai": _AGNES_AI,
     "xai": _XAI,
     "minimax": _MINIMAX,
     "stepfun": _STEPFUN,

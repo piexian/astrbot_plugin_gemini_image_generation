@@ -391,6 +391,104 @@
               }
             }
           },
+          "agnes_ai": {
+            "description": "Agnes AI 图片生成 API 覆盖配置",
+            "hint": "配置 Agnes AI /v1/images/generations 端点的密钥和参数，支持文生图和参考图生图",
+            "items": {
+              "priority": {
+                "description": "优先级",
+                "type": "int",
+                "hint": "同类型供应商配置多条时按优先级从高到低尝试；相同优先级按配置表从上到下尝试。",
+                "default": 0
+              },
+              "api_keys": {
+                "description": "API Key 列表",
+                "type": "list",
+                "hint": "多个 API Key，支持轮换使用",
+                "default": []
+              },
+              "daily_limit_per_key": {
+                "description": "每个 Key 每日限额",
+                "type": "int",
+                "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
+                "default": 0
+              },
+              "model": {
+                "description": "模型名称",
+                "type": "string",
+                "hint": "Agnes AI 图片模型名称，支持 agnes-image-2.0-flash / agnes-image-2.1-flash",
+                "default": "agnes-image-2.1-flash"
+              },
+              "api_base": {
+                "description": "API 端点地址",
+                "type": "string",
+                "hint": "Agnes AI API 地址，留空使用默认 https://apihub.agnes-ai.com",
+                "default": "https://apihub.agnes-ai.com"
+              },
+              "proxy": {
+                "description": "代理地址",
+                "type": "string",
+                "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式。优先级高于全局代理和环境变量",
+                "default": ""
+              },
+              "resolution": {
+                "description": "图像分辨率",
+                "type": "string",
+                "hint": "该供应商默认图像分辨率。快速模式传入覆盖值时优先使用快速模式。",
+                "default": "1K",
+                "options": [
+                  "1K",
+                  "2K",
+                  "4K"
+                ]
+              },
+              "aspect_ratio": {
+                "description": "长宽比",
+                "type": "string",
+                "hint": "该供应商默认长宽比。快速模式传入覆盖值时优先使用快速模式。",
+                "default": "1:1",
+                "options": [
+                  "1:1",
+                  "16:9",
+                  "4:3",
+                  "3:2",
+                  "9:16",
+                  "4:5",
+                  "5:4",
+                  "21:9",
+                  "3:4",
+                  "2:3"
+                ]
+              },
+              "max_reference_images": {
+                "description": "最大参考图片数量",
+                "type": "int",
+                "hint": "该供应商本次请求最多使用的参考图片数量；超过后按顺序截取。",
+                "default": 6
+              },
+              "response_format": {
+                "description": "响应格式",
+                "type": "string",
+                "hint": "url 返回临时链接，b64_json 返回 base64 编码并由插件保存到本地。",
+                "default": "url",
+                "options": [
+                  "url",
+                  "b64_json"
+                ]
+              },
+              "reference_image_mode": {
+                "description": "参考图传递方式",
+                "type": "string",
+                "hint": "base64 强制内联为 data URI；auto 对 URL 直接透传、对本地/base64 转 data URI；url 要求参考图必须是公开 URL",
+                "default": "base64",
+                "options": [
+                  "base64",
+                  "auto",
+                  "url"
+                ]
+              }
+            }
+          },
           "xai": {
             "description": "xAI Images API 覆盖配置",
             "hint": "配置 xAI /v1/images/generations 和 /v1/images/edits 端点的密钥和参数",
