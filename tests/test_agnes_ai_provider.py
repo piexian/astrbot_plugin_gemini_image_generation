@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import importlib
+
 import pytest
 
-from tl.api import agnes_ai as agnes_module
 from tl.api.agnes_ai import AgnesAIProvider
 from tl.api_types import ApiRequestConfig
 
@@ -52,6 +53,86 @@ async def test_agnes_ai_text_to_image_url_payload() -> None:
         "size": "1024x768",
         "extra_body": {"response_format": "url"},
     }
+
+
+@pytest.mark.asyncio
+async def test_agnes_ai_custom_proxy_path_is_preserved() -> None:
+    provider = AgnesAIProvider()
+    config = ApiRequestConfig(
+        model="agnes-image-2.1-flash",
+        prompt="draw a cat",
+        api_type="agnes_ai",
+        api_key="test-key",
+        provider_settings={
+            "api_base": "https://my-proxy.com/custom/path/v1",
+            "response_format": "url",
+        },
+    )
+
+    request = await provider.build_request(client=_FakeClient(), config=config)
+
+    assert request.url == (
+        "https://my-proxy.com/custom/path/v1/images/generations"
+    )
+
+
+@pytest.mark.asyncio
+async def test_agnes_ai_full_endpoint_base_is_trimmed() -> None:
+    provider = AgnesAIProvider()
+    config = ApiRequestConfig(
+        model="agnes-image-2.1-flash",
+        prompt="draw a cat",
+        api_type="agnes_ai",
+        api_key="test-key",
+        provider_settings={
+            "api_base": "https://my-proxy.com/custom/path/v1/images/generations",
+            "response_format": "url",
+        },
+    )
+
+    request = await provider.build_request(client=_FakeClient(), config=config)
+
+    assert request.url == (
+        "https://my-proxy.com/custom/path/v1/images/generations"
+    )
+
+
+@pytest.mark.asyncio
+async def test_agnes_ai_v1_prefixed_proxy_path_is_preserved() -> None:
+    provider = AgnesAIProvider()
+    config = ApiRequestConfig(
+        model="agnes-image-2.1-flash",
+        prompt="draw a cat",
+        api_type="agnes_ai",
+        api_key="test-key",
+        provider_settings={
+            "api_base": "https://my-proxy.com/v1/custom",
+            "response_format": "url",
+        },
+    )
+
+    request = await provider.build_request(client=_FakeClient(), config=config)
+
+    assert request.url == "https://my-proxy.com/v1/custom/images/generations"
+
+
+@pytest.mark.asyncio
+async def test_agnes_ai_v1beta_proxy_path_is_preserved() -> None:
+    provider = AgnesAIProvider()
+    config = ApiRequestConfig(
+        model="agnes-image-2.1-flash",
+        prompt="draw a cat",
+        api_type="agnes_ai",
+        api_key="test-key",
+        provider_settings={
+            "api_base": "https://my-proxy.com/v1beta",
+            "response_format": "url",
+        },
+    )
+
+    request = await provider.build_request(client=_FakeClient(), config=config)
+
+    assert request.url == "https://my-proxy.com/v1beta/images/generations"
 
 
 @pytest.mark.asyncio
@@ -107,6 +188,33 @@ async def test_agnes_ai_reference_payload_uses_extra_body_image() -> None:
 
 
 @pytest.mark.asyncio
+async def test_agnes_ai_reference_payload_omits_size_when_suppressed() -> None:
+    provider = AgnesAIProvider()
+    client = _FakeClient()
+    config = ApiRequestConfig(
+        model="agnes-image-2.1-flash",
+        prompt="edit this",
+        api_type="agnes_ai",
+        api_key="test-key",
+        reference_images=["/tmp/ref.png"],
+        image_input_mode="force_base64",
+        suppress_resolution=True,
+        provider_settings={
+            "response_format": "url",
+            "reference_image_mode": "base64",
+        },
+    )
+
+    request = await provider.build_request(client=client, config=config)
+
+    assert "size" not in request.payload
+    assert request.payload["extra_body"] == {
+        "image": ["data:image/png;base64,BASE64DATA"],
+        "response_format": "url",
+    }
+
+
+@pytest.mark.asyncio
 async def test_agnes_ai_parse_url_response() -> None:
     provider = AgnesAIProvider()
 
@@ -139,13 +247,14 @@ async def test_agnes_ai_parse_url_response() -> None:
 @pytest.mark.asyncio
 async def test_agnes_ai_parse_b64_response(monkeypatch: pytest.MonkeyPatch) -> None:
     provider = AgnesAIProvider()
+    saved_calls: list[tuple[str, str]] = []
 
     async def _save_base64_image(b64_data: str, image_format: str = "png") -> str:
-        assert b64_data == "BASE64DATA"
-        assert image_format == "png"
+        saved_calls.append((b64_data, image_format))
         return "/tmp/generated.png"
 
-    monkeypatch.setattr(agnes_module, "save_base64_image", _save_base64_image)
+    agnes_ai_module = importlib.import_module("tl.api.agnes_ai")
+    monkeypatch.setattr(agnes_ai_module, "save_base64_image", _save_base64_image)
 
     (
         image_urls,
@@ -159,6 +268,7 @@ async def test_agnes_ai_parse_b64_response(monkeypatch: pytest.MonkeyPatch) -> N
         http_status=200,
     )
 
+    assert saved_calls == [("BASE64DATA", "png")]
     assert image_urls == ["/tmp/generated.png"]
     assert image_paths == ["/tmp/generated.png"]
     assert text_content is None

@@ -39,7 +39,7 @@ class AgnesAIProvider:
         base = self._normalize_api_base(raw_api_base) or _DEFAULT_API_BASE
         url = (
             f"{base}/images/generations"
-            if base.endswith("/v1")
+            if self._api_base_includes_version_path(base)
             else f"{base}/v1/images/generations"
         )
         payload = await self._prepare_payload(
@@ -169,11 +169,12 @@ class AgnesAIProvider:
         payload: dict[str, Any] = {
             "model": model,
             "prompt": config.prompt,
-            "size": self._resolve_size(
+        }
+        if not config.suppress_resolution:
+            payload["size"] = self._resolve_size(
                 settings.get("size") or config.resolution,
                 config.aspect_ratio or settings.get("aspect_ratio"),
-            ),
-        }
+            )
 
         response_format = self._normalize_response_format(
             settings.get("response_format")
@@ -196,7 +197,7 @@ class AgnesAIProvider:
             payload["extra_body"] = extra_body
 
         logger.debug(
-            f"[agnes_ai] payload: model={model} size={payload['size']} "
+            f"[agnes_ai] payload: model={model} size={payload.get('size')} "
             f"refs={len(ref_images)} response_format={response_format}"
         )
         return payload
@@ -251,16 +252,16 @@ class AgnesAIProvider:
         raw_api_base = str(value or "").strip().rstrip("/")
         if not raw_api_base:
             return None
+        for suffix in ("/v1/images/generations", "/images/generations"):
+            if raw_api_base.endswith(suffix):
+                raw_api_base = raw_api_base[: -len(suffix)]
+                break
+        return raw_api_base.rstrip("/")
 
-        parsed = urllib.parse.urlsplit(raw_api_base)
-        if parsed.scheme and parsed.netloc:
-            path = parsed.path.rstrip("/")
-            normalized_path = "/v1" if path.startswith("/v1") else ""
-            normalized = urllib.parse.urlunsplit(
-                (parsed.scheme, parsed.netloc, normalized_path, "", "")
-            )
-            return normalized.rstrip("/")
-        return raw_api_base
+    @staticmethod
+    def _api_base_includes_version_path(value: str) -> bool:
+        path = urllib.parse.urlsplit(value).path.rstrip("/")
+        return path.startswith("/v1") or path.endswith("/v1")
 
     @staticmethod
     def _normalize_response_format(value: Any) -> str:
