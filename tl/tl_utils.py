@@ -7,13 +7,11 @@ import asyncio
 import base64
 import hashlib
 import os
-import re
 import time
 import urllib.parse
 from collections import OrderedDict
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
 from uuid import uuid4
 
 import aiohttp

@@ -327,9 +327,7 @@ async def test_candidate_polling_shares_total_timeout_across_candidates(
             return next(self.times, 107.0)
 
     async def fake_generate_image_single(**kwargs):
-        attempted.append(
-            (kwargs["config"].candidate_id, kwargs.get("max_total_time"))
-        )
+        attempted.append((kwargs["config"].candidate_id, kwargs.get("max_total_time")))
         raise APIError("fail", 500, "server_error")
 
     monkeypatch.setattr("tl.tl_api.asyncio.get_running_loop", lambda: _FakeLoop())
