@@ -20,6 +20,7 @@ class RateLimiter:
     """群限制和限流管理器（支持 KV 持久化 + 多规则限流）"""
 
     KV_KEY = "rate_limit_buckets"
+    SAVE_DEBOUNCE_SECONDS = 1.0
 
     def __init__(
         self,
@@ -31,10 +32,13 @@ class RateLimiter:
         self.config = config
         self._rate_limit_buckets: dict[str, list[float]] = {}
         self._rate_limit_lock = asyncio.Lock()
+        self._save_lock = asyncio.Lock()
         # KV 存储回调
         self._get_kv = get_kv
         self._put_kv = put_kv
         self._loaded = False
+        self._last_save_time = 0.0
+        self._pending_save_task: asyncio.Task | None = None
 
     async def _load_from_kv(self) -> None:
         """从 KV 存储加载限流数据"""
@@ -54,14 +58,52 @@ class RateLimiter:
         finally:
             self._loaded = True
 
-    async def _save_to_kv(self) -> None:
-        """保存限流数据到 KV 存储"""
+    async def _write_to_kv(self) -> None:
+        """立即保存限流数据到 KV 存储"""
         if not self._put_kv:
             return
         try:
-            await self._put_kv(self.KV_KEY, self._rate_limit_buckets)
+            async with self._save_lock:
+                await self._put_kv(self.KV_KEY, self._rate_limit_buckets)
+                self._last_save_time = time.monotonic()
         except Exception as e:
             logger.debug(f"保存限流数据失败: {e}")
+
+    async def _delayed_save_to_kv(self, delay_seconds: float) -> None:
+        try:
+            await asyncio.sleep(max(delay_seconds, 0.0))
+            await self._write_to_kv()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug(f"延迟保存限流数据失败: {e}")
+        finally:
+            if self._pending_save_task is asyncio.current_task():
+                self._pending_save_task = None
+
+    async def _save_to_kv(self, *, force: bool = False) -> None:
+        """保存限流数据到 KV 存储；高频请求会合并短时间内的写入。"""
+        if not self._put_kv:
+            return
+
+        if force:
+            if self._pending_save_task and not self._pending_save_task.done():
+                self._pending_save_task.cancel()
+            self._pending_save_task = None
+            await self._write_to_kv()
+            return
+
+        now = time.monotonic()
+        elapsed = now - self._last_save_time
+        if elapsed >= self.SAVE_DEBOUNCE_SECONDS:
+            await self._write_to_kv()
+            return
+
+        if self._pending_save_task and not self._pending_save_task.done():
+            return
+
+        delay = self.SAVE_DEBOUNCE_SECONDS - elapsed
+        self._pending_save_task = asyncio.create_task(self._delayed_save_to_kv(delay))
 
     def get_group_id_from_event(self, event: AstrMessageEvent) -> str | None:
         """从事件中解析群ID，仅在群聊场景下返回"""
@@ -161,8 +203,9 @@ class RateLimiter:
         window_start = now - period
 
         async with self._rate_limit_lock:
-            bucket = self._rate_limit_buckets.get(group_id, [])
-            bucket = [ts for ts in bucket if ts >= window_start]
+            original_bucket = self._rate_limit_buckets.get(group_id, [])
+            bucket = [ts for ts in original_bucket if ts >= window_start]
+            bucket_pruned = bucket != original_bucket
 
             if len(bucket) >= max_requests:
                 earliest = bucket[0]
@@ -171,7 +214,8 @@ class RateLimiter:
                     retry_after = 0
 
                 self._rate_limit_buckets[group_id] = bucket
-                await self._save_to_kv()
+                if bucket_pruned:
+                    await self._save_to_kv()
                 logger.debug(
                     "触发限流 group_id=%s count=%s/%s retry_after=%s rule=%s",
                     group_id,
@@ -202,4 +246,4 @@ class RateLimiter:
     async def reset(self) -> None:
         """重置限流状态"""
         self._rate_limit_buckets.clear()
-        await self._save_to_kv()
+        await self._save_to_kv(force=True)
