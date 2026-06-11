@@ -72,6 +72,21 @@ def test_schema_hides_openai_images_resolution_fields_in_size_mode() -> None:
     assert items["custom_size"]["condition"] == {"size_mode": "custom"}
 
 
+def test_schema_doubao_uses_size_mode_without_generic_ratio_fields() -> None:
+    schema_path = Path(__file__).resolve().parents[1] / "_conf_schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    items = schema["provider_settings"]["items"]["provider_overrides"]["templates"][
+        "doubao"
+    ]["items"]
+
+    assert "resolution" not in items
+    assert "aspect_ratio" not in items
+    assert "default_size" not in items
+    assert items["size_mode"]["options"] == ["preset", "custom"]
+    assert items["size"]["condition"] == {"size_mode": "preset"}
+    assert items["custom_size"]["condition"] == {"size_mode": "custom"}
+
+
 def test_provider_settings_default_polling_order_from_overrides_only() -> None:
     logger = _DummyLogger()
     plugin_config = _import_plugin_config_module(logger)
@@ -423,6 +438,9 @@ def test_doubao_uses_spec_model_field_and_settings_normalizer() -> None:
                         "__template_key": "doubao",
                         "api_keys": ["doubao-key"],
                         "endpoint_id": "doubao-model",
+                        "default_size": "3K",
+                        "size_mode": "custom",
+                        "custom_size": "2304×1728",
                     }
                 ]
             }
@@ -431,6 +449,10 @@ def test_doubao_uses_spec_model_field_and_settings_normalizer() -> None:
 
     assert cfg.provider_candidates[0].model == "doubao-model"
     assert cfg.doubao_settings["optimize_prompt_mode"] == "standard"
+    assert cfg.doubao_settings["size"] == "3K"
+    assert "default_size" not in cfg.doubao_settings
+    assert cfg.doubao_settings["size_mode"] == "custom"
+    assert cfg.doubao_settings["custom_size"] == "2304x1728"
 
 
 def test_provider_settings_accepts_agnes_ai_template() -> None:

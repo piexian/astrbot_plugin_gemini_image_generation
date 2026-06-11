@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .openai_image_size import (
@@ -12,8 +13,9 @@ from .openai_image_size import (
     validate_custom_size,
 )
 
-DOUBAO_SEQUENTIAL_IMAGES_MIN = 2
+DOUBAO_SEQUENTIAL_IMAGES_MIN = 1
 DOUBAO_SEQUENTIAL_IMAGES_MAX = 15
+DOUBAO_CUSTOM_SIZE_DEFAULT = "2048x2048"
 
 
 def _logger():
@@ -48,6 +50,34 @@ def validate_openai_images_settings(settings: dict[str, Any]) -> None:
 
 def normalize_doubao_settings(settings: dict[str, Any]) -> None:
     """Normalize doubao-specific override settings."""
+    legacy_size = settings.pop("default_size", None)
+    if not settings.get("size") and legacy_size:
+        settings["size"] = legacy_size
+
+    try:
+        size_mode = normalize_size_mode(
+            settings.get("size_mode"),
+            field_name="doubao.size_mode",
+        )
+    except ValueError as exc:
+        _logger().warning(
+            f"[配置加载] {exc}；已回退为 preset，以允许插件继续加载并在 WebUI 中修复配置"
+        )
+        size_mode = "preset"
+    settings["size_mode"] = size_mode
+
+    custom_size = settings.get("custom_size")
+    if size_mode == "custom":
+        settings["custom_size"] = normalize_custom_size_input(custom_size)
+        try:
+            settings["custom_size"] = validate_doubao_custom_size(custom_size)
+        except ValueError as exc:
+            _logger().warning(
+                f"[配置加载] {exc}；已保留当前值，以便在 WebUI 中继续修改"
+            )
+    elif isinstance(custom_size, str):
+        settings["custom_size"] = normalize_custom_size_input(custom_size)
+
     if not settings.get("optimize_prompt_mode"):
         settings["optimize_prompt_mode"] = "standard"
 
@@ -69,6 +99,29 @@ def normalize_doubao_settings(settings: dict[str, Any]) -> None:
         if isinstance(exc, ValueError) and "必须在" in str(exc):
             raise
         raise ValueError(f"sequential_max_images 配置无效: {max_images}") from exc
+
+
+def validate_doubao_custom_size(value: Any) -> str:
+    """Validate Doubao custom size format without applying model-specific limits."""
+    normalized = normalize_custom_size_input(value)
+    if not normalized:
+        raise ValueError(
+            "doubao.custom_size 不能为空；切换到 custom 模式后必须填写合法尺寸，"
+            f"如 {DOUBAO_CUSTOM_SIZE_DEFAULT}"
+        )
+
+    match = re.fullmatch(r"(\d+)x(\d+)", normalized)
+    if not match:
+        raise ValueError(
+            "doubao.custom_size 格式无效，必须为 WxH（支持 x 或 ×），"
+            f"例如 {DOUBAO_CUSTOM_SIZE_DEFAULT}"
+        )
+
+    width = int(match.group(1))
+    height = int(match.group(2))
+    if width <= 0 or height <= 0:
+        raise ValueError("doubao.custom_size 宽高必须大于 0")
+    return f"{width}x{height}"
 
 
 def openai_images_edit_capability(settings: dict[str, Any]) -> bool:
