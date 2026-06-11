@@ -65,7 +65,7 @@ def test_provider_paths_and_hook_paths_are_loadable() -> None:
 
 
 def test_registry_unknown_provider_falls_back_to_openai_compat() -> None:
-    from tl.api.registry import get_api_provider
     from tl.api.openai_compat import OpenAICompatProvider
+    from tl.api.registry import get_api_provider
 
     assert isinstance(get_api_provider("unknown"), OpenAICompatProvider)

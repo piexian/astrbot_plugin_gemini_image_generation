@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import importlib
-from functools import lru_cache
+from functools import cache
 from typing import Any
 
 
-@lru_cache(maxsize=None)
+@cache
 def load_callable(path: str) -> Any:
     """Load a callable/class from a fully-qualified dotted path."""
     module_name, separator, attr_name = path.rpartition(".")

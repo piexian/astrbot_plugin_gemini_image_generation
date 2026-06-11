@@ -26,8 +26,10 @@ from .openai_image_size import (
     validate_custom_size,
 )
 from .provider_settings import (
-    first_provider_tool_profile,
     first_provider_candidate as _first_candidate_from_config,
+)
+from .provider_settings import (
+    first_provider_tool_profile,
 )
 from .thought_signature import log_thought_signature_debug
 from .tl_utils import encode_file_to_base64, format_error_message

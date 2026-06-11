@@ -17,6 +17,7 @@ from uuid import uuid4
 import aiohttp
 import cv2
 from astrbot.api import logger
+
 from .reference_image import (
     REFERENCE_IMAGE_CACHE_DIR,
     build_reference_image_headers,

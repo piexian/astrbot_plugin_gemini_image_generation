@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 
-from tl.api_types import APIError, ApiRequestConfig
 from tl.api.base import ProviderRequest
+from tl.api_types import APIError, ApiRequestConfig
 from tl.key_manager import KeyManager
 from tl.tl_api import GeminiAPIClient
 
