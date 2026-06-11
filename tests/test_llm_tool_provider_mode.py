@@ -51,10 +51,11 @@ sys.modules["astrbot.core.astr_agent_context"] = context_module
 
 from tl.llm_tools import (  # noqa: E402
     _build_tool_parameters,
-    _is_openai_images_custom_size_mode,
+    _is_custom_size_tool_mode,
     _resolve_tool_size_params,
 )
 from tl.openai_image_size import CUSTOM_SIZE_DEFAULT  # noqa: E402
+from tl.provider_settings import provider_tool_profile  # noqa: E402
 
 
 def _plugin_with_candidates(*candidates):
@@ -74,13 +75,29 @@ def test_openai_custom_size_tool_mode_requires_first_candidate() -> None:
         ),
     )
 
-    assert _is_openai_images_custom_size_mode(plugin) is False
+    assert _is_custom_size_tool_mode(plugin) is False
 
     params = _build_tool_parameters(plugin)
 
     assert "size" not in params["properties"]
     assert "resolution" in params["properties"]
     assert "aspect_ratio" in params["properties"]
+
+
+def test_provider_tool_profile_uses_first_matching_candidate() -> None:
+    plugin = _plugin_with_candidates(
+        _candidate("google", {"resolution": "2K"}),
+        _candidate(
+            "openai_images",
+            {"size_mode": "custom", "custom_size": "1536x1024"},
+        ),
+    )
+
+    profile = provider_tool_profile(plugin, "openai_images")
+
+    assert profile["active"] is True
+    assert profile["custom_size_mode"] is True
+    assert profile["settings"]["custom_size"] == "1536x1024"
 
 
 def test_openai_custom_size_tool_mode_uses_first_candidate_settings() -> None:
@@ -92,7 +109,7 @@ def test_openai_custom_size_tool_mode_uses_first_candidate_settings() -> None:
         _candidate("google", {"resolution": "2K"}),
     )
 
-    assert _is_openai_images_custom_size_mode(plugin) is True
+    assert _is_custom_size_tool_mode(plugin) is True
 
     params = _build_tool_parameters(plugin)
 

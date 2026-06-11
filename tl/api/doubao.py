@@ -212,14 +212,17 @@ class DoubaoProvider:
             )
 
         logger.debug(
-            "[doubao] _prepare_payload: doubao_settings keys=%s default_size=%s",
+            "[doubao] _prepare_payload: doubao_settings keys=%s size=%s size_mode=%s",
             list(doubao_settings.keys()) if doubao_settings else [],
-            doubao_settings.get("default_size"),
+            doubao_settings.get("size") or doubao_settings.get("default_size"),
+            doubao_settings.get("size_mode"),
         )
 
         # Model: doubao_settings.endpoint_id > config.model > default
         model = (
-            doubao_settings.get("endpoint_id") or config.model or "doubao-seedream-4.5"
+            doubao_settings.get("endpoint_id")
+            or config.model
+            or "doubao-seedream-5-0-260128"
         )
 
         # Response format: url by default, fallback to b64_json on retry
@@ -237,22 +240,9 @@ class DoubaoProvider:
             "watermark": bool(watermark),
         }
 
-        # Size: doubao_settings.default_size > config.resolution > default 2K
-        # provider_overrides 条目配置优先级最高
-        if doubao_settings.get("default_size"):
-            size = self._map_resolution(doubao_settings["default_size"], model)
-        elif config.resolution:
-            size = self._map_resolution(config.resolution, model)
-        else:
-            size = "2K"  # Default for 4.5/4.0 models
+        size = self._resolve_size(doubao_settings, config)
         if size:
             payload["size"] = size
-
-        if config.seed is not None:
-            try:
-                payload["seed"] = int(config.seed)
-            except Exception:
-                logger.debug("[doubao] invalid seed ignored: %r", config.seed)
 
         # Process reference images (supports 1-14 images for doubao-seedream-4.5/4.0)
         if config.reference_images:
@@ -287,11 +277,31 @@ class DoubaoProvider:
 
         return payload
 
+    def _resolve_size(
+        self, doubao_settings: dict[str, Any], config: ApiRequestConfig
+    ) -> str:
+        """Resolve plugin settings into Doubao's official `size` request field."""
+        size_mode = str(doubao_settings.get("size_mode") or "preset").strip().lower()
+        if size_mode == "custom":
+            custom_size = doubao_settings.get("custom_size")
+            if custom_size:
+                return self._map_resolution(custom_size) or str(custom_size)
+
+        configured_size = doubao_settings.get("size") or doubao_settings.get(
+            "default_size"
+        )
+        if configured_size:
+            return self._map_resolution(configured_size) or str(configured_size)
+        if config.resolution:
+            return self._map_resolution(config.resolution) or str(config.resolution)
+        return "2K"
+
     @staticmethod
-    def _map_resolution(resolution: str | None, model: str = "") -> str | None:
+    def _map_resolution(resolution: str | None) -> str | None:
         """Map plugin resolution to Doubao `size`.
 
         Supported by Doubao:
+        - doubao-seedream-5.0-lite: "2K"/"3K"/"4K" or WxH
         - doubao-seedream-4.5: "2K"/"4K" only (min 2560x1440=3686400 px)
         - doubao-seedream-4.0: "1K"/"2K"/"4K" (min 1280x720=921600 px)
         """
@@ -302,48 +312,20 @@ class DoubaoProvider:
         if not raw:
             return None
 
-        normalized = raw.lower().replace(" ", "")
-        model_lower = model.lower() if model else ""
+        normalized = raw.lower().replace(" ", "").replace("×", "x")
 
         # WxH format - pass through
         if re.match(r"^\d{3,5}x\d{3,5}$", normalized):
             return normalized
 
-        # Normalize model name: 4-5 -> 4.5, 4_5 -> 4.5, etc.
-        model_normalized = model_lower.replace("-", ".").replace("_", ".")
-
-        # For doubao-seedream-4.5, only 2K/4K are valid shortcuts
-        # 1K is NOT supported - auto upgrade to 2K
-        if "4.5" in model_normalized or "seedream.4.5" in model_normalized:
-            if normalized in {"2k", "2048"}:
-                return "2K"
-            if normalized in {"4k", "4096"}:
-                return "4K"
-            if normalized in {"1k", "1024"}:
-                # 4.5 does not support 1K, auto upgrade to 2K
-                return "2K"
-            # Unknown resolution, default to 2K
-            return "2K"
-
-        # For doubao-seedream-4.0, 1K/2K/4K are all valid
-        if "4.0" in model_normalized or "seedream.4.0" in model_normalized:
-            if normalized in {"1k", "1024"}:
-                return "1K"
-            if normalized in {"2k", "2048"}:
-                return "2K"
-            if normalized in {"4k", "4096"}:
-                return "4K"
-            # Unknown resolution, default to 2K
-            return "2K"
-
-        # Default: assume 4.5 compatible (most common case)
+        if normalized in {"1k", "1024"}:
+            return "1K"
         if normalized in {"2k", "2048"}:
             return "2K"
+        if normalized in {"3k", "3072"}:
+            return "3K"
         if normalized in {"4k", "4096"}:
             return "4K"
-        if normalized in {"1k", "1024"}:
-            # Auto upgrade to 2K for safety
-            return "2K"
 
         # Unknown, default to 2K
         return "2K"
@@ -429,12 +411,12 @@ class DoubaoProvider:
 
         # Need to normalize through client
         try:
-            mime_type, b64_data = await client._normalize_image_input(
+            mime_type, b64_data = await client._normalize_reference_image_input(
                 image_str,
                 image_input_mode=getattr(config, "image_input_mode", "force_base64"),
             )
         except Exception as e:
-            logger.debug("[doubao] normalize_image_input failed: %s", e)
+            logger.debug("[doubao] normalize_reference_image_input failed: %s", e)
             mime_type, b64_data = None, None
 
         if not b64_data:

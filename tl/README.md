@@ -99,7 +99,8 @@ async def parse_response(
 | `PluginConfig` | 插件运行时配置数据类，集中保存 API、图像生成、快速模式、服务、限流、缓存等配置 |
 | `ConfigLoader(raw_config, data_dir=None)` | 配置加载器 |
 | `ConfigLoader.load()` | 入口方法，返回 `PluginConfig` |
-| `_validate_openai_images_settings(settings)` | 校验和归一化 `openai_images` 的 `size_mode/custom_size` |
+| `provider_settings_by_type` | 运行时派生字段，按 `api_type` 保存所有有效候选 settings 列表 |
+| `*_settings` | 兼容旧字段，仅投影每个 provider 的首个有效候选 |
 
 `ConfigLoader` 还负责：
 
@@ -107,6 +108,7 @@ async def parse_response(
 - 写入 `.migration_v1.9.0.done` 迁移标记。
 - 生成 `config_backup_pre_v1.9.0_*.json` 备份。
 - 加载 `provider_overrides`、`quick_mode_settings`、`rate_limit_rules`。
+- 根据 `ProviderSpec` 执行配置校验、归一化、候选能力判断和旧字段回填。
 
 ### `openai_image_size.py`
 
@@ -148,33 +150,36 @@ generate_image()
   -> _get_api_url()
   -> get_api_provider(api_type).build_request()
   -> _make_request()
-  -> provider.parse_response() 或兼容解析方法
+  -> provider.parse_response()
 ```
 
-`tl_api.py` 同时保留部分兼容解析方法，例如 `_parse_gresponse()`、`_parse_openai_response()`、`_parse_doubao_response()`，新 provider 优先放在 `tl/api/` 中实现。
+`tl_api.py` 仅保留通用兼容解析方法；新 provider 的请求构建和响应解析应放在 `tl/api/` 中实现，并通过 `ProviderSpec` 接入。
 
-### `api/registry.py`
+### Provider 注册元数据
 
 | 接口 | 说明 |
 |------|------|
-| `normalize_api_type(api_type)` | 小写、去空格、`-` 转 `_` |
-| `get_api_provider(api_type)` | 返回对应 provider 单例（字典查表，未知值回退 `OpenAICompatProvider`） |
+| `api_normalize.normalize_api_type(api_type)` | 小写、去空格、`-` 转 `_` |
+| `provider_metadata.ProviderSpec` | 供应商唯一代码注册元数据 |
+| `provider_metadata.iter_provider_specs()` | 按 schema 顺序返回所有 provider spec |
+| `provider_metadata.get_provider_spec(api_type)` | 返回 canonical provider spec |
+| `api/registry.get_api_provider(api_type)` | 按 `ProviderSpec.provider_path` 懒加载 provider 单例，未知值回退 `OpenAICompatProvider` |
 
-当前映射（与 `_conf_schema.json` 中 `provider_settings.provider_overrides.templates` 严格一致，不再提供别名）：
+当前 spec 顺序与 `_conf_schema.json` 中 `provider_settings.provider_overrides.templates` 严格一致，不再提供别名：
 
 | `api_type` | Provider |
 |------------|----------|
 | `google` | `GoogleProvider` |
-| `openai` | `OpenAICompatProvider`（默认兑底） |
-| `openai_images` | `OpenAIImagesProvider` |
+| `openai` | `OpenAICompatProvider`（默认兜底） |
+| `zai` | `ZaiProvider` |
+| `grok2api` | `Grok2ApiProvider` |
 | `agnes_ai` | `AgnesAIProvider` |
 | `xai` | `XAIProvider` |
 | `minimax` | `MiniMaxProvider` |
 | `stepfun` | `StepfunProvider` |
-| `sensenova` | `SenseNovaProvider` |
+| `openai_images` | `OpenAIImagesProvider` |
 | `doubao` | `DoubaoProvider` |
-| `zai` | `ZaiProvider` |
-| `grok2api` | `Grok2ApiProvider` |
+| `sensenova` | `SenseNovaProvider` |
 
 ### Provider 公共辅助模块
 
@@ -182,6 +187,10 @@ generate_image()
 
 | 模块 | 主要接口 | 说明 |
 |------|----------|------|
+| `provider_metadata.py` | `ProviderSpec` / `iter_provider_specs()` / `get_provider_spec()` | provider 唯一代码注册点，保持轻量导入 |
+| `provider_loader.py` | `load_callable(path)` | 懒加载 provider class 和 spec hook |
+| `provider_hooks.py` | 配置校验、归一化、候选配置、工具 profile hook | 承载 provider 专属行为，调用方由 spec 字段声明 |
+| `provider_settings.py` | `first_provider_settings()` / `first_provider_tool_profile()` | 共享 provider settings 读取 helper，避免只读旧 `*_settings` 字段 |
 | `api/provider_limits.py` | `MAX_REFERENCE_IMAGES_GOOGLE` / `MAX_REFERENCE_IMAGES_DOUBAO` / `MAX_REFERENCE_IMAGES_OPENAI_COMPAT` / `MAX_REFERENCE_IMAGES_MINIMAX` | 集中维护各 provider 参考图上限常量（`Final[int]`） |
 | `api/reference_intake.py` | `announce_reference_intake(references, max_count, *, log_prefix="")` | 参考图接收阶段统一日志，返回 `(收到数量, 采用数量)` |
 | `api/data_uri.py` | `format_data_uri(b64_data, mime_type=None)` / `strip_data_uri_prefix(s)` / `looks_like_base64(s)` | data URI 与 base64 字符串的格式化/识别助手 |
@@ -519,6 +528,17 @@ _prepare_foreground()
 | `rotate_key(api_type)` | 轮换到下一个可用 Key |
 | `get_key_status(api_type)` | 返回 Key 数量、每日限额、今日使用量等状态 |
 
+### `reference_image.py`
+
+参考图输入归一化模块，负责 provider 发送前的 MIME/base64 标准化。
+
+| 接口 | 说明 |
+|------|------|
+| `normalize_reference_image_input()` | 将 data URI、base64、本地文件、file://、http(s) URL 统一为 `(mime_type, base64_data)` |
+| `coerce_reference_image_bytes()`、`coerce_reference_image()` | 将图片字节/base64 转成 provider 支持的 PNG/JPEG/WEBP/HEIC/HEIF |
+| `check_reference_image_cache()`、`save_reference_image_cache()` | 管理参考图下载缓存 |
+| `build_reference_image_headers()`、`is_qq_image_host()` | 构建参考图下载请求头并处理 QQ 图床特殊规则 |
+
 ### `tl_utils.py`
 
 该文件是共享工具集合，接口较多，按职责分组如下。
@@ -528,7 +548,6 @@ _prepare_foreground()
 | 路径 | `get_plugin_data_dir()`、`get_temp_dir()` | 获取插件数据目录和临时目录 |
 | Base64 | `encode_file_to_base64()`、`save_base64_image()`、`is_valid_base64_image_str()` | 图片 base64 编码、保存和校验 |
 | 图片保存 | `save_image_stream()`、`save_image_data()`、`cleanup_old_images()` | 下载流保存、二进制保存、缓存清理 |
-| 图片规范化 | `coerce_supported_image_bytes()`、`coerce_supported_image()`、`normalize_image_input()` | 将输入图片统一为 provider 可用格式 |
 | 图片源解析 | `collect_image_sources()`、`resolve_image_source_to_path()` | 从 AstrBot 事件或任意来源解析图片 |
 | QQ 头像 | `download_qq_avatar()`、`AvatarManager`、`download_qq_avatar_legacy()` | 头像下载和缓存管理 |
 | NapCat Stream | `upload_file_stream()` | 复用当前 NapCat/OneBot 连接上传本地文件并返回可发送路径 |
@@ -536,7 +555,7 @@ _prepare_foreground()
 
 注意事项：
 
-- `normalize_image_input()` 是 API provider 处理参考图时的核心工具。
+- `normalize_reference_image_input()` 是 API provider 处理参考图时的核心工具，通过 `GeminiAPIClient._normalize_reference_image_input()` 复用。
 - `resolve_image_source_to_path()` 是 `/切图` 将 URL/base64/data URI 转成本地文件的核心工具。
 - `AvatarManager` 管理头像缓存和清理，通常通过 `AvatarHandler` 或 `ImageHandler` 间接使用。
 - `upload_file_stream()` 只作为发送失败后的兜底路径使用，常规图片发送仍由 `MessageSender.dispatch_send_results()` 构造。
@@ -563,9 +582,9 @@ _prepare_foreground()
 
 ## 修改建议
 
-- 新增 API 供应商时，优先在 `tl/api/` 新增 provider，并在 `api/registry.py` 注册。
+- 新增 API 供应商时，优先在 `tl/api/` 新增 provider，并在 `tl/provider_metadata.py` 增加 `ProviderSpec`；`api/registry.py` 只负责懒加载。
 - 只调整请求参数结构时，优先继承 `OpenAICompatProvider` 并覆盖 `_prepare_payload()`。
-- 新增配置项时，同步修改 `PluginConfig`、`ConfigLoader.load()`、`_conf_schema.json` 和文档。
+- 新增配置项时，同步修改 `_conf_schema.json`、`ProviderSpec`/hook、配置加载测试和文档。
 - 修改 OpenAI Images 尺寸逻辑时，优先集中在 `openai_image_size.py`，避免 provider、LLM Tool、快速模式各自实现一套校验。
 - 修改发送结果格式时，同时检查 `MessageSender.dispatch_send_results()` 和 `llm_tools._build_call_tool_result()`。
 - 修改切图逻辑时，优先保持 `split_image()` 的优先级顺序稳定，避免影响 `/快速 表情包` 和 `/切图` 两条路径。

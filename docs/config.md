@@ -49,15 +49,15 @@
 google / openai_images / minimax
 ```
 
-列表按从上到下尝试生成，重复名称会自动去重；未知名称会记录配置错误并跳过。留空时按插件内置供应商顺序，从有效配置中自动生成轮询列表。
+列表按从上到下尝试生成，重复名称会自动去重；未知名称会记录配置错误并跳过。留空时按配置表中有效供应商首次出现顺序自动生成轮询列表。
 
 支持的模板：
 
 ```text
-google / openai / zai / grok2api / agnes_ai / xai / minimax / stepfun / sensenova / openai_images / doubao
+google / openai / zai / grok2api / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova
 ```
 
-下方 `doubao_settings`、`openai_images_settings`、`agnes_ai_settings`、`xai_settings`、`minimax_settings`、`stepfun_settings`、`sensenova_settings` 章节对应这些模板的专用字段。配置时在 `provider_settings.provider_overrides` 中选择相应模板。
+下方 `doubao_settings`、`openai_images_settings`、`agnes_ai_settings`、`xai_settings`、`minimax_settings`、`stepfun_settings`、`sensenova_settings` 章节对应这些模板的专用字段。代码中的同名 `*_settings` 字段仅作为兼容旧调用的首个候选投影；多候选场景以 `provider_settings.provider_overrides` 和运行时派生的 `provider_settings_by_type` 为准。
 
 ## image_generation_settings
 
@@ -136,13 +136,15 @@ NapCat v4.8.115+ 支持 Stream API。插件默认仍先按 `max_inline_image_siz
 |--------|--------|------|
 | `api_keys` | `[]` | 火山引擎 API Key 列表，支持多 Key 轮换 |
 | `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
-| `endpoint_id` | `doubao-seedream-4-5-251128` | Endpoint/Model ID，例如 `ep-xxxx` 或 `doubao-seedream-4-5-251128` |
+| `endpoint_id` | `doubao-seedream-5-0-260128` | Endpoint/Model ID，例如 `ep-xxxx` 或 `doubao-seedream-5-0-260128` |
 | `api_base` | `https://ark.cn-beijing.volces.com` | API 端点地址 |
-| `default_size` | `2K` | 默认尺寸，支持 `2K` / `4K` 或具体尺寸 |
+| `size_mode` | `preset` | 尺寸模式：`preset` 使用 `size`；`custom` 使用 `custom_size` |
+| `size` | `2K` | Ark Images API 的 `size` 字段快捷值；5.0 lite 支持 `2K` / `3K` / `4K`，4.5 支持 `2K` / `4K`，4.0 支持 `1K` / `2K` / `4K` |
+| `custom_size` | `2048x2048` | 自定义宽高像素值，仅 `size_mode=custom` 生效，格式 `WxH`，如 `2304x1728` |
 | `watermark` | `false` | 是否添加水印 |
 | `optimize_prompt_mode` | `standard` | 提示词优化模式：`standard` / `fast` |
 | `sequential_image_generation` | `disabled` | 组图生成模式：`disabled` / `auto` |
-| `sequential_max_images` | `4` | 组图最大数量，范围 `2-15` |
+| `sequential_max_images` | `4` | 组图最大数量，范围 `1-15` |
 
 豆包组图官方文档：<https://www.volcengine.com/docs/82379/1824121?lang=zh#fc9f85e4>
 

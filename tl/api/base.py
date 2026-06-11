@@ -24,7 +24,7 @@ class ApiProvider(Protocol):
     """供应商策略接口。
 
     每个供应商负责：请求 URL/headers/payload 的构建，以及响应的解析。
-    通用能力（图片规范化、下载、落盘等）仍由 `GeminiAPIClient` 提供并被供应商复用。
+    通用能力（参考图归一化、下载、落盘等）仍由 `GeminiAPIClient` 提供并被供应商复用。
     """
 
     name: str

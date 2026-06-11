@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/Version-v2.0.1-blue)
+![Version](https://img.shields.io/badge/Version-v2.1.0-blue)
 ![License](https://img.shields.io/badge/License-AGPL--3.0-orange)
 
 **强大的 AstrBot 图像生成插件，支持生图、改图、头像参考、表情包切分和 LLM 工具调用。**
@@ -16,7 +16,7 @@
 - **多模式图像生成**：纯文本生图、参考图改图、风格转换、手办化、表情包生成。
 - **快速预设**：头像、海报、壁纸、卡片、手机壁纸、手办化、表情包一键生成。
 - **智能参考图**：自动读取消息图片、引用图片、合并转发、群文件，以及用户头像和 @ 对象头像。
-- **多供应商支持**：Google Gemini、OpenAI 兼容、OpenAI Images、Agnes AI、xAI Images、MiniMax、阶跃星辰、Zai、grok2api、豆包。
+- **多供应商支持**：Google Gemini、OpenAI 兼容、OpenAI Images、Agnes AI、xAI Images、MiniMax、阶跃星辰、Zai、grok2api、豆包、SenseNova。
 - **供应商轮询**：在插件内配置生图供应商、轮询顺序和同类型优先级，失败时按配置顺序自动尝试下一个候选。
 - **LLM 工具集成**：支持自然语言触发生图，前台短等待，超时后自动转后台发送。
 - **表情包切分**：内置 SmartMemeSplitter v4，默认优先走自适应黑描边贴纸切分，并保留手动网格、视觉识别等兜底路径。
@@ -49,7 +49,7 @@ https://github.com/piexian/astrbot_plugin_gemini_image_generation
 - 在 `provider_settings.provider_overrides` 中添加供应商模板（如 `google` / `openai_images` / `agnes_ai`），填入 `api_keys`、`model`、`api_base` 等字段；
 - 同类型可添加多条模板，通过 `priority` 控制优先级；相同优先级按配置表顺序尝试；
 - 可选配置 `provider_settings.provider_polling`，按列表从上到下自动尝试生成；重复供应商会自动去重，未知供应商会记录错误并跳过；
-- 使用 `openai_images` 且 `size_mode=custom` 时，配置界面只显示 `custom_size`，自动隐藏 `resolution` 和 `aspect_ratio`。
+- 使用 `openai_images` 或 `doubao` 且 `size_mode=custom` 时，配置界面只显示 `custom_size`，避免混用通用分辨率字段。
 
 常用配置入口：
 
@@ -81,6 +81,9 @@ https://github.com/piexian/astrbot_plugin_gemini_image_generation
 
 各供应商的端点、参数、尺寸适配规则等完整说明见 [完整配置参考](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/config.md)：
 
+```text
+google / openai / zai / grok2api / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova
+```
 
 ## 项目结构
 

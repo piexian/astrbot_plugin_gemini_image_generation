@@ -72,6 +72,21 @@ def test_schema_hides_openai_images_resolution_fields_in_size_mode() -> None:
     assert items["custom_size"]["condition"] == {"size_mode": "custom"}
 
 
+def test_schema_doubao_uses_size_mode_without_generic_ratio_fields() -> None:
+    schema_path = Path(__file__).resolve().parents[1] / "_conf_schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    items = schema["provider_settings"]["items"]["provider_overrides"]["templates"][
+        "doubao"
+    ]["items"]
+
+    assert "resolution" not in items
+    assert "aspect_ratio" not in items
+    assert "default_size" not in items
+    assert items["size_mode"]["options"] == ["preset", "custom"]
+    assert items["size"]["condition"] == {"size_mode": "preset"}
+    assert items["custom_size"]["condition"] == {"size_mode": "custom"}
+
+
 def test_provider_settings_default_polling_order_from_overrides_only() -> None:
     logger = _DummyLogger()
     plugin_config = _import_plugin_config_module(logger)
@@ -211,6 +226,40 @@ def test_same_provider_candidates_sort_by_priority() -> None:
         "low-model",
     ]
     assert list(cfg.provider_overrides) == ["google#2", "google#1"]
+    assert cfg.provider_settings_by_type["google"] == [
+        cfg.provider_candidates[0].settings,
+        cfg.provider_candidates[1].settings,
+    ]
+
+
+def test_settings_attr_legacy_fields_project_first_provider_candidate() -> None:
+    logger = _DummyLogger()
+    plugin_config = _import_plugin_config_module(logger)
+    from tl.provider_metadata import iter_provider_specs
+
+    overrides = []
+    for spec in iter_provider_specs():
+        if not spec.settings_attr:
+            continue
+        entry = {
+            "__template_key": spec.api_type,
+            "api_keys": [f"{spec.api_type}-key"],
+        }
+        entry[spec.model_field] = f"{spec.api_type}-model"
+        overrides.append(entry)
+
+    cfg = plugin_config.ConfigLoader(
+        {"provider_settings": {"provider_overrides": overrides}}
+    ).load()
+
+    assert cfg.provider_config_errors == []
+    for spec in iter_provider_specs():
+        if not spec.settings_attr:
+            continue
+        assert (
+            getattr(cfg, spec.settings_attr)
+            is cfg.provider_settings_by_type[spec.api_type][0]
+        )
 
 
 def test_provider_settings_allows_zero_max_reference_images() -> None:
@@ -354,6 +403,56 @@ def test_google_candidate_edit_capable_by_default() -> None:
     assert len(cfg.provider_candidates) == 1
     assert cfg.provider_candidates[0].api_type == "google"
     assert cfg.provider_candidates[0].supports_image_edit is True
+
+
+def test_sensenova_candidate_not_edit_capable_by_default() -> None:
+    logger = _DummyLogger()
+    plugin_config = _import_plugin_config_module(logger)
+    cfg = plugin_config.ConfigLoader(
+        {
+            "provider_settings": {
+                "provider_overrides": [
+                    {
+                        "__template_key": "sensenova",
+                        "api_keys": ["sense-key"],
+                        "model": "sensenova-u1-fast",
+                    }
+                ]
+            }
+        }
+    ).load()
+
+    assert len(cfg.provider_candidates) == 1
+    assert cfg.provider_candidates[0].api_type == "sensenova"
+    assert cfg.provider_candidates[0].supports_image_edit is False
+
+
+def test_doubao_uses_spec_model_field_and_settings_normalizer() -> None:
+    logger = _DummyLogger()
+    plugin_config = _import_plugin_config_module(logger)
+    cfg = plugin_config.ConfigLoader(
+        {
+            "provider_settings": {
+                "provider_overrides": [
+                    {
+                        "__template_key": "doubao",
+                        "api_keys": ["doubao-key"],
+                        "endpoint_id": "doubao-model",
+                        "default_size": "3K",
+                        "size_mode": "custom",
+                        "custom_size": "2304×1728",
+                    }
+                ]
+            }
+        }
+    ).load()
+
+    assert cfg.provider_candidates[0].model == "doubao-model"
+    assert cfg.doubao_settings["optimize_prompt_mode"] == "standard"
+    assert cfg.doubao_settings["size"] == "3K"
+    assert "default_size" not in cfg.doubao_settings
+    assert cfg.doubao_settings["size_mode"] == "custom"
+    assert cfg.doubao_settings["custom_size"] == "2304x1728"
 
 
 def test_provider_settings_accepts_agnes_ai_template() -> None:

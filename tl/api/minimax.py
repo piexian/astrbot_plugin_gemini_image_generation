@@ -394,7 +394,7 @@ class MiniMaxProvider:
         if image_str.startswith("data:image/") and ";base64," in image_str:
             return image_str
 
-        mime_type, b64_data = await client._normalize_image_input(
+        mime_type, b64_data = await client._normalize_reference_image_input(
             image_str,
             image_input_mode=getattr(config, "image_input_mode", "force_base64"),
         )
