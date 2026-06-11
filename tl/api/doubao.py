@@ -429,12 +429,12 @@ class DoubaoProvider:
 
         # Need to normalize through client
         try:
-            mime_type, b64_data = await client._normalize_image_input(
+            mime_type, b64_data = await client._normalize_reference_image_input(
                 image_str,
                 image_input_mode=getattr(config, "image_input_mode", "force_base64"),
             )
         except Exception as e:
-            logger.debug("[doubao] normalize_image_input failed: %s", e)
+            logger.debug("[doubao] normalize_reference_image_input failed: %s", e)
             mime_type, b64_data = None, None
 
         if not b64_data:

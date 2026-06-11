@@ -213,7 +213,7 @@ class OpenAICompatProvider:
                             )
 
                     else:
-                        mime_type, data = await client._normalize_image_input(
+                        mime_type, data = await client._normalize_reference_image_input(
                             image_input, image_input_mode=config.image_input_mode
                         )
                         if not data:

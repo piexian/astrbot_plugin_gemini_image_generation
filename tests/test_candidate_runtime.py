@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from tl.api_types import APIError, ApiRequestConfig
+from tl.api.base import ProviderRequest
 from tl.key_manager import KeyManager
 from tl.tl_api import GeminiAPIClient
 
@@ -62,6 +63,30 @@ class _FakeImageDownloadSession:
     def get(self, *args, **kwargs):
         self.proxy_seen = kwargs.get("proxy")
         return _FakeImageResponse()
+
+
+class _FakeJsonResponse:
+    def __init__(self, status: int, payload: str) -> None:
+        self.status = status
+        self.headers = {"Content-Type": "application/json"}
+        self._payload = payload
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def text(self) -> str:
+        return self._payload
+
+
+class _FakePostSession:
+    def __init__(self, response: _FakeJsonResponse) -> None:
+        self.response = response
+
+    def post(self, *args, **kwargs):
+        return self.response
 
 
 def test_gitignore_does_not_hide_tests_directory() -> None:
@@ -274,6 +299,78 @@ async def test_candidate_polling_stops_on_framework_timeout_errors(
 
 
 @pytest.mark.asyncio
+async def test_candidate_polling_shares_total_timeout_across_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = GeminiAPIClient(["fallback"])
+    first = _Candidate(
+        id="google#1",
+        api_type="google",
+        model="gemini-3-pro-image-preview",
+        settings={"api_keys": ["candidate-key"]},
+    )
+    second = _Candidate(
+        id="google#2",
+        api_type="google",
+        model="gemini-3-pro-image-preview",
+        settings={"api_keys": ["candidate-key"]},
+    )
+    client.set_provider_candidates([first, second])
+    original_config = ApiRequestConfig(model="", prompt="test", api_type="")
+    attempted: list[tuple[str, int | None]] = []
+
+    class _FakeLoop:
+        def __init__(self) -> None:
+            self.times = iter([100.0, 100.0, 107.0])
+
+        def time(self) -> float:
+            return next(self.times, 107.0)
+
+    async def fake_generate_image_single(**kwargs):
+        attempted.append(
+            (kwargs["config"].candidate_id, kwargs.get("max_total_time"))
+        )
+        raise APIError("fail", 500, "server_error")
+
+    monkeypatch.setattr("tl.tl_api.asyncio.get_running_loop", lambda: _FakeLoop())
+    client._generate_image_single = fake_generate_image_single  # type: ignore[method-assign]
+
+    with pytest.raises(APIError, match="fail"):
+        await client._generate_image_with_candidates(
+            original_config,
+            max_total_time=10,
+        )
+
+    assert attempted == [("google#1", 10), ("google#2", 3)]
+
+
+@pytest.mark.asyncio
+async def test_process_reference_image_prefers_normalize_without_temp_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = GeminiAPIClient(["fallback"])
+
+    async def fake_normalize(*args, **kwargs):
+        return "image/png", "BASE64DATA"
+
+    async def fail_resolve(*args, **kwargs):
+        raise AssertionError("base64 fast path should not resolve a temp file")
+
+    monkeypatch.setattr(client, "_normalize_reference_image_input", fake_normalize)
+    monkeypatch.setattr(
+        "tl.tl_api.resolve_image_source_to_path",
+        fail_resolve,
+        raising=False,
+    )
+
+    assert await client._process_reference_image("BASE64DATA", 0) == (
+        "image/png",
+        "BASE64DATA",
+        False,
+    )
+
+
+@pytest.mark.asyncio
 async def test_candidate_polling_skips_config_build_errors() -> None:
     client = GeminiAPIClient(["fallback"])
     bad = _Candidate(
@@ -357,6 +454,168 @@ def test_candidate_config_preserves_suppressed_reference_image_size() -> None:
     assert candidate_config.resolution is None
     assert candidate_config.aspect_ratio is None
     assert candidate_config.suppress_resolution is True
+
+
+@pytest.mark.asyncio
+async def test_retry_does_not_rebuild_request_for_plain_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = GeminiAPIClient(["fallback"])
+    config = ApiRequestConfig(model="model", prompt="test", api_type="google")
+    attempts = 0
+
+    async def fake_get_session(*args, **kwargs):
+        return object()
+
+    async def fake_perform_request(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise APIError("temporary", 500, "server_error")
+        return ["url"], [], None, None
+
+    async def fake_sleep(*args, **kwargs):
+        return None
+
+    def fail_get_api_provider(*args, **kwargs):
+        raise AssertionError("plain provider retry should not rebuild request")
+
+    monkeypatch.setattr(client, "_get_session", fake_get_session)
+    monkeypatch.setattr(client, "_perform_request", fake_perform_request)
+    monkeypatch.setattr("tl.tl_api.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("tl.tl_api.get_api_provider", fail_get_api_provider)
+
+    result = await client._make_request(
+        url="https://example.test",
+        payload={},
+        headers={},
+        api_type="google",
+        model="model",
+        max_retries=2,
+        config=config,
+    )
+
+    assert result == (["url"], [], None, None)
+    assert attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_minimax_retry_rebuild_receives_retry_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = GeminiAPIClient(["fallback"])
+    config = ApiRequestConfig(model="model", prompt="test", api_type="minimax")
+    attempts = 0
+    captured_retry_error: APIError | None = None
+
+    class _Provider:
+        async def build_request(self, **kwargs):
+            nonlocal captured_retry_error
+            captured_retry_error = kwargs.get("retry_error")
+            return ProviderRequest(
+                url="https://example.test/retry",
+                headers={},
+                payload={"rebuilt": True},
+            )
+
+    async def fake_get_session(*args, **kwargs):
+        return object()
+
+    async def fake_perform_request(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise APIError("minimax unknown", 500, "server_error", "1000")
+        return ["url"], [], None, None
+
+    async def fake_sleep(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(client, "_get_session", fake_get_session)
+    monkeypatch.setattr(client, "_perform_request", fake_perform_request)
+    monkeypatch.setattr("tl.tl_api.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("tl.tl_api.get_api_provider", lambda _api_type: _Provider())
+
+    result = await client._make_request(
+        url="https://example.test",
+        payload={},
+        headers={},
+        api_type="minimax",
+        model="model",
+        max_retries=2,
+        config=config,
+    )
+
+    assert result == (["url"], [], None, None)
+    assert isinstance(captured_retry_error, APIError)
+    assert captured_retry_error.error_code == "1000"
+
+
+@pytest.mark.asyncio
+async def test_doubao_non_200_response_uses_provider_parser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = GeminiAPIClient(["fallback"])
+    config = ApiRequestConfig(model="model", prompt="test", api_type="doubao")
+    captured: dict[str, Any] = {}
+
+    class _Provider:
+        async def parse_response(self, **kwargs):
+            captured.update(kwargs)
+            return ["parsed"], [], None, None
+
+    monkeypatch.setattr("tl.tl_api.get_api_provider", lambda _api_type: _Provider())
+
+    result = await client._perform_request(
+        _FakePostSession(_FakeJsonResponse(500, '{"error": {"message": "boom"}}')),
+        "https://example.test",
+        {"_is_retry": True},
+        {},
+        "doubao",
+        "model",
+        request_config=config,
+    )
+
+    assert result == (["parsed"], [], None, None)
+    assert captured["http_status"] == 500
+    assert captured["is_retry"] is True
+
+
+@pytest.mark.asyncio
+async def test_success_response_uses_provider_parser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = GeminiAPIClient(["fallback"])
+    config = ApiRequestConfig(model="model", prompt="test", api_type="openai")
+    captured: dict[str, Any] = {}
+
+    class _Provider:
+        async def parse_response(self, **kwargs):
+            captured.update(kwargs)
+            return ["parsed"], [], "text", None
+
+    monkeypatch.setattr("tl.tl_api.get_api_provider", lambda _api_type: _Provider())
+
+    result = await client._perform_request(
+        _FakePostSession(_FakeJsonResponse(200, '{"data": []}')),
+        "https://example.test",
+        {},
+        {},
+        "openai",
+        "model",
+        request_config=config,
+    )
+
+    assert result == (["parsed"], [], "text", None)
+    assert captured["http_status"] == 200
+    assert captured["request_config"] is config
+    assert "is_retry" not in captured
+
+
+def test_legacy_openai_url_extractor_no_longer_extracts_relative_paths() -> None:
+    client = GeminiAPIClient(["fallback"])
+
+    assert client._find_image_urls_in_text("![img](/images/generated.png)") == []
 
 
 @pytest.mark.asyncio

@@ -12,7 +12,6 @@ import base64
 import json
 import os
 import re
-import tempfile
 import urllib.parse
 import urllib.request
 from dataclasses import replace
@@ -22,26 +21,44 @@ from typing import Any
 import aiohttp
 from astrbot.api import logger
 
-from .api import get_api_provider, normalize_api_type, supports_image_edit
+from .api import (
+    get_api_provider,
+    get_provider_spec,
+    normalize_api_type,
+    supports_image_edit,
+)
 from .api_headers import apply_api_key_to_headers, extract_api_key_from_headers
 from .api_types import APIError, ApiRequestConfig
-from .openai_image_size import (
-    CUSTOM_SIZE_DEFAULT,
-    normalize_size_mode,
-    resolve_openai_custom_size,
-)
+from .provider_loader import load_callable
 
 _DOWNLOAD_PROXY_DEFAULT = object()
 
 try:
+    from .reference_image import (
+        REFERENCE_IMAGE_CACHE_DIR,
+        extract_reference_image_source,
+        normalize_reference_image_input,
+    )
+except ImportError:
+    REFERENCE_IMAGE_CACHE_DIR = Path(".") / "images" / "download_cache"
+
+    def extract_reference_image_source(image_input: Any) -> str:
+        return str(image_input or "").strip()
+
+    async def normalize_reference_image_input(
+        image_input: Any,
+        *,
+        image_cache_dir=None,
+        image_input_mode="force_base64",
+        session=None,
+        proxy=None,
+    ):
+        return None, None
+
+try:
     from .tl_utils import (
-        IMAGE_CACHE_DIR,
-        SUPPORTED_IMAGE_MIME_TYPES,
-        coerce_supported_image,
-        coerce_supported_image_bytes,
         encode_file_to_base64,
         get_plugin_data_dir,
-        normalize_image_input,
         resolve_image_source_to_path,
         save_base64_image,
         save_image_data,
@@ -72,26 +89,6 @@ except ImportError:
 
     def get_plugin_data_dir() -> Path:
         return Path(".")
-
-    IMAGE_CACHE_DIR = get_plugin_data_dir() / "images" / "download_cache"
-    SUPPORTED_IMAGE_MIME_TYPES = {
-        "image/png",
-        "image/jpeg",
-        "image/webp",
-        "image/heic",
-        "image/heif",
-    }
-
-    def coerce_supported_image_bytes(mime_type, raw_bytes):
-        return None, None
-
-    def coerce_supported_image(mime_type, base64_data):
-        return None, None
-
-    async def normalize_image_input(
-        image_input: Any, *, image_cache_dir=None, image_input_mode="force_base64"
-    ):
-        return None, None
 
 
 class GeminiAPIClient:
@@ -277,16 +274,8 @@ class GeminiAPIClient:
         return await self.get_next_api_key()
 
     def _provider_setting_attr(self, api_type: str) -> str | None:
-        mapping = {
-            "doubao": "doubao_settings",
-            "minimax": "minimax_settings",
-            "stepfun": "stepfun_settings",
-            "sensenova": "sensenova_settings",
-            "xai": "xai_settings",
-            "openai_images": "openai_images_settings",
-            "agnes_ai": "agnes_ai_settings",
-        }
-        return mapping.get(normalize_api_type(api_type))
+        spec = get_provider_spec(api_type)
+        return spec.settings_attr if spec else None
 
     def _apply_candidate_settings(self, candidate: Any) -> None:
         attr = self._provider_setting_attr(getattr(candidate, "api_type", ""))
@@ -299,9 +288,9 @@ class GeminiAPIClient:
         if model:
             return str(model)
         settings = getattr(candidate, "settings", None) or {}
-        if normalize_api_type(getattr(candidate, "api_type", "")) == "doubao":
-            return str(settings.get("endpoint_id") or "")
-        return str(settings.get("model") or "")
+        spec = get_provider_spec(getattr(candidate, "api_type", ""))
+        model_field = spec.model_field if spec else "model"
+        return str(settings.get(model_field) or "")
 
     @staticmethod
     def _candidate_api_base(candidate: Any) -> str | None:
@@ -327,6 +316,10 @@ class GeminiAPIClient:
         if support_flag is not None:
             return bool(support_flag)
         api_type = getattr(candidate, "api_type", "")
+        spec = get_provider_spec(api_type)
+        if spec and spec.edit_capability_path:
+            settings = getattr(candidate, "settings", None) or {}
+            return bool(load_callable(spec.edit_capability_path)(settings))
         return supports_image_edit(api_type)
 
     @staticmethod
@@ -344,65 +337,6 @@ class GeminiAPIClient:
             return None, None
 
         settings = getattr(candidate, "settings", None) or {}
-        api_type = normalize_api_type(getattr(candidate, "api_type", ""))
-        size_mode = (
-            normalize_size_mode(settings.get("size_mode"))
-            if api_type == "openai_images"
-            else "preset"
-        )
-
-        if api_type == "openai_images" and size_mode == "custom":
-            has_request_size_override = (
-                base_config.resolution is not None
-                or base_config.aspect_ratio is not None
-            )
-            resolution_candidate = None
-            aspect_ratio_candidate = None
-            if has_request_size_override:
-                resolution_candidate = (
-                    base_config.resolution or settings.get("resolution") or "1K"
-                )
-                aspect_ratio_candidate = (
-                    base_config.aspect_ratio or settings.get("aspect_ratio") or "1:1"
-                )
-            try:
-                return (
-                    resolve_openai_custom_size(
-                        base_config.resolution,
-                        resolution_candidate,
-                        aspect_ratio_candidate,
-                        settings,
-                        size_field_name="size",
-                        resolution_field_name="provider.resolution",
-                        aspect_ratio_field_name="provider.aspect_ratio",
-                    ),
-                    "",
-                )
-            except ValueError as exc:
-                if has_request_size_override:
-                    logger.warning(
-                        f"[openai_images] 根据请求参数解析 custom size 失败，"
-                        f"回退配置 custom_size: {exc}"
-                    )
-                    try:
-                        return (
-                            resolve_openai_custom_size(
-                                None,
-                                None,
-                                None,
-                                settings,
-                                custom_size_field_name="openai_images.custom_size",
-                            ),
-                            "",
-                        )
-                    except ValueError as config_exc:
-                        logger.warning(
-                            "[openai_images] 配置 custom_size 也非法，"
-                            f"回退默认尺寸 {CUSTOM_SIZE_DEFAULT}: {config_exc}"
-                        )
-                        return CUSTOM_SIZE_DEFAULT, ""
-                raise
-
         resolution = (
             base_config.resolution
             if base_config.resolution is not None
@@ -415,6 +349,19 @@ class GeminiAPIClient:
         )
 
         return resolution, aspect_ratio
+
+    @staticmethod
+    def _candidate_config_hook_values(
+        base_config: ApiRequestConfig, candidate: Any
+    ) -> dict[str, Any]:
+        spec = get_provider_spec(getattr(candidate, "api_type", ""))
+        if not spec or not spec.candidate_config_hook_path:
+            return {}
+        settings = getattr(candidate, "settings", None) or {}
+        values = load_callable(spec.candidate_config_hook_path)(
+            base_config, candidate, settings
+        )
+        return values if isinstance(values, dict) else {}
 
     def _build_candidate_config(
         self, base_config: ApiRequestConfig, candidate: Any
@@ -440,6 +387,11 @@ class GeminiAPIClient:
         resolution, aspect_ratio = self._candidate_resolution_values(
             base_config, candidate
         )
+        hook_values = self._candidate_config_hook_values(base_config, candidate)
+        if "resolution" in hook_values:
+            resolution = hook_values["resolution"]
+        if "aspect_ratio" in hook_values:
+            aspect_ratio = hook_values["aspect_ratio"]
         enable_text_response = bool(settings.get("enable_text_response", False))
         response_modalities = "TEXT_IMAGE" if enable_text_response else "IMAGE"
 
@@ -496,18 +448,6 @@ class GeminiAPIClient:
     @staticmethod
     def _request_has_proxy(request_config: ApiRequestConfig | None) -> bool:
         return bool(request_config and request_config.proxy)
-
-    @staticmethod
-    def _coerce_supported_image_bytes(
-        mime_type: str | None, raw_bytes: bytes
-    ) -> tuple[str | None, str | None]:
-        return coerce_supported_image_bytes(mime_type, raw_bytes)
-
-    @staticmethod
-    def _coerce_supported_image(
-        mime_type: str | None, base64_data: str
-    ) -> tuple[str | None, str | None]:
-        return coerce_supported_image(mime_type, base64_data)
 
     @staticmethod
     def _validate_and_normalize_b64(
@@ -580,29 +520,33 @@ class GeminiAPIClient:
                     f"已轮换到下一个 API 密钥，当前索引: {self.current_key_index}"
                 )
 
-    async def _prepare_google_payload(self, config: ApiRequestConfig) -> dict[str, Any]:
-        """向后兼容：委托给 GoogleProvider 构建 payload。"""
-        provider = get_api_provider("google")
-        req = await provider.build_request(client=self, config=config)
-        return req.payload
-
     async def _prepare_openai_payload(self, config: ApiRequestConfig) -> dict[str, Any]:
         """向后兼容：委托给 OpenAICompatProvider 构建 payload。"""
         provider = get_api_provider(config.api_type)
         req = await provider.build_request(client=self, config=config)
         return req.payload
 
-    async def _normalize_image_input(
+    async def _normalize_reference_image_input(
         self,
         image_input: Any,
         image_input_mode: str = "force_base64",
         image_cache_dir=None,
     ) -> tuple[str | None, str | None]:
-        """统一调用 tl_utils 的参考图规范化逻辑"""
-        return await normalize_image_input(
+        """Normalize a reference image input with the dedicated normalizer."""
+        image_str = extract_reference_image_source(image_input)
+
+        session = None
+        proxy = None
+        if image_str.startswith(("http://", "https://")):
+            session = await self._get_session(self.proxy)
+            proxy = self._http_proxy
+
+        return await normalize_reference_image_input(
             image_input,
-            image_cache_dir=image_cache_dir or IMAGE_CACHE_DIR,
+            image_cache_dir=image_cache_dir or REFERENCE_IMAGE_CACHE_DIR,
             image_input_mode=image_input_mode,
+            session=session,
+            proxy=proxy,
         )
 
     async def _process_reference_image(
@@ -615,10 +559,9 @@ class GeminiAPIClient:
         统一处理参考图像，返回 (mime_type, data, is_url)。
 
         处理流程：
-        1. 尝试解析为本地文件路径
-        2. 尝试规范化转换为 base64
-        3. 尝试通过 QQ 下载器获取
-        4. 返回处理结果
+        1. 优先规范化转换为 base64，避免已是 base64 的输入落临时文件再读回
+        2. 规范化失败时再尝试解析为本地文件路径
+        3. QQ 下载器逻辑已整合到 normalize_reference_image_input 和 resolve_image_source_to_path
 
         Returns:
             (mime_type, data, is_url):
@@ -632,7 +575,24 @@ class GeminiAPIClient:
         data = None
         mime_type = None
 
-        # 1. 尝试解析为本地文件
+        # 1. 优先规范化转换，避免 base64/data URL 先写临时文件再重新编码。
+        try:
+            mime_type, data = await self._normalize_reference_image_input(
+                image_input,
+                image_input_mode=image_input_mode,
+            )
+            if data:
+                logger.debug(
+                    f"[_process_reference_image] 规范化转换成功: idx={idx} mime={mime_type}"
+                )
+                return mime_type, data, is_url
+            logger.debug(f"[_process_reference_image] 规范化转换返回空: idx={idx}")
+        except Exception as e:
+            logger.debug(
+                f"[_process_reference_image] 规范化转换失败: idx={idx} err={e}"
+            )
+
+        # 2. 兜底解析为本地文件
         try:
             local_path = await resolve_image_source_to_path(
                 image_input,
@@ -647,35 +607,11 @@ class GeminiAPIClient:
                 logger.debug(
                     f"[_process_reference_image] 从本地文件获取成功: idx={idx}"
                 )
+                return mime_type, data, is_url
         except Exception as e:
             logger.debug(
                 f"[_process_reference_image] 本地文件解析失败: idx={idx} err={e}"
             )
-
-        # 2. 尝试规范化转换
-        if not data:
-            try:
-                with tempfile.TemporaryDirectory(prefix="gemini_ref_tmp_") as tmp_dir:
-                    temp_cache = Path(tmp_dir)
-                    mime_type, data = await self._normalize_image_input(
-                        image_input,
-                        image_input_mode=image_input_mode,
-                        image_cache_dir=temp_cache,
-                    )
-                if data:
-                    logger.debug(
-                        f"[_process_reference_image] 规范化转换成功: idx={idx} mime={mime_type}"
-                    )
-                else:
-                    logger.debug(
-                        f"[_process_reference_image] 规范化转换返回空: idx={idx}"
-                    )
-            except Exception as e:
-                logger.debug(
-                    f"[_process_reference_image] 规范化转换失败: idx={idx} err={e}"
-                )
-
-        # 3. QQ 下载器逻辑已整合到 normalize_image_input 和 resolve_image_source_to_path 中
 
         return mime_type, data, is_url
 
@@ -766,6 +702,27 @@ class GeminiAPIClient:
         has_reference_images = bool(config.reference_images)
         last_error: APIError | None = None
         skipped_reasons: list[str] = []
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
+
+        def coerce_positive_int(value: Any) -> int | None:
+            try:
+                int_value = int(value)
+            except Exception:
+                return None
+            return int_value if int_value > 0 else None
+
+        global_total_time = coerce_positive_int(max_total_time)
+        if global_total_time is None:
+            global_total_time = coerce_positive_int(total_timeout)
+
+        def remaining_time() -> int | None:
+            if global_total_time is None:
+                return None
+            remaining = global_total_time - (loop.time() - started_at)
+            if remaining <= 0:
+                raise APIError("图像生成时间过长，已超时。", None, "timeout")
+            return max(int(remaining), 1)
 
         for candidate in self.provider_candidates:
             candidate_id = str(
@@ -789,6 +746,7 @@ class GeminiAPIClient:
                 continue
 
             try:
+                candidate_max_total_time = remaining_time()
                 candidate_config = self._build_candidate_config(config, candidate)
 
                 logger.info(
@@ -801,7 +759,7 @@ class GeminiAPIClient:
                     max_retries=max_retries,
                     total_timeout=total_timeout,
                     per_retry_timeout=per_retry_timeout,
-                    max_total_time=max_total_time,
+                    max_total_time=candidate_max_total_time,
                 )
                 self._copy_request_stats(candidate_config, config)
                 return result
@@ -1056,7 +1014,8 @@ class GeminiAPIClient:
             current_payload = payload
             current_headers = dict(headers)  # 始终使用外层 headers（已含轮换后的 key）
             is_retry = attempt > 0
-            if is_retry and config is not None:
+            spec = get_provider_spec(api_type)
+            if is_retry and config is not None and spec and spec.rebuild_on_retry:
                 try:
                     # 重建前同步 config.api_key 为当前选中的 key（保持轮换一致性）
                     current_key_from_headers = extract_api_key_from_headers(headers)
@@ -1069,11 +1028,7 @@ class GeminiAPIClient:
                         "config": config,
                         "is_retry": True,
                     }
-                    if normalize_api_type(api_type) in {
-                        "minimax",
-                        "minimaxi",
-                        "hailuo",
-                    }:
+                    if spec.retry_error_arg:
                         provider_kwargs["retry_error"] = last_error
                     req = await provider.build_request(**provider_kwargs)
                     current_url = req.url
@@ -1277,61 +1232,30 @@ class GeminiAPIClient:
 
             self._record_token_usage(request_config, response_data, response.status)
 
+            spec = get_provider_spec(api_type)
+            provider = get_api_provider(api_type)
+
+            async def parse_with_provider(
+                status: int,
+            ) -> tuple[list[str], list[str], str | None, str | None]:
+                parse_kwargs: dict[str, Any] = {
+                    "client": self,
+                    "response_data": response_data,
+                    "session": session,
+                    "api_base": api_base,
+                    "http_status": status,
+                    "request_config": request_config,
+                }
+                if spec and spec.parse_errors_with_provider:
+                    parse_kwargs["is_retry"] = payload.get("_is_retry", False)
+                return await provider.parse_response(**parse_kwargs)
+
             if response.status == 200:
                 logger.debug("API 调用成功")
-                if api_type == "google":
-                    return await self._parse_gresponse(
-                        response_data, session, request_config=request_config
-                    )
-                else:  # openai 兼容格式
-                    # 豆包使用专门的解析方法
-                    if normalize_api_type(api_type) == "doubao":
-                        # 传递重试标记用于降级处理
-                        is_retry = payload.get("_is_retry", False)
-                        return await self._parse_doubao_response(
-                            response_data,
-                            session,
-                            api_base,
-                            response.status,
-                            is_retry=is_retry,
-                            request_config=request_config,
-                        )
-                    # OpenAI Images / xAI Images 使用 provider 自身的解析方法
-                    if normalize_api_type(api_type) in {
-                        "openai_images",
-                        "agnes_ai",
-                        "xai",
-                        "minimax",
-                        "stepfun",
-                        "sensenova",
-                    }:
-                        provider = get_api_provider(api_type)
-                        return await provider.parse_response(
-                            client=self,
-                            response_data=response_data,
-                            session=session,
-                            api_base=api_base,
-                            http_status=response.status,
-                            request_config=request_config,
-                        )
-                    return await self._parse_openai_response(
-                        response_data,
-                        session,
-                        api_base,
-                        request_config=request_config,
-                    )
+                return await parse_with_provider(response.status)
             elif response.status in [429, 402, 403]:
-                # 豆包 API 使用专门的错误处理
-                if normalize_api_type(api_type) == "doubao":
-                    is_retry = payload.get("_is_retry", False)
-                    return await self._parse_doubao_response(
-                        response_data,
-                        session,
-                        api_base,
-                        response.status,
-                        is_retry=is_retry,
-                        request_config=request_config,
-                    )
+                if spec and spec.parse_errors_with_provider:
+                    return await parse_with_provider(response.status)
                 error_msg = response_data.get("error", {}).get(
                     "message", f"HTTP {response.status}"
                 )
@@ -1350,17 +1274,8 @@ class GeminiAPIClient:
                     retryable=False,
                 )
             else:
-                # 豆包 API 使用专门的错误处理
-                if normalize_api_type(api_type) == "doubao":
-                    is_retry = payload.get("_is_retry", False)
-                    return await self._parse_doubao_response(
-                        response_data,
-                        session,
-                        api_base,
-                        response.status,
-                        is_retry=is_retry,
-                        request_config=request_config,
-                    )
+                if spec and spec.parse_errors_with_provider:
+                    return await parse_with_provider(response.status)
                 error_msg = response_data.get("error", {}).get(
                     "message", f"HTTP {response.status}"
                 )
@@ -1504,43 +1419,6 @@ class GeminiAPIClient:
         logger.debug("SSE 响应只包含通用事件，返回最后一个 data 包")
         return events[-1]
 
-    async def _parse_gresponse(
-        self,
-        response_data: dict,
-        session: aiohttp.ClientSession,
-        *,
-        request_config: ApiRequestConfig | None = None,
-    ) -> tuple[list[str], list[str], str | None, str | None]:
-        """解析 Google 官方 API 响应"""
-        provider = get_api_provider("google")
-        return await provider.parse_response(
-            client=self,
-            response_data=response_data,
-            session=session,
-            request_config=request_config,
-        )
-
-    async def _parse_doubao_response(
-        self,
-        response_data: dict,
-        session: aiohttp.ClientSession,
-        api_base: str | None = None,
-        http_status: int | None = None,
-        is_retry: bool = False,
-        request_config: ApiRequestConfig | None = None,
-    ) -> tuple[list[str], list[str], str | None, str | None]:
-        """解析豆包 API 响应"""
-        provider = get_api_provider("doubao")
-        return await provider.parse_response(
-            client=self,
-            response_data=response_data,
-            session=session,
-            api_base=api_base,
-            http_status=http_status,
-            is_retry=is_retry,
-            request_config=request_config,
-        )
-
     async def _parse_openai_response(
         self,
         response_data: dict,
@@ -1639,34 +1517,11 @@ class GeminiAPIClient:
                 ):
                     image_url, image_path = await self._parse_data_uri(candidate_url)
                 elif isinstance(candidate_url, str):
-                    # grok2api 适配：处理相对路径（如 /images/xxx）
                     if candidate_url.startswith("/") and not candidate_url.startswith(
                         "//"
                     ):
-                        if api_base:
-                            # 从 api_base 提取 scheme 和 netloc
-                            parsed_base = urllib.parse.urlparse(api_base)
-                            base_url = f"{parsed_base.scheme}://{parsed_base.netloc}"
-                            full_url = urllib.parse.urljoin(base_url, candidate_url)
-                            # grok2api 适配：立即下载临时缓存的图片（避免被清理）
-                            logger.debug(
-                                f"[grok2api 适配] 相对路径转换并下载: {candidate_url} -> {full_url}"
-                            )
-                            image_url, image_path = await self._download_image(
-                                full_url,
-                                session,
-                                use_cache=False,
-                                proxy=download_proxy,
-                            )
-                            # 只保留本地路径
-                            if image_path:
-                                image_paths.append(image_path)
-                            continue
-                        else:
-                            logger.warning(
-                                f"发现相对路径 URL 但未提供 api_base，跳过: {candidate_url}"
-                            )
-                            continue
+                        logger.warning(f"发现相对路径 URL，已跳过: {candidate_url}")
+                        continue
                     # 对于可访问的 http(s) 链接，直接返回 URL，避免重复下载占用带宽
                     if candidate_url.startswith("http://") or candidate_url.startswith(
                         "https://"
@@ -1738,9 +1593,7 @@ class GeminiAPIClient:
                 for url in http_urls:
                     is_temp_cache = "/images/users-" in url or "/temp/image/" in url
                     if is_temp_cache:
-                        logger.debug(
-                            f"[grok2api 适配] 跳过文本中的临时缓存 URL（已下载）: {url}"
-                        )
+                        logger.debug(f"跳过文本中的临时缓存 URL（已下载）: {url}")
                         continue
                     if has_request_proxy:
                         _, image_path = await self._download_image(
@@ -2073,8 +1926,6 @@ class GeminiAPIClient:
         markdown_pattern = r"!\[[^\]]*\]\((https?://[^)]+)\)"
         # Markdown 图片语法中的 data URI（如 ![image](data:image/png;base64,...)）
         markdown_data_uri_pattern = r"!\[[^\]]*\]\((data:image/[^)]+)\)"
-        # grok2api 适配：支持相对路径 (如 ![image](/images/xxx))
-        markdown_relative_pattern = r"!\[[^\]]*\]\((/[^)]+|[^/:)]+/[^)]+)\)"
         raw_pattern = (
             r"(https?://[^\s)]+\.(?:png|jpe?g|gif|webp|bmp|tiff|avif))(?:\b|$)"
         )
@@ -2085,7 +1936,6 @@ class GeminiAPIClient:
 
         def _push(candidate: str):
             cleaned = candidate.strip().replace("&amp;", "&").rstrip(").,;")
-            # grok2api 适配：移除 URL 两端的引号
             cleaned = cleaned.strip("'\"")
             if cleaned and cleaned not in seen:
                 seen.add(cleaned)
@@ -2093,11 +1943,6 @@ class GeminiAPIClient:
 
         for pattern in (markdown_pattern, markdown_data_uri_pattern, raw_pattern):
             for match in re.findall(pattern, text, flags=re.IGNORECASE):
-                _push(match)
-
-        # grok2api 适配：提取相对路径
-        for match in re.findall(markdown_relative_pattern, text, flags=re.IGNORECASE):
-            if not match.startswith(("http://", "https://", "data:")):
                 _push(match)
 
         # 适配带空格的 http:// 片段
@@ -2145,8 +1990,8 @@ class GeminiAPIClient:
         # 缓存命中直接返回，减少重复下载与内存占用
         if cache_key:
             try:
-                IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-                cached = next(IMAGE_CACHE_DIR.glob(f"{cache_key}.*"), None)
+                REFERENCE_IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+                cached = next(REFERENCE_IMAGE_CACHE_DIR.glob(f"{cache_key}.*"), None)
                 if cached and cached.exists() and cached.stat().st_size > 0:
                     logger.debug(f"图像下载命中缓存: {cleaned_url}")
                     return str(cached), str(cached)
@@ -2270,7 +2115,9 @@ class GeminiAPIClient:
 
                     target_path = None
                     if cache_key:
-                        target_path = IMAGE_CACHE_DIR / f"{cache_key}.{image_format}"
+                        target_path = (
+                            REFERENCE_IMAGE_CACHE_DIR / f"{cache_key}.{image_format}"
+                        )
 
                     image_path = await save_image_stream(
                         response.content, image_format, target_path=target_path
