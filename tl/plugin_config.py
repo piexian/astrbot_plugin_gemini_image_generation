@@ -8,42 +8,19 @@ from typing import Any
 
 from astrbot.api import logger
 
-from .openai_image_size import (
-    normalize_custom_size_input,
-    normalize_size_mode,
-    validate_custom_size,
-)
+from . import provider_hooks as _provider_hooks
+from .provider_loader import load_callable
 from .provider_metadata import (
+    get_provider_spec,
+    iter_provider_specs,
     is_known_api_type,
     normalize_api_type,
     supports_image_edit,
 )
 
-# 豆包组图数量限制常量
-DOUBAO_SEQUENTIAL_IMAGES_MIN = 2
-DOUBAO_SEQUENTIAL_IMAGES_MAX = 15
-
-
-def _validate_openai_images_settings(settings: dict[str, Any]) -> None:
-    """校验 openai_images 覆盖配置。"""
-    try:
-        size_mode = normalize_size_mode(settings.get("size_mode"))
-    except ValueError as exc:
-        logger.warning(
-            f"[配置加载] {exc}；已回退为 preset，以允许插件继续加载并在 WebUI 中修复配置"
-        )
-        size_mode = "preset"
-    settings["size_mode"] = size_mode
-
-    custom_size = settings.get("custom_size")
-    if size_mode == "custom":
-        settings["custom_size"] = normalize_custom_size_input(custom_size)
-        try:
-            settings["custom_size"] = validate_custom_size(custom_size)
-        except ValueError as exc:
-            logger.warning(f"[配置加载] {exc}；已保留当前值，以便在 WebUI 中继续修改")
-    elif isinstance(custom_size, str):
-        settings["custom_size"] = normalize_custom_size_input(custom_size)
+DOUBAO_SEQUENTIAL_IMAGES_MAX = _provider_hooks.DOUBAO_SEQUENTIAL_IMAGES_MAX
+DOUBAO_SEQUENTIAL_IMAGES_MIN = _provider_hooks.DOUBAO_SEQUENTIAL_IMAGES_MIN
+_validate_openai_images_settings = _provider_hooks.validate_openai_images_settings
 
 
 def _clean_string(value: Any) -> str:
@@ -82,9 +59,9 @@ def _clean_priority(value: Any) -> int:
 
 
 def _entry_model(api_type: str, settings: dict[str, Any]) -> str:
-    if api_type == "doubao":
-        return _clean_string(settings.get("endpoint_id"))
-    return _clean_string(settings.get("model"))
+    spec = get_provider_spec(api_type)
+    model_field = spec.model_field if spec else "model"
+    return _clean_string(settings.get(model_field))
 
 
 @dataclass(frozen=True)
@@ -136,6 +113,9 @@ class PluginConfig:
 
     # 供应商配置覆盖
     # 结构：{candidate_id: {api_keys: [...], daily_limit_per_key: int, ...}}
+    provider_settings_by_type: dict[str, list[dict[str, Any]]] = field(
+        default_factory=dict
+    )
     provider_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
     provider_candidates: list[ProviderCandidate] = field(default_factory=list)
     provider_polling: list[str] = field(default_factory=list)
@@ -439,6 +419,12 @@ class ConfigLoader:
                     config.provider_config_errors.append(message)
                     logger.error(f"[配置加载] {message}")
                     continue
+                spec = get_provider_spec(template_key)
+                if spec is None:
+                    message = f"未知供应商配置: {template_key}"
+                    config.provider_config_errors.append(message)
+                    logger.error(f"[配置加载] {message}")
+                    continue
 
                 settings = override.copy()
                 settings.pop("__template_key", None)
@@ -471,10 +457,10 @@ class ConfigLoader:
                 settings["proxy"] = (
                     proxy_val.strip() if isinstance(proxy_val, str) else None
                 )
-                if template_key == "openai_images":
-                    _validate_openai_images_settings(settings)
-                if template_key == "doubao":
-                    self._normalize_doubao_settings(settings)
+                if spec.settings_validator_path:
+                    load_callable(spec.settings_validator_path)(settings)
+                if spec.settings_normalizer_path:
+                    load_callable(spec.settings_normalizer_path)(settings)
 
                 model_name = _entry_model(template_key, settings)
                 if not model_name:
@@ -490,8 +476,10 @@ class ConfigLoader:
                     continue
 
                 edit_capable = supports_image_edit(template_key)
-                if template_key == "openai_images" and settings.get("generations_only"):
-                    edit_capable = False
+                if spec.edit_capability_path:
+                    edit_capable = bool(
+                        load_callable(spec.edit_capability_path)(settings)
+                    )
 
                 candidate_index = len(candidates_by_type.get(template_key, [])) + 1
                 candidate = ProviderCandidate(
@@ -557,24 +545,19 @@ class ConfigLoader:
         config.provider_overrides = {
             candidate.id: candidate.settings for candidate in ordered_candidates
         }
+        config.provider_settings_by_type = {}
+        for candidate in ordered_candidates:
+            config.provider_settings_by_type.setdefault(candidate.api_type, []).append(
+                candidate.settings
+            )
 
-        config.doubao_settings = self._first_settings_for(ordered_candidates, "doubao")
-        config.minimax_settings = self._first_settings_for(
-            ordered_candidates, "minimax"
-        )
-        config.stepfun_settings = self._first_settings_for(
-            ordered_candidates, "stepfun"
-        )
-        config.sensenova_settings = self._first_settings_for(
-            ordered_candidates, "sensenova"
-        )
-        config.xai_settings = self._first_settings_for(ordered_candidates, "xai")
-        config.openai_images_settings = self._first_settings_for(
-            ordered_candidates, "openai_images"
-        )
-        config.agnes_ai_settings = self._first_settings_for(
-            ordered_candidates, "agnes_ai"
-        )
+        for spec in iter_provider_specs():
+            if spec.settings_attr:
+                setattr(
+                    config,
+                    spec.settings_attr,
+                    self._first_settings_for(ordered_candidates, spec.api_type),
+                )
 
     @staticmethod
     def _first_settings_for(
@@ -586,27 +569,7 @@ class ConfigLoader:
         return {}
 
     def _normalize_doubao_settings(self, settings: dict[str, Any]) -> None:
-        if not settings.get("optimize_prompt_mode"):
-            settings["optimize_prompt_mode"] = "standard"
-
-        max_images = settings.get("sequential_max_images")
-        if max_images is None:
-            return
-        try:
-            max_images_int = int(max_images)
-            if (
-                max_images_int < DOUBAO_SEQUENTIAL_IMAGES_MIN
-                or max_images_int > DOUBAO_SEQUENTIAL_IMAGES_MAX
-            ):
-                raise ValueError(
-                    f"sequential_max_images 必须在 {DOUBAO_SEQUENTIAL_IMAGES_MIN}-"
-                    f"{DOUBAO_SEQUENTIAL_IMAGES_MAX} 之间，当前值: {max_images_int}"
-                )
-            settings["sequential_max_images"] = max_images_int
-        except (TypeError, ValueError) as e:
-            if isinstance(e, ValueError) and "必须在" in str(e):
-                raise
-            raise ValueError(f"sequential_max_images 配置无效: {max_images}") from e
+        _provider_hooks.normalize_doubao_settings(settings)
 
     def load(self) -> PluginConfig:
         """加载配置并返回 PluginConfig 实例"""

@@ -49,15 +49,15 @@
 google / openai_images / minimax
 ```
 
-列表按从上到下尝试生成，重复名称会自动去重；未知名称会记录配置错误并跳过。留空时按插件内置供应商顺序，从有效配置中自动生成轮询列表。
+列表按从上到下尝试生成，重复名称会自动去重；未知名称会记录配置错误并跳过。留空时按配置表中有效供应商首次出现顺序自动生成轮询列表。
 
 支持的模板：
 
 ```text
-google / openai / zai / grok2api / agnes_ai / xai / minimax / stepfun / sensenova / openai_images / doubao
+google / openai / zai / grok2api / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova
 ```
 
-下方 `doubao_settings`、`openai_images_settings`、`agnes_ai_settings`、`xai_settings`、`minimax_settings`、`stepfun_settings`、`sensenova_settings` 章节对应这些模板的专用字段。配置时在 `provider_settings.provider_overrides` 中选择相应模板。
+下方 `doubao_settings`、`openai_images_settings`、`agnes_ai_settings`、`xai_settings`、`minimax_settings`、`stepfun_settings`、`sensenova_settings` 章节对应这些模板的专用字段。代码中的同名 `*_settings` 字段仅作为兼容旧调用的首个候选投影；多候选场景以 `provider_settings.provider_overrides` 和运行时派生的 `provider_settings_by_type` 为准。
 
 ## image_generation_settings
 

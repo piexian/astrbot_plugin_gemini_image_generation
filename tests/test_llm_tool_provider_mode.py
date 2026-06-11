@@ -51,7 +51,7 @@ sys.modules["astrbot.core.astr_agent_context"] = context_module
 
 from tl.llm_tools import (  # noqa: E402
     _build_tool_parameters,
-    _is_openai_images_custom_size_mode,
+    _is_custom_size_tool_mode,
     _resolve_tool_size_params,
 )
 from tl.openai_image_size import CUSTOM_SIZE_DEFAULT  # noqa: E402
@@ -74,7 +74,7 @@ def test_openai_custom_size_tool_mode_requires_first_candidate() -> None:
         ),
     )
 
-    assert _is_openai_images_custom_size_mode(plugin) is False
+    assert _is_custom_size_tool_mode(plugin) is False
 
     params = _build_tool_parameters(plugin)
 
@@ -92,7 +92,7 @@ def test_openai_custom_size_tool_mode_uses_first_candidate_settings() -> None:
         _candidate("google", {"resolution": "2K"}),
     )
 
-    assert _is_openai_images_custom_size_mode(plugin) is True
+    assert _is_custom_size_tool_mode(plugin) is True
 
     params = _build_tool_parameters(plugin)
 
