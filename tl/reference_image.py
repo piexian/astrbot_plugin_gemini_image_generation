@@ -8,6 +8,7 @@ import hashlib
 import io
 import re
 import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -273,7 +274,7 @@ async def normalize_reference_image_input(
 
         if image_str.startswith("file://"):
             parsed = urllib.parse.urlparse(image_str)
-            image_path = Path(parsed.path)
+            image_path = Path(urllib.request.url2pathname(parsed.path))
             if image_path.exists() and image_path.is_file():
                 suffix = image_path.suffix.lower().lstrip(".") or "png"
                 mime_type = f"image/{suffix}"
@@ -295,9 +296,13 @@ async def normalize_reference_image_input(
             cached = check_reference_image_cache(cleaned_url, cache_dir)
             if cached:
                 mime_guess = f"image/{cached.suffix.lstrip('.') or 'png'}"
-                data = _encode_file_to_base64(cached)
                 logger.debug(f"参考图命中缓存: {cleaned_url}")
-                return mime_guess, data
+                try:
+                    data_bytes = cached.read_bytes()
+                except Exception as e:
+                    logger.warning(f"读取参考图缓存失败: {e}")
+                else:
+                    return coerce_reference_image_bytes(mime_guess, data_bytes)
 
             is_qq = is_qq_image_host(parsed_host)
             headers = build_reference_image_headers(parsed_host, for_qq=is_qq)
@@ -340,6 +345,7 @@ async def normalize_reference_image_input(
                             fallback_reason = f"HTTP {resp.status} {resp.reason}"
                 except Exception as e:
                     fallback_reason = str(e)
+                if fallback_reason:
                     logger.warning(
                         f"下载参考图失败: {cleaned_url}，原因: {fallback_reason}"
                     )

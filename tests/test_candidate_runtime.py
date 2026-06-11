@@ -89,6 +89,37 @@ class _FakePostSession:
         return self.response
 
 
+@pytest.mark.asyncio
+async def test_qq_reference_image_avoids_reusing_proxied_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = GeminiAPIClient(["fallback"])
+    client.proxy = "socks5://proxy.local:1080"
+    captured: dict[str, Any] = {}
+
+    async def fail_get_session(proxy: str | None = None):
+        raise AssertionError("QQ reference downloads should use a direct session")
+
+    async def fake_normalize_reference_image_input(*args, **kwargs):
+        captured.update(kwargs)
+        return "image/png", "encoded"
+
+    monkeypatch.setattr(client, "_get_session", fail_get_session)
+    monkeypatch.setattr(
+        "tl.tl_api.normalize_reference_image_input",
+        fake_normalize_reference_image_input,
+    )
+
+    mime_type, encoded = await client._normalize_reference_image_input(
+        "https://gchat.qpic.cn/gchatpic_new/0/0-0.png"
+    )
+
+    assert mime_type == "image/png"
+    assert encoded == "encoded"
+    assert captured["session"] is None
+    assert captured["proxy"] is None
+
+
 def test_gitignore_does_not_hide_tests_directory() -> None:
     gitignore = Path(__file__).resolve().parents[1] / ".gitignore"
     ignored_entries = {

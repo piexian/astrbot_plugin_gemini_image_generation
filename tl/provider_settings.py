@@ -59,8 +59,8 @@ def first_provider_settings(config: Any, api_type: str) -> dict[str, Any]:
 def provider_tool_profile(config: Any, api_type: str) -> dict[str, Any]:
     """Return tool behavior profile for the active first provider candidate."""
     target = normalize_api_type(api_type)
-    candidate = first_provider_candidate(config)
-    if normalize_api_type(getattr(candidate, "api_type", "")) != target:
+    candidate = first_provider_candidate(config, target)
+    if candidate is None:
         return {"active": False, "settings": {}}
 
     settings = getattr(candidate, "settings", None)

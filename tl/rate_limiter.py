@@ -39,6 +39,7 @@ class RateLimiter:
         self._loaded = False
         self._last_save_time = 0.0
         self._pending_save_task: asyncio.Task | None = None
+        self._pending_save_data: dict[str, list[float]] = {}
 
     async def _load_from_kv(self) -> None:
         """从 KV 存储加载限流数据"""
@@ -64,7 +65,7 @@ class RateLimiter:
             return
         try:
             async with self._save_lock:
-                await self._put_kv(self.KV_KEY, self._rate_limit_buckets)
+                await self._put_kv(self.KV_KEY, self._pending_save_data)
                 self._last_save_time = time.monotonic()
         except Exception as e:
             logger.debug(f"保存限流数据失败: {e}")
@@ -85,6 +86,11 @@ class RateLimiter:
         """保存限流数据到 KV 存储；高频请求会合并短时间内的写入。"""
         if not self._put_kv:
             return
+
+        self._pending_save_data = {
+            group_id: list(bucket)
+            for group_id, bucket in self._rate_limit_buckets.items()
+        }
 
         if force:
             if self._pending_save_task and not self._pending_save_task.done():
@@ -245,5 +251,6 @@ class RateLimiter:
 
     async def reset(self) -> None:
         """重置限流状态"""
-        self._rate_limit_buckets.clear()
-        await self._save_to_kv(force=True)
+        async with self._rate_limit_lock:
+            self._rate_limit_buckets.clear()
+            await self._save_to_kv(force=True)

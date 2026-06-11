@@ -37,6 +37,7 @@ try:
     from .reference_image import (
         REFERENCE_IMAGE_CACHE_DIR,
         extract_reference_image_source,
+        is_qq_image_host,
         normalize_reference_image_input,
     )
 except ImportError:
@@ -44,6 +45,9 @@ except ImportError:
 
     def extract_reference_image_source(image_input: Any) -> str:
         return str(image_input or "").strip()
+
+    def is_qq_image_host(host: str) -> bool:
+        return False
 
     async def normalize_reference_image_input(
         image_input: Any,
@@ -539,8 +543,11 @@ class GeminiAPIClient:
         session = None
         proxy = None
         if image_str.startswith(("http://", "https://")):
-            session = await self._get_session(self.proxy)
-            proxy = self._http_proxy
+            parsed_url = urllib.parse.urlparse(image_str)
+            is_qq = is_qq_image_host(parsed_url.netloc or "")
+            if not is_qq:
+                session = await self._get_session(self.proxy)
+                proxy = self._http_proxy
 
         return await normalize_reference_image_input(
             image_input,

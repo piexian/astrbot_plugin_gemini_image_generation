@@ -62,6 +62,37 @@ async def test_rate_limiter_debounces_successive_kv_writes() -> None:
 
 
 @pytest.mark.asyncio
+async def test_rate_limiter_delayed_save_flushes_latest_bucket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writes: list[dict[str, list[float]]] = []
+
+    async def put_kv(key: str, value: dict[str, list[float]]) -> None:
+        writes.append({group: list(bucket) for group, bucket in value.items()})
+
+    async def immediate_sleep(delay: float) -> None:
+        return None
+
+    limiter = RateLimiter(_Config(), put_kv=put_kv)
+    limiter.SAVE_DEBOUNCE_SECONDS = 60.0
+    monkeypatch.setattr("tl.rate_limiter.asyncio.sleep", immediate_sleep)
+
+    allowed, _ = await limiter.check_and_consume(_Event("10001"))
+    assert allowed is True
+    assert len(writes) == 1
+
+    allowed, _ = await limiter.check_and_consume(_Event("10001"))
+    assert allowed is True
+
+    task = limiter._pending_save_task
+    assert task is not None
+    await task
+
+    assert len(writes) == 2
+    assert len(writes[-1]["10001"]) == 2
+
+
+@pytest.mark.asyncio
 async def test_rate_limiter_skips_kv_write_for_unchanged_limited_bucket() -> None:
     writes: list[dict[str, list[float]]] = []
 
