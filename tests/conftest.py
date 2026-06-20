@@ -37,16 +37,16 @@ if "tl.tl_utils" not in sys.modules:
 
 
 class _BootstrapLogger:
-    def warning(self, message: str, *args) -> None:
+    def warning(self, message: str, *args, **kwargs) -> None:
         return None
 
-    def debug(self, message: str, *args) -> None:
+    def debug(self, message: str, *args, **kwargs) -> None:
         return None
 
-    def info(self, message: str, *args) -> None:
+    def info(self, message: str, *args, **kwargs) -> None:
         return None
 
-    def error(self, message: str, *args) -> None:
+    def error(self, message: str, *args, **kwargs) -> None:
         return None
 
 

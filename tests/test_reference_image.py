@@ -68,6 +68,59 @@ def test_reference_image_bytes_use_detected_mime(
 
 
 @pytest.mark.asyncio
+async def test_normalize_reference_image_input_base64_valid(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_reference_image(monkeypatch)
+    raw_png = b"\x89PNG\r\n\x1a\n" + b"base64-bytes"
+    b64 = base64.b64encode(raw_png).decode("ascii")
+
+    mime_type, encoded = await module.normalize_reference_image_input(
+        b64,
+        image_cache_dir=tmp_path,
+    )
+
+    assert mime_type == "image/png"
+    assert base64.b64decode(encoded) == raw_png
+
+
+@pytest.mark.asyncio
+async def test_normalize_reference_image_input_base64_relaxed_padding(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_reference_image(monkeypatch)
+    raw_png = b"\x89PNG\r\n\x1a\n" + b"relaxed-base64"
+    clean_b64 = base64.b64encode(raw_png).decode("ascii")
+    noisy_b64 = " \n" + clean_b64.rstrip("=") + "!!\n"
+
+    mime_type, encoded = await module.normalize_reference_image_input(
+        noisy_b64,
+        image_cache_dir=tmp_path,
+    )
+
+    assert mime_type == "image/png"
+    assert base64.b64decode(encoded) == raw_png
+
+
+@pytest.mark.asyncio
+async def test_normalize_reference_image_input_base64_invalid(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_reference_image(monkeypatch)
+
+    mime_type, encoded = await module.normalize_reference_image_input(
+        "not-a-valid-base64-string!!!",
+        image_cache_dir=tmp_path,
+    )
+
+    assert mime_type is None
+    assert encoded is None
+
+
+@pytest.mark.asyncio
 async def test_normalize_reference_image_input_coerces_cached_bytes(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

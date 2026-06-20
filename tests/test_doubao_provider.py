@@ -5,6 +5,7 @@ import pytest
 from tl.api.doubao import DoubaoProvider
 from tl.api_types import ApiRequestConfig
 from tl.provider_hooks import (
+    DOUBAO_SEQUENTIAL_IMAGES_MAX,
     DOUBAO_SEQUENTIAL_IMAGES_MIN,
     normalize_doubao_settings,
 )
@@ -80,3 +81,40 @@ def test_doubao_normalizer_accepts_official_min_sequential_images() -> None:
 
     assert DOUBAO_SEQUENTIAL_IMAGES_MIN == 1
     assert settings["sequential_max_images"] == 1
+
+
+def test_doubao_normalizer_rejects_zero_sequential_images() -> None:
+    settings = {"sequential_max_images": "0"}
+
+    with pytest.raises(ValueError) as exc_info:
+        normalize_doubao_settings(settings)
+
+    message = str(exc_info.value)
+    assert "sequential_max_images" in message
+    assert "必须在" in message
+    assert str(DOUBAO_SEQUENTIAL_IMAGES_MIN) in message
+    assert str(DOUBAO_SEQUENTIAL_IMAGES_MAX) in message
+
+
+def test_doubao_normalizer_rejects_too_many_sequential_images() -> None:
+    settings = {"sequential_max_images": str(DOUBAO_SEQUENTIAL_IMAGES_MAX + 1)}
+
+    with pytest.raises(ValueError) as exc_info:
+        normalize_doubao_settings(settings)
+
+    message = str(exc_info.value)
+    assert "sequential_max_images" in message
+    assert "必须在" in message
+    assert str(DOUBAO_SEQUENTIAL_IMAGES_MIN) in message
+    assert str(DOUBAO_SEQUENTIAL_IMAGES_MAX) in message
+
+
+def test_doubao_normalizer_rejects_non_numeric_sequential_images() -> None:
+    settings = {"sequential_max_images": "not-a-number"}
+
+    with pytest.raises(ValueError) as exc_info:
+        normalize_doubao_settings(settings)
+
+    message = str(exc_info.value)
+    assert "sequential_max_images" in message
+    assert "配置无效" in message

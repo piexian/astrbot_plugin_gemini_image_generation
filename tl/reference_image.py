@@ -245,7 +245,8 @@ async def normalize_reference_image_input(
     """
     Normalize a reference image input to (mime_type, base64_data).
 
-    Supports data URI, raw/relaxed base64, local paths, file:// and http(s) URLs.
+    Supports data URI, raw/relaxed base64, file:// and http(s) URLs.
+    Bare filesystem paths are resolved by GeminiAPIClient._process_reference_image.
     """
     try:
         if image_input is None:

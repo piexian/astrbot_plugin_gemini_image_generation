@@ -359,13 +359,25 @@ class GeminiAPIClient:
     def _candidate_config_hook_values(
         base_config: ApiRequestConfig, candidate: Any
     ) -> dict[str, Any]:
-        spec = get_provider_spec(getattr(candidate, "api_type", ""))
+        api_type = getattr(candidate, "api_type", "")
+        spec = get_provider_spec(api_type)
         if not spec or not spec.candidate_config_hook_path:
             return {}
         settings = getattr(candidate, "settings", None) or {}
-        values = load_callable(spec.candidate_config_hook_path)(
-            base_config, candidate, settings
-        )
+        try:
+            hook = load_callable(spec.candidate_config_hook_path)
+            values = hook(base_config, candidate, settings)
+        except Exception as e:
+            provider_id = getattr(candidate, "provider_id", None) or getattr(
+                candidate, "id", None
+            )
+            logger.warning(
+                "候选配置 hook 执行失败，已忽略: "
+                f"provider_id={provider_id} api_type={api_type} "
+                f"hook={spec.candidate_config_hook_path} err={e}",
+                exc_info=True,
+            )
+            return {}
         return values if isinstance(values, dict) else {}
 
     def _build_candidate_config(

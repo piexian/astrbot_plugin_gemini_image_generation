@@ -93,6 +93,41 @@ async def test_rate_limiter_delayed_save_flushes_latest_bucket(
 
 
 @pytest.mark.asyncio
+async def test_rate_limiter_reset_clears_buckets_and_forces_kv_write() -> None:
+    writes: list[dict[str, list[float]]] = []
+
+    async def put_kv(key: str, value: dict[str, list[float]]) -> None:
+        writes.append({group: list(bucket) for group, bucket in value.items()})
+
+    limiter = RateLimiter(_Config(), put_kv=put_kv)
+    limiter.SAVE_DEBOUNCE_SECONDS = 60.0
+
+    try:
+        allowed, _ = await limiter.check_and_consume(_Event("10001"))
+        assert allowed is True
+
+        allowed, _ = await limiter.check_and_consume(_Event("10001"))
+        assert allowed is True
+        assert limiter._rate_limit_buckets
+        pending_task = limiter._pending_save_task
+        assert pending_task is not None
+        assert not pending_task.done()
+
+        await limiter.reset()
+        async with limiter._rate_limit_lock:
+            assert limiter._rate_limit_buckets == {}
+
+        if not pending_task.done():
+            with suppress(asyncio.CancelledError):
+                await pending_task
+
+        assert writes
+        assert writes[-1] == {}
+    finally:
+        await _cancel_pending_save(limiter)
+
+
+@pytest.mark.asyncio
 async def test_rate_limiter_skips_kv_write_for_unchanged_limited_bucket() -> None:
     writes: list[dict[str, list[float]]] = []
 
