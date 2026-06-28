@@ -23,10 +23,14 @@ from pydantic.dataclasses import dataclass
 
 from .openai_image_size import (
     CUSTOM_SIZE_DEFAULT,
-    normalize_size_mode,
     validate_custom_size,
 )
-from .provider_metadata import normalize_api_type
+from .provider_settings import (
+    first_provider_candidate as _first_candidate_from_config,
+)
+from .provider_settings import (
+    first_provider_tool_profile,
+)
 from .thought_signature import log_thought_signature_debug
 from .tl_utils import encode_file_to_base64, format_error_message
 
@@ -53,48 +57,16 @@ VALID_ASPECT_RATIOS = set(ASPECT_RATIO_OPTIONS)
 
 
 def _first_provider_candidate(plugin: Any) -> Any | None:
-    if not plugin or not getattr(plugin, "cfg", None):
-        return None
-    candidates = getattr(plugin.cfg, "provider_candidates", []) or []
-    return candidates[0] if candidates else None
+    return _first_candidate_from_config(plugin)
 
 
-def _get_openai_images_settings(plugin: Any) -> dict[str, Any]:
-    if not plugin or not getattr(plugin, "cfg", None):
-        return {}
-
-    candidate = _first_provider_candidate(plugin)
-    if normalize_api_type(getattr(candidate, "api_type", "")) == "openai_images":
-        settings = getattr(candidate, "settings", None)
-        return settings if isinstance(settings, dict) else {}
-
-    settings = getattr(plugin.cfg, "openai_images_settings", None)
-    if isinstance(settings, dict) and settings:
-        return settings
-
-    overrides = getattr(plugin.cfg, "provider_overrides", None) or {}
-    candidate = overrides.get("openai_images#1") or overrides.get("openai_images", {})
-    return candidate if isinstance(candidate, dict) else {}
+def _get_tool_profile_settings(plugin: Any) -> dict[str, Any]:
+    settings = first_provider_tool_profile(plugin).get("settings", {})
+    return settings if isinstance(settings, dict) else {}
 
 
-def _is_openai_images_custom_size_mode(plugin: Any) -> bool:
-    if not plugin or not getattr(plugin, "cfg", None):
-        return False
-
-    candidate = _first_provider_candidate(plugin)
-    if normalize_api_type(getattr(candidate, "api_type", "")) != "openai_images":
-        return False
-
-    try:
-        size_mode = normalize_size_mode(
-            _get_openai_images_settings(plugin).get("size_mode")
-        )
-        return size_mode == "custom"
-    except ValueError as exc:
-        logger.warning(
-            f"[工具定义] openai_images size_mode 非法，回退为预设模式: {exc}"
-        )
-        return False
+def _is_custom_size_tool_mode(plugin: Any) -> bool:
+    return bool(first_provider_tool_profile(plugin).get("custom_size_mode"))
 
 
 def _build_tool_base_properties() -> dict[str, Any]:
@@ -208,7 +180,7 @@ def _resolve_tool_size_params(
         aspect_ratio
     )
 
-    if not _is_openai_images_custom_size_mode(plugin):
+    if not _is_custom_size_tool_mode(plugin):
         if size is not None and str(size).strip():
             logger.warning("[工具调用] 当前模式忽略 legacy size 参数")
         return normalized_resolution, normalized_aspect_ratio, None
@@ -219,7 +191,7 @@ def _resolve_tool_size_params(
         except ValueError as exc:
             logger.warning(f"[工具调用] size={size!r} 非法，已退回默认尺寸: {exc}")
 
-    settings = _get_openai_images_settings(plugin)
+    settings = _get_tool_profile_settings(plugin)
     if invalid_resolution or invalid_aspect_ratio:
         try:
             default_size = validate_custom_size(

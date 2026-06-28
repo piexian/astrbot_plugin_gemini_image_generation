@@ -309,7 +309,7 @@ class ImageHandler:
                     (
                         mime_type,
                         base64_data,
-                    ) = await self.api_client._normalize_image_input(
+                    ) = await self.api_client._normalize_reference_image_input(
                         candidate, image_input_mode="force_base64"
                     )
                     if base64_data:

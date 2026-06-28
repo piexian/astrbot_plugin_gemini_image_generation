@@ -40,7 +40,6 @@ from .tl import (
     resolve_split_source_to_path,
     split_image,
 )
-from .tl.api import normalize_api_type
 from .tl.enhanced_prompts import (
     get_avatar_prompt,
     get_card_prompt,
@@ -206,25 +205,6 @@ class GeminiImageGenerationPlugin(Star):
                 max_attempts_per_key=self.cfg.max_attempts_per_key,
                 max_reference_images=self._max_configured_reference_images(),
             )
-
-    def _get_openai_images_settings(self) -> dict[str, Any]:
-        for candidate in getattr(self.cfg, "provider_candidates", []) or []:
-            if (
-                normalize_api_type(getattr(candidate, "api_type", ""))
-                == "openai_images"
-            ):
-                settings = getattr(candidate, "settings", None)
-                return settings if isinstance(settings, dict) else {}
-
-        settings = getattr(self.cfg, "openai_images_settings", None)
-        if isinstance(settings, dict):
-            return settings
-
-        overrides = getattr(self.cfg, "provider_overrides", None) or {}
-        override_settings = overrides.get("openai_images#1") or overrides.get(
-            "openai_images"
-        )
-        return override_settings if isinstance(override_settings, dict) else {}
 
     def _max_configured_reference_images(self) -> int:
         return max_configured_reference_images(

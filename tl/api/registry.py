@@ -1,52 +1,29 @@
 """供应商注册表。
 
-集中管理 `api_type` -> 供应商实现 的映射关系。
+集中管理 `api_type` -> 供应商实现 的懒加载映射。
 """
 
 from __future__ import annotations
 
 from typing import Final
 
-from ..provider_metadata import normalize_api_type
-from .agnes_ai import AgnesAIProvider
+from ..provider_loader import load_callable
+from ..provider_metadata import get_provider_spec, normalize_api_type
 from .base import ApiProvider
-from .doubao import DoubaoProvider
-from .google import GoogleProvider
-from .grok2api import Grok2ApiProvider
-from .minimax import MiniMaxProvider
-from .openai_compat import OpenAICompatProvider
-from .openai_images import OpenAIImagesProvider
-from .sensenova import SenseNovaProvider
-from .stepfun import StepfunProvider
-from .xai import XAIProvider
-from .zai import ZaiProvider
 
-_AGNES_AI: Final[AgnesAIProvider] = AgnesAIProvider()
-_DOUBAO: Final[DoubaoProvider] = DoubaoProvider()
-_GOOGLE: Final[GoogleProvider] = GoogleProvider()
-_GROK2API: Final[Grok2ApiProvider] = Grok2ApiProvider()
-_MINIMAX: Final[MiniMaxProvider] = MiniMaxProvider()
-_OPENAI: Final[OpenAICompatProvider] = OpenAICompatProvider()
-_OPENAI_IMAGES: Final[OpenAIImagesProvider] = OpenAIImagesProvider()
-_SENSENOVA: Final[SenseNovaProvider] = SenseNovaProvider()
-_STEPFUN: Final[StepfunProvider] = StepfunProvider()
-_XAI: Final[XAIProvider] = XAIProvider()
-_ZAI: Final[ZaiProvider] = ZaiProvider()
+_PROVIDER_CACHE: Final[dict[str, ApiProvider]] = {}
 
-# canonical api_type -> provider 映射表（与 _conf_schema.json 中 provider 模板名一致）
-_PROVIDERS: Final[dict[str, ApiProvider]] = {
-    "google": _GOOGLE,
-    "openai": _OPENAI,
-    "openai_images": _OPENAI_IMAGES,
-    "agnes_ai": _AGNES_AI,
-    "xai": _XAI,
-    "minimax": _MINIMAX,
-    "stepfun": _STEPFUN,
-    "sensenova": _SENSENOVA,
-    "zai": _ZAI,
-    "grok2api": _GROK2API,
-    "doubao": _DOUBAO,
-}
+
+def _load_provider(api_type: str) -> ApiProvider:
+    spec = get_provider_spec(api_type)
+    if spec is None:
+        raise ValueError(f"Unknown provider api_type: {api_type}")
+    provider = _PROVIDER_CACHE.get(spec.api_type)
+    if provider is None:
+        provider_class = load_callable(spec.provider_path)
+        provider = provider_class()
+        _PROVIDER_CACHE[spec.api_type] = provider
+    return provider
 
 
 def get_api_provider(api_type: str | None) -> ApiProvider:
@@ -54,4 +31,7 @@ def get_api_provider(api_type: str | None) -> ApiProvider:
 
     未知值回退到 ``OpenAICompatProvider``。
     """
-    return _PROVIDERS.get(normalize_api_type(api_type), _OPENAI)
+    normalized = normalize_api_type(api_type)
+    if get_provider_spec(normalized) is None:
+        normalized = "openai"
+    return _load_provider(normalized)

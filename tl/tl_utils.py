@@ -5,126 +5,26 @@
 
 import asyncio
 import base64
-import binascii
 import hashlib
-import io
 import os
-import re
 import time
 import urllib.parse
 from collections import OrderedDict
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
 from uuid import uuid4
 
 import aiohttp
 import cv2
 from astrbot.api import logger
-from PIL import Image as PILImage
 
-SUPPORTED_IMAGE_MIME_TYPES = frozenset(
-    {"image/png", "image/jpeg", "image/webp", "image/heic", "image/heif"}
+from .reference_image import (
+    REFERENCE_IMAGE_CACHE_DIR,
+    build_reference_image_headers,
+    check_reference_image_cache,
+    detect_reference_image_mime,
+    is_qq_image_host,
 )
-
-# QQ 域名集合，用于识别 QQ 图片服务器
-QQ_IMAGE_HOSTS = frozenset({"qpic.cn", "qq.com", "nt.qq.com", "gchat.qpic.cn"})
-
-
-def _is_qq_host(host: str) -> bool:
-    """检查是否为 QQ 图片服务器域名"""
-    if not host:
-        return False
-    host_lower = host.lower()
-    return any(qq_host in host_lower for qq_host in QQ_IMAGE_HOSTS)
-
-
-def _build_http_headers(host: str = "", for_qq: bool = False) -> dict[str, str]:
-    """
-    构建 HTTP 请求头
-
-    Args:
-        host: 目标主机名
-        for_qq: 是否为 QQ 图片服务器优化
-    """
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/139.0.0.0 Safari/537.36 Edg/139.0.0.0"
-        ),
-        "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-        "Accept-Encoding": "gzip, deflate, br",
-    }
-    if host:
-        scheme = "https" if not for_qq else "http"
-        headers["Referer"] = f"{scheme}://{host}"
-
-    if for_qq or _is_qq_host(host):
-        headers["Referer"] = "https://qun.qq.com"
-        headers["Origin"] = "https://qun.qq.com"
-        if ",image/png" not in headers["Accept"]:
-            headers["Accept"] += ",image/png"
-
-    return headers
-
-
-def _check_image_cache(url: str, cache_dir: Path) -> Path | None:
-    """
-    检查 URL 对应的本地缓存是否存在
-
-    Args:
-        url: 图片 URL
-        cache_dir: 缓存目录
-
-    Returns:
-        缓存文件路径，不存在返回 None
-    """
-    try:
-        cache_key = hashlib.sha256(url.encode("utf-8")).hexdigest()
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        cached = next(
-            (
-                p
-                for p in cache_dir.glob(f"{cache_key}.*")
-                if p.exists() and p.stat().st_size > 0
-            ),
-            None,
-        )
-        return cached
-    except Exception as e:
-        logger.debug(f"检查缓存失败: {e}")
-        return None
-
-
-def _save_to_cache(
-    url: str, data: bytes, mime_type: str, cache_dir: Path
-) -> Path | None:
-    """
-    将图片数据保存到缓存
-
-    Args:
-        url: 图片 URL
-        data: 图片数据
-        mime_type: MIME 类型
-        cache_dir: 缓存目录
-
-    Returns:
-        缓存文件路径，失败返回 None
-    """
-    try:
-        cache_key = hashlib.sha256(url.encode("utf-8")).hexdigest()
-        suffix = mime_type.split("/")[-1] if "/" in mime_type else "png"
-        cache_file = cache_dir / f"{cache_key}.{suffix}"
-        cache_file.parent.mkdir(parents=True, exist_ok=True)
-        cache_file.write_bytes(data)
-        return cache_file
-    except Exception as e:
-        logger.debug(f"写入缓存失败: {e}")
-        return None
 
 
 def _decode_base64_to_temp_file(
@@ -179,10 +79,6 @@ def get_temp_dir() -> Path:
     temp_dir = get_plugin_data_dir() / "temp"
     temp_dir.mkdir(parents=True, exist_ok=True)
     return temp_dir
-
-
-# 下载缓存目录
-IMAGE_CACHE_DIR = get_plugin_data_dir() / "images" / "download_cache"
 
 
 def _build_image_path(
@@ -719,28 +615,6 @@ def is_valid_base64_image_str(value: str) -> bool:
     if not value:
         return False
 
-    def _looks_like_image(raw: bytes) -> bool:
-        """通过魔数快速判断是否为常见图片格式"""
-        if not raw or len(raw) < 4:
-            return False
-        if raw.startswith(b"\x89PNG\r\n\x1a\n"):
-            return True
-        if raw.startswith(b"\xff\xd8"):  # JPEG
-            return True
-        if raw.startswith(b"RIFF") and len(raw) >= 12 and raw[8:12] == b"WEBP":
-            return True
-        if raw.startswith((b"GIF87a", b"GIF89a")):  # GIF
-            return True
-        if len(raw) >= 12 and raw[4:12] in {
-            b"ftypheic",
-            b"ftypheif",
-            b"ftypmif1",
-            b"ftypmsf1",
-            b"ftyphevc",
-        }:
-            return True
-        return False
-
     cleaned = value.strip()
     if not cleaned:
         return False
@@ -755,7 +629,9 @@ def is_valid_base64_image_str(value: str) -> bool:
     except Exception:
         return False
 
-    return _looks_like_image(raw)
+    if raw.startswith((b"GIF87a", b"GIF89a")):
+        return True
+    return detect_reference_image_mime(raw) is not None
 
 
 async def collect_image_sources(event, log_debug=logger.debug) -> list[str]:
@@ -824,198 +700,6 @@ async def collect_image_sources(event, log_debug=logger.debug) -> list[str]:
     extract_from_components(message_chain, "当前消息")
 
     return sources
-
-
-def coerce_supported_image_bytes(
-    mime_type: str | None, raw_bytes: bytes
-) -> tuple[str | None, str | None]:
-    """
-    将输入图片转换为 Gemini 支持的 MIME。
-    - 支持: PNG/JPEG/WEBP/HEIC/HEIF
-    - 不支持的格式尝试用 Pillow 转为 PNG
-    """
-    normalized_mime = (mime_type or "").lower()
-    target_mime = (
-        normalized_mime
-        if normalized_mime in SUPPORTED_IMAGE_MIME_TYPES
-        else "image/png"
-    )
-    try:
-        with PILImage.open(io.BytesIO(raw_bytes)) as img:
-            if target_mime == "image/png":
-                save_format = "PNG"
-                if img.mode not in ("RGB", "RGBA"):
-                    img = img.convert("RGBA")
-            elif target_mime == "image/jpeg":
-                save_format = "JPEG"
-                if img.mode not in ("RGB", "L"):
-                    img = img.convert("RGB")
-            elif target_mime == "image/webp":
-                save_format = "WEBP"
-                if img.mode not in ("RGB", "RGBA"):
-                    img = img.convert("RGBA")
-            else:
-                save_format = "PNG"
-                target_mime = "image/png"
-                if img.mode not in ("RGB", "RGBA"):
-                    img = img.convert("RGBA")
-
-            buffer = io.BytesIO()
-            img.save(buffer, format=save_format)
-            buffer.seek(0)
-            encoded = base64.b64encode(buffer.read()).decode("utf-8")
-            return target_mime, encoded
-    except Exception as e:
-        logger.warning(f"参考图格式不受支持且转换失败: mime={mime_type}, err={e}")
-        return None, None
-
-
-def coerce_supported_image(
-    mime_type: str | None, base64_data: str
-) -> tuple[str | None, str | None]:
-    """兼容旧调用：先尝试解码 base64，再调用字节级转换"""
-    try:
-        raw = base64.b64decode(base64_data, validate=False)
-    except Exception as e:
-        logger.warning(f"base64 解码失败，无法转换为受支持格式: {e}")
-        return None, None
-    return coerce_supported_image_bytes(mime_type, raw)
-
-
-async def normalize_image_input(
-    image_input: Any,
-    *,
-    image_cache_dir: Path | None = None,
-    image_input_mode: str = "force_base64",
-) -> tuple[str | None, str | None]:
-    """
-    将参考图像输入规范化为 (mime_type, base64_data)。
-    支持 data URI、纯/宽松 base64 字符串、本地文件路径、file://、http/https URL。
-    """
-    try:
-        if image_input is None:
-            return None, None
-
-        image_str = str(image_input).strip()
-        # 若是 Markdown 图片语法，先提取括号里的 URL/data URI
-        md_match = re.search(r"!\[[^\]]*\]\(\s*([^)]+)\s*\)", image_str)
-        if md_match:
-            image_str = md_match.group(1).strip()
-
-        if "&amp;" in image_str:
-            image_str = image_str.replace("&amp;", "&")
-        if not image_str:
-            return None, None
-
-        cache_dir = image_cache_dir or IMAGE_CACHE_DIR
-        logger.debug(
-            f"规范化参考图输入: len={len(image_str)} "
-            f"type={type(image_input)} mode={image_input_mode}"
-        )
-
-        # data URI
-        if image_str.startswith("data:image/") and ";base64," in image_str:
-            header, data = image_str.split(";base64,", 1)
-            mime_type = header.replace("data:", "")
-            logger.debug(f"检测到 data URI，mime={mime_type}")
-            try:
-                raw = base64.b64decode(data, validate=False)
-            except Exception:
-                logger.warning("data URL base64 解码失败")
-                return None, None
-            return coerce_supported_image_bytes(mime_type, raw)
-
-        # file:// 路径
-        if image_str.startswith("file://"):
-            parsed = urllib.parse.urlparse(image_str)
-            image_path = Path(parsed.path)
-            if image_path.exists() and image_path.is_file():
-                suffix = image_path.suffix.lower().lstrip(".") or "png"
-                mime_type = f"image/{suffix}"
-                logger.debug(f"使用 file:// 路径: {image_path}")
-                try:
-                    data_bytes = image_path.read_bytes()
-                    return coerce_supported_image_bytes(mime_type, data_bytes)
-                except Exception as e:
-                    logger.warning(f"读取 file:// 路径失败: {e}")
-            else:
-                logger.warning(f"file:// 路径不存在: {image_str}")
-
-        # http(s) URL -> 下载并转base64（带重试和详细日志）
-        if image_str.startswith("http://") or image_str.startswith("https://"):
-            cleaned_url = image_str.replace("&amp;", "&")
-            parsed_url = urllib.parse.urlparse(cleaned_url)
-            parsed_host = parsed_url.netloc or ""
-            logger.debug(f"下载 http(s) 参考图: {cleaned_url}")
-
-            # 缓存命中直接读取
-            cached = _check_image_cache(cleaned_url, cache_dir)
-            if cached:
-                mime_guess = f"image/{cached.suffix.lstrip('.') or 'png'}"
-                data = encode_file_to_base64(cached)
-                logger.debug(f"参考图命中缓存: {cleaned_url}")
-                return mime_guess, data
-
-            # 使用统一的请求头构建
-            is_qq = _is_qq_host(parsed_host)
-            headers = _build_http_headers(parsed_host, for_qq=is_qq)
-
-            timeout = aiohttp.ClientTimeout(total=20, connect=10)
-            trust_env = not is_qq
-
-            async with aiohttp.ClientSession(
-                timeout=timeout, trust_env=trust_env
-            ) as session:
-                fallback_reason = None
-
-                try:
-                    async with session.get(cleaned_url, headers=headers) as resp:
-                        if resp.status == 200:
-                            content_type = resp.headers.get("Content-Type", "image/png")
-                            mime_type = (
-                                content_type.split(";")[0]
-                                if content_type
-                                else "image/png"
-                            )
-                            try:
-                                data_bytes = await resp.read()
-                            except Exception as e:
-                                fallback_reason = f"读取响应体失败: {e}"
-                            else:
-                                # 缓存到本地文件
-                                _save_to_cache(
-                                    cleaned_url, data_bytes, mime_type, cache_dir
-                                )
-                                return coerce_supported_image_bytes(
-                                    mime_type, data_bytes
-                                )
-                        else:
-                            fallback_reason = f"HTTP {resp.status} {resp.reason}"
-                except Exception as e:
-                    fallback_reason = str(e)
-                    logger.warning(
-                        f"下载参考图失败: {cleaned_url}，原因: {fallback_reason}"
-                    )
-
-        # 纯 base64（宽松校验），尝试自动补齐/过滤非法字符
-        logger.debug("尝试将输入视为纯 base64")
-        try:
-            base64.b64decode(image_str, validate=False)
-            return coerce_supported_image(None, image_str)
-        except binascii.Error:
-            cleaned = re.sub(r"[^A-Za-z0-9+/=_-]", "", image_str)
-            pad_len = (-len(cleaned)) % 4
-            if pad_len:
-                cleaned += "=" * pad_len
-            try:
-                base64.b64decode(cleaned, validate=False)
-                return coerce_supported_image(None, cleaned)
-            except Exception:
-                return None, None
-
-    except Exception as e:
-        logger.error(f"规范化参考图输入失败: {e}")
-        return None, None
 
 
 async def resolve_image_source_to_path(
@@ -1089,12 +773,12 @@ async def resolve_image_source_to_path(
 
         try:
             # 命中下载缓存直接返回文件
-            cached = _check_image_cache(src, IMAGE_CACHE_DIR)
+            cached = check_reference_image_cache(src, REFERENCE_IMAGE_CACHE_DIR)
             if cached:
                 return str(cached)
 
             data_url = None
-            is_qq = _is_qq_host(parsed_host)
+            is_qq = is_qq_image_host(parsed_host)
 
             if download_qq_image_fn and is_qq:
                 try:
@@ -1103,7 +787,7 @@ async def resolve_image_source_to_path(
                     data_url = await download_qq_image_fn(src)
 
             if not data_url and api_client:
-                mime_type, b64 = await api_client._normalize_image_input(
+                mime_type, b64 = await api_client._normalize_reference_image_input(
                     src, image_input_mode=image_input_mode
                 )
                 if b64:
@@ -1115,7 +799,7 @@ async def resolve_image_source_to_path(
 
             if not data_url:
                 timeout = aiohttp.ClientTimeout(total=12, connect=5)
-                headers = _build_http_headers(parsed_host, for_qq=is_qq)
+                headers = build_reference_image_headers(parsed_host, for_qq=is_qq)
                 trust_env_flag = not is_qq
                 async with aiohttp.ClientSession(
                     headers=headers, trust_env=trust_env_flag

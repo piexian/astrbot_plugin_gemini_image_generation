@@ -14,7 +14,7 @@ class _FakeClient:
     def __init__(self) -> None:
         self.normalized: list[tuple[str, str]] = []
 
-    async def _normalize_image_input(
+    async def _normalize_reference_image_input(
         self, image_input: str, *, image_input_mode: str = "force_base64"
     ) -> tuple[str, str]:
         self.normalized.append((image_input, image_input_mode))

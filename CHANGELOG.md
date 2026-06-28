@@ -2,6 +2,28 @@
 
 > **升级提示**：v1.9.0 以后的配置文件格式不兼容旧版本。升级后如遇配置模板显示错误，请查看 [配置迁移说明](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/troubleshooting.md#配置迁移说明)。
 
+## [Unreleased]
+
+## [2.1.0] - 2026-06-11
+
+### Added
+
+- 新增 `tl/reference_image.py`，集中处理参考图 MIME 检测、base64/data URI/file/http(s) 归一化、QQ 图床请求头和下载缓存。
+
+### Changed
+
+- 重构 provider 注册机制：新增 `ProviderSpec` 表作为唯一代码注册点，`registry.py` 改为按路径懒加载 provider，配置校验、候选能力、重试降级、错误解析和 LLM Tool 行为通过 spec hook 声明。
+- 保留旧 `*_settings` 兼容投影，并新增 `provider_settings_by_type` 保留同类型多候选 settings 列表语义。
+- 参考图归一化入口从 `tl_utils.py` 迁移到 `reference_image.py`，provider、`ImageHandler` 和切图兜底流程统一复用 `GeminiAPIClient._normalize_reference_image_input()`。
+
+### Performance
+
+- 参考图处理优先走内存归一化，避免 base64/data URI 先写临时文件再读回。
+- 已支持的 PNG/JPEG/WEBP/HEIC/HEIF 参考图按文件头直接透传，避免不必要的 Pillow 重新编码。
+- http(s) 参考图归一化复用 API 客户端会话和代理配置，减少重复创建 `aiohttp` session。
+- 多 provider 候选轮询共享总超时预算，避免每个候选重新获得完整超时时间。
+- 限流 KV 写入增加 debounce，并跳过未变化的受限桶写入，降低频繁请求下的持久化开销。
+
 ## [2.0.1] - 2026-06-09
 
 ### Added

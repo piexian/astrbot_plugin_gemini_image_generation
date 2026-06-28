@@ -1071,7 +1071,7 @@
                 "description": "Endpoint/Model ID",
                 "type": "string",
                 "hint": "Ark Images API 的 model 字段",
-                "default": "doubao-seedream-4-5-251128"
+                "default": "doubao-seedream-5-0-260128"
               },
               "api_base": {
                 "description": "API 端点地址",
@@ -1085,50 +1085,45 @@
                 "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式。优先级高于全局代理和环境变量",
                 "default": ""
               },
-              "resolution": {
-                "description": "图像分辨率",
-                "type": "string",
-                "hint": "该供应商默认图像分辨率。快速模式传入覆盖值时优先使用快速模式。",
-                "default": "1K",
-                "options": [
-                  "1K",
-                  "2K",
-                  "4K"
-                ]
-              },
-              "aspect_ratio": {
-                "description": "长宽比",
-                "type": "string",
-                "hint": "该供应商默认长宽比。快速模式传入覆盖值时优先使用快速模式。",
-                "default": "1:1",
-                "options": [
-                  "1:1",
-                  "16:9",
-                  "4:3",
-                  "3:2",
-                  "9:16",
-                  "4:5",
-                  "5:4",
-                  "21:9",
-                  "3:4",
-                  "2:3"
-                ]
-              },
               "max_reference_images": {
                 "description": "最大参考图片数量",
                 "type": "int",
                 "hint": "该供应商本次请求最多使用的参考图片数量；超过后按顺序截取。文生图-only 供应商可保持默认。",
                 "default": 6
               },
-              "default_size": {
-                "description": "默认尺寸",
+              "size_mode": {
+                "description": "尺寸模式",
                 "type": "string",
-                "hint": "默认生成图片尺寸",
+                "hint": "preset 使用 size；custom 使用 custom_size 指定官方 size 的 WxH 像素值。",
+                "default": "preset",
+                "options": [
+                  "preset",
+                  "custom"
+                ]
+              },
+              "size": {
+                "description": "生成尺寸",
+                "type": "string",
+                "hint": "Ark Images API 的 size 字段。不同模型支持的快捷值不同：5.0 lite 支持 2K/3K/4K，4.5 支持 2K/4K，4.0 支持 1K/2K/4K。",
                 "default": "2K",
                 "options": [
+                  "1K",
                   "2K",
+                  "3K",
                   "4K"
-                ]
+                ],
+                "condition": {
+                  "size_mode": "preset"
+                }
+              },
+              "custom_size": {
+                "description": "自定义尺寸",
+                "type": "string",
+                "hint": "仅在 size_mode=custom 时生效，直接作为 Ark Images API 的 size 字段发送。格式 WxH，例如 2048x2048 或 2304x1728；具体像素范围由所选模型决定。",
+                "default": "2048x2048",
+                "condition": {
+                  "size_mode": "custom"
+                }
               },
               "watermark": {
                 "description": "添加水印",
@@ -1159,7 +1154,7 @@
               "sequential_max_images": {
                 "description": "组图最大数量",
                 "type": "int",
-                "hint": "组图最多包含的图片数量（2-15），超出范围将报错",
+                "hint": "组图最多包含的图片数量（1-15），超出范围将报错",
                 "default": 4
               }
             }
