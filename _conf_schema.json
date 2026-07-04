@@ -7,7 +7,20 @@
       "provider_polling": {
         "description": "供应商轮询顺序",
         "type": "list",
-        "hint": "按列表从上到下尝试生成。填写供应商名称，如 google/openai/openai_images。留空时按配置表中的有效供应商顺序尝试。",
+        "hint": "按列表从上到下尝试生成。请选择并按优先级排列：google / openai / zai / grok2api / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova。留空时按配置表中的有效供应商顺序尝试。",
+        "options": [
+          "google",
+          "openai",
+          "zai",
+          "grok2api",
+          "agnes_ai",
+          "xai",
+          "minimax",
+          "stepfun",
+          "openai_images",
+          "doubao",
+          "sensenova"
+        ],
         "default": []
       },
       "proxy": {
@@ -1308,6 +1321,22 @@
           "max": 100,
           "step": 1
         }
+      },
+      "llm_tool_reference_path_mode": {
+        "description": "LLM 工具本地路径参考图模式",
+        "type": "string",
+        "hint": "控制 reference_image_paths 的本地路径范围。whitelist=仅允许白名单目录；global=允许任意本地图片路径，并会尝试将工具默认权限设为管理员。",
+        "default": "whitelist",
+        "options": [
+          "whitelist",
+          "global"
+        ]
+      },
+      "llm_tool_reference_allowed_dirs": {
+        "description": "LLM 工具参考图允许目录",
+        "type": "list",
+        "hint": "whitelist 模式下额外允许的参考图目录；默认已覆盖常见 AstrBot 数据目录。仅接受可完整校验的图片文件，详见 docs/config.md。",
+        "default": []
       }
     }
   },

@@ -33,6 +33,7 @@ from .provider_settings import (
 )
 from .thought_signature import log_thought_signature_debug
 from .tl_utils import encode_file_to_base64, format_error_message
+from .tool_path_guard import filter_reference_paths
 
 if TYPE_CHECKING:
     from ..main import GeminiImageGenerationPlugin
@@ -91,6 +92,18 @@ def _build_tool_base_properties() -> dict[str, Any]:
             ),
             "default": False,
         },
+        "reference_image_paths": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "可选。作为参考图的本地图片路径列表。"
+                "默认白名单模式下，路径必须位于插件配置的允许目录内"
+                "（默认覆盖各系统 AstrBot 数据目录，如 ~/.astrbot/data、/opt/astrbot/data）。"
+                "禁止 .. 穿越。路径不存在、越界、非图片或图片损坏将被静默丢弃并在日志记录。"
+                "典型用途：复用上一次工具调用缓存在 data/temp/tool_images/ 的图片。"
+            ),
+            "default": [],
+        },
     }
 
 
@@ -120,6 +133,8 @@ def _build_tool_description(plugin: Any) -> str:
         "【重要】当当前请求明确要求将生成的图片发到论坛/AstrBook时，设置 for_forum=true。"
         "此时工具会等待图片生成完成后返回图片路径，你需要使用 upload_image 工具将图片上传到论坛图床获取URL，"
         "然后在发帖或回复时使用 Markdown 格式 ![描述](URL) 插入图片。"
+        "【本地路径参考图】如需基于上一轮工具产出的本地图片改图（如 data/temp/tool_images/ 下缓存图），"
+        "用 reference_image_paths 传路径；默认仅允许插件配置的允许目录内文件，禁止 .. 穿越。"
     )
 
 
@@ -685,6 +700,10 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         resolution = kwargs.get("resolution") or None
         aspect_ratio = kwargs.get("aspect_ratio") or None
         for_forum = kwargs.get("for_forum", False)
+        # 本地路径参考图（独立于 use_reference_images，LLM 显式传路径即生效）
+        raw_ref_paths = kwargs.get("reference_image_paths") or []
+        if isinstance(raw_ref_paths, str):
+            raw_ref_paths = [raw_ref_paths]
 
         # 获取事件上下文
         event = context.context.event
@@ -724,6 +743,26 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
             reference_images = []
         if not include_avatar:
             avatar_reference = []
+
+        # 本地路径参考图：白名单/全局守卫后合并到 reference_images 尾部
+        # 截断由下游 _build_candidate_config per-candidate 完成，这里只保证顺序：
+        # fetch 来的在前（更可信），路径追加在尾，超长时尾部（路径）先被丢。
+        cfg = getattr(plugin, "cfg", None)
+        path_mode = getattr(cfg, "llm_tool_reference_path_mode", "whitelist")
+        allowed_dirs = list(getattr(cfg, "llm_tool_reference_allowed_dirs", []) or [])
+        accepted_paths, rejected_paths = filter_reference_paths(
+            [str(p) for p in raw_ref_paths if isinstance(p, str)],
+            allowed_dirs=allowed_dirs,
+            global_mode=(path_mode == "global"),
+            log_fn=logger.debug,
+        )
+        if rejected_paths:
+            logger.warning(
+                f"[工具调用] reference_image_paths 被拒 {len(rejected_paths)} 条 "
+                f"(mode={path_mode})"
+            )
+        if accepted_paths:
+            reference_images = list(reference_images) + accepted_paths
 
         ref_count = len(reference_images)
         avatar_count = len(avatar_reference)

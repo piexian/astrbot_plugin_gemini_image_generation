@@ -56,6 +56,7 @@ from .tl.enhanced_prompts import (
 from .tl.llm_tools import GeminiImageGenerationTool
 from .tl.plugin_config import max_configured_reference_images
 from .tl.tl_api import APIClient, ApiRequestConfig, get_api_client
+from .tl.tool_permission import ensure_admin_default_tool_permission
 from .tl.tl_utils import AvatarManager, cleanup_old_images, format_error_message
 
 
@@ -239,6 +240,8 @@ class GeminiImageGenerationPlugin(Star):
             tool.refresh_from_plugin()
             self.llm_image_tool = tool
             self.context.add_llm_tools(tool)
+            if self.cfg.llm_tool_reference_path_mode == "global":
+                ensure_admin_default_tool_permission(tool.name)
             logger.debug("已注册 GeminiImageGenerationTool 到 LLM 工具列表")
         except Exception as e:
             logger.warning(f"注册 LLM 工具失败: {e}，将使用装饰器方式")

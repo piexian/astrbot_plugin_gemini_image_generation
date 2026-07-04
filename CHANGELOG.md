@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-07-04
+
+### Added
+
+- **LLM 工具支持本地路径参考图**：`gemini_image_generation` 工具新增 `reference_image_paths` 参数，允许 LLM 提交本地文件路径作为参考图，解决「本地路径有文件但不在消息内」的场景（如复用上一轮工具调用缓存在 `data/temp/tool_images/` 的图片）。
+- **新增 `tl/tool_path_guard.py`**：路径白名单守卫模块。默认白名单覆盖各系统 AstrBot 数据目录（Linux/macOS `~/.astrbot/data`、Docker `/opt/astrbot/data`、`/AstrBot/data`、`/app/data`）及 `ASTRBOT_DATA_PATH` 环境变量；拒绝 `..` 路径穿越，`Path.resolve` 跟随符号链接后校验 `parents` 链。
+- **新增 `llm_tool_reference_path_mode` 配置**：`whitelist`（默认，仅允许白名单目录）/ `global`（允许任意本地路径，适用于管理员）。`global` 模式下会尝试将工具默认权限自动设为管理员可用（`tl/tool_permission.py`），权限管控也可在 AstrBot WebUI「插件-管理行为-函数工具」中手动调整。
+- **新增 `llm_tool_reference_allowed_dirs` 配置**：`whitelist` 模式下可追加自定义允许目录。
+
+### Changed
+
+- `provider_polling` 配置项新增 `options` 预制供应商列表（11 个已知 api_type），前端渲染为带搜索的下拉多选，并更新 hint。
+- `docs/config.md` 补充 LLM 工具本地路径参考图相关字段说明。
+
 ## [2.1.0] - 2026-06-11
 
 ### Added
