@@ -1313,9 +1313,9 @@
       "llm_tool_timeout_reserve_percent": {
         "name": "LLM Tool Timeout Reserve Percent",
         "description": "LLM 工具超时预留百分比",
-        "hint": "LLM 工具触发生图时，会从当前聊天工具超时配置中按比例预留安全时间。剩余时间用于前台同步等待；超出后转为后台发送。默认 75%，即默认 60 秒超时下，前台最多等待约 45 秒。",
+        "hint": "LLM 工具触发生图时，会从当前聊天工具超时配置中按比例预留安全时间。剩余时间用于前台同步等待；超出后转为后台发送。默认 50%，即默认 60 秒超时下，前台最多等待约 30 秒。",
         "type": "int",
-        "default": 75,
+        "default": 50,
         "slider": {
           "min": 1,
           "max": 100,

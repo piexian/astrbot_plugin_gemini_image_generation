@@ -701,7 +701,9 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         aspect_ratio = kwargs.get("aspect_ratio") or None
         for_forum = kwargs.get("for_forum", False)
         # 本地路径参考图（独立于 use_reference_images，LLM 显式传路径即生效）
-        raw_ref_paths = kwargs.get("reference_image_paths") or []
+        raw_ref_paths = kwargs.get("reference_image_paths")
+        if raw_ref_paths is None:
+            raw_ref_paths = []
         if isinstance(raw_ref_paths, str):
             raw_ref_paths = [raw_ref_paths]
 
@@ -751,7 +753,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         path_mode = getattr(cfg, "llm_tool_reference_path_mode", "whitelist")
         allowed_dirs = list(getattr(cfg, "llm_tool_reference_allowed_dirs", []) or [])
         accepted_paths, rejected_paths = filter_reference_paths(
-            [str(p) for p in raw_ref_paths if isinstance(p, str)],
+            raw_ref_paths,
             allowed_dirs=allowed_dirs,
             global_mode=(path_mode == "global"),
             log_fn=logger.debug,

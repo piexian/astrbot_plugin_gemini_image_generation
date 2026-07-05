@@ -64,7 +64,7 @@ class ImageHandler:
         过滤出合法的参考图像。
 
         支持的格式：
-        - http(s):// URL（由 tl_api 下载转换）
+        - http(s):// URL 或 file:// URI（由 tl_api 统一转换）
         - data:image/xxx;base64,... 格式
         - 纯 base64 字符串（需通过魔数校验为图片）
 
@@ -82,12 +82,12 @@ class ImageHandler:
 
             cleaned = img.strip()
 
-            # URL 形式的图片，交给 tl_api 下载处理
-            if cleaned.lower().startswith("http://") or cleaned.lower().startswith(
-                "https://"
-            ):
+            cleaned_lower = cleaned.lower()
+
+            # URL/file URI 形式的图片，交给 tl_api 统一归一化处理
+            if cleaned_lower.startswith(("http://", "https://", "file://")):
                 valid.append(cleaned)
-                self._log_debug(f"保留 URL 参考图像({source}): {cleaned[:64]}...")
+                self._log_debug(f"保留 URI 参考图像({source}): {cleaned[:64]}...")
                 continue
 
             if self.is_valid_base64_image_str(cleaned):

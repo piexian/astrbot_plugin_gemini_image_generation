@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import base64
+import sys
+import types
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+import tl.tool_path_guard as path_guard
 from tl.tool_path_guard import (
     expand_allowed_dirs,
     filter_reference_paths,
@@ -135,6 +138,20 @@ def test_is_supported_image_file_rejects_non_image(tmp_path):
     assert is_supported_image_file(f) is False
 
 
+def test_is_supported_image_file_registers_heif_opener_when_available(
+    monkeypatch,
+    tmp_path,
+):
+    calls = []
+    heif_module = types.ModuleType("pillow_heif")
+    heif_module.register_heif_opener = lambda: calls.append("registered")
+    monkeypatch.setitem(sys.modules, "pillow_heif", heif_module)
+    f = _make_img(tmp_path)
+
+    assert is_supported_image_file(f) is True
+    assert calls == ["registered"]
+
+
 def test_filter_whitelist_accepts_inside(tmp_path):
     f = _make_img(tmp_path)
     accepted, rejected = filter_reference_paths(
@@ -163,6 +180,29 @@ def test_filter_whitelist_rejects_outside(tmp_path):
     )
     assert accepted == []
     assert len(rejected) == 1
+
+
+def test_filter_whitelist_rejects_outside_before_image_validation(
+    monkeypatch,
+    tmp_path,
+):
+    allowed = tmp_path / "allowed"
+    outside = tmp_path / "outside"
+    allowed.mkdir()
+    outside.mkdir()
+    ref = _make_img(outside)
+
+    def fail_if_called(path):
+        raise AssertionError(f"不应打开白名单外文件: {path}")
+
+    monkeypatch.setattr(path_guard, "is_supported_image_file", fail_if_called)
+
+    accepted, rejected = path_guard.filter_reference_paths(
+        [str(ref)], allowed_dirs=[str(allowed)], global_mode=False
+    )
+
+    assert accepted == []
+    assert rejected == [str(ref)]
 
 
 def test_filter_rejects_traversal_even_in_whitelist(tmp_path):
@@ -236,6 +276,64 @@ def test_filter_skips_non_string_and_empty(tmp_path):
     )
     assert accepted == []
     assert len(rejected) == 3
+
+
+def test_filter_rejects_non_iterable_raw_paths(tmp_path):
+    accepted, rejected = filter_reference_paths(
+        True,
+        allowed_dirs=[str(tmp_path)],
+        global_mode=False,
+    )
+    assert accepted == []
+    assert rejected == ["True"]
+
+
+def test_filter_rejects_mapping_raw_paths(tmp_path):
+    accepted, rejected = filter_reference_paths(
+        {"path": str(tmp_path / "a.png")},
+        allowed_dirs=[str(tmp_path)],
+        global_mode=False,
+    )
+    assert accepted == []
+    assert len(rejected) == 1
+
+
+def test_filter_rejects_mixed_non_string_items(tmp_path):
+    f = _make_img(tmp_path)
+    accepted, rejected = filter_reference_paths(
+        [str(f), 123, False],
+        allowed_dirs=[str(tmp_path)],
+        global_mode=False,
+    )
+    assert accepted == [f.resolve().as_uri()]
+    assert rejected == ["123", "False"]
+
+
+def test_image_handler_keeps_file_uri_reference_images(monkeypatch):
+    components_module = types.ModuleType("astrbot.api.message_components")
+    components_module.At = type("At", (), {})
+    components_module.Image = type("Image", (), {})
+    components_module.Reply = type("Reply", (), {})
+    monkeypatch.setitem(
+        sys.modules, "astrbot.api.message_components", components_module
+    )
+
+    tl_utils_module = sys.modules["tl.tl_utils"]
+    monkeypatch.setattr(
+        tl_utils_module, "AvatarManager", type("AvatarManager", (), {}), raising=False
+    )
+    monkeypatch.setattr(
+        tl_utils_module, "is_valid_base64_image_str", lambda value: False, raising=False
+    )
+
+    from tl.image_handler import ImageHandler
+
+    image_handler = ImageHandler(log_debug_fn=lambda msg: None)
+    file_uri = "file:///tmp/tool_images/ref.png"
+
+    assert image_handler.filter_valid_reference_images([file_uri], "消息图片") == [
+        file_uri
+    ]
 
 
 # ---------- expand_allowed_dirs ----------

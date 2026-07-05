@@ -56,8 +56,8 @@ from .tl.enhanced_prompts import (
 from .tl.llm_tools import GeminiImageGenerationTool
 from .tl.plugin_config import max_configured_reference_images
 from .tl.tl_api import APIClient, ApiRequestConfig, get_api_client
-from .tl.tool_permission import ensure_admin_default_tool_permission
 from .tl.tl_utils import AvatarManager, cleanup_old_images, format_error_message
+from .tl.tool_permission import ensure_admin_default_tool_permission
 
 
 def _build_no_ref_msg(mode: str, suggestion: str) -> str:

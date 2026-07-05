@@ -20,6 +20,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable
 from pathlib import Path
+from typing import Any
 
 from astrbot.api import logger
 
@@ -129,6 +130,15 @@ def is_supported_image_file(path: Path) -> bool:
     """只放行可作为参考图处理的完整图片文件。"""
     try:
         from PIL import Image as PILImage
+
+        try:
+            from pillow_heif import register_heif_opener
+
+            register_heif_opener()
+        except ImportError:
+            pass
+        except Exception as exc:
+            logger.debug(f"[path_guard] 注册 HEIF/HEIC opener 失败: {exc}")
     except ImportError:
         return False
 
@@ -149,7 +159,7 @@ def _path_to_reference_uri(path: Path) -> str:
 
 
 def filter_reference_paths(
-    raw_paths: list[str],
+    raw_paths: Any,
     *,
     allowed_dirs: list[str],
     global_mode: bool,
@@ -158,7 +168,7 @@ def filter_reference_paths(
     """过滤 LLM 提交的本地路径参考图。
 
     Args:
-        raw_paths: LLM 提交的原始路径字符串列表。
+        raw_paths: LLM 提交的原始路径字符串列表；异常形态会统一拒绝并记录。
         allowed_dirs: 用户配置 + 默认的允许目录（未 resolve 的原始串）。
         global_mode: True 时跳过白名单检查（仍拒 traversal、不存在与无效图片）。
         log_fn: 日志回调，默认 logger.debug。
@@ -173,9 +183,24 @@ def filter_reference_paths(
     accepted: list[str] = []
     rejected: list[str] = []
 
-    for raw in raw_paths:
-        if not isinstance(raw, str) or not raw.strip():
-            rejected.append(str(raw) if raw else "")
+    if raw_paths is None:
+        iterable_paths: Iterable[Any] = []
+    elif isinstance(raw_paths, str):
+        iterable_paths = [raw_paths]
+    elif isinstance(raw_paths, (list, tuple)):
+        iterable_paths = raw_paths
+    else:
+        log(f"[path_guard] 拒绝非列表路径参数: {type(raw_paths).__name__}")
+        return [], [str(raw_paths)]
+
+    for raw in iterable_paths:
+        if not isinstance(raw, str):
+            log(f"[path_guard] 拒绝非字符串路径: {type(raw).__name__}")
+            rejected.append(str(raw))
+            continue
+        if not raw.strip():
+            log("[path_guard] 拒绝空路径")
+            rejected.append("")
             continue
 
         if raw_has_traversal(raw):
@@ -194,13 +219,13 @@ def filter_reference_paths(
             rejected.append(raw)
             continue
 
-        if not is_supported_image_file(path):
-            log(f"[path_guard] 拒绝非图片文件: {raw[:80]}")
+        if not global_mode and not is_path_allowed(path, allowed_resolved):
+            log(f"[path_guard] 拒绝路径越出白名单: {raw[:80]}")
             rejected.append(raw)
             continue
 
-        if not global_mode and not is_path_allowed(path, allowed_resolved):
-            log(f"[path_guard] 拒绝路径越出白名单: {raw[:80]}")
+        if not is_supported_image_file(path):
+            log(f"[path_guard] 拒绝非图片文件: {raw[:80]}")
             rejected.append(raw)
             continue
 

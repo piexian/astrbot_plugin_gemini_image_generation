@@ -6,7 +6,6 @@ from typing import Any
 
 from astrbot.api import logger
 
-
 TOOL_PERMISSION_SCOPE = "global"
 TOOL_PERMISSION_SCOPE_ID = "global"
 TOOL_PERMISSION_KEY = "tool_permissions"
