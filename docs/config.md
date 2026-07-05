@@ -69,8 +69,23 @@ google / openai / zai / grok2api / agnes_ai / xai / minimax / stepfun / openai_i
 | `preserve_reference_image_size` | `false` | 改图时保留参考图尺寸 |
 | `max_inline_image_size_mb` | `2.0` | 本地图片 base64 编码阈值 |
 | `llm_tool_timeout_reserve_percent` | `50` | 为 `tool_call_timeout` 预留的百分比，剩余时间用于前台同步等待 |
+| `llm_tool_reference_path_mode` | `whitelist` | LLM 工具 `reference_image_paths` 的本地路径权限模式 |
+| `llm_tool_reference_allowed_dirs` | `[]` | `whitelist` 模式下额外允许的参考图目录 |
 
 分辨率、长宽比、最大参考图数量、Google 文本响应、Google 搜索接地、OpenAI/OpenAI 兼容参数名等均在 `provider_settings.provider_overrides` 的各供应商条目内配置。
+
+### LLM 工具本地路径参考图
+
+`gemini_image_generation` 工具支持 `reference_image_paths` 参数，用于让 LLM 复用上一次工具调用缓存在本地的图片，例如 `data/temp/tool_images/` 下的文件。
+
+路径守卫规则：
+
+- `llm_tool_reference_path_mode=whitelist`：默认模式，只允许默认目录和 `llm_tool_reference_allowed_dirs` 中的文件。
+- `llm_tool_reference_path_mode=global`：跳过白名单目录检查，但仍会检查路径穿越、文件存在性和图片完整性。插件会在支持函数工具权限配置的 AstrBot 新版上，尝试将 `gemini_image_generation` 默认权限设为管理员；若管理员已在 WebUI 手动配置过该工具权限，则不会覆盖。
+- 默认白名单包含常见 AstrBot 数据目录：`~/.astrbot/data`、`/opt/astrbot/data`、`/AstrBot/data`、`/app/data`，以及 `ASTRBOT_DATA_PATH` 环境变量指向的目录。
+- `llm_tool_reference_allowed_dirs` 可追加自定义目录，支持绝对路径或 `~` 开头路径。
+- 原始路径中包含 `..` 穿越会被拒绝；符号链接会先 `resolve`，再检查最终路径是否仍位于允许目录内。
+- 只有能通过完整性校验的图片文件会被接受；不存在、非文件、非图片或损坏图片都会被拒绝并写入日志。
 
 ## quick_mode_settings
 

@@ -129,6 +129,8 @@ class PluginConfig:
     image_input_mode: str = "force_base64"
     max_inline_image_size_mb: float = 2.0  # 本地图片 base64 编码阈值（MB）
     llm_tool_timeout_reserve_percent: int = 50
+    llm_tool_reference_path_mode: str = "whitelist"  # "whitelist" | "global"
+    llm_tool_reference_allowed_dirs: list[str] = field(default_factory=list)
 
     # 表情包设置
     sticker_grid_rows: int = 4
@@ -607,6 +609,23 @@ class ConfigLoader:
                 config.llm_tool_timeout_reserve_percent = (
                     PluginConfig().llm_tool_timeout_reserve_percent
                 )
+
+        # LLM 工具本地路径参考图：模式与白名单目录
+        ref_path_mode = (
+            str(image_settings.get("llm_tool_reference_path_mode") or "whitelist")
+            .strip()
+            .lower()
+        )
+        config.llm_tool_reference_path_mode = (
+            "global" if ref_path_mode == "global" else "whitelist"
+        )
+        raw_allowed_dirs = image_settings.get("llm_tool_reference_allowed_dirs")
+        if isinstance(raw_allowed_dirs, list):
+            config.llm_tool_reference_allowed_dirs = [
+                item.strip()
+                for item in raw_allowed_dirs
+                if isinstance(item, str) and item.strip()
+            ]
 
         # 表情包网格设置
         grid_raw = str(image_settings.get("sticker_grid") or "4x4").strip()
