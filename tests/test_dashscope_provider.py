@@ -275,6 +275,25 @@ async def test_dashscope_reference_image_converted_to_data_uri() -> None:
 
 
 @pytest.mark.asyncio
+async def test_dashscope_bare_local_path_normalized_as_file_uri(
+    tmp_path,  # noqa: ANN001
+) -> None:
+    """裸本地路径应转 file:// URI 后再交客户端归一化（共享归一化器不认裸路径）。"""
+    image_file = tmp_path / "photo.png"
+    image_file.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    provider = DashScopeProvider()
+    client = _FakeClient()
+    await provider.build_request(
+        client=client,
+        config=_make_config(
+            reference_images=[str(image_file)],
+            image_input_mode="force_base64",
+        ),
+    )
+    assert client.normalized == [(image_file.resolve().as_uri(), "force_base64")]
+
+
+@pytest.mark.asyncio
 async def test_dashscope_reference_images_capped_at_nine() -> None:
     provider = DashScopeProvider()
     request = await provider.build_request(
@@ -421,6 +440,34 @@ async def test_dashscope_parse_throttling_is_retryable() -> None:
         )
     assert excinfo.value.retryable is True
     assert excinfo.value.error_code == "Throttling"
+
+
+@pytest.mark.asyncio
+async def test_dashscope_parse_invalid_api_key_defers_to_framework() -> None:
+    """认证类错误码 retryable=None，交框架在多 Key 时轮换重试。"""
+    provider = DashScopeProvider()
+    with pytest.raises(APIError) as excinfo:
+        await provider.parse_response(
+            client=_FakeClient(),
+            response_data={"code": "InvalidApiKey", "message": "无效 Key"},
+            session=None,
+            http_status=401,
+        )
+    assert excinfo.value.retryable is None
+    assert excinfo.value.error_code == "InvalidApiKey"
+
+
+@pytest.mark.asyncio
+async def test_dashscope_parse_unknown_code_defers_to_framework() -> None:
+    provider = DashScopeProvider()
+    with pytest.raises(APIError) as excinfo:
+        await provider.parse_response(
+            client=_FakeClient(),
+            response_data={"code": "SomethingNew", "message": "未知"},
+            session=None,
+            http_status=504,
+        )
+    assert excinfo.value.retryable is None
 
 
 @pytest.mark.asyncio

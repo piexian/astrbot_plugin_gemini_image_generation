@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import re
+from pathlib import Path
 from typing import Any
 
 import aiohttp
@@ -82,17 +83,12 @@ _RETRYABLE_CODES: frozenset[str] = frozenset(
     }
 )
 
-# 不可重试错误码
+# 不可重试错误码（认证/配额类不在此列：标记三态 None，交框架在多 Key 时轮换重试）
 _NON_RETRYABLE_CODES: frozenset[str] = frozenset(
     {
         "DataInspectionFailed",
         "InvalidParameter",
-        "InvalidApiKey",
-        "AccessDenied",
-        "AuthFailure",
-        "Arrearage",
         "ModelNotFound",
-        "Model.AccessDenied",
         "BadRequest.EmptyBody",
     }
 )
@@ -209,13 +205,15 @@ def _coerce_n(value: Any, n_max: int) -> int:
 
 
 def _build_api_error(code: str, message: str, http_status: int | None) -> APIError:
-    """根据 DashScope 错误码构建带重试语义的 APIError。"""
+    """根据 DashScope 错误码构建带重试语义的 APIError。
+
+    未知错误码 retryable=None，交框架通用逻辑判断（多 Key 轮换、5xx/429 重试等）。
+    """
+    retryable: bool | None = None
     if code in _RETRYABLE_CODES:
         retryable = True
     elif code in _NON_RETRYABLE_CODES:
         retryable = False
-    else:
-        retryable = http_status in {429, 500, 502, 503}
     return APIError(
         f"DashScope 图像生成失败: {message}",
         http_status,
@@ -378,10 +376,14 @@ class DashScopeProvider:
         if looks_like_base64(image_str) and not image_str.startswith("data:"):
             return format_data_uri(strip_data_uri_prefix(image_str))
 
-        # 其余（本地路径 / 强制 base64 的 URL）走客户端归一化
+        # 其余（本地路径 / 强制 base64 的 URL）走客户端归一化；
+        # 共享归一化器不认裸路径，先转 file:// URI
+        normalize_input = image_str
+        if "://" not in image_str and Path(image_str).is_file():
+            normalize_input = Path(image_str).resolve().as_uri()
         try:
             mime_type, b64_data = await client._normalize_reference_image_input(
-                image_str,
+                normalize_input,
                 image_input_mode=getattr(config, "image_input_mode", "force_base64"),
             )
         except Exception as e:
