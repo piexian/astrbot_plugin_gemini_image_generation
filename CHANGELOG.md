@@ -4,6 +4,21 @@
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-07-21
+
+### Added
+
+- **新增 `dashscope` 供应商模板**：接入阿里云百炼 DashScope 原生 multimodal-generation 同步接口，支持通义万相 `wan2.7-image-pro` / `wan2.7-image`（文生图 + 多图编辑，参考图最多 9 张）与千问图像 `qwen-image-2.0` 系列（支持负向提示词）。
+- **`endpoint_mode` 端点切换**：`dashscope`（阿里云百炼官方端点）/ `token_plan`（千问 AI 平台 Token Plan 套餐端点，`sk-sp-` 前缀 Key）；`api_base` 留空按端点自动选择，仅自建反代场景需覆盖。
+- **参数模型门控**：wan2.7 自动跳过 `negative_prompt` / `prompt_extend`，qwen 系列不发送 `thinking_mode` / `enable_sequential`；`n` 按模型钳制（wan2.7 顺序模式 1-12 / 标准 1-4，qwen-image-2.0 1-6，其余 1）。
+- **尺寸换算**：preset 模式按分辨率档位 + 长宽比查官方推荐像素表，表外比例按档位像素预算推算（16 对齐、钳位 512-4096）；custom 模式支持 `WxH`（x/×/* 均可）与 wan2.7 简写 `1K/2K/4K`。
+- 生成图片 URL 24 小时过期，provider 解析响应时立即下载落盘，下载失败兜底返回直链。
+
+### Changed
+
+- `provider_polling` 预制供应商列表与相关文档同步加入 `dashscope`（12 个已知 api_type）。
+- `docs/config.md` 新增 `dashscope_settings` 章节（含 Token Plan 接入、参数门控与尺寸换算表，附官方文档链接）。
+
 ## [2.2.0] - 2026-07-04
 
 ### Added
