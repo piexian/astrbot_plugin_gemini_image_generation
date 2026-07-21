@@ -411,6 +411,7 @@ class DashScopeProvider:
         api_base: str | None = None,
         http_status: int | None = None,
         request_config: ApiRequestConfig | None = None,
+        is_retry: bool = False,
     ) -> tuple[list[str], list[str], str | None, str | None]:  # noqa: ANN401
         if not isinstance(response_data, dict):
             raise APIError(

@@ -289,6 +289,55 @@ async def test_dashscope_reference_images_capped_at_nine() -> None:
     assert len(image_items) == 9
 
 
+@pytest.mark.asyncio
+async def test_dashscope_reference_url_passthrough_when_not_forcing_b64() -> None:
+    provider = DashScopeProvider()
+    client = _FakeClient()
+    request = await provider.build_request(
+        client=client,
+        config=_make_config(
+            reference_images=["https://example.com/a.png"],
+            image_input_mode="url",
+        ),
+    )
+    content = request.payload["input"]["messages"][0]["content"]
+    assert content[1] == {"image": "https://example.com/a.png"}
+    assert client.normalized == []
+
+
+@pytest.mark.asyncio
+async def test_dashscope_reference_url_normalized_when_forcing_b64() -> None:
+    provider = DashScopeProvider()
+    client = _FakeClient()
+    request = await provider.build_request(
+        client=client,
+        config=_make_config(
+            reference_images=["https://example.com/a.png"],
+            image_input_mode="force_base64",
+        ),
+    )
+    content = request.payload["input"]["messages"][0]["content"]
+    assert content[1] == {"image": "data:image/png;base64,BASE64"}
+    assert client.normalized == [("https://example.com/a.png", "force_base64")]
+
+
+@pytest.mark.asyncio
+async def test_dashscope_parse_response_accepts_framework_is_retry_kwarg() -> None:
+    """parse_errors_with_provider=True 时框架会注入 is_retry（tl/tl_api.py:1270）。"""
+    provider = DashScopeProvider()
+    client = _FakeClient()
+    image_urls, _, _, _ = await provider.parse_response(
+        client=client,
+        response_data=_success_response(["https://oss.example.com/a.png"]),
+        session=None,
+        api_base=None,
+        http_status=200,
+        request_config=None,
+        is_retry=False,
+    )
+    assert image_urls == ["/tmp/dashscope_1.png"]
+
+
 def _success_response(urls: list[str]) -> dict:
     return {
         "status_code": 200,
@@ -444,3 +493,15 @@ def test_normalize_dashscope_settings_bad_endpoint_mode_falls_back() -> None:
     settings: dict = {"endpoint_mode": "bogus"}
     normalize_dashscope_settings(settings)
     assert settings["endpoint_mode"] == "dashscope"
+
+
+def test_normalize_dashscope_settings_non_numeric_n_falls_back_to_1() -> None:
+    settings: dict = {"n": "abc"}
+    normalize_dashscope_settings(settings)
+    assert settings["n"] == 1
+
+
+def test_normalize_dashscope_settings_out_of_range_custom_size_preserved() -> None:
+    settings: dict = {"size_mode": "custom", "custom_size": "8192x8192"}
+    normalize_dashscope_settings(settings)
+    assert settings["custom_size"] == "8192x8192"
