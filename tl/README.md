@@ -180,6 +180,7 @@ generate_image()
 | `openai_images` | `OpenAIImagesProvider` |
 | `doubao` | `DoubaoProvider` |
 | `sensenova` | `SenseNovaProvider` |
+| `dashscope` | `DashScopeProvider` |
 
 ### Provider 公共辅助模块
 
@@ -191,7 +192,7 @@ generate_image()
 | `provider_loader.py` | `load_callable(path)` | 懒加载 provider class 和 spec hook |
 | `provider_hooks.py` | 配置校验、归一化、候选配置、工具 profile hook | 承载 provider 专属行为，调用方由 spec 字段声明 |
 | `provider_settings.py` | `first_provider_settings()` / `first_provider_tool_profile()` | 共享 provider settings 读取 helper，避免只读旧 `*_settings` 字段 |
-| `api/provider_limits.py` | `MAX_REFERENCE_IMAGES_GOOGLE` / `MAX_REFERENCE_IMAGES_DOUBAO` / `MAX_REFERENCE_IMAGES_OPENAI_COMPAT` / `MAX_REFERENCE_IMAGES_MINIMAX` | 集中维护各 provider 参考图上限常量（`Final[int]`） |
+| `api/provider_limits.py` | `MAX_REFERENCE_IMAGES_GOOGLE` / `MAX_REFERENCE_IMAGES_DOUBAO` / `MAX_REFERENCE_IMAGES_OPENAI_COMPAT` / `MAX_REFERENCE_IMAGES_MINIMAX` / `MAX_REFERENCE_IMAGES_DASHSCOPE` | 集中维护各 provider 参考图上限常量（`Final[int]`） |
 | `api/reference_intake.py` | `announce_reference_intake(references, max_count, *, log_prefix="")` | 参考图接收阶段统一日志，返回 `(收到数量, 采用数量)` |
 | `api/data_uri.py` | `format_data_uri(b64_data, mime_type=None)` / `strip_data_uri_prefix(s)` / `looks_like_base64(s)` | data URI 与 base64 字符串的格式化/识别助手 |
 
@@ -293,6 +294,17 @@ SenseNova（商汤日日新）provider，仅支持文生图。
 | `SenseNovaProvider.build_request()` | 构造 `/v1/images/generations` 请求 |
 | `SenseNovaProvider.parse_response()` | 解析 `data[].url` / `data[].b64_json` 响应 |
 | `_resolve_size()` | 将内部 resolution/aspect_ratio 映射到 11 种固定尺寸 |
+
+### `api/dashscope.py`
+
+DashScope（阿里云百炼）provider，接入原生 multimodal-generation 同步端点，支持 wan2.7 / qwen-image-2.0 系列（文生图 + 多图编辑）；返回 URL 24 小时过期，故解析时强制下载落盘。
+
+| 接口 | 说明 |
+|------|------|
+| `DashScopeProvider.build_request()` | 构造 `input.messages` + `parameters` 请求，按模型门控参数 |
+| `DashScopeProvider.parse_response()` | 解析 `output.choices[].message.content[].image`，立即下载落盘 |
+| `_resolve_size()` | preset 档位+比例查官方推荐表或按像素预算推算，custom 直接透传 |
+| `_build_api_error()` | 将 DashScope 错误码转为带重试语义的 `APIError` |
 
 ### `api/stepfun.py`
 

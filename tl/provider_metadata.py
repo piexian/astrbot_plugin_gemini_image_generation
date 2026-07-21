@@ -74,6 +74,13 @@ _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
         supports_image_edit=False,
         settings_attr="sensenova_settings",
     ),
+    ProviderSpec(
+        "dashscope",
+        "tl.api.dashscope.DashScopeProvider",
+        settings_attr="dashscope_settings",
+        settings_normalizer_path="tl.provider_hooks.normalize_dashscope_settings",
+        parse_errors_with_provider=True,
+    ),
 )
 
 PROVIDER_TYPES: Final[tuple[str, ...]] = tuple(

@@ -54,10 +54,10 @@ google / openai_images / minimax
 支持的模板：
 
 ```text
-google / openai / zai / grok2api / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova
+google / openai / zai / grok2api / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova / dashscope
 ```
 
-下方 `doubao_settings`、`openai_images_settings`、`agnes_ai_settings`、`xai_settings`、`minimax_settings`、`stepfun_settings`、`sensenova_settings` 章节对应这些模板的专用字段。代码中的同名 `*_settings` 字段仅作为兼容旧调用的首个候选投影；多候选场景以 `provider_settings.provider_overrides` 和运行时派生的 `provider_settings_by_type` 为准。
+下方 `doubao_settings`、`openai_images_settings`、`agnes_ai_settings`、`xai_settings`、`minimax_settings`、`stepfun_settings`、`sensenova_settings`、`dashscope_settings` 章节对应这些模板的专用字段。代码中的同名 `*_settings` 字段仅作为兼容旧调用的首个候选投影；多候选场景以 `provider_settings.provider_overrides` 和运行时派生的 `provider_settings_by_type` 为准。
 
 ## image_generation_settings
 
@@ -385,3 +385,70 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 官方文档：
 
 - <https://platform.sensenova.cn/doc?path=/chat/ImageGeneration/ImageGeneration.md>
+
+## dashscope_settings（DashScope 阿里云百炼专用配置）
+
+配置路径：`provider_settings.provider_overrides` 中选择 `dashscope` 模板。接入 DashScope **原生** multimodal-generation 同步接口（非 OpenAI 兼容格式），支持通义万相 `wan2.7-image-pro` / `wan2.7-image`（文生图 + 多图编辑）与千问图像 `qwen-image-2.0` 系列。
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `api_keys` | `[]` | DashScope API Key 列表（控制台获取的 Bearer Token），支持多 Key 轮换 |
+| `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
+| `model` | `wan2.7-image-pro` | 推荐 `wan2.7-image-pro` / `wan2.7-image`；千问图像可选 `qwen-image-2.0-pro` / `qwen-image-2.0`（支持负向提示词）。仅支持同步调用模型，wan2.5 及更早的纯异步模型不适用 |
+| `endpoint_mode` | `dashscope` | 接入端点：`dashscope` 阿里云百炼官方端点；`token_plan` 千问 AI 平台 Token Plan 套餐端点 |
+| `api_base` | - | 可选覆盖；留空按 `endpoint_mode` 自动选择地址，仅自建反代等特殊场景需要填写 |
+| `max_reference_images` | `9` | 最大参考图数量（wan2.7 上限 9 张），超过按顺序截取 |
+| `size_mode` | `preset` | `preset` 按分辨率+长宽比换算官方推荐像素；`custom` 直接发送 `custom_size` |
+| `resolution` | `2K` | 分辨率档位（`1K`/`2K`/`4K`）。4K 仅 `wan2.7-image-pro` 文生图支持；qwen-image-2.0 上限 2K |
+| `aspect_ratio` | `1:1` | 默认长宽比，快速模式传入覆盖值时优先 |
+| `custom_size` | `2048*2048` | 仅 `size_mode=custom` 生效。格式 `WxH`（x/×/* 均可，发送时统一为 `W*H`），或 wan2.7 简写 `1K`/`2K`/`4K` |
+| `n` | `1` | 单次生成图片数量，按成功张数计费，超出范围自动钳制 |
+| `watermark` | `false` | 是否添加水印 |
+| `negative_prompt` | - | 负向提示词，wan2.7 不支持（自动跳过并记录日志） |
+| `prompt_extend` | `false` | 提示词智能改写。服务端默认开启（增加 3-4 秒延迟）；插件提示词已增强，默认关闭并显式发送。wan2.7 不支持 |
+| `thinking_mode` | `true` | 增强推理，仅 wan2.7 生效；顺序模式下不可用 |
+| `enable_sequential` | `false` | 顺序组图生成，仅 wan2.7 生效；开启后 `n` 上限提高到 12，`thinking_mode` 随之失效 |
+| `proxy` | - | 独立代理地址，优先级高于全局代理和环境变量 |
+
+`dashscope` 供应商使用 DashScope 原生同步端点：
+
+- 文生图 / 图像编辑：`POST /api/v1/services/aigc/multimodal-generation/generation`
+- 生成图片仅返回 URL 且 **24 小时后过期**，provider 会立即下载落盘；下载失败时兜底返回直链
+- 不支持纯异步 legacy 模型（wan2.5 及更早、wanx 系列）；`color_palette`（wan2.7 品牌色）暂不支持配置
+
+### Token Plan（千问 AI 平台套餐）接入
+
+千问 AI 平台 Token Plan 套餐的图像生成接口与 DashScope 原生同步端点结构完全一致（同请求体、同响应格式），切换方式：
+
+- `endpoint_mode` 选 `token_plan`（自动使用 `https://token-plan.cn-beijing.maas.aliyuncs.com`）
+- `api_keys` 填套餐专属 Key（以 `sk-sp-` 为前缀）
+
+个人版 Token Plan 图像生成模型仅 `wan2.7-image` / `wan2.7-image-pro`；参数门控与尺寸换算规则与 DashScope 原生端点相同。完整模型列表以千问 AI 平台为准。
+
+参数门控规则（由 provider 按模型自动处理）：
+
+| 参数 | wan2.7 系列 | qwen-image-2.0 系列 | 其他（qwen-image-plus/max 等） |
+|------|------------|--------------------|-------------------------------|
+| `negative_prompt` | 不支持（跳过） | 支持 | 支持 |
+| `prompt_extend` | 不支持（跳过） | 显式发送 | 显式发送 |
+| `thinking_mode` | 支持（非顺序模式） | 不发送 | 不发送 |
+| `enable_sequential` | 支持 | 不发送 | 不发送 |
+| `n` 范围 | 标准 1-4 / 顺序 1-12 | 1-6 | 仅 1 |
+
+preset 模式尺寸换算表（分辨率档位 × 长宽比 → 官方推荐像素）：
+
+| 长宽比 | 4K | 2K | 1K |
+|--------|----|----|----|
+| 1:1 | `4096*4096` | `2048*2048` | `1280*1280` |
+| 16:9 | `4096*2304` | `2688*1536` | `1696*960` |
+| 9:16 | `2304*4096` | `1536*2688` | `960*1696` |
+| 4:3 | `4096*3072` | `2368*1728` | `1472*1104` |
+| 3:4 | `3072*4096` | `1728*2368` | `1104*1472` |
+
+表外比例（`3:2`、`4:5`、`5:4`、`21:9`、`2:3`）按档位总像素预算推算，两边取 16 的倍数并钳位 `[512, 4096]`。
+
+官方文档：
+
+- 文生图：<https://platform.qianwenai.com/docs/developer-guides/image-generation/text-to-image>
+- 图像编辑：<https://platform.qianwenai.com/docs/developer-guides/image-generation/wan-image-editing>
+- Token Plan 接入：<https://platform.qianwenai.com/docs/token-plan/best-practices/multimodal-generation>

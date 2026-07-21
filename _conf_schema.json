@@ -7,7 +7,7 @@
       "provider_polling": {
         "description": "供应商轮询顺序",
         "type": "list",
-        "hint": "按列表从上到下尝试生成。请选择并按优先级排列：google / openai / zai / grok2api / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova。留空时按配置表中的有效供应商顺序尝试。",
+        "hint": "按列表从上到下尝试生成。请选择并按优先级排列：google / openai / zai / grok2api / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova / dashscope。留空时按配置表中的有效供应商顺序尝试。",
         "options": [
           "google",
           "openai",
@@ -19,7 +19,8 @@
           "stepfun",
           "openai_images",
           "doubao",
-          "sensenova"
+          "sensenova",
+          "dashscope"
         ],
         "default": []
       },
@@ -1268,6 +1269,163 @@
                   "3072x1376",
                   "1344x3136"
                 ]
+              }
+            }
+          },
+          "dashscope": {
+            "description": "DashScope（阿里云百炼）API 覆盖配置",
+            "hint": "配置通义万相 wan2.7 / 千问图像 qwen-image-2.0 等 DashScope 原生图像模型",
+            "items": {
+              "priority": {
+                "description": "优先级",
+                "type": "int",
+                "hint": "同类型供应商配置多条时按优先级从高到低尝试；相同优先级按配置表从上到下尝试。",
+                "default": 0
+              },
+              "api_keys": {
+                "description": "API Key 列表",
+                "type": "list",
+                "hint": "多个 API Key，支持轮换使用（控制台获取的 Bearer Token）",
+                "default": []
+              },
+              "daily_limit_per_key": {
+                "description": "每个 Key 每日限额",
+                "type": "int",
+                "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
+                "default": 0
+              },
+              "model": {
+                "description": "模型名称",
+                "type": "string",
+                "hint": "推荐 wan2.7-image-pro / wan2.7-image（文生图+编辑）；千问图像可选 qwen-image-2.0-pro / qwen-image-2.0（支持负向提示词）。仅支持同步调用模型。各端点模型支持差异见 docs/config.md。",
+                "default": "wan2.7-image-pro",
+                "options": [
+                  "wan2.7-image-pro",
+                  "wan2.7-image",
+                  "qwen-image-2.0-pro",
+                  "qwen-image-2.0",
+                  "qwen-image-plus",
+                  "qwen-image-max",
+                  "qwen-image"
+                ]
+              },
+              "endpoint_mode": {
+                "description": "接入端点",
+                "type": "string",
+                "hint": "dashscope：阿里云百炼官方端点；token_plan：千问 AI 平台 Token Plan 套餐端点（sk-sp- 前缀 Key）。",
+                "default": "dashscope",
+                "options": [
+                  "dashscope",
+                  "token_plan"
+                ]
+              },
+              "api_base": {
+                "description": "API 端点地址（可选覆盖）",
+                "type": "string",
+                "hint": "留空按接入端点自动选择地址；仅自建反代等特殊场景需要填写。",
+                "default": ""
+              },
+              "proxy": {
+                "description": "代理地址",
+                "type": "string",
+                "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式",
+                "default": ""
+              },
+              "max_reference_images": {
+                "description": "最大参考图片数量",
+                "type": "int",
+                "hint": "wan2.7 最多 9 张、wan2.6 最多 4 张；超过按顺序截取。纯文生图可保持默认。",
+                "default": 9
+              },
+              "size_mode": {
+                "description": "尺寸模式",
+                "type": "string",
+                "hint": "preset 按分辨率+长宽比换算官方推荐像素；custom 直接发送 custom_size。",
+                "default": "preset",
+                "options": [
+                  "preset",
+                  "custom"
+                ]
+              },
+              "resolution": {
+                "description": "图像分辨率档位",
+                "type": "string",
+                "hint": "与长宽比组合换算为官方推荐像素值。4K 仅 wan2.7-image-pro 文生图支持；qwen-image-2.0 上限 2K。",
+                "default": "2K",
+                "options": [
+                  "1K",
+                  "2K",
+                  "4K"
+                ],
+                "condition": {
+                  "size_mode": "preset"
+                }
+              },
+              "aspect_ratio": {
+                "description": "长宽比",
+                "type": "string",
+                "hint": "该供应商默认长宽比。快速模式传入覆盖值时优先使用快速模式。",
+                "default": "1:1",
+                "options": [
+                  "1:1",
+                  "16:9",
+                  "4:3",
+                  "3:2",
+                  "9:16",
+                  "4:5",
+                  "5:4",
+                  "21:9",
+                  "3:4",
+                  "2:3"
+                ],
+                "condition": {
+                  "size_mode": "preset"
+                }
+              },
+              "custom_size": {
+                "description": "自定义尺寸",
+                "type": "string",
+                "hint": "仅 size_mode=custom 时生效。格式 WxH（x/×/* 均可，发送时统一为 W*H，如 2048*2048），或 wan2.7 简写 1K/2K/4K（简写仅 wan2.7 支持且只出 1:1）。",
+                "default": "2048*2048",
+                "condition": {
+                  "size_mode": "custom"
+                }
+              },
+              "n": {
+                "description": "单次生成图片数量",
+                "type": "int",
+                "hint": "按成功生成张数计费，测试建议 1。范围：wan2.7 标准 1-4 / 顺序模式 1-12；qwen-image-2.0 1-6；qwen-image-max/plus 仅 1。超出自动钳制。",
+                "default": 1
+              },
+              "watermark": {
+                "description": "添加水印",
+                "type": "bool",
+                "hint": "是否在图片上添加水印",
+                "default": false
+              },
+              "negative_prompt": {
+                "description": "负向提示词",
+                "type": "string",
+                "hint": "描述要排除的元素。wan2.7-image-pro / wan2.7-image 不支持，会自动跳过并记录日志。",
+                "default": ""
+              },
+              "prompt_extend": {
+                "description": "提示词智能改写",
+                "type": "bool",
+                "hint": "服务端默认开启（会增加 3-4 秒延迟）；插件提示词已增强，默认关闭并显式发送。wan2.7 不支持此参数（自动跳过）。",
+                "default": false
+              },
+              "thinking_mode": {
+                "description": "增强推理（wan2.7）",
+                "type": "bool",
+                "hint": "仅 wan2.7-image-pro / wan2.7-image 生效，提升提示词理解与画质；其他模型自动跳过。顺序模式（enable_sequential）下不可用。",
+                "default": true
+              },
+              "enable_sequential": {
+                "description": "顺序组图生成（wan2.7）",
+                "type": "bool",
+                "hint": "仅 wan2.7 生效。开启后 n 上限提高到 12，生成风格一致的多图；thinking_mode 随之失效。",
+                "default": false
               }
             }
           }

@@ -45,6 +45,7 @@ tl/
 | `openai_images` | `OpenAIImagesProvider` | OpenAI `/v1/images/generations` 与 `/v1/images/edits` |
 | `doubao` | `DoubaoProvider` | 火山引擎 Ark / 豆包 |
 | `sensenova` | `SenseNovaProvider` | SenseNova（商汤日日新）`/v1/images/generations`（仅文生图，11 种固定尺寸） |
+| `dashscope` | `DashScopeProvider` | DashScope 原生 multimodal-generation 同步端点（wan2.7 / qwen-image-2.0） |
 | 未知值 | - | 配置加载阶段记录错误并跳过，不进入轮询候选 |
 
 ## 核心接口

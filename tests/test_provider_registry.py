@@ -19,6 +19,7 @@ _PROVIDER_MODULES = (
     "tl.api.openai_images",
     "tl.api.doubao",
     "tl.api.sensenova",
+    "tl.api.dashscope",
 )
 
 

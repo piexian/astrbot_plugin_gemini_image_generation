@@ -211,3 +211,61 @@ def openai_images_tool_profile(
         "custom_size_mode": size_mode == "custom",
         "settings": settings,
     }
+
+
+_DASHSCOPE_SHORTHAND_SIZES = frozenset({"1K", "2K", "4K"})
+_DASHSCOPE_ENDPOINT_MODES = frozenset({"dashscope", "token_plan"})
+
+
+def normalize_dashscope_settings(settings: dict[str, Any]) -> None:
+    """Normalize dashscope-specific override settings."""
+    endpoint_mode = str(settings.get("endpoint_mode") or "dashscope").strip().lower()
+    if endpoint_mode not in _DASHSCOPE_ENDPOINT_MODES:
+        _logger().warning(
+            "[配置加载] dashscope.endpoint_mode=%r 无效（仅支持 dashscope / token_plan），已回退为 dashscope",
+            settings.get("endpoint_mode"),
+        )
+        endpoint_mode = "dashscope"
+    settings["endpoint_mode"] = endpoint_mode
+
+    try:
+        size_mode = normalize_size_mode(
+            settings.get("size_mode"), field_name="dashscope.size_mode"
+        )
+    except ValueError as exc:
+        _logger().warning(
+            f"[配置加载] {exc}；已回退为 preset，以允许插件继续加载并在 WebUI 中修复配置"
+        )
+        size_mode = "preset"
+    settings["size_mode"] = size_mode
+
+    custom_size = settings.get("custom_size")
+    if isinstance(custom_size, str) and custom_size.strip():
+        raw = custom_size.strip()
+        if raw.upper() in _DASHSCOPE_SHORTHAND_SIZES:
+            settings["custom_size"] = raw.upper()
+        else:
+            normalized = normalize_custom_size_input(raw.replace("*", "x"))
+            match = re.fullmatch(r"(\d+)x(\d+)", normalized)
+            if match:
+                width, height = int(match.group(1)), int(match.group(2))
+                if 16 <= width <= 4096 and 16 <= height <= 4096:
+                    settings["custom_size"] = f"{width}*{height}"
+                else:
+                    _logger().warning(
+                        "[配置加载] dashscope.custom_size=%s 超出 16-4096 像素范围，已保留原值",
+                        raw,
+                    )
+            else:
+                _logger().warning(
+                    "[配置加载] dashscope.custom_size=%s 格式无法识别（应为 WxH 或 1K/2K/4K），已保留原值",
+                    raw,
+                )
+
+    n_raw = settings.get("n")
+    if n_raw is not None:
+        try:
+            settings["n"] = max(1, min(int(n_raw), 12))
+        except (TypeError, ValueError):
+            _logger().warning("[配置加载] dashscope.n=%r 无效，已回退为 1", n_raw)
+            settings["n"] = 1

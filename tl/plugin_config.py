@@ -110,6 +110,7 @@ class PluginConfig:
     xai_settings: dict[str, Any] = field(default_factory=dict)
     openai_images_settings: dict[str, Any] = field(default_factory=dict)
     agnes_ai_settings: dict[str, Any] = field(default_factory=dict)
+    dashscope_settings: dict[str, Any] = field(default_factory=dict)
 
     # 供应商配置覆盖
     # 结构：{candidate_id: {api_keys: [...], daily_limit_per_key: int, ...}}
@@ -451,6 +452,9 @@ class ConfigLoader:
                     "sequential_image_generation",
                     "response_format",
                     "reference_image_mode",
+                    "size",
+                    "custom_size",
+                    "negative_prompt",
                 ):
                     if isinstance(settings.get(key), str):
                         settings[key] = settings[key].strip()
