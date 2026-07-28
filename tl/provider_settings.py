@@ -78,6 +78,24 @@ def provider_tool_profile(config: Any, api_type: str) -> dict[str, Any]:
     return {"active": True, "settings": settings}
 
 
+def candidate_tool_profile(config: Any, candidate: Any) -> dict[str, Any]:
+    """Return tool behavior for one concrete configured candidate."""
+    if candidate is None:
+        return {"active": False, "settings": {}}
+    api_type = normalize_api_type(getattr(candidate, "api_type", ""))
+    settings = getattr(candidate, "settings", None)
+    if not isinstance(settings, dict):
+        settings = first_provider_settings(config, api_type)
+    spec = get_provider_spec(api_type)
+    if spec and spec.tool_profile_path:
+        profile = load_callable(spec.tool_profile_path)(config, settings)
+        if isinstance(profile, dict):
+            profile.setdefault("active", True)
+            profile.setdefault("settings", settings)
+            return profile
+    return {"active": True, "settings": settings}
+
+
 def first_provider_tool_profile(config: Any) -> dict[str, Any]:
     """Return tool profile for the active first provider candidate."""
     candidate = first_provider_candidate(config)

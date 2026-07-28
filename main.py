@@ -40,6 +40,7 @@ from .tl import (
     resolve_split_source_to_path,
     split_image,
 )
+from .tl.background_tasks import BackgroundTaskManager
 from .tl.enhanced_prompts import (
     get_avatar_prompt,
     get_card_prompt,
@@ -53,8 +54,10 @@ from .tl.enhanced_prompts import (
     get_style_change_prompt,
     get_wallpaper_prompt,
 )
+from .tl.llm_query_tools import BackgroundTaskStatusTool, ProviderModelQueryTool
 from .tl.llm_tools import GeminiImageGenerationTool
 from .tl.plugin_config import max_configured_reference_images
+from .tl.provider_capabilities import select_candidates
 from .tl.tl_api import APIClient, ApiRequestConfig, get_api_client
 from .tl.tl_utils import AvatarManager, cleanup_old_images, format_error_message
 from .tl.tool_permission import ensure_admin_default_tool_permission
@@ -83,6 +86,8 @@ class GeminiImageGenerationPlugin(Star):
         self.api_client: APIClient | None = None
         self._cleanup_task: asyncio.Task | None = None
         self.llm_image_tool: GeminiImageGenerationTool | None = None
+        self.llm_provider_query_tool: ProviderModelQueryTool | None = None
+        self.llm_task_status_tool: BackgroundTaskStatusTool | None = None
 
         # 获取插件数据目录
         self._plugin_data_dir = os.path.join(
@@ -92,6 +97,10 @@ class GeminiImageGenerationPlugin(Star):
 
         # 加载配置（传入数据目录用于备份）
         self.cfg = ConfigLoader(config or {}, data_dir=self._plugin_data_dir).load()
+        self.background_task_manager = BackgroundTaskManager(
+            self._plugin_data_dir,
+            retention_hours=self.cfg.background_task_retention_hours,
+        )
 
         # 初始化各功能模块
         self._init_modules()
@@ -238,11 +247,16 @@ class GeminiImageGenerationPlugin(Star):
         try:
             tool = GeminiImageGenerationTool(plugin=self)
             tool.refresh_from_plugin()
+            provider_query_tool = ProviderModelQueryTool(plugin=self)
+            task_status_tool = BackgroundTaskStatusTool(plugin=self)
             self.llm_image_tool = tool
-            self.context.add_llm_tools(tool)
+            self.llm_provider_query_tool = provider_query_tool
+            self.llm_task_status_tool = task_status_tool
+            for registered_tool in (tool, provider_query_tool, task_status_tool):
+                self.context.add_llm_tools(registered_tool)
             if self.cfg.llm_tool_reference_path_mode == "global":
                 ensure_admin_default_tool_permission(tool.name)
-            logger.debug("已注册 GeminiImageGenerationTool 到 LLM 工具列表")
+            logger.debug("已注册生图、供应商查询和后台任务查询 LLM 工具")
         except Exception as e:
             logger.warning(f"注册 LLM 工具失败: {e}，将使用装饰器方式")
 
@@ -282,6 +296,10 @@ class GeminiImageGenerationPlugin(Star):
         if self._cleanup_task and not self._cleanup_task.done():
             self._cleanup_task.cancel()
             logger.debug("定时清理任务已停止")
+        try:
+            await self.background_task_manager.close()
+        except Exception as e:
+            logger.debug(f"关闭后台任务管理器失败: {e}")
         if self.api_client and hasattr(self.api_client, "close"):
             try:
                 await self.api_client.close()
@@ -422,6 +440,8 @@ class GeminiImageGenerationPlugin(Star):
         # 配合 preserve_reference_image_size 时保留原图尺寸。
         override_resolution: str | None = None,
         override_aspect_ratio: str | None = None,
+        requested_provider: str | None = None,
+        requested_model: str | None = None,
     ):
         """快捷图像生成"""
         if not self._ensure_api_client():
@@ -487,6 +507,8 @@ class GeminiImageGenerationPlugin(Star):
                 reference_images=all_ref_images if all_ref_images else None,
                 enable_smart_retry=self.cfg.enable_smart_retry,
                 image_input_mode="force_base64",
+                requested_provider=requested_provider,
+                requested_model=requested_model,
             )
 
             yield event.plain_result("🎨  生成中...")
@@ -523,6 +545,9 @@ class GeminiImageGenerationPlugin(Star):
                 retry_count=config.retry_count,
                 retry_note=config.retry_note,
                 token_usage=config.token_usage,
+                provider=config.successful_provider,
+                model=config.successful_model,
+                model_alias=config.successful_model_alias,
             ):
                 yield res
 
@@ -583,6 +608,52 @@ class GeminiImageGenerationPlugin(Star):
 
         return base
 
+    def _parse_generation_route(
+        self,
+        prompt: str,
+    ) -> tuple[str, str | None, str | None]:
+        """Parse an unambiguous provider/model selector from the first token."""
+        text = str(prompt or "").strip()
+        if not text:
+            return text, None, None
+        try:
+            tokens = shlex.split(text)
+        except ValueError:
+            tokens = text.split()
+        if not tokens:
+            return text, None, None
+
+        selector = tokens[0]
+        configured_candidates = list(getattr(self.cfg, "provider_candidates", []) or [])
+        provider: str | None = None
+        model: str | None = None
+        consumed = False
+        if "/" in selector:
+            provider_part, model_part = selector.split("/", 1)
+            provider_matches = select_candidates(
+                configured_candidates,
+                provider=provider_part,
+            )
+            if provider_part and provider_matches:
+                provider = provider_part
+                model = model_part or None
+                consumed = True
+            elif select_candidates(configured_candidates, model=selector):
+                model = selector
+                consumed = True
+        else:
+            candidates = select_candidates(
+                configured_candidates,
+                model=selector,
+            )
+            if candidates:
+                model = selector
+                consumed = True
+
+        if not consumed:
+            return text, None, None
+        return " ".join(tokens[1:]).strip(), provider, model
+
     async def _handle_quick_mode(
         self,
         event: AstrMessageEvent,
@@ -592,9 +663,15 @@ class GeminiImageGenerationPlugin(Star):
         mode_name: str,
         mode_key: str | None = None,
         prompt_func: Any = None,
+        requested_provider: str | None = None,
+        requested_model: str | None = None,
         **kwargs,
     ):
         """处理快速模式的通用逻辑"""
+        if requested_provider is None and requested_model is None:
+            prompt, requested_provider, requested_model = self._parse_generation_route(
+                prompt
+            )
         allowed, limit_message = await self.rate_limiter.check_and_consume(event)
         if not allowed:
             if limit_message:
@@ -628,6 +705,8 @@ class GeminiImageGenerationPlugin(Star):
             use_avatar,
             override_resolution=effective_resolution,
             override_aspect_ratio=effective_aspect_ratio,
+            requested_provider=requested_provider,
+            requested_model=requested_model,
             **kwargs,
         ):
             yield result
@@ -644,13 +723,20 @@ class GeminiImageGenerationPlugin(Star):
             return
 
         prompt = self._extract_prompt_from_message(event, prompt, ("生图",))
+        prompt, requested_provider, requested_model = self._parse_generation_route(
+            prompt
+        )
         use_avatar = await self.avatar_handler.should_use_avatar(event)
         generation_prompt = get_generation_prompt(prompt)
 
         yield event.plain_result("🎨 开始生成图像...")
 
         async for result in self._quick_generate_image(
-            event, generation_prompt, use_avatar
+            event,
+            generation_prompt,
+            use_avatar,
+            requested_provider=requested_provider,
+            requested_model=requested_model,
         ):
             yield result
 
@@ -710,6 +796,9 @@ class GeminiImageGenerationPlugin(Star):
         prompt = self._extract_prompt_from_message(
             event, prompt, ("快速",), ("手办化",)
         )
+        prompt, requested_provider, requested_model = self._parse_generation_route(
+            prompt
+        )
         # 参数解析：1/PVC -> 风格1；2/GK -> 风格2
         style_type = 1
         clean_prompt = prompt
@@ -739,6 +828,8 @@ class GeminiImageGenerationPlugin(Star):
             "手办化",
             "figure",
             None,
+            requested_provider=requested_provider,
+            requested_model=requested_model,
         ):
             yield result
 
@@ -752,6 +843,9 @@ class GeminiImageGenerationPlugin(Star):
         """
         prompt = self._extract_prompt_from_message(
             event, prompt, ("快速",), ("表情包",)
+        )
+        prompt, requested_provider, requested_model = self._parse_generation_route(
+            prompt
         )
         allowed, limit_message = await self.rate_limiter.check_and_consume(event)
         if not allowed:
@@ -818,6 +912,8 @@ class GeminiImageGenerationPlugin(Star):
                 use_avatar,
                 override_resolution=sticker_resolution,
                 override_aspect_ratio=sticker_aspect_ratio,
+                requested_provider=requested_provider,
+                requested_model=requested_model,
             ):
                 yield result
             return
@@ -848,6 +944,8 @@ class GeminiImageGenerationPlugin(Star):
                 avatar_reference=valid_avatar_reference,
                 override_resolution=sticker_resolution,
                 override_aspect_ratio=sticker_aspect_ratio,
+                requested_provider=requested_provider,
+                requested_model=requested_model,
             )
             api_duration = time.perf_counter() - api_start_time
 
@@ -954,9 +1052,24 @@ class GeminiImageGenerationPlugin(Star):
                     yield res
                 return
 
-            yield event.plain_result(
-                f"⏱️ API耗时 {api_duration:.1f}s，切割耗时 {split_duration:.1f}s"
-            )
+            request_stats = self.image_generator.get_request_stats()
+            stats_parts = [
+                f"⏱️ API耗时 {api_duration:.1f}s",
+                f"切割耗时 {split_duration:.1f}s",
+            ]
+            successful_provider = request_stats.get("successful_provider")
+            successful_model = request_stats.get("successful_model")
+            successful_alias = request_stats.get("successful_model_alias")
+            if successful_provider:
+                stats_parts.append(f"供应商 {successful_provider}")
+            if successful_model:
+                model_text = (
+                    f"{successful_alias}（{successful_model}）"
+                    if successful_alias
+                    else str(successful_model)
+                )
+                stats_parts.append(f"模型 {model_text}")
+            yield event.plain_result(" | ".join(stats_parts))
 
             # 发送结果
             sent_success = False
@@ -1302,6 +1415,9 @@ class GeminiImageGenerationPlugin(Star):
                 yield event.plain_result(limit_message)
             return
         prompt = self._extract_prompt_from_message(event, prompt, ("改图",))
+        prompt, requested_provider, requested_model = self._parse_generation_route(
+            prompt
+        )
 
         # 构造改图专用提示词，确保修改意图明确
         modification_prompt = get_modification_prompt(prompt)
@@ -1311,7 +1427,12 @@ class GeminiImageGenerationPlugin(Star):
         use_avatar = await self.avatar_handler.should_use_avatar(event)
 
         async for result in self._quick_generate_image(
-            event, modification_prompt, use_avatar, is_modification=True
+            event,
+            modification_prompt,
+            use_avatar,
+            is_modification=True,
+            requested_provider=requested_provider,
+            requested_model=requested_model,
         ):
             yield result
 
@@ -1325,6 +1446,7 @@ class GeminiImageGenerationPlugin(Star):
             return
 
         tail = self._extract_prompt_from_message(event, "", ("换风格",))
+        tail, requested_provider, requested_model = self._parse_generation_route(tail)
         if tail:
             try:
                 tail_tokens = shlex.split(tail)
@@ -1366,6 +1488,8 @@ class GeminiImageGenerationPlugin(Star):
             prompt=full_prompt,
             reference_images=reference_images,
             avatar_reference=avatar_reference,
+            requested_provider=requested_provider,
+            requested_model=requested_model,
         )
         api_duration = time.perf_counter() - api_start
 
@@ -1388,13 +1512,17 @@ class GeminiImageGenerationPlugin(Star):
             yield event.plain_result(result_data)
         send_duration = time.perf_counter() - send_start
 
+        request_stats = self.image_generator.get_request_stats()
         async for res in self.message_sender.send_api_duration(
             event,
             api_duration,
             send_duration,
-            retry_count=self.image_generator.last_request_stats.get("retry_count", 0),
-            retry_note=self.image_generator.last_request_stats.get("retry_note"),
-            token_usage=self.image_generator.last_request_stats.get("token_usage"),
+            retry_count=request_stats.get("retry_count", 0),
+            retry_note=request_stats.get("retry_note"),
+            token_usage=request_stats.get("token_usage"),
+            provider=request_stats.get("successful_provider"),
+            model=request_stats.get("successful_model"),
+            model_alias=request_stats.get("successful_model_alias"),
         ):
             yield res
 
@@ -1441,6 +1569,13 @@ class GeminiImageGenerationPlugin(Star):
         override_resolution: str | None = None,
         override_aspect_ratio: str | None = None,
         is_tool_call: bool = False,
+        requested_provider: str | None = None,
+        requested_model: str | None = None,
+        negative_prompt: str | None = None,
+        watermark: bool | None = None,
+        quality: str | None = None,
+        image_count: int = 1,
+        suppress_resolution: bool = False,
     ) -> tuple[bool, tuple[list[str], list[str], str | None, str | None] | str]:
         """兼容旧 API：核心图像生成方法"""
         return await self.image_generator.generate_image_core(
@@ -1451,6 +1586,13 @@ class GeminiImageGenerationPlugin(Star):
             override_resolution=override_resolution,
             override_aspect_ratio=override_aspect_ratio,
             is_tool_call=is_tool_call,
+            requested_provider=requested_provider,
+            requested_model=requested_model,
+            negative_prompt=negative_prompt,
+            watermark=watermark,
+            quality=quality,
+            image_count=image_count,
+            suppress_resolution=suppress_resolution,
         )
 
     async def _dispatch_send_results(

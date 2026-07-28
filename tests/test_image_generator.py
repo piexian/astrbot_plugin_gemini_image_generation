@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from tl.image_generator import DEFAULT_MAX_REFERENCE_IMAGES, ImageGenerator
@@ -77,3 +79,33 @@ def test_image_generator_invalid_max_reference_images_falls_back_to_default() ->
     )
 
     assert generator.max_reference_images == DEFAULT_MAX_REFERENCE_IMAGES
+
+
+@pytest.mark.asyncio
+async def test_request_stats_legacy_property_is_context_local() -> None:
+    generator = ImageGenerator(context=None, api_client=None)
+    first_ready = asyncio.Event()
+    second_ready = asyncio.Event()
+
+    async def first_request():
+        generator._set_request_stats({"request": "first"})
+        first_ready.set()
+        await second_ready.wait()
+        return generator.get_request_stats(), generator.last_request_stats
+
+    async def second_request():
+        await first_ready.wait()
+        generator.last_request_stats = {"request": "second"}
+        second_ready.set()
+        await asyncio.sleep(0)
+        return generator.get_request_stats(), generator.last_request_stats
+
+    first_result, second_result = await asyncio.gather(
+        first_request(),
+        second_request(),
+    )
+
+    assert first_result == ({"request": "first"}, {"request": "first"})
+    assert second_result == ({"request": "second"}, {"request": "second"})
+    assert "request" not in generator.last_request_stats
+    assert generator.last_request_stats == generator.get_request_stats()

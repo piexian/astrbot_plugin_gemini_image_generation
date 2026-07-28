@@ -22,6 +22,7 @@ class ProviderSpec:
     edit_capability_path: str | None = None
     candidate_config_hook_path: str | None = None
     tool_profile_path: str | None = None
+    capability_profile_path: str | None = None
     rebuild_on_retry: bool = False
     retry_error_arg: bool = False
     parse_errors_with_provider: bool = False
@@ -37,11 +38,17 @@ _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
         "tl.api.agnes_ai.AgnesAIProvider",
         settings_attr="agnes_ai_settings",
     ),
-    ProviderSpec("xai", "tl.api.xai.XAIProvider", settings_attr="xai_settings"),
+    ProviderSpec(
+        "xai",
+        "tl.api.xai.XAIProvider",
+        settings_attr="xai_settings",
+        capability_profile_path="tl.provider_capabilities.xai_capability",
+    ),
     ProviderSpec(
         "minimax",
         "tl.api.minimax.MiniMaxProvider",
         settings_attr="minimax_settings",
+        capability_profile_path="tl.provider_capabilities.minimax_capability",
         rebuild_on_retry=True,
         retry_error_arg=True,
     ),
@@ -49,6 +56,7 @@ _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
         "stepfun",
         "tl.api.stepfun.StepfunProvider",
         settings_attr="stepfun_settings",
+        capability_profile_path="tl.provider_capabilities.stepfun_capability",
     ),
     ProviderSpec(
         "openai_images",
@@ -58,6 +66,7 @@ _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
         edit_capability_path="tl.provider_hooks.openai_images_edit_capability",
         candidate_config_hook_path="tl.provider_hooks.openai_images_candidate_config",
         tool_profile_path="tl.provider_hooks.openai_images_tool_profile",
+        capability_profile_path="tl.provider_capabilities.openai_images_capability",
     ),
     ProviderSpec(
         "doubao",
@@ -65,6 +74,7 @@ _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
         settings_attr="doubao_settings",
         model_field="endpoint_id",
         settings_normalizer_path="tl.provider_hooks.normalize_doubao_settings",
+        capability_profile_path="tl.provider_capabilities.doubao_capability",
         rebuild_on_retry=True,
         parse_errors_with_provider=True,
     ),
@@ -73,12 +83,14 @@ _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
         "tl.api.sensenova.SenseNovaProvider",
         supports_image_edit=False,
         settings_attr="sensenova_settings",
+        capability_profile_path="tl.provider_capabilities.sensenova_capability",
     ),
     ProviderSpec(
         "dashscope",
         "tl.api.dashscope.DashScopeProvider",
         settings_attr="dashscope_settings",
         settings_normalizer_path="tl.provider_hooks.normalize_dashscope_settings",
+        capability_profile_path="tl.provider_capabilities.dashscope_capability",
         parse_errors_with_provider=True,
     ),
 )

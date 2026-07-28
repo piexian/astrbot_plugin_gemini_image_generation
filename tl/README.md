@@ -14,7 +14,10 @@ main.py
   ├─ VisionHandler / image_splitter / sticker_cutter -> 表情包切分
   ├─ RateLimiter -> 群限制与限流
   ├─ KeyManager -> provider_overrides 多 Key 轮换
-  └─ GeminiImageGenerationTool -> AstrBot LLM Tool
+  └─ GeminiImageGenerationTool / Query Tools -> AstrBot LLM Tools
+       ├─ provider_capabilities -> 路由、参数能力、原生批量上限
+       ├─ BackgroundTaskManager -> 持久化任务状态
+       └─ batch_generation -> 命名批量编排与结果发送
 ```
 
 ## 稳定内部入口
@@ -27,6 +30,10 @@ main.py
 | `get_api_client()` / `clear_api_client()` | `tl_api.py` | API 客户端单例管理 |
 | `ImageGenerator.generate_image_core()` | `image_generator.py` | 指令与 LLM Tool 共用的核心生图逻辑 |
 | `GeminiImageGenerationTool.call()` | `llm_tools.py` | AstrBot FunctionTool 调用入口 |
+| `ProviderModelQueryTool.call()` | `llm_query_tools.py` | 查询已配置供应商、模型、别名、生成模式和可选参数 |
+| `BackgroundTaskStatusTool.call()` | `llm_query_tools.py` | 按会话查询后台任务状态 |
+| `BackgroundTaskManager` | `background_tasks.py` | 持久化、隔离和清理后台任务记录 |
+| `run_batch_job()` | `batch_generation.py` | 按配置并发执行命名批量任务并顺序发送结果 |
 | `execute_image_generation_tool()` | `llm_tools.py` | 兼容旧调用方式的工具入口 |
 | `MessageSender.dispatch_send_results()` | `message_sender.py` | 图片、文本、合并转发发送结果构造入口 |
 | `MessageSender.send_results_with_stream_retry()` | `message_sender.py` | 直接发送结果；原始发送失败后按阈值尝试 NapCat Stream API 兜底 |
@@ -73,8 +80,8 @@ Provider 协议：
 ```python
 async def build_request(
     self, *, client: Any, config: ApiRequestConfig
-) -> ProviderRequest:
-    ...
+) -> ProviderRequest: ...
+
 
 async def parse_response(
     self,
@@ -84,8 +91,7 @@ async def parse_response(
     session: aiohttp.ClientSession,
     api_base: str | None = None,
     http_status: int | None = None,
-) -> tuple[list[str], list[str], str | None, str | None]:
-    ...
+) -> tuple[list[str], list[str], str | None, str | None]: ...
 ```
 
 `parse_response()` 返回 `(image_urls, image_paths, text_content, thought_signature)`。
@@ -192,6 +198,7 @@ generate_image()
 | `provider_loader.py` | `load_callable(path)` | 懒加载 provider class 和 spec hook |
 | `provider_hooks.py` | 配置校验、归一化、候选配置、工具 profile hook | 承载 provider 专属行为，调用方由 spec 字段声明 |
 | `provider_settings.py` | `first_provider_settings()` / `first_provider_tool_profile()` | 共享 provider settings 读取 helper，避免只读旧 `*_settings` 字段 |
+| `provider_capabilities.py` | `candidate_capability()` / `select_candidates()` / `apply_request_overrides()` | 集中声明生成模式、工具参数、原生批量上限和候选过滤规则 |
 | `api/provider_limits.py` | `MAX_REFERENCE_IMAGES_GOOGLE` / `MAX_REFERENCE_IMAGES_DOUBAO` / `MAX_REFERENCE_IMAGES_OPENAI_COMPAT` / `MAX_REFERENCE_IMAGES_MINIMAX` / `MAX_REFERENCE_IMAGES_DASHSCOPE` | 集中维护各 provider 参考图上限常量（`Final[int]`） |
 | `api/reference_intake.py` | `announce_reference_intake(references, max_count, *, log_prefix="")` | 参考图接收阶段统一日志，返回 `(收到数量, 采用数量)` |
 | `api/data_uri.py` | `format_data_uri(b64_data, mime_type=None)` / `strip_data_uri_prefix(s)` / `looks_like_base64(s)` | data URI 与 base64 字符串的格式化/识别助手 |
@@ -342,7 +349,8 @@ grok2api provider，继承 `OpenAICompatProvider`。
 |------|------|
 | `ImageGenerator(...)` | 核心图像生成处理器 |
 | `update_config(**kwargs)` | 热更新配置字段 |
-| `generate_image_core(event, prompt, reference_images, avatar_reference, override_resolution=None, override_aspect_ratio=None, is_tool_call=False)` | 不直接发送消息，只返回成功状态和生成结果 |
+| `generate_image_core(...)` | 不直接发送消息；支持供应商/模型路由、请求级可选参数和图片数量，返回成功状态和生成结果 |
+| `get_request_stats()` | 返回当前异步任务最终成功的候选、重试和 token 统计 |
 
 返回格式：
 
@@ -364,11 +372,25 @@ grok2api provider，继承 `OpenAICompatProvider`。
 | `_build_call_tool_result()` | 将图片结果封装为 `CallToolResult`，包含 `ImageContent` / `TextContent` |
 | `_background_generate_and_send()` | 后台生成完成后发送结果 |
 
-工具参数固定为：
+核心工具参数包括：
 
 ```text
-prompt + use_reference_images + include_user_avatar + resolution + aspect_ratio + for_forum
+prompt + provider + model + negative_prompt + watermark + quality
++ use_reference_images + include_user_avatar + reference_image_paths
++ preserve_reference_image_size + resolution + aspect_ratio + batch_tasks + for_forum
 ```
+
+### `provider_capabilities.py` / `llm_query_tools.py`
+
+- `candidate_capability()` 是模型生成模式、请求参数和原生批量上限的运行时事实来源。
+- `select_candidates()` 必须保持配置顺序；显式路由或参数不匹配时不得回退到过滤范围外。
+- 默认查询只返回供应商、原始模型、别名和生成模式，`detail=true` 才返回生图工具实际接受的模型参数。
+
+### `background_tasks.py` / `batch_generation.py`
+
+- 后台记录按 `unified_msg_origin` 隔离并落盘，重启时将未完成任务标记为 `interrupted`。
+- 批量任务以命名条目为并发单位；条目内部遵循供应商原生单次上限并在返回不足时继续补齐。
+- 最终发送保持输入顺序，任务状态区分 `succeeded`、`partial_success`、`failed` 和 `interrupted`。
 
 ### `thought_signature.py`
 

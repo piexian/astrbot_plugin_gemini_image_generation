@@ -74,6 +74,7 @@ class ProviderCandidate:
     priority: int = 0
     order: int = 0
     supports_image_edit: bool = True
+    model_alias: str | None = None
 
     @property
     def api_keys(self) -> list[str]:
@@ -132,6 +133,10 @@ class PluginConfig:
     llm_tool_timeout_reserve_percent: int = 50
     llm_tool_reference_path_mode: str = "whitelist"  # "whitelist" | "global"
     llm_tool_reference_allowed_dirs: list[str] = field(default_factory=list)
+    batch_max_images_per_task: int = 10
+    batch_max_tasks: int = 20
+    batch_concurrency: int = 3
+    background_task_retention_hours: int = 24
 
     # 表情包设置
     sticker_grid_rows: int = 4
@@ -455,6 +460,7 @@ class ConfigLoader:
                     "size",
                     "custom_size",
                     "negative_prompt",
+                    "model_alias",
                 ):
                     if isinstance(settings.get(key), str):
                         settings[key] = settings[key].strip()
@@ -495,6 +501,7 @@ class ConfigLoader:
                     priority=settings["priority"],
                     order=order,
                     supports_image_edit=edit_capable,
+                    model_alias=_clean_string(settings.get("model_alias")) or None,
                 )
                 candidates_by_type.setdefault(template_key, []).append(candidate)
 
@@ -630,6 +637,19 @@ class ConfigLoader:
                 for item in raw_allowed_dirs
                 if isinstance(item, str) and item.strip()
             ]
+
+        config.batch_max_images_per_task = _clean_positive_int(
+            image_settings.get("batch_max_images_per_task"), 10
+        )
+        config.batch_max_tasks = _clean_positive_int(
+            image_settings.get("batch_max_tasks"), 20
+        )
+        config.batch_concurrency = _clean_positive_int(
+            image_settings.get("batch_concurrency"), 3
+        )
+        config.background_task_retention_hours = _clean_positive_int(
+            image_settings.get("background_task_retention_hours"), 24
+        )
 
         # 表情包网格设置
         grid_raw = str(image_settings.get("sticker_grid") or "4x4").strip()
