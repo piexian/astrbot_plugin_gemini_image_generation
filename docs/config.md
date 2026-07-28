@@ -29,6 +29,7 @@
 | `priority` | `0` | 同类型多条配置按优先级从高到低尝试；相同优先级按配置表从上到下 |
 | `api_keys` | `[]` | API Key 列表，支持多 Key 轮换 |
 | `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
+| `model_alias` | - | 可选模型别名，供命令和 LLM 工具选择；可跨供应商复用，实际请求仍使用原始模型名 |
 | `model` | - | 模型名称；豆包使用 `endpoint_id` |
 | `api_base` | - | API 端点地址 |
 | `proxy` | - | 独立代理地址，优先级高于全局代理和环境变量 |
@@ -71,6 +72,10 @@ google / openai / zai / grok2api / agnes_ai / xai / minimax / stepfun / openai_i
 | `llm_tool_timeout_reserve_percent` | `50` | 为 `tool_call_timeout` 预留的百分比，剩余时间用于前台同步等待 |
 | `llm_tool_reference_path_mode` | `whitelist` | LLM 工具 `reference_image_paths` 的本地路径权限模式 |
 | `llm_tool_reference_allowed_dirs` | `[]` | `whitelist` 模式下额外允许的参考图目录 |
+| `batch_max_images_per_task` | `10` | 单个命名提示词的目标图片数量上限；供应商原生单次上限更小时自动拆分补齐 |
+| `batch_max_tasks` | `20` | 一次 `batch_tasks` 允许的命名任务条目上限 |
+| `batch_concurrency` | `3` | 后台批量生成并发数；每个条目内部按供应商单次上限顺序补齐 |
+| `background_task_retention_hours` | `24` | 后台任务状态记录保留时间；插件重启会把未完成任务标记为 `interrupted` |
 
 分辨率、长宽比、最大参考图数量、Google 文本响应、Google 搜索接地、OpenAI/OpenAI 兼容参数名等均在 `provider_settings.provider_overrides` 的各供应商条目内配置。
 

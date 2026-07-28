@@ -21,6 +21,7 @@ class _Candidate:
     model: str
     settings: dict
     api_base: str = ""
+    model_alias: str | None = None
 
     @property
     def api_keys(self) -> list[str]:
@@ -235,6 +236,58 @@ async def test_candidate_polling_copies_stats_back_to_original_config() -> None:
     assert original_config.token_usage == {"total_tokens": 11}
     assert original_config.retry_note == "重试 2 次后成功"
     assert original_config.api_type == ""
+
+
+@pytest.mark.asyncio
+async def test_explicit_model_alias_never_retries_outside_matching_candidates() -> None:
+    client = GeminiAPIClient(["fallback"])
+    candidates = [
+        _Candidate(
+            id="google#1",
+            api_type="google",
+            model="gemini-image-a",
+            model_alias="shared",
+            settings={"api_keys": ["candidate-key"]},
+        ),
+        _Candidate(
+            id="openai#1",
+            api_type="openai",
+            model="image-model-b",
+            model_alias="shared",
+            settings={"api_keys": ["candidate-key"]},
+        ),
+        _Candidate(
+            id="google#2",
+            api_type="google",
+            model="unrelated-model",
+            settings={"api_keys": ["candidate-key"]},
+        ),
+    ]
+    client.set_provider_candidates(candidates)
+    original_config = ApiRequestConfig(
+        model="",
+        prompt="test",
+        api_type="",
+        requested_model="shared",
+    )
+    attempted: list[str] = []
+
+    async def fake_generate_image_single(**kwargs):
+        candidate_config = kwargs["config"]
+        attempted.append(candidate_config.candidate_id)
+        if candidate_config.candidate_id == "google#1":
+            raise APIError("retry", 500, "server_error")
+        return ["url"], ["path"], None, None
+
+    client._generate_image_single = fake_generate_image_single  # type: ignore[method-assign]
+
+    result = await client._generate_image_with_candidates(original_config)
+
+    assert result == (["url"], ["path"], None, None)
+    assert attempted == ["google#1", "openai#1"]
+    assert original_config.successful_provider == "openai"
+    assert original_config.successful_model == "image-model-b"
+    assert original_config.successful_model_alias == "shared"
 
 
 @pytest.mark.asyncio

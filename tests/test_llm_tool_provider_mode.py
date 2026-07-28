@@ -51,6 +51,7 @@ sys.modules["astrbot.core.astr_agent_context"] = context_module
 
 from tl.llm_tools import (  # noqa: E402
     _build_tool_parameters,
+    _first_provider_candidate,
     _is_custom_size_tool_mode,
     _resolve_tool_size_params,
 )
@@ -116,6 +117,23 @@ def test_openai_custom_size_tool_mode_uses_first_candidate_settings() -> None:
     assert "size" not in params["properties"]
     assert "resolution" in params["properties"]
     assert "aspect_ratio" in params["properties"]
+
+
+def test_explicit_unmatched_route_does_not_fallback_to_first_candidate() -> None:
+    first = _candidate(
+        "openai_images",
+        {"size_mode": "custom", "custom_size": "1536x1024"},
+    )
+    plugin = _plugin_with_candidates(first, _candidate("google"))
+
+    assert _first_provider_candidate(plugin) is first
+    assert _first_provider_candidate(plugin, provider="missing") is None
+    assert _first_provider_candidate(plugin, model="missing") is None
+    assert _resolve_tool_size_params(
+        plugin,
+        provider="missing",
+        size="1024x1024",
+    ) == (None, None, None)
 
 
 def test_openai_custom_size_tool_params_keep_preset_controls() -> None:

@@ -29,6 +29,12 @@ from .api import (
 )
 from .api_headers import apply_api_key_to_headers, extract_api_key_from_headers
 from .api_types import APIError, ApiRequestConfig
+from .provider_capabilities import (
+    apply_request_overrides,
+    explicit_runtime_parameters,
+    routing_mode,
+    select_candidates,
+)
 from .provider_loader import load_callable
 
 _DOWNLOAD_PROXY_DEFAULT = object()
@@ -384,6 +390,11 @@ class GeminiAPIClient:
         self, base_config: ApiRequestConfig, candidate: Any
     ) -> ApiRequestConfig:
         settings = getattr(candidate, "settings", None) or {}
+        request_settings, effective_image_count = apply_request_overrides(
+            base_config,
+            candidate,
+            settings,
+        )
         api_type = normalize_api_type(getattr(candidate, "api_type", ""))
 
         max_refs = self._coerce_max_reference_images(
@@ -435,8 +446,10 @@ class GeminiAPIClient:
             resolution_param_name=resolution_param_name,
             aspect_ratio_param_name=aspect_ratio_param_name,
             reference_images=reference_images if reference_images else None,
-            provider_settings=settings,
+            provider_settings=request_settings,
             proxy=self._candidate_proxy(candidate) or self._default_proxy,
+            model_alias=getattr(candidate, "model_alias", None),
+            effective_image_count=effective_image_count,
         )
 
     @staticmethod
@@ -444,6 +457,11 @@ class GeminiAPIClient:
         target.retry_count = source.retry_count
         target.token_usage = source.token_usage
         target.retry_note = source.retry_note
+        target.effective_image_count = source.effective_image_count
+        target.successful_candidate_id = source.candidate_id
+        target.successful_provider = source.api_type
+        target.successful_model = source.model
+        target.successful_model_alias = source.model_alias
 
     def _candidate_key_count(self, key_scope: str) -> int:
         if self._key_manager and self._key_manager.has_provider(key_scope):
@@ -695,6 +713,10 @@ class GeminiAPIClient:
             (image_urls, image_paths, text_content, thought_signature)，如果失败则返回空列表和None
         """
         if self.provider_candidates:
+            config.routing_mode = routing_mode(
+                config.requested_provider,
+                config.requested_model,
+            )
             return await self._generate_image_with_candidates(
                 config=config,
                 max_retries=max_retries,
@@ -703,13 +725,18 @@ class GeminiAPIClient:
                 max_total_time=max_total_time,
             )
 
-        return await self._generate_image_single(
+        result = await self._generate_image_single(
             config=config,
             max_retries=max_retries,
             total_timeout=total_timeout,
             per_retry_timeout=per_retry_timeout,
             max_total_time=max_total_time,
         )
+        config.successful_candidate_id = config.candidate_id
+        config.successful_provider = config.api_type
+        config.successful_model = config.model
+        config.successful_model_alias = config.model_alias
+        return result
 
     async def _generate_image_with_candidates(
         self,
@@ -724,6 +751,33 @@ class GeminiAPIClient:
         skipped_reasons: list[str] = []
         loop = asyncio.get_running_loop()
         started_at = loop.time()
+        required_parameters = explicit_runtime_parameters(config)
+        request_values = {name: getattr(config, name) for name in required_parameters}
+        candidates = select_candidates(
+            self.provider_candidates,
+            provider=config.requested_provider,
+            model=config.requested_model,
+            has_reference_images=has_reference_images,
+            required_parameters=required_parameters,
+            request_values=request_values,
+        )
+        if not candidates:
+            selections: list[str] = []
+            if config.requested_provider:
+                selections.append(f"供应商={config.requested_provider}")
+            if config.requested_model:
+                selections.append(f"模型/别名={config.requested_model}")
+            if has_reference_images:
+                selections.append("生成模式=image_to_image")
+            if required_parameters:
+                selections.append("参数=" + ",".join(sorted(required_parameters)))
+            detail = "；".join(selections) or "当前配置"
+            raise APIError(
+                f"没有匹配本次请求能力的供应商候选：{detail}",
+                None,
+                "no_available_provider",
+                retryable=False,
+            )
 
         def coerce_positive_int(value: Any) -> int | None:
             try:
@@ -744,7 +798,7 @@ class GeminiAPIClient:
                 raise APIError("图像生成时间过长，已超时。", None, "timeout")
             return max(int(remaining), 1)
 
-        for candidate in self.provider_candidates:
+        for candidate in candidates:
             candidate_id = str(
                 getattr(candidate, "id", None)
                 or normalize_api_type(getattr(candidate, "api_type", ""))

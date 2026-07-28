@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/Version-v2.3.0-blue)
+![Version](https://img.shields.io/badge/Version-v2.4.0-blue)
 ![License](https://img.shields.io/badge/License-AGPL--3.0-orange)
 
 **强大的 AstrBot 图像生成插件，支持生图、改图、头像参考、表情包切分和 LLM 工具调用。**
@@ -17,8 +17,8 @@
 - **快速预设**：头像、海报、壁纸、卡片、手机壁纸、手办化、表情包一键生成。
 - **智能参考图**：自动读取消息图片、引用图片、合并转发、群文件，以及用户头像和 @ 对象头像。
 - **多供应商支持**：Google Gemini、OpenAI 兼容、OpenAI Images、Agnes AI、xAI Images、MiniMax、阶跃星辰、Zai、grok2api、豆包、SenseNova、DashScope（通义万相/千问图像）。
-- **供应商轮询**：在插件内配置生图供应商、轮询顺序和同类型优先级，失败时按配置顺序自动尝试下一个候选。
-- **LLM 工具集成**：支持自然语言触发生图，前台短等待，超时后自动转后台发送。
+- **供应商与模型路由**：支持供应商、原始模型或别名选择；未指定时按配置轮询，显式指定时只在匹配候选内重试。
+- **LLM 工具集成**：支持自然语言生图、参数能力查询、后台任务查询和命名批量生成；前台超时后返回任务号并继续生成。
 - **表情包切分**：内置 SmartMemeSplitter v4，默认优先走自适应黑描边贴纸切分，并保留手动网格、视觉识别等兜底路径。
 - **限流与缓存**：支持群白名单/黑名单、周期限流、KV 持久化、临时文件自动清理。
 

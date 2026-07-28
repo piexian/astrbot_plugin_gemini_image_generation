@@ -71,6 +71,12 @@
                 "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
                 "default": 0
               },
+              "model_alias": {
+                "description": "模型别名（可选）",
+                "type": "string",
+                "hint": "供指令和 LLM 工具选择模型使用；同一别名可在多个供应商中复用。实际请求仍发送原始模型名。",
+                "default": ""
+              },
               "model": {
                 "description": "模型名称",
                 "type": "string",
@@ -178,6 +184,12 @@
                 "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
                 "default": 0
               },
+              "model_alias": {
+                "description": "模型别名（可选）",
+                "type": "string",
+                "hint": "供指令和 LLM 工具选择模型使用；同一别名可在多个供应商中复用。实际请求仍发送原始模型名。",
+                "default": ""
+              },
               "model": {
                 "description": "模型名称",
                 "type": "string",
@@ -273,6 +285,12 @@
                 "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
                 "default": 0
               },
+              "model_alias": {
+                "description": "模型别名（可选）",
+                "type": "string",
+                "hint": "供指令和 LLM 工具选择模型使用；同一别名可在多个供应商中复用。实际请求仍发送原始模型名。",
+                "default": ""
+              },
               "model": {
                 "description": "模型名称",
                 "type": "string",
@@ -350,6 +368,12 @@
                 "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
                 "default": 0
               },
+              "model_alias": {
+                "description": "模型别名（可选）",
+                "type": "string",
+                "hint": "供指令和 LLM 工具选择模型使用；同一别名可在多个供应商中复用。实际请求仍发送原始模型名。",
+                "default": ""
+              },
               "model": {
                 "description": "模型名称",
                 "type": "string",
@@ -426,6 +450,12 @@
                 "type": "int",
                 "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
                 "default": 0
+              },
+              "model_alias": {
+                "description": "模型别名（可选）",
+                "type": "string",
+                "hint": "供指令和 LLM 工具选择模型使用；同一别名可在多个供应商中复用。实际请求仍发送原始模型名。",
+                "default": ""
               },
               "model": {
                 "description": "模型名称",
@@ -524,6 +554,12 @@
                 "type": "int",
                 "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
                 "default": 0
+              },
+              "model_alias": {
+                "description": "模型别名（可选）",
+                "type": "string",
+                "hint": "供指令和 LLM 工具选择模型使用；同一别名可在多个供应商中复用。实际请求仍发送原始模型名。",
+                "default": ""
               },
               "model": {
                 "description": "模型名称",
@@ -629,6 +665,12 @@
                 "type": "int",
                 "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
                 "default": 0
+              },
+              "model_alias": {
+                "description": "模型别名（可选）",
+                "type": "string",
+                "hint": "供指令和 LLM 工具选择模型使用；同一别名可在多个供应商中复用。实际请求仍发送原始模型名。",
+                "default": ""
               },
               "model": {
                 "description": "模型名称",
@@ -775,6 +817,12 @@
                 "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
                 "default": 0
               },
+              "model_alias": {
+                "description": "模型别名（可选）",
+                "type": "string",
+                "hint": "供指令和 LLM 工具选择模型使用；同一别名可在多个供应商中复用。实际请求仍发送原始模型名。",
+                "default": ""
+              },
               "model": {
                 "description": "模型名称",
                 "type": "string",
@@ -891,6 +939,12 @@
                 "type": "int",
                 "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
                 "default": 0
+              },
+              "model_alias": {
+                "description": "模型别名（可选）",
+                "type": "string",
+                "hint": "供指令和 LLM 工具选择模型使用；同一别名可在多个供应商中复用。实际请求仍发送原始模型名。",
+                "default": ""
               },
               "model": {
                 "description": "模型名称",
@@ -1081,6 +1135,12 @@
                 "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
                 "default": 0
               },
+              "model_alias": {
+                "description": "模型别名（可选）",
+                "type": "string",
+                "hint": "供指令和 LLM 工具选择模型使用；同一别名可在多个供应商中复用。实际请求仍发送原始模型名。",
+                "default": ""
+              },
               "endpoint_id": {
                 "description": "Endpoint/Model ID",
                 "type": "string",
@@ -1195,6 +1255,12 @@
                 "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
                 "default": 0
               },
+              "model_alias": {
+                "description": "模型别名（可选）",
+                "type": "string",
+                "hint": "供指令和 LLM 工具选择模型使用；同一别名可在多个供应商中复用。实际请求仍发送原始模型名。",
+                "default": ""
+              },
               "model": {
                 "description": "模型名称",
                 "type": "string",
@@ -1293,6 +1359,12 @@
                 "type": "int",
                 "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
                 "default": 0
+              },
+              "model_alias": {
+                "description": "模型别名（可选）",
+                "type": "string",
+                "hint": "供指令和 LLM 工具选择模型使用；同一别名可在多个供应商中复用。实际请求仍发送原始模型名。",
+                "default": ""
               },
               "model": {
                 "description": "模型名称",
@@ -1495,6 +1567,50 @@
         "type": "list",
         "hint": "whitelist 模式下额外允许的参考图目录；默认已覆盖常见 AstrBot 数据目录。仅接受可完整校验的图片文件，详见 docs/config.md。",
         "default": []
+      },
+      "batch_max_images_per_task": {
+        "description": "单个批量任务图片上限",
+        "type": "int",
+        "hint": "每个命名提示词允许生成的目标图片数量。供应商单次原生上限更小时会自动拆分补齐。",
+        "default": 10,
+        "slider": {
+          "min": 1,
+          "max": 100,
+          "step": 1
+        }
+      },
+      "batch_max_tasks": {
+        "description": "批量任务条目上限",
+        "type": "int",
+        "hint": "一次 batch_tasks 最多包含的命名提示词数量。",
+        "default": 20,
+        "slider": {
+          "min": 1,
+          "max": 100,
+          "step": 1
+        }
+      },
+      "batch_concurrency": {
+        "description": "批量生成并发数",
+        "type": "int",
+        "hint": "后台批量任务同时执行的命名提示词数量。每个条目内部按供应商单次上限顺序补齐。",
+        "default": 3,
+        "slider": {
+          "min": 1,
+          "max": 20,
+          "step": 1
+        }
+      },
+      "background_task_retention_hours": {
+        "description": "后台任务记录保留小时数",
+        "type": "int",
+        "hint": "任务状态查询可访问记录的保留时间；插件重启会将未完成任务标记为 interrupted。",
+        "default": 24,
+        "slider": {
+          "min": 1,
+          "max": 720,
+          "step": 1
+        }
       }
     }
   },

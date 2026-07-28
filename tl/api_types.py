@@ -32,6 +32,14 @@ class ApiRequestConfig:
     image_input_mode: str = "force_base64"  # 参考图统一转 base64
     provider_settings: dict | None = None  # 当前候选供应商的请求级配置
     proxy: str | None = None  # 当前请求使用的代理
+    requested_provider: str | None = None  # 显式供应商选择
+    requested_model: str | None = None  # 显式原始模型或别名选择
+    negative_prompt: str | None = None  # 请求级负面提示词覆盖
+    watermark: bool | None = None  # 请求级水印覆盖
+    quality: str | None = None  # 请求级质量覆盖
+    image_count: int = 1  # 本次上游请求期望返回的图片数量
+    effective_image_count: int = 1  # 当前候选实际单次请求数量
+    model_alias: str | None = None  # 当前候选展示别名
 
     # 官方文档推荐参数
     temperature: float = 0.7  # 控制生成随机性，0.0-1.0
@@ -44,6 +52,11 @@ class ApiRequestConfig:
     retry_count: int = 0  # 本次请求成功前发生的重试次数
     token_usage: dict[str, int] | None = None  # 本次请求返回的 token 用量
     retry_note: str | None = None  # 可展示给用户的重试说明
+    successful_candidate_id: str | None = None
+    successful_provider: str | None = None
+    successful_model: str | None = None
+    successful_model_alias: str | None = None
+    routing_mode: str = "full_polling"
 
 
 class APIError(Exception):

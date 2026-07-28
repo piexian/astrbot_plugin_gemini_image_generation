@@ -320,6 +320,9 @@ class MessageSender:
         retry_count: int = 0,
         retry_note: str | None = None,
         token_usage: dict[str, int] | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+        model_alias: str | None = None,
     ):
         """
         发送耗时统计消息
@@ -339,6 +342,11 @@ class MessageSender:
                 parts.append(f"重试 {max(int(retry_count or 0), 0)}次")
             if self.show_retry_stats and retry_note:
                 parts.append(str(retry_note))
+            if provider:
+                parts.append(f"供应商 {provider}")
+            if model:
+                model_text = f"{model_alias}（{model}）" if model_alias else str(model)
+                parts.append(f"模型 {model_text}")
             token_text = (
                 self._format_token_usage(token_usage)
                 if self.show_token_usage_stats

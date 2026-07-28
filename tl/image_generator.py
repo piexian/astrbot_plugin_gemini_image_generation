@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextvars import ContextVar
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -55,11 +56,15 @@ class ImageGenerator:
         )
         self._filter_valid_fn = filter_valid_fn
         self._get_tool_timeout_fn = get_tool_timeout_fn
-        self.last_request_stats: dict[str, object] = {
+        initial_request_stats: dict[str, object] = {
             "retry_count": 0,
             "token_usage": None,
             "retry_note": None,
         }
+        self._request_stats_var: ContextVar[dict[str, object]] = ContextVar(
+            "image_generation_request_stats",
+            default=initial_request_stats,
+        )
 
     def update_config(self, **kwargs):
         """更新配置"""
@@ -90,6 +95,22 @@ class ImageGenerator:
             return self._get_tool_timeout_fn(event)
         return 120
 
+    def get_request_stats(self) -> dict[str, object]:
+        """Return stats for the current async generation context."""
+        return dict(self._request_stats_var.get())
+
+    @property
+    def last_request_stats(self) -> dict[str, object]:
+        """Compatibility view of stats for the current async context."""
+        return self.get_request_stats()
+
+    @last_request_stats.setter
+    def last_request_stats(self, stats: dict[str, object]) -> None:
+        self._request_stats_var.set(dict(stats))
+
+    def _set_request_stats(self, stats: dict[str, object]) -> None:
+        self.last_request_stats = stats
+
     async def generate_image_core(
         self,
         event: AstrMessageEvent,
@@ -99,6 +120,13 @@ class ImageGenerator:
         override_resolution: str | None = None,
         override_aspect_ratio: str | None = None,
         is_tool_call: bool = False,
+        requested_provider: str | None = None,
+        requested_model: str | None = None,
+        negative_prompt: str | None = None,
+        watermark: bool | None = None,
+        quality: str | None = None,
+        image_count: int = 1,
+        suppress_resolution: bool = False,
     ) -> tuple[bool, tuple[list[str], list[str], str | None, str | None] | str]:
         """
         内部核心图像生成方法，不发送消息，只返回结果
@@ -108,21 +136,37 @@ class ImageGenerator:
             (是否成功, (图片URL列表, 图片路径列表, 文本内容, 思维签名) 或错误消息)
         """
         if not self.api_client:
-            self.last_request_stats = {
-                "retry_count": 0,
-                "token_usage": None,
-                "retry_note": None,
-            }
+            self._set_request_stats(
+                {
+                    "retry_count": 0,
+                    "token_usage": None,
+                    "retry_note": None,
+                    "successful_candidate_id": None,
+                    "successful_provider": None,
+                    "successful_model": None,
+                    "successful_model_alias": None,
+                    "effective_image_count": 1,
+                    "routing_mode": "full_polling",
+                }
+            )
             return False, (
                 "❌ 无法生成图像：API 客户端尚未初始化。\n"
                 "🧐 可能原因：服务启动过快，提供商尚未加载或 API 配置/密钥缺失。\n"
                 "✅ 建议：先在配置文件中填写有效的 API 密钥并重启服务。"
             )
-        self.last_request_stats = {
-            "retry_count": 0,
-            "token_usage": None,
-            "retry_note": None,
-        }
+        self._set_request_stats(
+            {
+                "retry_count": 0,
+                "token_usage": None,
+                "retry_note": None,
+                "successful_candidate_id": None,
+                "successful_provider": None,
+                "successful_model": None,
+                "successful_model_alias": None,
+                "effective_image_count": 1,
+                "routing_mode": "full_polling",
+            }
+        )
 
         valid_msg_images = self._filter_valid_reference_images(
             reference_images, source="消息图片"
@@ -154,9 +198,16 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
             api_base=None,
             resolution=override_resolution,
             aspect_ratio=override_aspect_ratio,
+            suppress_resolution=suppress_resolution,
             reference_images=all_reference_images if all_reference_images else None,
             enable_smart_retry=self.enable_smart_retry,
             image_input_mode="force_base64",
+            requested_provider=requested_provider,
+            requested_model=requested_model,
+            negative_prompt=negative_prompt,
+            watermark=watermark,
+            quality=quality,
+            image_count=max(int(image_count or 1), 1),
         )
 
         logger.info("图像生成请求:")
@@ -190,11 +241,19 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
                 per_retry_timeout=per_retry_timeout,
                 max_total_time=max_total_time,
             )
-            self.last_request_stats = {
-                "retry_count": request_config.retry_count,
-                "token_usage": request_config.token_usage,
-                "retry_note": request_config.retry_note,
-            }
+            self._set_request_stats(
+                {
+                    "retry_count": request_config.retry_count,
+                    "token_usage": request_config.token_usage,
+                    "retry_note": request_config.retry_note,
+                    "successful_candidate_id": request_config.successful_candidate_id,
+                    "successful_provider": request_config.successful_provider,
+                    "successful_model": request_config.successful_model,
+                    "successful_model_alias": request_config.successful_model_alias,
+                    "effective_image_count": request_config.effective_image_count,
+                    "routing_mode": request_config.routing_mode,
+                }
+            )
 
             end_time = asyncio.get_running_loop().time()
             api_duration = end_time - start_time
