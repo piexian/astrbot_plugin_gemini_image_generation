@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [2.4.1] - 2026-08-01
+
+### Added
+
+- 支持 QQ 官方机器人 WebSocket 事件通过 bot client appid 与用户 openid 获取头像，并在元数据中声明对应平台支持；代码兼容但不声明未经实机验证的 Webhook 路径。
+
 ## [2.4.0] - 2026-07-23
 
 ### Added
