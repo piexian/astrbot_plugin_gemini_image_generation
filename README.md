@@ -138,4 +138,10 @@ AGPL-3.0 License - 详见 [LICENSE](https://github.com/piexian/astrbot_plugin_ge
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/image?repos=piexian/astrbot_plugin_gemini_image_generation&type=date&legend=top-left)](https://www.star-history.com/?repos=piexian%2Fastrbot_plugin_gemini_image_generation&type=date&legend=top-left)
+<a href="https://www.star-history.com/?repos=piexian%2Fastrbot_plugin_gemini_image_generation&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=piexian/astrbot_plugin_gemini_image_generation&type=date&theme=dark&legend=top-left&sealed_token=Z2XbcOsIu5Vg1iRLrkQbpmCSLkAoEzGqgt9eiqaqMx8gNx7IDJO6nfyApkfrcU0PAQGpcbWkrWlfcUoYmgsOOUozIaQ6p7XOLMOVPcem8xNIigKJe9wFEw" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=piexian/astrbot_plugin_gemini_image_generation&type=date&legend=top-left&sealed_token=Z2XbcOsIu5Vg1iRLrkQbpmCSLkAoEzGqgt9eiqaqMx8gNx7IDJO6nfyApkfrcU0PAQGpcbWkrWlfcUoYmgsOOUozIaQ6p7XOLMOVPcem8xNIigKJe9wFEw" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=piexian/astrbot_plugin_gemini_image_generation&type=date&legend=top-left&sealed_token=Z2XbcOsIu5Vg1iRLrkQbpmCSLkAoEzGqgt9eiqaqMx8gNx7IDJO6nfyApkfrcU0PAQGpcbWkrWlfcUoYmgsOOUozIaQ6p7XOLMOVPcem8xNIigKJe9wFEw" />
+ </picture>
+</a>
