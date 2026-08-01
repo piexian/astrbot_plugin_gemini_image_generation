@@ -120,6 +120,33 @@ def _pick_avatar_url(data: dict | None) -> str | None:
     return None
 
 
+_QQ_OFFICIAL_PLATFORMS = {"qq_official", "qq_official_webhook"}
+
+
+def _build_qq_official_avatar_url(event, user_id: str) -> str | None:
+    """Build the QQ Official avatar URL from the bot appid and user openid."""
+    try:
+        platform_name = str(event.get_platform_name() or "").strip()
+    except Exception:
+        platform_name = str(
+            getattr(getattr(event, "platform_meta", None), "name", "") or ""
+        ).strip()
+    if platform_name not in _QQ_OFFICIAL_PLATFORMS:
+        return None
+
+    bot = getattr(event, "bot", None) or getattr(event, "_bot", None)
+    appid = str(getattr(getattr(bot, "platform", None), "appid", "") or "").strip()
+    openid = str(user_id or "").strip()
+    if not appid or not openid:
+        return None
+
+    return (
+        "https://q.qlogo.cn/qqapp/"
+        f"{urllib.parse.quote(appid, safe='')}/"
+        f"{urllib.parse.quote(openid, safe='')}/100"
+    )
+
+
 def _encode_file_to_base64(file_path: Path, chunk_size: int = 65536) -> str:
     """流式编码文件为base64
     注意: chunk_size 必须是 3 的倍数，否则 base64 编码会出错
@@ -485,7 +512,13 @@ async def download_qq_avatar(
         except Exception:
             pass
 
-        # 3. NapCat / OneBot API
+        # 3. QQ 官方 API：从 bot client 读取 appid，并与用户 openid 构造直链。
+        url = _build_qq_official_avatar_url(event, user_id)
+        if url:
+            logger.debug("已构造 QQ 官方用户头像 URL")
+            return url
+
+        # 4. NapCat / OneBot API
         bot = getattr(event, "bot", None) or getattr(event, "_bot", None)
         if bot:
             group_id = None
@@ -554,7 +587,7 @@ async def download_qq_avatar(
             # 回退使用 qlogo 直链（使用 HTTP 协议，更稳定）
             avatar_url = f"http://q4.qlogo.cn/headimg_dl?dst_uin={user_id}&spec=640"
             logger.debug(f"未从事件获取头像URL，回退 qlogo: {avatar_url}")
-        else:
+        elif not avatar_url.startswith("https://q.qlogo.cn/qqapp/"):
             # 将获取到的 URL 转为 HTTP 协议
             avatar_url = avatar_url.replace("https://", "http://")
 
