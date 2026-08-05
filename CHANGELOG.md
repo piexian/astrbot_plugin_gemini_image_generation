@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+## [2.4.2] - 2026-08-05
+
+### Added
+
+- 豆包 provider 新增 `endpoint_mode`，支持官方图片端点与 Agent Plan 端点切换；保留既有 `api_base` 配置兼容性。
+- 适配 Seedream 5.0 Pro，包括 `doubao-seedream-5-0-pro-260628` 等版本化模型 ID。
+- 新增 `model_capability` 配置；使用对应 Pro 推理点 `ep-...` ID 时可显式声明 `seedream_5_pro`，启用单图和参考图数量限制。
+
+### Changed
+
+- Seedream 5.0 Pro 自动禁用组图请求，参考图上限限制为 10 张；其他豆包多图模型保持原有上限。
+- 豆包新增 `output_format` 配置，支持 `jpeg` / `png`，并让 base64 重试响应使用对应扩展名。
+
 ## [2.4.1] - 2026-08-01
 
 ### Added

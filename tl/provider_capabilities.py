@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .api_normalize import normalize_api_type
+from .provider_hooks import is_doubao_seedream_5_pro
 from .provider_loader import load_callable
 from .provider_metadata import get_provider_spec
 
@@ -163,7 +164,12 @@ def openai_images_capability(candidate: Any) -> dict[str, Any]:
 
 def doubao_capability(candidate: Any) -> dict[str, Any]:
     settings = _settings(candidate)
-    sequential = settings.get("sequential_image_generation") == "auto"
+    model = _model(candidate) or str(settings.get("endpoint_id") or "").strip()
+    is_seedream_5_pro = is_doubao_seedream_5_pro(model, settings)
+    # Seedream 5.0 Pro 仅支持单图。
+    sequential = (
+        settings.get("sequential_image_generation") == "auto" and not is_seedream_5_pro
+    )
     try:
         configured_limit = int(settings.get("sequential_max_images", 1))
     except (TypeError, ValueError):
