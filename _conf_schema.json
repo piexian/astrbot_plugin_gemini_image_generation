@@ -1144,13 +1144,33 @@
               "endpoint_id": {
                 "description": "Endpoint/Model ID",
                 "type": "string",
-                "hint": "Ark Images API 的 model 字段",
+                "hint": "Ark Images API 的 model 字段；可填写 doubao-seedream-5-0-pro-260628 等版本化模型 ID，或 ep-... 推理点 ID。使用推理点 ID 时，请根据实际模型设置 model_capability。",
                 "default": "doubao-seedream-5-0-260128"
               },
-              "api_base": {
-                "description": "API 端点地址",
+              "model_capability": {
+                "description": "模型能力提示（推理点 ID 可选）",
                 "type": "string",
-                "hint": "火山引擎 Ark API 地址",
+                "hint": "auto：按 endpoint_id 中的模型名自动识别；seedream_5_pro：当 endpoint_id 填写 ep-... 推理点 ID 且该推理点对应 Seedream 5.0 Pro 时显式选择，以启用单图和最多 10 张参考图限制。",
+                "default": "auto",
+                "options": [
+                  "auto",
+                  "seedream_5_pro"
+                ]
+              },
+              "endpoint_mode": {
+                "description": "接入端点",
+                "type": "string",
+                "hint": "official：火山方舟官方图片端点；agent_plan：Agent Plan 专属图片端点。切换时无需修改 api_base，Agent Plan 必须使用专属 API Key 和支持的模型。",
+                "default": "official",
+                "options": [
+                  "official",
+                  "agent_plan"
+                ]
+              },
+              "api_base": {
+                "description": "API 基础地址",
+                "type": "string",
+                "hint": "填写域名即可；endpoint_mode 会自动选择 /api/v3 或 /api/plan/v3。仅自建反代等特殊场景需要修改。",
                 "default": "https://ark.cn-beijing.volces.com"
               },
               "proxy": {
@@ -1162,7 +1182,7 @@
               "max_reference_images": {
                 "description": "最大参考图片数量",
                 "type": "int",
-                "hint": "该供应商本次请求最多使用的参考图片数量；超过后按顺序截取。文生图-only 供应商可保持默认。",
+                "hint": "该供应商本次请求最多使用的参考图片数量；超过后按顺序截取。Seedream 5.0 Pro 最多 10 张，其他支持多图的模型最多 14 张。",
                 "default": 6
               },
               "size_mode": {
@@ -1178,7 +1198,7 @@
               "size": {
                 "description": "生成尺寸",
                 "type": "string",
-                "hint": "Ark Images API 的 size 字段。不同模型支持的快捷值不同：5.0 lite 支持 2K/3K/4K，4.5 支持 2K/4K，4.0 支持 1K/2K/4K。",
+                "hint": "Ark Images API 的 size 字段。不同模型支持的快捷值不同：5.0 Pro/Lite 支持 2K/3K/4K，4.5 支持 2K/4K，4.0 支持 1K/2K/4K。",
                 "default": "2K",
                 "options": [
                   "1K",
@@ -1205,6 +1225,16 @@
                 "hint": "是否在图片右下角添加'AI生成'水印",
                 "default": false
               },
+              "output_format": {
+                "description": "输出图片格式",
+                "type": "string",
+                "hint": "输出格式：jpeg（默认）或 png。Seedream 5.0 Pro、5.0 Lite、4.5、4.0 均支持。",
+                "default": "jpeg",
+                "options": [
+                  "jpeg",
+                  "png"
+                ]
+              },
               "optimize_prompt_mode": {
                 "description": "提示词优化模式",
                 "type": "string",
@@ -1218,7 +1248,7 @@
               "sequential_image_generation": {
                 "description": "组图生成模式",
                 "type": "string",
-                "hint": "auto：模型自主判断；disabled：只生成一张",
+                "hint": "auto：模型自主判断并生成组图；disabled：只生成一张。Seedream 5.0 Pro 不支持组图，会自动忽略 auto。",
                 "default": "disabled",
                 "options": [
                   "disabled",

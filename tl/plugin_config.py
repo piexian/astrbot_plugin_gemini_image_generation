@@ -447,7 +447,9 @@ class ConfigLoader:
                 for key in (
                     "model",
                     "endpoint_id",
+                    "model_capability",
                     "api_base",
+                    "endpoint_mode",
                     "resolution",
                     "aspect_ratio",
                     "resolution_param_name",
@@ -456,6 +458,7 @@ class ConfigLoader:
                     "optimize_prompt_mode",
                     "sequential_image_generation",
                     "response_format",
+                    "output_format",
                     "reference_image_mode",
                     "size",
                     "custom_size",

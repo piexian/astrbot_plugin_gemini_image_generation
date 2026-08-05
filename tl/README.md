@@ -199,7 +199,7 @@ generate_image()
 | `provider_hooks.py` | 配置校验、归一化、候选配置、工具 profile hook | 承载 provider 专属行为，调用方由 spec 字段声明 |
 | `provider_settings.py` | `first_provider_settings()` / `first_provider_tool_profile()` | 共享 provider settings 读取 helper，避免只读旧 `*_settings` 字段 |
 | `provider_capabilities.py` | `candidate_capability()` / `select_candidates()` / `apply_request_overrides()` | 集中声明生成模式、工具参数、原生批量上限和候选过滤规则 |
-| `api/provider_limits.py` | `MAX_REFERENCE_IMAGES_GOOGLE` / `MAX_REFERENCE_IMAGES_DOUBAO` / `MAX_REFERENCE_IMAGES_OPENAI_COMPAT` / `MAX_REFERENCE_IMAGES_MINIMAX` / `MAX_REFERENCE_IMAGES_DASHSCOPE` | 集中维护各 provider 参考图上限常量（`Final[int]`） |
+| `api/provider_limits.py` | `MAX_REFERENCE_IMAGES_GOOGLE` / `MAX_REFERENCE_IMAGES_DOUBAO` / `MAX_REFERENCE_IMAGES_DOUBAO_SEEDREAM_5_PRO` / `MAX_REFERENCE_IMAGES_OPENAI_COMPAT` / `MAX_REFERENCE_IMAGES_MINIMAX` / `MAX_REFERENCE_IMAGES_DASHSCOPE` | 集中维护各 provider 参考图上限常量（`Final[int]`） |
 | `api/reference_intake.py` | `announce_reference_intake(references, max_count, *, log_prefix="")` | 参考图接收阶段统一日志，返回 `(收到数量, 采用数量)` |
 | `api/data_uri.py` | `format_data_uri(b64_data, mime_type=None)` / `strip_data_uri_prefix(s)` / `looks_like_base64(s)` | data URI 与 base64 字符串的格式化/识别助手 |
 
@@ -285,9 +285,9 @@ MiniMax 图片生成官方 provider。
 
 | 接口 | 说明 |
 |------|------|
-| `DoubaoProvider.build_request()` | 构造 `/api/v3/images/generations` 请求 |
+| `DoubaoProvider.build_request()` | 构造 `endpoint_mode` 对应的 `/api/v3/images/generations` 或 `/api/plan/v3/images/generations` 请求 |
 | `DoubaoProvider.parse_response()` | 解析 URL/base64 响应并处理错误码 |
-| `_prepare_payload()` | 组装模型、尺寸、水印、组图、参考图等参数 |
+| `_prepare_payload()` | 组装模型、尺寸、水印、输出格式、组图、参考图等参数；Seedream 5.0 Pro 自动禁用组图并限制参考图数量，推理点 ID 可通过 `model_capability` 声明能力 |
 | `_map_resolution()` | 将内部 `1K/2K/4K` 或具体尺寸映射为豆包尺寸 |
 | `_process_reference_images()` | 处理图生图参考图 |
 | `_build_api_error()` | 将豆包错误转为 `APIError` |

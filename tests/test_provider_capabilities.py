@@ -140,6 +140,25 @@ def test_config_loader_parses_alias_and_batch_limits() -> None:
             ),
             12,
         ),
+        (
+            _candidate(
+                "doubao",
+                "doubao-seedream-5.0-pro",
+                sequential_image_generation="auto",
+                sequential_max_images=12,
+            ),
+            1,
+        ),
+        (
+            _candidate(
+                "doubao",
+                "ep-20260628-seedream-pro",
+                model_capability="seedream_5_pro",
+                sequential_image_generation="auto",
+                sequential_max_images=12,
+            ),
+            1,
+        ),
         (_candidate("dashscope", "wan2.7-image"), 4),
         (
             _candidate(
@@ -163,7 +182,16 @@ def test_provider_specific_optional_parameter_capabilities() -> None:
     dashscope_wan = candidate_capability(_candidate("dashscope", "wan2.7-image-pro"))
     dashscope_qwen = candidate_capability(_candidate("dashscope", "qwen-image-2.0"))
     dall_e_3 = candidate_capability(_candidate("openai_images", "dall-e-3"))
+    doubao_pro = candidate_capability(
+        _candidate(
+            "doubao",
+            "doubao-seedream-5.0-pro",
+            sequential_image_generation="auto",
+        )
+    )
 
+    assert doubao_pro["parameters"]["image_count"]["native_request_maximum"] == 1
+    assert doubao_pro["native_batch_limit"] == 1
     assert "watermark" in minimax["parameters"]
     assert "negative_prompt" not in dashscope_wan["parameters"]
     assert "negative_prompt" in dashscope_qwen["parameters"]

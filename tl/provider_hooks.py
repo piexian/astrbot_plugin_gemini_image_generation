@@ -17,6 +17,48 @@ DOUBAO_SEQUENTIAL_IMAGES_MIN = 1
 DOUBAO_SEQUENTIAL_IMAGES_MAX = 15
 DOUBAO_CUSTOM_SIZE_DEFAULT = "2048x2048"
 
+DOUBAO_ENDPOINT_MODES = frozenset({"official", "agent_plan"})
+_DOUBAO_ENDPOINT_MODE_ALIASES = {"plan": "agent_plan"}
+DOUBAO_OUTPUT_FORMATS = frozenset({"jpeg", "png"})
+_DOUBAO_OUTPUT_FORMAT_ALIASES = {"jpg": "jpeg"}
+DOUBAO_MODEL_CAPABILITIES = frozenset({"auto", "seedream_5_pro"})
+_DOUBAO_MODEL_CAPABILITY_ALIASES = {
+    "pro": "seedream_5_pro",
+    "seedream_5_pro": "seedream_5_pro",
+    "seedream_5_0_pro": "seedream_5_pro",
+    "seedream_5.0_pro": "seedream_5_pro",
+}
+
+
+def _normalize_doubao_model_capability(value: Any) -> str:
+    raw = str(value or "auto").strip().lower()
+    normalized = raw.replace("-", "_").replace(" ", "_")
+    return _DOUBAO_MODEL_CAPABILITY_ALIASES.get(normalized, normalized)
+
+
+def is_doubao_seedream_5_pro(
+    model: Any, settings: dict[str, Any] | None = None
+) -> bool:
+    """Return whether a model ID or declared endpoint capability is Seedream 5 Pro."""
+    if isinstance(settings, dict):
+        capability = _normalize_doubao_model_capability(
+            settings.get("model_capability")
+        )
+        if capability == "seedream_5_pro":
+            return True
+    normalized = "-".join(str(model or "").strip().lower().replace("_", "-").split())
+    if any(
+        marker in normalized
+        for marker in (
+            "seedream-5.0-pro",
+            "seedream-5-0-pro",
+            "seedream-5-pro",
+            "seedream-5pro",
+        )
+    ):
+        return True
+    return normalized.endswith(("seedream-5.0", "seedream-5-0"))
+
 
 def _logger():
     from astrbot.api import logger
@@ -50,6 +92,42 @@ def validate_openai_images_settings(settings: dict[str, Any]) -> None:
 
 def normalize_doubao_settings(settings: dict[str, Any]) -> None:
     """Normalize doubao-specific override settings."""
+    raw_endpoint_mode = str(settings.get("endpoint_mode") or "official")
+    endpoint_mode = raw_endpoint_mode.strip().lower().replace("-", "_")
+    endpoint_mode = _DOUBAO_ENDPOINT_MODE_ALIASES.get(endpoint_mode, endpoint_mode)
+    if endpoint_mode not in DOUBAO_ENDPOINT_MODES:
+        _logger().warning(
+            "[配置加载] doubao.endpoint_mode=%r 无效（仅支持 official / agent_plan），"
+            "已回退为 official",
+            settings.get("endpoint_mode"),
+        )
+        endpoint_mode = "official"
+    settings["endpoint_mode"] = endpoint_mode
+
+    raw_output_format = str(settings.get("output_format") or "jpeg")
+    output_format = raw_output_format.strip().lower()
+    output_format = _DOUBAO_OUTPUT_FORMAT_ALIASES.get(output_format, output_format)
+    if output_format not in DOUBAO_OUTPUT_FORMATS:
+        _logger().warning(
+            "[配置加载] doubao.output_format=%r 无效（仅支持 jpeg / png），"
+            "已回退为 jpeg",
+            settings.get("output_format"),
+        )
+        output_format = "jpeg"
+    settings["output_format"] = output_format
+
+    model_capability = _normalize_doubao_model_capability(
+        settings.get("model_capability")
+    )
+    if model_capability not in DOUBAO_MODEL_CAPABILITIES:
+        _logger().warning(
+            "[配置加载] doubao.model_capability=%r 无效（仅支持 auto / seedream_5_pro），"
+            "已回退为 auto",
+            settings.get("model_capability"),
+        )
+        model_capability = "auto"
+    settings["model_capability"] = model_capability
+
     legacy_size = settings.pop("default_size", None)
     if not settings.get("size") and legacy_size:
         settings["size"] = legacy_size

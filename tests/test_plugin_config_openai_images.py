@@ -85,6 +85,11 @@ def test_schema_doubao_uses_size_mode_without_generic_ratio_fields() -> None:
     assert items["size_mode"]["options"] == ["preset", "custom"]
     assert items["size"]["condition"] == {"size_mode": "preset"}
     assert items["custom_size"]["condition"] == {"size_mode": "custom"}
+    assert items["output_format"]["default"] == "jpeg"
+    assert items["output_format"]["options"] == ["jpeg", "png"]
+    assert items["model_capability"]["default"] == "auto"
+    assert items["model_capability"]["options"] == ["auto", "seedream_5_pro"]
+    assert "Seedream 5.0 Pro" in items["sequential_image_generation"]["hint"]
 
 
 def test_provider_settings_default_polling_order_from_overrides_only() -> None:

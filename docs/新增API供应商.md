@@ -43,7 +43,7 @@ tl/
 | `minimax` | `MiniMaxProvider` | MiniMax `/v1/image_generation` |
 | `stepfun` | `StepfunProvider` | StepFun `/v1/images/generations` 与 `/v1/images/edits` |
 | `openai_images` | `OpenAIImagesProvider` | OpenAI `/v1/images/generations` 与 `/v1/images/edits` |
-| `doubao` | `DoubaoProvider` | 火山引擎 Ark / 豆包 |
+| `doubao` | `DoubaoProvider` | 火山引擎 Ark / 豆包图片接口（支持 official / Agent Plan 端点） |
 | `sensenova` | `SenseNovaProvider` | SenseNova（商汤日日新）`/v1/images/generations`（仅文生图，11 种固定尺寸） |
 | `dashscope` | `DashScopeProvider` | DashScope 原生 multimodal-generation 同步端点（wan2.7 / qwen-image-2.0） |
 | 未知值 | - | 配置加载阶段记录错误并跳过，不进入轮询候选 |
@@ -139,7 +139,7 @@ class MyProvider(OpenAICompatProvider):
 - `openai_images.py`：multipart/form-data 图像编辑、`b64_json` / `url` 响应解析、自定义尺寸校验。
 - `xai.py`：JSON 图像接口、参考图转 `data URI`。
 - `minimax.py`：MiniMax `/v1/image_generation`、`subject_reference` 图生图、`image_base64` / `image_urls` 响应解析。
-- `doubao.py`：火山 Ark 请求结构、尺寸映射、组图参数。
+- `doubao.py`：火山 Ark 请求结构、尺寸映射、组图参数、Seedream 5.0 Pro 能力限制。
 - `google.py`：Google/Gemini 官方协议。
 
 ## 公共辅助模块（推荐复用）
@@ -154,6 +154,7 @@ class MyProvider(OpenAICompatProvider):
 from .provider_limits import (
     MAX_REFERENCE_IMAGES_GOOGLE,        # 14
     MAX_REFERENCE_IMAGES_DOUBAO,        # 14
+    MAX_REFERENCE_IMAGES_DOUBAO_SEEDREAM_5_PRO, # 10
     MAX_REFERENCE_IMAGES_OPENAI_COMPAT, # 6
     MAX_REFERENCE_IMAGES_MINIMAX,       # 9
 )

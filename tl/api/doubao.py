@@ -11,10 +11,14 @@ from astrbot.api import logger
 
 from ..api_types import APIError, ApiRequestConfig
 from ..plugin_config import DOUBAO_SEQUENTIAL_IMAGES_MAX, DOUBAO_SEQUENTIAL_IMAGES_MIN
+from ..provider_hooks import is_doubao_seedream_5_pro
 from ..tl_utils import save_base64_image
 from .base import ProviderRequest
 from .data_uri import format_data_uri, looks_like_base64, strip_data_uri_prefix
-from .provider_limits import MAX_REFERENCE_IMAGES_DOUBAO
+from .provider_limits import (
+    MAX_REFERENCE_IMAGES_DOUBAO,
+    MAX_REFERENCE_IMAGES_DOUBAO_SEEDREAM_5_PRO,
+)
 from .reference_intake import announce_reference_intake
 
 # 豆包 API 错误码分类
@@ -129,8 +133,13 @@ ERROR_MESSAGES = {
 class DoubaoProvider:
     name = "doubao"
 
-    # Default Ark base URL
+    # Ark 基础地址与图片生成端点路径
     ARK_API_BASE = "https://ark.cn-beijing.volces.com"
+    _ENDPOINT_PATHS = {
+        "official": "/api/v3/images/generations",
+        "agent_plan": "/api/plan/v3/images/generations",
+    }
+    _ENDPOINT_MODE_ALIASES = {"plan": "agent_plan"}
 
     async def build_request(
         self,
@@ -145,15 +154,9 @@ class DoubaoProvider:
             or {}
         )
 
-        # Determine API base: doubao_settings > config.api_base > default
-        api_base = (
-            doubao_settings.get("api_base")
-            or (config.api_base or "").rstrip("/")
-            or self.ARK_API_BASE
-        )
-        api_base = api_base.rstrip("/")
-        url = f"{api_base}/api/v3/images/generations"
-
+        endpoint_mode = self._resolve_endpoint_mode(doubao_settings)
+        api_base = self._resolve_api_base(doubao_settings, config)
+        url = f"{api_base}{self._ENDPOINT_PATHS[endpoint_mode]}"
         # Determine API key: from api_keys list (multi-key rotation) or legacy api_key
         api_keys = doubao_settings.get("api_keys") or []
         if not api_keys:
@@ -196,6 +199,41 @@ class DoubaoProvider:
         )
         return ProviderRequest(url=url, headers=headers, payload=payload)
 
+    @classmethod
+    def _resolve_endpoint_mode(cls, settings: dict[str, Any]) -> str:
+        """Resolve the endpoint mode and fall back to the official API."""
+        raw_mode = str(settings.get("endpoint_mode") or "official")
+        mode = raw_mode.strip().lower().replace("-", "_")
+        mode = cls._ENDPOINT_MODE_ALIASES.get(mode, mode)
+        if mode not in cls._ENDPOINT_PATHS:
+            logger.warning(
+                "[doubao] endpoint_mode=%r 无效，已回退为 official",
+                settings.get("endpoint_mode"),
+            )
+            return "official"
+        return mode
+
+    @classmethod
+    def _resolve_api_base(
+        cls, settings: dict[str, Any], config: ApiRequestConfig
+    ) -> str:
+        """Normalize a configured base so the selected path is appended once."""
+        explicit_base = str(settings.get("api_base") or config.api_base or "").strip()
+        api_base = (explicit_base or cls.ARK_API_BASE).rstrip("/")
+
+        # 兼容用户曾填写的完整官方/Plan Base URL，避免切换模式后重复拼接路径。
+        for suffix in (
+            "/api/plan/v3/images/generations",
+            "/api/v3/images/generations",
+            "/api/plan/v3",
+            "/api/v3",
+        ):
+            if api_base.endswith(suffix):
+                api_base = api_base[: -len(suffix)].rstrip("/")
+                break
+
+        return api_base or cls.ARK_API_BASE
+
     async def _prepare_payload(
         self,
         *,
@@ -224,6 +262,7 @@ class DoubaoProvider:
             or config.model
             or "doubao-seedream-5-0-260128"
         )
+        is_seedream_5_pro = is_doubao_seedream_5_pro(model, doubao_settings)
 
         # Response format: url by default, fallback to b64_json on retry
         response_format = "b64_json" if is_retry else "url"
@@ -237,6 +276,7 @@ class DoubaoProvider:
             "model": model,
             "prompt": config.prompt,
             "response_format": response_format,
+            "output_format": self._resolve_output_format(doubao_settings),
             "watermark": bool(watermark),
         }
 
@@ -244,12 +284,14 @@ class DoubaoProvider:
         if size:
             payload["size"] = size
 
-        # Process reference images (supports 1-14 images for doubao-seedream-4.5/4.0)
+        # Process reference images (10 for Seedream 5.0 Pro, 14 otherwise)
         if config.reference_images:
             image_value = await self._process_reference_images(
                 client=client,
                 config=config,
                 image_inputs=config.reference_images,
+                model=model,
+                settings=doubao_settings,
             )
             if image_value:
                 payload["image"] = image_value
@@ -259,9 +301,9 @@ class DoubaoProvider:
         if optimize_mode in ("standard", "fast"):
             payload["optimize_prompt_options"] = {"mode": optimize_mode}
 
-        # Sequential image generation (组图功能)
+        # Seedream 5.0 Pro 不支持组图，不能发送 sequential 字段。
         seq_mode = doubao_settings.get("sequential_image_generation")
-        if seq_mode == "auto":
+        if seq_mode == "auto" and not is_seedream_5_pro:
             payload["sequential_image_generation"] = "auto"
             max_images = doubao_settings.get("sequential_max_images")
             if (
@@ -274,8 +316,21 @@ class DoubaoProvider:
                 payload["sequential_image_generation_options"] = {
                     "max_images": max_images
                 }
+        elif seq_mode == "auto":
+            logger.debug(
+                "[doubao] Seedream 5.0 Pro 不支持组图，已忽略 sequential_image_generation"
+            )
 
         return payload
+
+    @staticmethod
+    def _resolve_output_format(settings: dict[str, Any]) -> str:
+        """Resolve the Doubao output image format with a safe default."""
+        output_format = str(settings.get("output_format") or "jpeg")
+        output_format = output_format.strip().lower()
+        if output_format == "jpg":
+            return "jpeg"
+        return output_format if output_format in {"jpeg", "png"} else "jpeg"
 
     def _resolve_size(
         self, doubao_settings: dict[str, Any], config: ApiRequestConfig
@@ -301,6 +356,7 @@ class DoubaoProvider:
         """Map plugin resolution to Doubao `size`.
 
         Supported by Doubao:
+        - doubao-seedream-5.0-pro: "2K"/"3K"/"4K" or WxH
         - doubao-seedream-5.0-lite: "2K"/"3K"/"4K" or WxH
         - doubao-seedream-4.5: "2K"/"4K" only (min 2560x1440=3686400 px)
         - doubao-seedream-4.0: "1K"/"2K"/"4K" (min 1280x720=921600 px)
@@ -331,13 +387,18 @@ class DoubaoProvider:
         return "2K"
 
     async def _process_reference_images(
-        self, *, client: Any, config: ApiRequestConfig, image_inputs: list[Any]
+        self,
+        *,
+        client: Any,
+        config: ApiRequestConfig,
+        image_inputs: list[Any],
+        model: str | None = None,
+        settings: dict[str, Any] | None = None,
     ) -> str | list[str] | None:  # noqa: ANN401
         """Prepare Doubao `image` field for i2i.
 
         Doubao supports:
-        - Single image: string (URL or base64 with data URI prefix)
-        - Multiple images (2-14): array of strings
+        - Multiple images (2-10 for Seedream 5.0 Pro, 2-14 otherwise)
 
         Returns:
         - Single string if only one image
@@ -346,6 +407,22 @@ class DoubaoProvider:
         """
         if not image_inputs:
             return None
+        request_settings = settings
+        if not isinstance(request_settings, dict):
+            request_settings = getattr(config, "provider_settings", None)
+        if not isinstance(request_settings, dict):
+            request_settings = {}
+        request_model = (
+            model
+            or request_settings.get("endpoint_id")
+            or getattr(config, "model", None)
+            or ""
+        )
+        max_reference_images = (
+            MAX_REFERENCE_IMAGES_DOUBAO_SEEDREAM_5_PRO
+            if is_doubao_seedream_5_pro(request_model, request_settings)
+            else MAX_REFERENCE_IMAGES_DOUBAO
+        )
 
         force_b64 = (
             str(getattr(config, "image_input_mode", "auto")).lower() == "force_base64"
@@ -355,11 +432,11 @@ class DoubaoProvider:
 
         announce_reference_intake(
             image_inputs,
-            MAX_REFERENCE_IMAGES_DOUBAO,
+            max_reference_images,
             log_prefix="[doubao] ",
         )
 
-        for image_input in image_inputs[:MAX_REFERENCE_IMAGES_DOUBAO]:
+        for image_input in image_inputs[:max_reference_images]:
             image_str = str(image_input).strip()
             if not image_str:
                 continue
@@ -508,6 +585,12 @@ class DoubaoProvider:
                 error_message=error_message,
                 http_status=http_status,
             )
+        output_format = str(response_data.get("output_format") or "").strip().lower()
+        if output_format not in {"jpeg", "png"} and request_config is not None:
+            request_settings = getattr(request_config, "provider_settings", None)
+            if isinstance(request_settings, dict):
+                output_format = self._resolve_output_format(request_settings)
+        save_extension = output_format if output_format in {"jpeg", "png"} else "png"
 
         data_list = response_data.get("data") or []
         if isinstance(data_list, list):
@@ -546,7 +629,7 @@ class DoubaoProvider:
                     continue
                 b64_json = item.get("b64_json")
                 if isinstance(b64_json, str) and b64_json:
-                    image_path = await save_base64_image(b64_json, "png")
+                    image_path = await save_base64_image(b64_json, save_extension)
                     if image_path:
                         image_urls.append(image_path)
                         image_paths.append(image_path)
