@@ -7,6 +7,9 @@ from tl.api_types import ApiRequestConfig
 from tl.provider_hooks import (
     DOUBAO_SEQUENTIAL_IMAGES_MAX,
     DOUBAO_SEQUENTIAL_IMAGES_MIN,
+    is_doubao_seedream_5_pro,
+    normalize_doubao_endpoint_mode,
+    normalize_doubao_output_format,
     normalize_doubao_settings,
 )
 
@@ -87,6 +90,22 @@ async def test_doubao_pro_inference_endpoint_uses_declared_capability() -> None:
     assert "sequential_image_generation" not in payload
     assert isinstance(payload["image"], list)
     assert len(payload["image"]) == 10
+
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        ("doubao-seedream-5-0-pro-260628", True),
+        ("doubao-seedream-5.0-pro", True),
+        ("doubao-seedream-5.0", False),
+        ("doubao-seedream-5-0", False),
+        ("doubao-seedream-5.0-lite", False),
+    ],
+)
+def test_doubao_pro_detection_requires_explicit_marker(
+    model: str, expected: bool
+) -> None:
+    assert is_doubao_seedream_5_pro(model) is expected
 
 
 @pytest.mark.asyncio
@@ -256,6 +275,11 @@ def test_doubao_normalizer_output_format_aliases_jpg() -> None:
     normalize_doubao_settings(settings)
 
     assert settings["output_format"] == "jpeg"
+
+
+def test_doubao_shared_normalizers_canonicalize_aliases() -> None:
+    assert normalize_doubao_endpoint_mode("Plan") == "agent_plan"
+    assert normalize_doubao_output_format("JPG") == "jpeg"
 
 
 def test_doubao_normalizer_invalid_output_format_falls_back() -> None:

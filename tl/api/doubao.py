@@ -11,7 +11,12 @@ from astrbot.api import logger
 
 from ..api_types import APIError, ApiRequestConfig
 from ..plugin_config import DOUBAO_SEQUENTIAL_IMAGES_MAX, DOUBAO_SEQUENTIAL_IMAGES_MIN
-from ..provider_hooks import is_doubao_seedream_5_pro
+from ..provider_hooks import (
+    DOUBAO_OUTPUT_FORMATS,
+    is_doubao_seedream_5_pro,
+    normalize_doubao_endpoint_mode,
+    normalize_doubao_output_format,
+)
 from ..tl_utils import save_base64_image
 from .base import ProviderRequest
 from .data_uri import format_data_uri, looks_like_base64, strip_data_uri_prefix
@@ -139,7 +144,6 @@ class DoubaoProvider:
         "official": "/api/v3/images/generations",
         "agent_plan": "/api/plan/v3/images/generations",
     }
-    _ENDPOINT_MODE_ALIASES = {"plan": "agent_plan"}
 
     async def build_request(
         self,
@@ -154,7 +158,9 @@ class DoubaoProvider:
             or {}
         )
 
-        endpoint_mode = self._resolve_endpoint_mode(doubao_settings)
+        endpoint_mode = normalize_doubao_endpoint_mode(
+            doubao_settings.get("endpoint_mode")
+        )
         api_base = self._resolve_api_base(doubao_settings, config)
         url = f"{api_base}{self._ENDPOINT_PATHS[endpoint_mode]}"
         # Determine API key: from api_keys list (multi-key rotation) or legacy api_key
@@ -198,20 +204,6 @@ class DoubaoProvider:
             {k: v for k, v in payload.items() if k != "image"},
         )
         return ProviderRequest(url=url, headers=headers, payload=payload)
-
-    @classmethod
-    def _resolve_endpoint_mode(cls, settings: dict[str, Any]) -> str:
-        """Resolve the endpoint mode and fall back to the official API."""
-        raw_mode = str(settings.get("endpoint_mode") or "official")
-        mode = raw_mode.strip().lower().replace("-", "_")
-        mode = cls._ENDPOINT_MODE_ALIASES.get(mode, mode)
-        if mode not in cls._ENDPOINT_PATHS:
-            logger.warning(
-                "[doubao] endpoint_mode=%r 无效，已回退为 official",
-                settings.get("endpoint_mode"),
-            )
-            return "official"
-        return mode
 
     @classmethod
     def _resolve_api_base(
@@ -276,7 +268,9 @@ class DoubaoProvider:
             "model": model,
             "prompt": config.prompt,
             "response_format": response_format,
-            "output_format": self._resolve_output_format(doubao_settings),
+            "output_format": normalize_doubao_output_format(
+                doubao_settings.get("output_format")
+            ),
             "watermark": bool(watermark),
         }
 
@@ -322,15 +316,6 @@ class DoubaoProvider:
             )
 
         return payload
-
-    @staticmethod
-    def _resolve_output_format(settings: dict[str, Any]) -> str:
-        """Resolve the Doubao output image format with a safe default."""
-        output_format = str(settings.get("output_format") or "jpeg")
-        output_format = output_format.strip().lower()
-        if output_format == "jpg":
-            return "jpeg"
-        return output_format if output_format in {"jpeg", "png"} else "jpeg"
 
     def _resolve_size(
         self, doubao_settings: dict[str, Any], config: ApiRequestConfig
@@ -585,12 +570,21 @@ class DoubaoProvider:
                 error_message=error_message,
                 http_status=http_status,
             )
-        output_format = str(response_data.get("output_format") or "").strip().lower()
-        if output_format not in {"jpeg", "png"} and request_config is not None:
+        response_output_format = (
+            str(response_data.get("output_format") or "").strip().lower()
+        )
+        output_format = (
+            response_output_format
+            if response_output_format in DOUBAO_OUTPUT_FORMATS
+            else None
+        )
+        if output_format is None and request_config is not None:
             request_settings = getattr(request_config, "provider_settings", None)
             if isinstance(request_settings, dict):
-                output_format = self._resolve_output_format(request_settings)
-        save_extension = output_format if output_format in {"jpeg", "png"} else "png"
+                output_format = normalize_doubao_output_format(
+                    request_settings.get("output_format")
+                )
+        save_extension = output_format or "png"
 
         data_list = response_data.get("data") or []
         if isinstance(data_list, list):

@@ -1150,7 +1150,7 @@
               "model_capability": {
                 "description": "模型能力提示（推理点 ID 可选）",
                 "type": "string",
-                "hint": "auto：按 endpoint_id 中的模型名自动识别；seedream_5_pro：当 endpoint_id 填写 ep-... 推理点 ID 且该推理点对应 Seedream 5.0 Pro 时显式选择，以启用单图和最多 10 张参考图限制。",
+                "hint": "auto：按明确 Pro 标记识别；Pro 推理点或其他无明确标记的 ID 请设为 seedream_5_pro。",
                 "default": "auto",
                 "options": [
                   "auto",

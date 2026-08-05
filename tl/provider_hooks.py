@@ -47,7 +47,7 @@ def is_doubao_seedream_5_pro(
         if capability == "seedream_5_pro":
             return True
     normalized = "-".join(str(model or "").strip().lower().replace("_", "-").split())
-    if any(
+    return any(
         marker in normalized
         for marker in (
             "seedream-5.0-pro",
@@ -55,15 +55,43 @@ def is_doubao_seedream_5_pro(
             "seedream-5-pro",
             "seedream-5pro",
         )
-    ):
-        return True
-    return normalized.endswith(("seedream-5.0", "seedream-5-0"))
+    )
 
 
 def _logger():
     from astrbot.api import logger
 
     return logger
+
+
+def normalize_doubao_endpoint_mode(value: Any) -> str:
+    """Normalize a Doubao endpoint mode to a supported canonical value."""
+    raw_mode = str(value or "official")
+    mode = raw_mode.strip().lower().replace("-", "_")
+    mode = _DOUBAO_ENDPOINT_MODE_ALIASES.get(mode, mode)
+    if mode not in DOUBAO_ENDPOINT_MODES:
+        _logger().warning(
+            "[配置加载] doubao.endpoint_mode=%r 无效（仅支持 official / agent_plan），"
+            "已回退为 official",
+            value,
+        )
+        return "official"
+    return mode
+
+
+def normalize_doubao_output_format(value: Any) -> str:
+    """Normalize a Doubao output format to a supported canonical value."""
+    raw_format = str(value or "jpeg")
+    output_format = raw_format.strip().lower()
+    output_format = _DOUBAO_OUTPUT_FORMAT_ALIASES.get(output_format, output_format)
+    if output_format not in DOUBAO_OUTPUT_FORMATS:
+        _logger().warning(
+            "[配置加载] doubao.output_format=%r 无效（仅支持 jpeg / png），"
+            "已回退为 jpeg",
+            value,
+        )
+        return "jpeg"
+    return output_format
 
 
 def validate_openai_images_settings(settings: dict[str, Any]) -> None:
@@ -92,29 +120,12 @@ def validate_openai_images_settings(settings: dict[str, Any]) -> None:
 
 def normalize_doubao_settings(settings: dict[str, Any]) -> None:
     """Normalize doubao-specific override settings."""
-    raw_endpoint_mode = str(settings.get("endpoint_mode") or "official")
-    endpoint_mode = raw_endpoint_mode.strip().lower().replace("-", "_")
-    endpoint_mode = _DOUBAO_ENDPOINT_MODE_ALIASES.get(endpoint_mode, endpoint_mode)
-    if endpoint_mode not in DOUBAO_ENDPOINT_MODES:
-        _logger().warning(
-            "[配置加载] doubao.endpoint_mode=%r 无效（仅支持 official / agent_plan），"
-            "已回退为 official",
-            settings.get("endpoint_mode"),
-        )
-        endpoint_mode = "official"
-    settings["endpoint_mode"] = endpoint_mode
-
-    raw_output_format = str(settings.get("output_format") or "jpeg")
-    output_format = raw_output_format.strip().lower()
-    output_format = _DOUBAO_OUTPUT_FORMAT_ALIASES.get(output_format, output_format)
-    if output_format not in DOUBAO_OUTPUT_FORMATS:
-        _logger().warning(
-            "[配置加载] doubao.output_format=%r 无效（仅支持 jpeg / png），"
-            "已回退为 jpeg",
-            settings.get("output_format"),
-        )
-        output_format = "jpeg"
-    settings["output_format"] = output_format
+    settings["endpoint_mode"] = normalize_doubao_endpoint_mode(
+        settings.get("endpoint_mode")
+    )
+    settings["output_format"] = normalize_doubao_output_format(
+        settings.get("output_format")
+    )
 
     model_capability = _normalize_doubao_model_capability(
         settings.get("model_capability")

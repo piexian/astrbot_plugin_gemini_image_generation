@@ -157,7 +157,7 @@ NapCat v4.8.115+ 支持 Stream API。插件默认仍先按 `max_inline_image_siz
 | `api_keys` | `[]` | 火山引擎 API Key 列表，支持多 Key 轮换 |
 | `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
 | `endpoint_id` | `doubao-seedream-5-0-260128` | Ark `model` 字段，可填写模型 ID、版本化模型 ID 或推理点 ID，例如 `doubao-seedream-5-0-pro-260628`、`ep-xxxx` |
-| `model_capability` | `auto` | `auto` 按模型 ID 自动识别；若 `endpoint_id` 是对应 Seedream 5.0 Pro 的 `ep-...` 推理点 ID，请设为 `seedream_5_pro`，自动启用单图和最多 10 张参考图限制 |
+| `model_capability` | `auto` | `auto` 仅按 `endpoint_id` 中明确的 Pro 标记识别；不带 Pro 标记的 `seedream-5.0` 不会自动按 Pro 处理。若使用对应 Seedream 5.0 Pro 的 `ep-...` 推理点 ID 或其他无法从名称判断能力的 ID，请设为 `seedream_5_pro`，以启用单图和最多 10 张参考图限制 |
 | `endpoint_mode` | `official` | 接入端点：`official` 火山方舟官方图片端点；`agent_plan` Agent Plan 专属图片端点 |
 | `api_base` | `https://ark.cn-beijing.volces.com` | API 基础地址；插件按 `endpoint_mode` 自动追加 `/api/v3` 或 `/api/plan/v3`，通常无需修改 |
 | `size_mode` | `preset` | 尺寸模式：`preset` 使用 `size`；`custom` 使用 `custom_size` |
