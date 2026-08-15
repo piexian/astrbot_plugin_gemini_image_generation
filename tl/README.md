@@ -570,7 +570,7 @@ _prepare_foreground()
 |------|------|
 | `normalize_reference_image_input()` | 将 data URI、base64、本地文件、file://、http(s) URL 统一为 `(mime_type, base64_data)` |
 | `coerce_reference_image_bytes()`、`coerce_reference_image()` | 将图片字节/base64 转成 provider 支持的 PNG/JPEG/WEBP/HEIC/HEIF |
-| `check_reference_image_cache()`、`save_reference_image_cache()` | 管理参考图下载缓存 |
+| `check_reference_image_cache()`、`save_reference_image_cache()` | 管理参考图下载缓存（位于 AstrBot 临时目录下的插件专属子目录，由 AstrBot 统一清理） |
 | `build_reference_image_headers()`、`is_qq_image_host()` | 构建参考图下载请求头并处理 QQ 图床特殊规则 |
 
 ### `tl_utils.py`
