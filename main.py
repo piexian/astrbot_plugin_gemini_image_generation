@@ -59,7 +59,11 @@ from .tl.llm_tools import GeminiImageGenerationTool
 from .tl.plugin_config import max_configured_reference_images
 from .tl.provider_capabilities import select_candidates
 from .tl.tl_api import APIClient, ApiRequestConfig, get_api_client
-from .tl.tl_utils import AvatarManager, cleanup_old_images, format_error_message
+from .tl.tl_utils import (
+    AvatarManager,
+    format_error_message,
+    set_image_cache_max_size_mb,
+)
 from .tl.tool_permission import ensure_admin_default_tool_permission
 
 
@@ -84,7 +88,6 @@ class GeminiImageGenerationPlugin(Star):
 
         # 初始化状态
         self.api_client: APIClient | None = None
-        self._cleanup_task: asyncio.Task | None = None
         self.llm_image_tool: GeminiImageGenerationTool | None = None
         self.llm_provider_query_tool: ProviderModelQueryTool | None = None
         self.llm_task_status_tool: BackgroundTaskStatusTool | None = None
@@ -95,8 +98,13 @@ class GeminiImageGenerationPlugin(Star):
             "astrbot_plugin_gemini_image_generation",
         )
 
+        # 清理旧版本留在插件数据目录的缓存（现已迁移到 AstrBot 临时目录）
+        self._cleanup_legacy_cache_dirs()
+
         # 加载配置（传入数据目录用于备份）
         self.cfg = ConfigLoader(config or {}, data_dir=self._plugin_data_dir).load()
+        # 生成图保留区的容量上限（写图时按需清理）
+        set_image_cache_max_size_mb(self.cfg.image_cache_max_size_mb)
         self.background_task_manager = BackgroundTaskManager(
             self._plugin_data_dir,
             retention_hours=self.cfg.background_task_retention_hours,
@@ -111,8 +119,53 @@ class GeminiImageGenerationPlugin(Star):
         # 注册 LLM 工具
         self._register_llm_tools()
 
-        # 启动定时清理任务
-        self._start_cleanup_task()
+    def _cleanup_legacy_cache_dirs(self):
+        """清理旧版本插件数据目录下的缓存（已迁移到 AstrBot 临时目录）。
+
+        只删除已知缓存子目录和已知前缀的缓存文件，避免误删用户自定义数据。
+        """
+        import shutil
+
+        base = Path(self._plugin_data_dir)
+
+        def _remove(target: Path):
+            if not target.exists():
+                return
+            try:
+                if target.is_dir():
+                    shutil.rmtree(target, ignore_errors=True)
+                else:
+                    target.unlink(missing_ok=True)
+                logger.debug(f"已清理旧缓存: {target}")
+            except Exception as e:
+                logger.debug(f"清理旧缓存 {target} 失败: {e}")
+
+        def _rmdir_if_empty(directory: Path):
+            try:
+                directory.rmdir()  # 仅删除空目录
+            except OSError:
+                pass
+
+        # images/ 下仅删除已知缓存：下载/头像缓存目录和插件生成的图片
+        images_dir = base / "images"
+        if images_dir.is_dir():
+            _remove(images_dir / "download_cache")
+            _remove(images_dir / "avatar_cache")
+            for pattern in ("gemini_image_*", "gemini_advanced_image_*", "help_*"):
+                for file in images_dir.glob(pattern):
+                    _remove(file)
+            _rmdir_if_empty(images_dir)
+
+        # temp/ 下仅删除已知临时文件前缀
+        temp_dir = base / "temp"
+        if temp_dir.is_dir():
+            for pattern in ("cut_*", "gem_inline_*"):
+                for file in temp_dir.glob(pattern):
+                    _remove(file)
+            _rmdir_if_empty(temp_dir)
+
+        # split_output/ 整个目录均为插件生成的切图缓存，可直接移除
+        _remove(base / "split_output")
 
     def _load_version(self) -> str:
         """从 metadata.yaml 读取版本号"""
@@ -260,42 +313,8 @@ class GeminiImageGenerationPlugin(Star):
         except Exception as e:
             logger.warning(f"注册 LLM 工具失败: {e}，将使用装饰器方式")
 
-    def _start_cleanup_task(self):
-        """启动定时清理任务"""
-        if self._cleanup_task and not self._cleanup_task.done():
-            return
-
-        # 读取配置的清理间隔和缓存保留时间
-        cleanup_interval = self.cfg.cleanup_interval_minutes
-        cache_ttl = self.cfg.cache_ttl_minutes
-        max_files = self.cfg.max_cache_files
-
-        # 如果清理间隔为 0，禁用定时清理
-        if cleanup_interval <= 0:
-            logger.debug("定时清理任务已禁用（cleanup_interval_minutes=0）")
-            return
-
-        async def cleanup_loop():
-            while True:
-                try:
-                    await cleanup_old_images(ttl_minutes=cache_ttl, max_files=max_files)
-                    await asyncio.sleep(cleanup_interval * 60)
-                except asyncio.CancelledError:
-                    break
-                except Exception as e:
-                    logger.warning(f"清理任务异常: {e}")
-                    await asyncio.sleep(300)
-
-        self._cleanup_task = asyncio.create_task(cleanup_loop())
-        logger.debug(
-            f"定时清理任务已启动（间隔 {cleanup_interval} 分钟，保留 {cache_ttl} 分钟，上限 {max_files} 个）"
-        )
-
     async def terminate(self):
         """插件卸载/重载时调用"""
-        if self._cleanup_task and not self._cleanup_task.done():
-            self._cleanup_task.cancel()
-            logger.debug("定时清理任务已停止")
         try:
             await self.background_task_manager.close()
         except Exception as e:
@@ -554,11 +573,6 @@ class GeminiImageGenerationPlugin(Star):
         except Exception as e:
             logger.error(f"快捷生成失败: {e}", exc_info=True)
             yield event.plain_result(format_error_message(e))
-        finally:
-            try:
-                await self.avatar_manager.cleanup_used_avatars()
-            except Exception as e:
-                logger.warning(f"清理头像缓存失败: {e}")
 
     def _resolve_quick_mode_params(
         self, mode_key: str | None, default_resolution: str, default_aspect_ratio: str
@@ -1122,12 +1136,9 @@ class GeminiImageGenerationPlugin(Star):
                     uin=sender_id, name="Gemini表情包生成", content=node_content
                 )
                 yield event.chain_result([node])
-
-        finally:
-            try:
-                await self.avatar_manager.cleanup_used_avatars()
-            except Exception:
-                pass
+        except Exception as e:
+            logger.error(f"表情包生成失败: {e}", exc_info=True)
+            yield event.plain_result(format_error_message(e))
 
     @filter.command("切图")
     async def split_image_command(

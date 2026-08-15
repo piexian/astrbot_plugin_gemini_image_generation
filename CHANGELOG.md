@@ -4,6 +4,23 @@
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-08-15
+
+### Added
+
+- 新增 `service_settings.image_cache_max_size_mb` 配置（默认 512MB，0 表示不清理）：生成图与帮助图保留在插件数据目录 `images/` 下，写图前检查容量，超限按最旧文件优先清理约 30%，策略与 AstrBot 的 TempDirCleaner 一致。
+
+### Changed
+
+- 切图输出、参考图下载缓存、base64 中转等瞬时文件统一迁移到 AstrBot 共享临时目录下的插件专属子目录（`data/temp/astrbot_plugin_gemini_image_generation/`），由 AstrBot 的 TempDirCleaner 按容量上限自动清理，插件不再自行维护清理逻辑；以完整插件名作为子目录名，避免与其他插件撞名。
+- 生成图与帮助图保留在插件数据目录 `images/` 下（AstrBot 临时目录无防清理机制，不适合存放待发送图片），清理方式由定时任务改为上述按容量自清理。
+- 插件启动时一次性清理旧版本遗留的缓存：`images/` 内的下载缓存、头像缓存目录和旧生成图文件，`temp/` 内的旧临时文件，以及整个 `split_output/` 目录。
+- 头像保持纯内存 base64 处理，删除已无人使用的头像缓存目录清理逻辑。
+
+### Removed
+
+- 删除 `cache_settings` 配置分组（`cache_ttl_minutes` / `cleanup_interval_minutes` / `max_cache_files`）及对应的定时清理任务；旧配置键会被静默忽略，不影响启动。
+
 ## [2.4.2] - 2026-08-05
 
 ### Added

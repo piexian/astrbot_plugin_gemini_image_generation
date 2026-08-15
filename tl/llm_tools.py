@@ -648,13 +648,6 @@ def _create_generation_task(
     return asyncio.create_task(_run_generation())
 
 
-async def _cleanup_avatar_cache(plugin: Any, log_prefix: str) -> None:
-    try:
-        await plugin.avatar_manager.cleanup_used_avatars()
-    except Exception as exc:
-        logger.debug(f"{log_prefix} 清理头像缓存失败: {exc}")
-
-
 async def _dispatch_generation_result(
     plugin: Any,
     event: Any,
@@ -797,8 +790,6 @@ async def _await_generation_task_and_send(
                 completed_items=1,
                 failed_items=1,
             )
-    finally:
-        await _cleanup_avatar_cache(plugin, f"[{scene}]")
 
 
 def _schedule_generation_delivery(
@@ -1318,12 +1309,6 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
             except Exception as e:
                 logger.error(f"[后台任务] 图片生成异常：{e}", exc_info=True)
                 return f"❌ 图片生成过程中出错：{str(e)}"
-            finally:
-                # 清理缓存
-                try:
-                    await plugin.avatar_manager.cleanup_used_avatars()
-                except Exception as e:
-                    logger.debug(f"[后台任务] 清理头像缓存失败：{e}")
 
         generation_task = _create_generation_task(
             plugin=plugin,
@@ -1342,12 +1327,10 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
             image_count=1,
             suppress_resolution=suppress_resolution,
         )
-        cleanup_now = True
         foreground_wait_seconds = _resolve_foreground_wait_seconds(plugin, event)
 
         try:
             if foreground_wait_seconds <= 0:
-                cleanup_now = False
                 notice = _build_background_start_notice(
                     ref_count=ref_count,
                     avatar_count=avatar_count,
@@ -1408,9 +1391,8 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                     logger.warning(
                         "[前台等待] 构建 CallToolResult 超时（代理下载慢），转后台直发"
                     )
-                    # 生成已完成，创建一个立即完成的 task 包装结果，走后台直发
-                    cleanup_now = False
 
+                    # 生成已完成，创建一个立即完成的 task 包装结果，走后台直发
                     async def _already_done():
                         return (True, result_data, request_stats)
 
@@ -1445,7 +1427,6 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                 )
                 return error_msg
         except asyncio.TimeoutError:
-            cleanup_now = False
             logger.debug("[前台等待] 等待超时，切换为后台继续生成。")
             notice = _build_background_fallback_notice(
                 ref_count=ref_count,
@@ -1474,9 +1455,6 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         except Exception as e:
             logger.error(f"[前台等待] 图像生成异常：{e}", exc_info=True)
             return f"❌ 图片生成过程中出错：{str(e)}"
-        finally:
-            if cleanup_now:
-                await _cleanup_avatar_cache(plugin, "[工具调用]")
 
 
 async def _background_generate_and_send(
@@ -1570,12 +1548,6 @@ async def execute_image_generation_tool(
         avatar_reference=avatar_reference,
         is_tool_call=True,
     )
-
-    # 清理缓存
-    try:
-        await plugin.avatar_manager.cleanup_cache()
-    except Exception as e:
-        logger.warning(f"清理头像缓存失败: {e}")
 
     if success and isinstance(result_data, tuple):
         image_urls, image_paths, text_content, thought_signature = result_data

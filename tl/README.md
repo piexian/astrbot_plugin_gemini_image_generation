@@ -102,7 +102,7 @@ async def parse_response(
 
 | 接口 | 说明 |
 |------|------|
-| `PluginConfig` | 插件运行时配置数据类，集中保存 API、图像生成、快速模式、服务、限流、缓存等配置 |
+| `PluginConfig` | 插件运行时配置数据类，集中保存 API、图像生成、快速模式、服务、限流等配置 |
 | `ConfigLoader(raw_config, data_dir=None)` | 配置加载器 |
 | `ConfigLoader.load()` | 入口方法，返回 `PluginConfig` |
 | `provider_settings_by_type` | 运行时派生字段，按 `api_type` 保存所有有效候选 settings 列表 |
@@ -570,7 +570,7 @@ _prepare_foreground()
 |------|------|
 | `normalize_reference_image_input()` | 将 data URI、base64、本地文件、file://、http(s) URL 统一为 `(mime_type, base64_data)` |
 | `coerce_reference_image_bytes()`、`coerce_reference_image()` | 将图片字节/base64 转成 provider 支持的 PNG/JPEG/WEBP/HEIC/HEIF |
-| `check_reference_image_cache()`、`save_reference_image_cache()` | 管理参考图下载缓存 |
+| `check_reference_image_cache()`、`save_reference_image_cache()` | 管理参考图下载缓存（位于 AstrBot 临时目录下的插件专属子目录，由 AstrBot 统一清理） |
 | `build_reference_image_headers()`、`is_qq_image_host()` | 构建参考图下载请求头并处理 QQ 图床特殊规则 |
 
 ### `tl_utils.py`
@@ -579,11 +579,11 @@ _prepare_foreground()
 
 | 分组 | 主要接口 | 说明 |
 |------|----------|------|
-| 路径 | `get_plugin_data_dir()`、`get_temp_dir()` | 获取插件数据目录和临时目录 |
+| 路径 | `get_plugin_data_dir()`、`get_temp_dir()`、`get_shared_temp_dir()` | 获取插件数据目录和 AstrBot 共享临时目录（临时文件由 AstrBot 统一清理） |
 | Base64 | `encode_file_to_base64()`、`save_base64_image()`、`is_valid_base64_image_str()` | 图片 base64 编码、保存和校验 |
-| 图片保存 | `save_image_stream()`、`save_image_data()`、`cleanup_old_images()` | 下载流保存、二进制保存、缓存清理 |
+| 图片保存 | `save_image_stream()`、`save_image_data()`、`cleanup_image_cache_by_size()` | 下载流保存、二进制保存（写入插件数据目录 `images/`）、按容量清理 |
 | 图片源解析 | `collect_image_sources()`、`resolve_image_source_to_path()` | 从 AstrBot 事件或任意来源解析图片 |
-| QQ 头像 | `download_qq_avatar()`、`AvatarManager`、`download_qq_avatar_legacy()` | 头像下载和缓存管理 |
+| QQ 头像 | `download_qq_avatar()`、`AvatarManager`、`download_qq_avatar_legacy()` | 头像下载（纯内存 base64，不落盘） |
 | NapCat Stream | `upload_file_stream()` | 复用当前 NapCat/OneBot 连接上传本地文件并返回可发送路径 |
 | 错误展示 | `format_error_message()` | 已迁移到 `tl/format_error.py`，此处保留 re-export shim 维持向后兼容 |
 
@@ -591,7 +591,7 @@ _prepare_foreground()
 
 - `normalize_reference_image_input()` 是 API provider 处理参考图时的核心工具，通过 `GeminiAPIClient._normalize_reference_image_input()` 复用。
 - `resolve_image_source_to_path()` 是 `/切图` 将 URL/base64/data URI 转成本地文件的核心工具。
-- `AvatarManager` 管理头像缓存和清理，通常通过 `AvatarHandler` 或 `ImageHandler` 间接使用。
+- `AvatarManager` 负责头像获取，通常通过 `AvatarHandler` 或 `ImageHandler` 间接使用。
 - `upload_file_stream()` 只作为发送失败后的兜底路径使用，常规图片发送仍由 `MessageSender.dispatch_send_results()` 构造。
 
 ### `format_error.py`

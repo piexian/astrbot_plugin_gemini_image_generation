@@ -10,7 +10,7 @@ import os
 import time
 import urllib.parse
 from collections import OrderedDict
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -50,7 +50,7 @@ def _decode_base64_to_temp_file(
         if ";base64," in data:
             _, _, data = data.partition(";base64,")
         raw_bytes = base64.b64decode(data)
-        # 使用插件临时目录而非系统临时目录，便于统一清理
+        # 使用 AstrBot 共享临时目录，由 AstrBot 统一清理
         temp_dir = get_temp_dir()
         tmp_path = temp_dir / f"cut_{int(time.time() * 1000)}_{os.getpid()}.png"
         tmp_path.write_bytes(raw_bytes)
@@ -74,19 +74,94 @@ def get_plugin_data_dir() -> Path:
     return StarTools.get_data_dir("astrbot_plugin_gemini_image_generation")
 
 
-def get_temp_dir() -> Path:
-    """获取插件临时文件目录，用于存放需要定时清理的临时文件"""
-    temp_dir = get_plugin_data_dir() / "temp"
+def get_shared_temp_dir() -> Path:
+    """返回 AstrBot 共享临时目录根（不可用时回退到系统临时目录）。
+
+    生成图、切图、参考图缓存等瞬时文件统一写入该目录下的插件专属子目录，
+    由 AstrBot 的 TempDirCleaner 按容量上限自动清理，插件不再自行维护清理逻辑。
+    """
+    try:
+        from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
+
+        temp_dir = Path(get_astrbot_temp_path())
+    except Exception:
+        import tempfile
+
+        temp_dir = Path(tempfile.gettempdir())
     temp_dir.mkdir(parents=True, exist_ok=True)
     return temp_dir
+
+
+def get_temp_dir() -> Path:
+    """获取插件临时文件目录（AstrBot 共享临时目录下的插件专属子目录，由 AstrBot 统一清理）"""
+    temp_dir = get_shared_temp_dir() / "astrbot_plugin_gemini_image_generation"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    return temp_dir
+
+
+# 生成图保留区（插件数据目录 images/）的容量上限（MB），由配置覆盖；<=0 表示不清理
+_DEFAULT_IMAGE_CACHE_MAX_SIZE_MB = 512.0
+_image_cache_max_size_mb = _DEFAULT_IMAGE_CACHE_MAX_SIZE_MB
+
+
+def set_image_cache_max_size_mb(value: float) -> None:
+    """由插件配置设置生成图保留区的容量上限（MB）"""
+    global _image_cache_max_size_mb
+    try:
+        _image_cache_max_size_mb = float(value)
+    except (TypeError, ValueError):
+        _image_cache_max_size_mb = _DEFAULT_IMAGE_CACHE_MAX_SIZE_MB
+
+
+def cleanup_image_cache_by_size(
+    images_dir: Path | None = None, max_size_mb: float | None = None
+) -> None:
+    """按容量清理生成图保留区：超过上限时从最旧文件开始删除，释放约 30% 空间。
+
+    策略对齐 AstrBot 的 TempDirCleaner；max_size_mb <= 0 时不清理。
+    """
+    limit_mb = _image_cache_max_size_mb if max_size_mb is None else max_size_mb
+    if limit_mb <= 0:
+        return
+    try:
+        if images_dir is None:
+            images_dir = get_plugin_data_dir() / "images"
+        if not images_dir.is_dir():
+            return
+
+        files = [f for f in images_dir.iterdir() if f.is_file()]
+        total = sum(f.stat().st_size for f in files)
+        if total <= int(limit_mb * 1024**2):
+            return
+
+        files.sort(key=lambda f: f.stat().st_mtime)
+        target_release = max(int(total * 0.3), 1)
+        released = 0
+        removed = 0
+        for file_path in files:
+            try:
+                size = file_path.stat().st_size
+                file_path.unlink()
+            except OSError:
+                continue
+            released += size
+            removed += 1
+            if released >= target_release:
+                break
+        logger.debug(f"生成图缓存超出容量上限，已清理 {removed} 个最旧文件")
+    except Exception as e:
+        logger.warning(f"生成图缓存清理失败: {e}")
 
 
 def _build_image_path(
     image_format: str = "png", prefix: str = "gemini_advanced_image"
 ) -> Path:
     """生成规范的图片路径，避免重复逻辑"""
+    # 生成图需要保留供发送与复用，放插件数据目录并按容量自清理；
+    # AstrBot 临时目录没有防清理机制，不适合存放待发送的生成图
     images_dir = get_plugin_data_dir() / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
+    cleanup_image_cache_by_size(images_dir)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
     unique_suffix = uuid4().hex[:6]
@@ -316,156 +391,6 @@ async def save_image_data(image_data: bytes, image_format: str = "png") -> str |
     except Exception as e:
         logger.error(f"保存图像失败: {e}")
         return None
-
-
-async def cleanup_old_images(
-    images_dir: Path | None = None, ttl_minutes: int = 5, max_files: int = 100
-):
-    """
-    清理超过指定时间的图像文件和缓存，并限制文件数量
-
-    Args:
-        images_dir (Path): images 目录路径，如果为None则使用默认路径
-        ttl_minutes (int): 缓存保留时间（分钟），默认 5 分钟，设为 0 表示不按时间清理
-        max_files (int): 各目录文件数量上限，默认 100，设为 0 表示不限制数量
-    """
-    # 如果 TTL 和数量限制都为 0，不执行清理
-    if ttl_minutes <= 0 and max_files <= 0:
-        return
-
-    try:
-        plugin_data_dir = get_plugin_data_dir()
-        if images_dir is None:
-            images_dir = plugin_data_dir / "images"
-
-        current_time = datetime.now()
-        cutoff_time = current_time - timedelta(minutes=ttl_minutes)
-        cleaned_count = 0
-
-        # 清理 images 目录
-        if images_dir.exists():
-            image_patterns = [
-                "gemini_image_*.*",
-                "gemini_advanced_image_*.*",
-                "help_*.png",
-            ]
-            all_files: list[Path] = []
-            for pattern in image_patterns:
-                all_files.extend(images_dir.glob(pattern))
-
-            # 按修改时间排序（最旧的在前面）
-            all_files.sort(key=lambda f: f.stat().st_mtime)
-
-            for idx, file_path in enumerate(all_files):
-                try:
-                    should_delete = False
-                    # 按时间清理
-                    if ttl_minutes > 0:
-                        if (
-                            datetime.fromtimestamp(file_path.stat().st_mtime)
-                            < cutoff_time
-                        ):
-                            should_delete = True
-                    # 按数量清理（保留最新的 max_files 个）
-                    if max_files > 0 and len(all_files) - idx > max_files:
-                        should_delete = True
-
-                    if should_delete:
-                        file_path.unlink()
-                        cleaned_count += 1
-                except Exception as e:
-                    logger.warning(f"清理文件 {file_path} 时出错: {e}")
-
-        # 清理 download_cache 目录
-        cache_dir = (
-            images_dir / "download_cache"
-            if images_dir
-            else plugin_data_dir / "images" / "download_cache"
-        )
-        if cache_dir.exists():
-            cache_files = [f for f in cache_dir.glob("*") if f.is_file()]
-            cache_files.sort(key=lambda f: f.stat().st_mtime)
-
-            for idx, file_path in enumerate(cache_files):
-                try:
-                    should_delete = False
-                    if ttl_minutes > 0:
-                        if (
-                            datetime.fromtimestamp(file_path.stat().st_mtime)
-                            < cutoff_time
-                        ):
-                            should_delete = True
-                    if max_files > 0 and len(cache_files) - idx > max_files:
-                        should_delete = True
-
-                    if should_delete:
-                        file_path.unlink()
-                        cleaned_count += 1
-                except Exception as e:
-                    logger.warning(f"清理缓存 {file_path} 时出错: {e}")
-
-        # 清理 split_output 目录（包括子目录）
-        split_dir = plugin_data_dir / "split_output"
-        if split_dir.exists():
-            # 收集所有文件（包括子目录中的文件）
-            all_split_files = [f for f in split_dir.rglob("*") if f.is_file()]
-            all_split_files.sort(key=lambda f: f.stat().st_mtime)
-
-            for idx, file_path in enumerate(all_split_files):
-                try:
-                    should_delete = False
-                    if ttl_minutes > 0:
-                        if (
-                            datetime.fromtimestamp(file_path.stat().st_mtime)
-                            < cutoff_time
-                        ):
-                            should_delete = True
-                    if max_files > 0 and len(all_split_files) - idx > max_files:
-                        should_delete = True
-
-                    if should_delete:
-                        file_path.unlink()
-                        cleaned_count += 1
-                except Exception as e:
-                    logger.warning(f"清理切图 {file_path} 时出错: {e}")
-
-            # 清理空的子目录
-            for subdir in sorted(split_dir.rglob("*"), reverse=True):
-                if subdir.is_dir():
-                    try:
-                        subdir.rmdir()  # 只能删除空目录
-                    except OSError:
-                        pass  # 目录非空，跳过
-
-        # 清理 temp 目录
-        temp_dir = plugin_data_dir / "temp"
-        if temp_dir.exists():
-            temp_files = [f for f in temp_dir.glob("*") if f.is_file()]
-            temp_files.sort(key=lambda f: f.stat().st_mtime)
-
-            for idx, file_path in enumerate(temp_files):
-                try:
-                    should_delete = False
-                    if ttl_minutes > 0:
-                        if (
-                            datetime.fromtimestamp(file_path.stat().st_mtime)
-                            < cutoff_time
-                        ):
-                            should_delete = True
-                    if max_files > 0 and len(temp_files) - idx > max_files:
-                        should_delete = True
-
-                    if should_delete:
-                        file_path.unlink()
-                        cleaned_count += 1
-                except Exception as e:
-                    logger.warning(f"清理临时文件 {file_path} 时出错: {e}")
-
-        if cleaned_count > 0:
-            logger.debug(f"共清理 {cleaned_count} 个过期文件")
-
-    except Exception as e:
-        logger.error(f"清理过程出错: {e}")
 
 
 async def download_qq_avatar(
@@ -878,26 +803,6 @@ class AvatarManager:
             base64格式的头像数据
         """
         return await download_qq_avatar(user_id, cache_name, self.images_dir, event)
-
-    async def cleanup_cache(self):
-        """清理头像缓存"""
-        if self.images_dir is None:
-            self.images_dir = get_plugin_data_dir() / "images"
-
-        cache_dir = self.images_dir / "avatar_cache"
-        if cache_dir.exists():
-            # 不再使用头像缓存，直接清空目录
-            try:
-                for avatar_file in cache_dir.glob("*"):
-                    avatar_file.unlink(missing_ok=True)
-                cache_dir.rmdir()
-                logger.debug("已清空头像缓存目录")
-            except Exception as e:
-                logger.warning(f"清理头像缓存目录失败: {e}")
-
-    async def cleanup_used_avatars(self):
-        """清理已使用的头像缓存（别名方法）"""
-        await self.cleanup_cache()
 
 
 # 为了向后兼容，提供一些旧名称的别名

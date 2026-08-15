@@ -272,8 +272,3 @@ async def run_batch_job(
             await event.send(event.plain_result(f"批量生图任务 {task_id} 失败：{exc}"))
         except Exception:
             pass
-    finally:
-        try:
-            await plugin.avatar_manager.cleanup_used_avatars()
-        except Exception as exc:
-            logger.debug(f"[批量任务] 清理头像缓存失败: {exc}")
