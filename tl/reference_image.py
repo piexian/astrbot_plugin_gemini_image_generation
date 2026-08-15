@@ -37,11 +37,11 @@ def get_reference_image_cache_dir() -> Path:
     """
     try:
         # 延迟 import，避免与 tl_utils 形成循环依赖
-        from .tl_utils import get_shared_temp_dir
+        from .tl_utils import get_temp_dir
 
-        return Path(get_shared_temp_dir()) / "gemini_download_cache"
+        return get_temp_dir() / "download_cache"
     except Exception:
-        return Path(".") / "gemini_download_cache"
+        return Path(".") / "download_cache"
 
 
 REFERENCE_IMAGE_CACHE_DIR = get_reference_image_cache_dir()

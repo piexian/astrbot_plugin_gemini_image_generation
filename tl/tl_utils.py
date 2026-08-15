@@ -95,8 +95,10 @@ def get_shared_temp_dir() -> str:
 
 
 def get_temp_dir() -> Path:
-    """获取临时文件目录（AstrBot 共享临时目录，由 AstrBot 统一清理）"""
-    return Path(get_shared_temp_dir())
+    """获取插件临时文件目录（AstrBot 共享临时目录下的插件专属子目录，由 AstrBot 统一清理）"""
+    temp_dir = Path(get_shared_temp_dir()) / "astrbot_plugin_gemini_image_generation"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    return temp_dir
 
 
 def _build_image_path(

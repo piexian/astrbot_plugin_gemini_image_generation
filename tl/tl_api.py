@@ -47,7 +47,7 @@ try:
         normalize_reference_image_input,
     )
 except ImportError:
-    REFERENCE_IMAGE_CACHE_DIR = Path(".") / "gemini_download_cache"
+    REFERENCE_IMAGE_CACHE_DIR = Path(".") / "download_cache"
 
     def extract_reference_image_source(image_input: Any) -> str:
         return str(image_input or "").strip()
