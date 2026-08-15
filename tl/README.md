@@ -581,7 +581,7 @@ _prepare_foreground()
 |------|----------|------|
 | 路径 | `get_plugin_data_dir()`、`get_temp_dir()`、`get_shared_temp_dir()` | 获取插件数据目录和 AstrBot 共享临时目录（临时文件由 AstrBot 统一清理） |
 | Base64 | `encode_file_to_base64()`、`save_base64_image()`、`is_valid_base64_image_str()` | 图片 base64 编码、保存和校验 |
-| 图片保存 | `save_image_stream()`、`save_image_data()` | 下载流保存、二进制保存（写入 AstrBot 临时目录） |
+| 图片保存 | `save_image_stream()`、`save_image_data()`、`cleanup_image_cache_by_size()` | 下载流保存、二进制保存（写入插件数据目录 `images/`）、按容量清理 |
 | 图片源解析 | `collect_image_sources()`、`resolve_image_source_to_path()` | 从 AstrBot 事件或任意来源解析图片 |
 | QQ 头像 | `download_qq_avatar()`、`AvatarManager`、`download_qq_avatar_legacy()` | 头像下载（纯内存 base64，不落盘） |
 | NapCat Stream | `upload_file_stream()` | 复用当前 NapCat/OneBot 连接上传本地文件并返回可发送路径 |

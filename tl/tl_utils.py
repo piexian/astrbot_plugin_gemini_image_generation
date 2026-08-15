@@ -99,12 +99,69 @@ def get_temp_dir() -> Path:
     return temp_dir
 
 
+# 生成图保留区（插件数据目录 images/）的容量上限（MB），由配置覆盖；<=0 表示不清理
+_DEFAULT_IMAGE_CACHE_MAX_SIZE_MB = 512.0
+_image_cache_max_size_mb = _DEFAULT_IMAGE_CACHE_MAX_SIZE_MB
+
+
+def set_image_cache_max_size_mb(value: float) -> None:
+    """由插件配置设置生成图保留区的容量上限（MB）"""
+    global _image_cache_max_size_mb
+    try:
+        _image_cache_max_size_mb = float(value)
+    except (TypeError, ValueError):
+        _image_cache_max_size_mb = _DEFAULT_IMAGE_CACHE_MAX_SIZE_MB
+
+
+def cleanup_image_cache_by_size(
+    images_dir: Path | None = None, max_size_mb: float | None = None
+) -> None:
+    """按容量清理生成图保留区：超过上限时从最旧文件开始删除，释放约 30% 空间。
+
+    策略对齐 AstrBot 的 TempDirCleaner；max_size_mb <= 0 时不清理。
+    """
+    limit_mb = _image_cache_max_size_mb if max_size_mb is None else max_size_mb
+    if limit_mb <= 0:
+        return
+    try:
+        if images_dir is None:
+            images_dir = get_plugin_data_dir() / "images"
+        if not images_dir.is_dir():
+            return
+
+        files = [f for f in images_dir.iterdir() if f.is_file()]
+        total = sum(f.stat().st_size for f in files)
+        if total <= int(limit_mb * 1024**2):
+            return
+
+        files.sort(key=lambda f: f.stat().st_mtime)
+        target_release = max(int(total * 0.3), 1)
+        released = 0
+        removed = 0
+        for file_path in files:
+            try:
+                size = file_path.stat().st_size
+                file_path.unlink()
+            except OSError:
+                continue
+            released += size
+            removed += 1
+            if released >= target_release:
+                break
+        logger.debug(f"生成图缓存超出容量上限，已清理 {removed} 个最旧文件")
+    except Exception as e:
+        logger.warning(f"生成图缓存清理失败: {e}")
+
+
 def _build_image_path(
     image_format: str = "png", prefix: str = "gemini_advanced_image"
 ) -> Path:
     """生成规范的图片路径，避免重复逻辑"""
-    # 生成图只作发送中转，直接放 AstrBot 共享临时目录，无需自行清理
-    images_dir = get_temp_dir()
+    # 生成图需要保留供发送与复用，放插件数据目录并按容量自清理；
+    # AstrBot 临时目录没有防清理机制，不适合存放待发送的生成图
+    images_dir = get_plugin_data_dir() / "images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+    cleanup_image_cache_by_size(images_dir)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
     unique_suffix = uuid4().hex[:6]

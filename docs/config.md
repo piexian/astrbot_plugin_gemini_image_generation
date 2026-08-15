@@ -117,6 +117,7 @@ avatar / poster / wallpaper / card / mobile / figure / sticker
 | `show_duration_stats` | `true` | 生成完成后是否展示耗时统计 |
 | `show_retry_stats` | `true` | 生成完成后是否展示重试次数 |
 | `show_token_usage_stats` | `true` | 生成完成后是否展示上游返回的 token 用量 |
+| `image_cache_max_size_mb` | `512.0` | 插件数据目录 `images/` 下生成图与帮助图的容量上限（MB），超限时按最旧文件优先自动清理；`0` 表示不清理 |
 | `theme_settings.mode` | `cycle` | 帮助页主题模式 |
 
 NapCat v4.8.115+ 支持 Stream API。插件默认仍先按 `max_inline_image_size_mb` 规则发送本地图片；只有原始发送失败且文件大小达到 `napcat_stream_threshold_mb` 时，才会复用当前 NapCat/OneBot 连接调用 `upload_file_stream` 并重试一次。Docker / docker compose 部署仍建议共享 `AstrBot/data` 目录，以兼容普通本地文件发送路径。

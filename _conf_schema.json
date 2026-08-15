@@ -1957,6 +1957,12 @@
         "hint": "生成完成后是否展示上游返回的 token 用量",
         "default": true
       },
+      "image_cache_max_size_mb": {
+        "description": "生成图缓存容量上限（MB）",
+        "type": "float",
+        "hint": "插件数据目录 images/ 下生成图与帮助图的容量上限，超过时按最旧文件优先自动清理（策略与 AstrBot 临时目录清理一致）。填 0 表示不自动清理",
+        "default": 512.0
+      },
       "theme_settings": {
         "description": "主题设置",
         "type": "object",

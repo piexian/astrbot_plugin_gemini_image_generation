@@ -59,7 +59,11 @@ from .tl.llm_tools import GeminiImageGenerationTool
 from .tl.plugin_config import max_configured_reference_images
 from .tl.provider_capabilities import select_candidates
 from .tl.tl_api import APIClient, ApiRequestConfig, get_api_client
-from .tl.tl_utils import AvatarManager, format_error_message
+from .tl.tl_utils import (
+    AvatarManager,
+    format_error_message,
+    set_image_cache_max_size_mb,
+)
 from .tl.tool_permission import ensure_admin_default_tool_permission
 
 
@@ -99,6 +103,8 @@ class GeminiImageGenerationPlugin(Star):
 
         # 加载配置（传入数据目录用于备份）
         self.cfg = ConfigLoader(config or {}, data_dir=self._plugin_data_dir).load()
+        # 生成图保留区的容量上限（写图时按需清理）
+        set_image_cache_max_size_mb(self.cfg.image_cache_max_size_mb)
         self.background_task_manager = BackgroundTaskManager(
             self._plugin_data_dir,
             retention_hours=self.cfg.background_task_retention_hours,

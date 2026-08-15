@@ -160,6 +160,7 @@ class PluginConfig:
     show_duration_stats: bool = True
     show_retry_stats: bool = True
     show_token_usage_stats: bool = True
+    image_cache_max_size_mb: float = 512.0
 
     # 帮助页渲染
     help_render_mode: str = "html"
@@ -696,6 +697,12 @@ class ConfigLoader:
         config.show_token_usage_stats = service_settings.get(
             "show_token_usage_stats", True
         )
+        try:
+            config.image_cache_max_size_mb = max(
+                float(service_settings.get("image_cache_max_size_mb", 512.0)), 0.0
+            )
+        except (TypeError, ValueError):
+            config.image_cache_max_size_mb = 512.0
 
         # 帮助页渲染
         config.help_render_mode = self.raw_config.get("help_render_mode") or "html"

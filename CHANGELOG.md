@@ -8,7 +8,8 @@
 
 ### Changed
 
-- 生成图、帮助图、切图输出、参考图下载缓存等瞬时文件统一迁移到 AstrBot 共享临时目录下的插件专属子目录（`data/temp/astrbot_plugin_gemini_image_generation/`），由 AstrBot 的 TempDirCleaner 按容量上限自动清理，插件不再自行维护清理逻辑；以完整插件名作为子目录名，避免与其他插件撞名。
+- 切图输出、参考图下载缓存、base64 中转等瞬时文件统一迁移到 AstrBot 共享临时目录下的插件专属子目录（`data/temp/astrbot_plugin_gemini_image_generation/`），由 AstrBot 的 TempDirCleaner 按容量上限自动清理，插件不再自行维护清理逻辑；以完整插件名作为子目录名，避免与其他插件撞名。
+- 生成图与帮助图保留在插件数据目录 `images/` 下（AstrBot 临时目录无防清理机制，不适合存放待发送图片），改为与 AstrBot 一致的按容量自清理：新增 `service_settings.image_cache_max_size_mb`（默认 512MB，0 表示不清理），写图前检查容量，超限按最旧文件优先清理约 30%。
 - 插件启动时一次性清理旧版本留在插件数据目录下的 `images/`、`temp/`、`split_output/` 缓存目录。
 - 头像保持纯内存 base64 处理，删除已无人使用的头像缓存目录清理逻辑。
 
