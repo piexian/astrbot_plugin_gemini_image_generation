@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-08-15
+
+### Changed
+
+- 生成图、帮助图、切图输出、参考图下载缓存等瞬时文件统一迁移到 AstrBot 共享临时目录（`data/temp/`），由 AstrBot 的 TempDirCleaner 按容量上限自动清理，插件不再自行维护清理逻辑。
+- 参考图下载缓存与切图输出目录分别更名为 `gemini_download_cache`、`gemini_split_output`（位于 AstrBot 临时目录下），避免与其他插件冲突。
+- 插件启动时一次性清理旧版本留在插件数据目录下的 `images/`、`temp/`、`split_output/` 缓存目录。
+- 头像保持纯内存 base64 处理，删除已无人使用的头像缓存目录清理逻辑。
+
+### Removed
+
+- 删除 `cache_settings` 配置分组（`cache_ttl_minutes` / `cleanup_interval_minutes` / `max_cache_files`）及对应的定时清理任务；旧配置键会被静默忽略，不影响启动。
+
 ## [2.4.2] - 2026-08-05
 
 ### Added

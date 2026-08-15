@@ -140,14 +140,6 @@ NapCat v4.8.115+ 支持 Stream API。插件默认仍先按 `max_inline_image_siz
 | `default_rate_limit.period_seconds` | `60` | 默认限流周期，单位秒 |
 | `default_rate_limit.max_requests` | `5` | 默认单群周期内最大请求数 |
 
-## cache_settings
-
-| 配置项 | 默认值 | 说明 |
-|--------|--------|------|
-| `cache_ttl_minutes` | `5` | 缓存保留时间，单位分钟 |
-| `cleanup_interval_minutes` | `30` | 清理间隔，单位分钟 |
-| `max_cache_files` | `100` | 缓存文件数量上限 |
-
 ## doubao_settings（豆包生图专用配置）
 
 配置路径：`provider_settings.provider_overrides` 中选择 `doubao` 模板。

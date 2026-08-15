@@ -7,7 +7,7 @@ import numpy as np
 from astrbot.api import logger
 
 from .tl_utils import (
-    get_plugin_data_dir,
+    get_temp_dir,
     is_valid_base64_image_str,
     resolve_image_source_to_path,
 )
@@ -1346,7 +1346,7 @@ def split_image(
         image_path: 源图片路径
         rows: 保留参数以兼容旧接口（网格切分默认值）
         cols: 保留参数以兼容旧接口（网格切分默认值）
-        output_dir: 输出目录，如果不指定则使用插件数据目录下的 split_output
+        output_dir: 输出目录，如果不指定则使用 AstrBot 临时目录下的 gemini_split_output
         bboxes: 外部提供的裁剪框（x,y,width,height），优先使用
         manual_rows: 手动指定的纵向切割数（行数）
         manual_cols: 手动指定的横向切割数（列数）
@@ -1356,16 +1356,15 @@ def split_image(
         List[str]: 切分后的图片文件路径列表，按顺序排列
     """
     try:
-        # 如果未指定输出目录，则使用插件的标准数据目录
+        # 如果未指定输出目录，则使用 AstrBot 共享临时目录（由 AstrBot 统一清理）
         if not output_dir:
-            data_dir = get_plugin_data_dir()
-            output_dir_path = data_dir / "split_output"
+            output_dir_path = get_temp_dir() / "gemini_split_output"
         else:
             output_dir_path = Path(output_dir)
 
         # 获取源文件名（不含扩展名和路径）作为子目录，避免文件混淆
         base_name = Path(image_path).stem
-        # 最终存储目录: .../split_output/base_name/
+        # 最终存储目录: .../gemini_split_output/base_name/
         final_output_dir = output_dir_path / base_name
         final_output_dir.mkdir(parents=True, exist_ok=True)
         output_files = []
@@ -1755,7 +1754,7 @@ def create_zip(files: list[str], output_filename: str | None = None) -> str | No
             first_file = Path(files[0])
             dir_path = first_file.parent
             dir_name = dir_path.name
-            # 输出到目录的同级，即 .../split_output/base_name.zip
+            # 输出到目录的同级，即 .../gemini_split_output/base_name.zip
             output_filename_path = dir_path.parent / f"{dir_name}.zip"
             output_filename = str(output_filename_path)
 

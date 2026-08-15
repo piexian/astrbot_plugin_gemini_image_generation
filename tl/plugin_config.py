@@ -179,11 +179,6 @@ class PluginConfig:
         }
     )
 
-    # 缓存设置
-    cache_ttl_minutes: int = 5
-    cleanup_interval_minutes: int = 30
-    max_cache_files: int = 100
-
 
 def max_configured_reference_images(candidates: Any) -> int:
     """Return the largest configured reference-image limit across candidates."""
@@ -709,9 +704,6 @@ class ConfigLoader:
         # 限制设置
         self._load_limit_settings(config)
 
-        # 缓存设置
-        self._load_cache_settings(config)
-
         return config
 
     def _load_html_render_options(
@@ -828,28 +820,3 @@ class ConfigLoader:
                 )
             except (TypeError, ValueError):
                 pass
-
-    def _load_cache_settings(self, config: PluginConfig):
-        """加载缓存设置"""
-        cache_settings = self.raw_config.get("cache_settings") or {}
-
-        cache_ttl = cache_settings.get("cache_ttl_minutes")
-        if cache_ttl is not None:
-            try:
-                config.cache_ttl_minutes = max(int(cache_ttl), 0)
-            except (TypeError, ValueError):
-                config.cache_ttl_minutes = 5
-
-        cleanup_interval = cache_settings.get("cleanup_interval_minutes")
-        if cleanup_interval is not None:
-            try:
-                config.cleanup_interval_minutes = max(int(cleanup_interval), 0)
-            except (TypeError, ValueError):
-                config.cleanup_interval_minutes = 30
-
-        max_files = cache_settings.get("max_cache_files")
-        if max_files is not None:
-            try:
-                config.max_cache_files = max(int(max_files), 0)
-            except (TypeError, ValueError):
-                config.max_cache_files = 100

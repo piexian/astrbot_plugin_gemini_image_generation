@@ -31,17 +31,17 @@ QQ_REFERENCE_IMAGE_HOSTS = frozenset(
 
 
 def get_reference_image_cache_dir() -> Path:
-    """Return the plugin cache directory used for downloaded reference images."""
-    try:
-        from astrbot.api.star import StarTools
+    """Return the cache directory used for downloaded reference images.
 
-        return (
-            StarTools.get_data_dir("astrbot_plugin_gemini_image_generation")
-            / "images"
-            / "download_cache"
-        )
+    缓存改放 AstrBot 共享临时目录下的插件专属子目录，由 AstrBot 统一清理。
+    """
+    try:
+        # 延迟 import，避免与 tl_utils 形成循环依赖
+        from .tl_utils import get_shared_temp_dir
+
+        return Path(get_shared_temp_dir()) / "gemini_download_cache"
     except Exception:
-        return Path(".") / "images" / "download_cache"
+        return Path(".") / "gemini_download_cache"
 
 
 REFERENCE_IMAGE_CACHE_DIR = get_reference_image_cache_dir()

@@ -379,7 +379,7 @@ class GoogleProvider:
                                 image_urls.append(saved_path)
                             else:
                                 try:
-                                    # 使用插件临时目录而非系统临时目录
+                                    # 使用 AstrBot 共享临时目录，由 AstrBot 统一清理
                                     temp_dir = get_temp_dir()
                                     tmp_path = (
                                         temp_dir

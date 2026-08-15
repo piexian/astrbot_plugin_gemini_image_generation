@@ -109,8 +109,7 @@ class _MessageSender:
 
 
 class _AvatarManager:
-    async def cleanup_used_avatars(self) -> None:
-        return None
+    pass
 
 
 @pytest.mark.asyncio
@@ -329,17 +328,11 @@ async def test_batch_job_waits_for_siblings_and_attributes_item_exceptions(
                 "successful_candidate_id": "xai#1",
             }
 
-    class _TrackingAvatarManager:
-        cleanup_after_sibling = False
-
-        async def cleanup_used_avatars(self) -> None:
-            self.cleanup_after_sibling = slow_finished.is_set()
-
     class _Plugin:
         cfg = SimpleNamespace(batch_concurrency=2)
         background_task_manager = manager
         message_sender = _MessageSender()
-        avatar_manager = _TrackingAvatarManager()
+        avatar_manager = _AvatarManager()
         image_generator = _Generator()
         partial_calls = 0
 
@@ -395,7 +388,6 @@ async def test_batch_job_waits_for_siblings_and_attributes_item_exceptions(
     assert by_name["slow-item"]["success"] is True
     assert len(plugin.message_sender.deliveries) == 2
     assert manager.progress_failure_raised is True
-    assert plugin.avatar_manager.cleanup_after_sibling is True
 
 
 @pytest.mark.asyncio

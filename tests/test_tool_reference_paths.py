@@ -414,8 +414,7 @@ def test_tool_base_properties_has_reference_image_paths():
 
 
 class _FakeAvatarManager:
-    async def cleanup_used_avatars(self):
-        return None
+    pass
 
 
 class _FakePlugin:
