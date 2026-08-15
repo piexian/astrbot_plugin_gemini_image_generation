@@ -47,7 +47,13 @@ try:
         normalize_reference_image_input,
     )
 except ImportError:
-    REFERENCE_IMAGE_CACHE_DIR = Path(".") / "download_cache"
+    import tempfile
+
+    REFERENCE_IMAGE_CACHE_DIR = (
+        Path(tempfile.gettempdir())
+        / "astrbot_plugin_gemini_image_generation"
+        / "download_cache"
+    )
 
     def extract_reference_image_source(image_input: Any) -> str:
         return str(image_input or "").strip()

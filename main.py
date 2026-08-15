@@ -114,17 +114,52 @@ class GeminiImageGenerationPlugin(Star):
         self._register_llm_tools()
 
     def _cleanup_legacy_cache_dirs(self):
-        """删除旧版本插件数据目录下的缓存子目录（已迁移到 AstrBot 临时目录）"""
+        """清理旧版本插件数据目录下的缓存（已迁移到 AstrBot 临时目录）。
+
+        只删除已知缓存子目录和已知前缀的缓存文件，避免误删用户自定义数据。
+        """
         import shutil
 
-        for name in ("images", "temp", "split_output"):
-            target = Path(self._plugin_data_dir) / name
-            if target.exists():
-                try:
+        base = Path(self._plugin_data_dir)
+
+        def _remove(target: Path):
+            if not target.exists():
+                return
+            try:
+                if target.is_dir():
                     shutil.rmtree(target, ignore_errors=True)
-                    logger.debug(f"已清理旧缓存目录: {target}")
-                except Exception as e:
-                    logger.debug(f"清理旧缓存目录 {target} 失败: {e}")
+                else:
+                    target.unlink(missing_ok=True)
+                logger.debug(f"已清理旧缓存: {target}")
+            except Exception as e:
+                logger.debug(f"清理旧缓存 {target} 失败: {e}")
+
+        def _rmdir_if_empty(directory: Path):
+            try:
+                directory.rmdir()  # 仅删除空目录
+            except OSError:
+                pass
+
+        # images/ 下仅删除已知缓存：下载/头像缓存目录和插件生成的图片
+        images_dir = base / "images"
+        if images_dir.is_dir():
+            _remove(images_dir / "download_cache")
+            _remove(images_dir / "avatar_cache")
+            for pattern in ("gemini_image_*", "gemini_advanced_image_*", "help_*"):
+                for file in images_dir.glob(pattern):
+                    _remove(file)
+            _rmdir_if_empty(images_dir)
+
+        # temp/ 下仅删除已知临时文件前缀
+        temp_dir = base / "temp"
+        if temp_dir.is_dir():
+            for pattern in ("cut_*", "gem_inline_*"):
+                for file in temp_dir.glob(pattern):
+                    _remove(file)
+            _rmdir_if_empty(temp_dir)
+
+        # split_output/ 整个目录均为插件生成的切图缓存，可直接移除
+        _remove(base / "split_output")
 
     def _load_version(self) -> str:
         """从 metadata.yaml 读取版本号"""

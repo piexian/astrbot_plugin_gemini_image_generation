@@ -74,29 +74,27 @@ def get_plugin_data_dir() -> Path:
     return StarTools.get_data_dir("astrbot_plugin_gemini_image_generation")
 
 
-def get_shared_temp_dir() -> str:
-    """返回 AstrBot 共享临时目录（不可用时回退到系统临时目录下的插件专属子目录）。
+def get_shared_temp_dir() -> Path:
+    """返回 AstrBot 共享临时目录根（不可用时回退到系统临时目录）。
 
-    生成图、切图、参考图缓存等瞬时文件统一写入该目录，由 AstrBot 的
-    TempDirCleaner 按容量上限自动清理，插件不再自行维护清理逻辑。
+    生成图、切图、参考图缓存等瞬时文件统一写入该目录下的插件专属子目录，
+    由 AstrBot 的 TempDirCleaner 按容量上限自动清理，插件不再自行维护清理逻辑。
     """
     try:
         from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 
-        temp_dir = get_astrbot_temp_path()
+        temp_dir = Path(get_astrbot_temp_path())
     except Exception:
         import tempfile
 
-        temp_dir = os.path.join(
-            tempfile.gettempdir(), "astrbot_plugin_gemini_image_generation"
-        )
-    os.makedirs(temp_dir, exist_ok=True)
+        temp_dir = Path(tempfile.gettempdir())
+    temp_dir.mkdir(parents=True, exist_ok=True)
     return temp_dir
 
 
 def get_temp_dir() -> Path:
     """获取插件临时文件目录（AstrBot 共享临时目录下的插件专属子目录，由 AstrBot 统一清理）"""
-    temp_dir = Path(get_shared_temp_dir()) / "astrbot_plugin_gemini_image_generation"
+    temp_dir = get_shared_temp_dir() / "astrbot_plugin_gemini_image_generation"
     temp_dir.mkdir(parents=True, exist_ok=True)
     return temp_dir
 
