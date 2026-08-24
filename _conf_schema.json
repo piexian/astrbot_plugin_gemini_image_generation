@@ -53,6 +53,12 @@
             "description": "Google/Gemini API 覆盖配置",
             "hint": "配置 Google Gemini 官方 API 的密钥和端点",
             "items": {
+              "enabled": {
+                "description": "启用此条配置",
+                "type": "bool",
+                "hint": "临时关闭本条模型配置而不删除它；关闭后该条不参与轮询和生图，同渠道其他条目不受影响。",
+                "default": true
+              },
               "priority": {
                 "description": "优先级",
                 "type": "int",
@@ -166,6 +172,12 @@
             "description": "OpenAI 兼容 API 覆盖配置",
             "hint": "配置 OpenAI 兼容格式的 API 密钥和端点",
             "items": {
+              "enabled": {
+                "description": "启用此条配置",
+                "type": "bool",
+                "hint": "临时关闭本条模型配置而不删除它；关闭后该条不参与轮询和生图，同渠道其他条目不受影响。",
+                "default": true
+              },
               "priority": {
                 "description": "优先级",
                 "type": "int",
@@ -267,6 +279,12 @@
             "description": "Zai API 覆盖配置",
             "hint": "配置 Zai.is 的 API 密钥和端点",
             "items": {
+              "enabled": {
+                "description": "启用此条配置",
+                "type": "bool",
+                "hint": "临时关闭本条模型配置而不删除它；关闭后该条不参与轮询和生图，同渠道其他条目不受影响。",
+                "default": true
+              },
               "priority": {
                 "description": "优先级",
                 "type": "int",
@@ -350,6 +368,12 @@
             "description": "grok2api 覆盖配置",
             "hint": "配置 grok2api 的 API 密钥和端点",
             "items": {
+              "enabled": {
+                "description": "启用此条配置",
+                "type": "bool",
+                "hint": "临时关闭本条模型配置而不删除它；关闭后该条不参与轮询和生图，同渠道其他条目不受影响。",
+                "default": true
+              },
               "priority": {
                 "description": "优先级",
                 "type": "int",
@@ -433,6 +457,12 @@
             "description": "Agnes AI 图片生成 API 覆盖配置",
             "hint": "配置 Agnes AI /v1/images/generations 端点的密钥和参数，支持文生图和参考图生图",
             "items": {
+              "enabled": {
+                "description": "启用此条配置",
+                "type": "bool",
+                "hint": "临时关闭本条模型配置而不删除它；关闭后该条不参与轮询和生图，同渠道其他条目不受影响。",
+                "default": true
+              },
               "priority": {
                 "description": "优先级",
                 "type": "int",
@@ -537,6 +567,12 @@
             "description": "xAI Images API 覆盖配置",
             "hint": "配置 xAI /v1/images/generations 和 /v1/images/edits 端点的密钥和参数",
             "items": {
+              "enabled": {
+                "description": "启用此条配置",
+                "type": "bool",
+                "hint": "临时关闭本条模型配置而不删除它；关闭后该条不参与轮询和生图，同渠道其他条目不受影响。",
+                "default": true
+              },
               "priority": {
                 "description": "优先级",
                 "type": "int",
@@ -648,6 +684,12 @@
             "description": "MiniMax 图片生成 API 覆盖配置",
             "hint": "配置 MiniMax /v1/image_generation 端点的密钥和参数，支持文生图和 subject_reference 图生图",
             "items": {
+              "enabled": {
+                "description": "启用此条配置",
+                "type": "bool",
+                "hint": "临时关闭本条模型配置而不删除它；关闭后该条不参与轮询和生图，同渠道其他条目不受影响。",
+                "default": true
+              },
               "priority": {
                 "description": "优先级",
                 "type": "int",
@@ -799,6 +841,12 @@
             "description": "阶跃星辰图片生成 API 覆盖配置",
             "hint": "仅完全适配 step-image-edit-2 模型参数",
             "items": {
+              "enabled": {
+                "description": "启用此条配置",
+                "type": "bool",
+                "hint": "临时关闭本条模型配置而不删除它；关闭后该条不参与轮询和生图，同渠道其他条目不受影响。",
+                "default": true
+              },
               "priority": {
                 "description": "优先级",
                 "type": "int",
@@ -922,6 +970,12 @@
             "description": "OpenAI Images API 覆盖配置",
             "hint": "配置 OpenAI /v1/images/generations 和 /v1/images/edits 端点的密钥和参数",
             "items": {
+              "enabled": {
+                "description": "启用此条配置",
+                "type": "bool",
+                "hint": "临时关闭本条模型配置而不删除它；关闭后该条不参与轮询和生图，同渠道其他条目不受影响。",
+                "default": true
+              },
               "priority": {
                 "description": "优先级",
                 "type": "int",
@@ -1117,6 +1171,12 @@
             "description": "豆包 API 覆盖配置",
             "hint": "配置豆包专用的多 Key 轮换和每日限额",
             "items": {
+              "enabled": {
+                "description": "启用此条配置",
+                "type": "bool",
+                "hint": "临时关闭本条模型配置而不删除它；关闭后该条不参与轮询和生图，同渠道其他条目不受影响。",
+                "default": true
+              },
               "priority": {
                 "description": "优先级",
                 "type": "int",
@@ -1267,6 +1327,12 @@
             "description": "SenseNova（商汤日日新）API 覆盖配置",
             "hint": "配置 SenseNova U1 Fast 文生图 API 的密钥与端点",
             "items": {
+              "enabled": {
+                "description": "启用此条配置",
+                "type": "bool",
+                "hint": "临时关闭本条模型配置而不删除它；关闭后该条不参与轮询和生图，同渠道其他条目不受影响。",
+                "default": true
+              },
               "priority": {
                 "description": "优先级",
                 "type": "int",
@@ -1372,6 +1438,12 @@
             "description": "DashScope（阿里云百炼）API 覆盖配置",
             "hint": "配置通义万相 wan2.7 / 千问图像 qwen-image-2.0 等 DashScope 原生图像模型",
             "items": {
+              "enabled": {
+                "description": "启用此条配置",
+                "type": "bool",
+                "hint": "临时关闭本条模型配置而不删除它；关闭后该条不参与轮询和生图，同渠道其他条目不受影响。",
+                "default": true
+              },
               "priority": {
                 "description": "优先级",
                 "type": "int",

@@ -432,6 +432,23 @@ class ConfigLoader:
 
                 settings = override.copy()
                 settings.pop("__template_key", None)
+
+                # 条目级开关：禁用条目不参与轮询和生图
+                enabled = settings.pop("enabled", True)
+                if isinstance(enabled, str):
+                    enabled = enabled.strip().lower() not in (
+                        "false",
+                        "0",
+                        "no",
+                        "off",
+                    )
+                elif enabled is None:
+                    enabled = True
+                if not enabled:
+                    logger.info(
+                        f"[配置加载] {template_key} 第 {order + 1} 条配置已禁用，跳过"
+                    )
+                    continue
                 settings["api_keys"] = _clean_api_keys(settings.get("api_keys"))
                 settings["daily_limit_per_key"] = _clean_non_negative_int(
                     settings.get("daily_limit_per_key")
