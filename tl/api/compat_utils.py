@@ -60,7 +60,11 @@ def build_generation_config(
     resolution_key: str = "image_size",
     aspect_ratio_key: str = "aspect_ratio",
 ) -> dict[str, Any]:
-    """按 zai 约定构建 generation_config 载荷（顶层分辨率/比例键 + generation_config 嵌套）。"""
+    """构建 generation_config 内容（仅扁平的分辨率/比例键）。
+
+    不含外层载荷组装：原 zai 约定由调用方将这些键同时写入顶层、
+    再整体嵌套到 payload[\"generation_config\"]。
+    """
     config: dict[str, Any] = {}
     if resolution:
         config[resolution_key] = resolution
