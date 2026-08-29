@@ -195,7 +195,6 @@ def doubao_capability(candidate: Any) -> dict[str, Any]:
 
 
 def sensenova_capability(candidate: Any) -> dict[str, Any]:
-    settings = _settings(candidate)
     model = _model(candidate).lower()
     if model.startswith("sensenova-u1.5"):
         return _profile(
