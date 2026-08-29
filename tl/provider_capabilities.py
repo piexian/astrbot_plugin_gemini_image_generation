@@ -104,7 +104,7 @@ def xai_capability(candidate: Any) -> dict[str, Any]:
         parameters={
             "quality": {
                 "type": "string",
-                "enum": ["low", "medium", "high"],
+                "enum": ["low", "medium"],
                 "default_source": "provider_config",
             }
         },

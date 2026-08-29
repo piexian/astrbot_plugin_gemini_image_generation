@@ -241,11 +241,11 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 |--------|--------|------|
 | `api_keys` | `[]` | API Key 列表，支持多 Key 轮换 |
 | `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
-| `model` | `grok-imagine-image` | xAI 图像模型名称 |
+| `model` | `grok-imagine-image-2.0` | 当前模型；旧模型名仍可手填但可能已被官方退役 |
 | `api_base` | `https://api.x.ai` | API 端点地址 |
 | `response_format` | `url` | 响应格式：`url` / `b64_json` |
-| `quality` | - | 透传给 xAI 图片接口，留空不传 |
-| `n` | `1` | 单次请求生成数量，当前最多 `10` |
+| `quality` | - | 仅 `grok-imagine-image-2.0` 支持，官方仅 `low` / `medium`（服务端默认 `medium`）；`high` 自动降级为 `medium`，留空不传 |
+| `n` | `1` | 单次请求生成数量，官方上限 `10` |
 | `proxy` | - | 独立代理地址 |
 
 `xai` 供应商会自动走 xAI 官方 JSON 图像接口：
@@ -253,7 +253,13 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 - 文生图：`/v1/images/generations`
 - 改图：`/v1/images/edits`
 
-改图请求会把参考图统一内联为 `data URI`，不使用 `multipart/form-data`。xAI 官方文档当前说明单次编辑最多支持 `5` 张参考图，分辨率支持 `1k/2k`，单图编辑时输出比例默认跟随输入图。
+改图请求会把参考图统一内联为 `data URI`，不使用 `multipart/form-data`。单次编辑最多支持 `3` 张参考图（超出截取前 3 张并记录日志），分辨率支持 `1k/2k`；多图编辑默认输出比例跟随第一张输入图，可用 `aspect_ratio` 覆盖，单图编辑始终跟随输入图。
+
+`aspect_ratio` 官方枚举：`1:1` / `16:9` / `9:16` / `4:3` / `3:4` / `3:2` / `2:3` / `2:1` / `1:2` / `19.5:9` / `9:19.5` / `20:9` / `9:20` / `auto`；`4:5` / `5:4` / `21:9` 不受支持，传入自动忽略并记录日志。
+
+官方文档：
+
+- <https://docs.x.ai/developers/model-capabilities/imagine>
 
 ## agnes_ai_settings（Agnes AI 图片生成 API 专用配置）
 

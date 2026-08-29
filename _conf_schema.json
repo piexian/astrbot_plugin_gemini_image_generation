@@ -420,8 +420,11 @@
               "model": {
                 "description": "模型名称",
                 "type": "string",
-                "hint": "xAI 图像模型名称",
-                "default": "grok-imagine-image"
+                "hint": "grok-imagine-image-2.0（当前模型，quality 仅 low/medium）；旧模型名仍可手填但可能已被官方退役",
+                "default": "grok-imagine-image-2.0",
+                "options": [
+                  "grok-imagine-image-2.0"
+                ]
               },
               "api_base": {
                 "description": "API 端点地址",
@@ -449,19 +452,23 @@
               "aspect_ratio": {
                 "description": "长宽比",
                 "type": "string",
-                "hint": "该供应商默认长宽比。快速模式传入覆盖值时优先使用快速模式。",
+                "hint": "官方枚举：含 2:1/1:2/19.5:9/9:19.5/20:9/9:20 与 auto（模型自动选择）；不支持 4:5/5:4/21:9，传入自动忽略",
                 "default": "1:1",
                 "options": [
                   "1:1",
                   "16:9",
-                  "4:3",
-                  "3:2",
                   "9:16",
-                  "4:5",
-                  "5:4",
-                  "21:9",
+                  "4:3",
                   "3:4",
-                  "2:3"
+                  "3:2",
+                  "2:3",
+                  "2:1",
+                  "1:2",
+                  "19.5:9",
+                  "9:19.5",
+                  "20:9",
+                  "9:20",
+                  "auto"
                 ]
               },
               "max_reference_images": {
@@ -483,13 +490,12 @@
               "quality": {
                 "description": "图像质量",
                 "type": "string",
-                "hint": "透传给 xAI 图片接口，留空不传。建议仅在已确认接口支持时使用。",
+                "hint": "仅 grok-imagine-image-2.0 支持，官方仅 low/medium（服务端默认 medium）；high 传入自动降级为 medium，留空不传",
                 "default": "",
                 "options": [
                   "",
                   "low",
-                  "medium",
-                  "high"
+                  "medium"
                 ]
               },
               "n": {
