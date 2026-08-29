@@ -1146,7 +1146,7 @@
           },
           "sensenova": {
             "description": "SenseNova（商汤日日新）API 覆盖配置",
-            "hint": "配置 SenseNova U1 Fast 文生图 API 的密钥与端点",
+            "hint": "配置 SenseNova U1.5 Lite（生成+编辑）/ U1 Fast（纯文生图）API 的密钥与端点",
             "items": {
               "enabled": {
                 "description": "启用此条配置",
@@ -1181,9 +1181,10 @@
               "model": {
                 "description": "模型名称",
                 "type": "string",
-                "hint": "SenseNova 图像生成模型，目前固定为 sensenova-u1-fast",
-                "default": "sensenova-u1-fast",
+                "hint": "sensenova-u1.5-lite（推荐，文生图+编辑，尺寸自由换算）；sensenova-u1-fast（纯文生图信息图，11 种固定尺寸）",
+                "default": "sensenova-u1.5-lite",
                 "options": [
+                  "sensenova-u1.5-lite",
                   "sensenova-u1-fast"
                 ]
               },
@@ -1231,13 +1232,13 @@
               "max_reference_images": {
                 "description": "最大参考图片数量",
                 "type": "int",
-                "hint": "SenseNova 当前仅支持文生图；改图/参考图请求会跳过该供应商。保留此项用于统一配置表。",
+                "hint": "u1.5-lite 编辑接口最多 4 张参考图（官方未公布上限，超出截取）；u1-fast 不支持参考图，带图请求直接报错。",
                 "default": 6
               },
               "default_size": {
                 "description": "默认图像尺寸",
                 "type": "string",
-                "hint": "插件未指定 aspect_ratio 时使用的兜底尺寸；必须为官方支持的 11 种尺寸之一",
+                "hint": "仅 sensenova-u1-fast 生效：未推导出合法比例时的兜底尺寸，必须为官方 11 种尺寸之一；u1.5-lite 按分辨率档位+长宽比自动换算",
                 "default": "2752x1536",
                 "options": [
                   "2048x2048",
@@ -1251,6 +1252,28 @@
                   "2272x1824",
                   "3072x1376",
                   "1344x3136"
+                ]
+              },
+              "watermark": {
+                "description": "添加水印",
+                "type": "bool",
+                "hint": "是否添加日日新官方 Logo 水印，仅 sensenova-u1.5-lite 生效。服务端默认开启，插件默认关闭并显式发送",
+                "default": false
+              },
+              "prompt_extend": {
+                "description": "提示词智能改写",
+                "type": "bool",
+                "hint": "仅 sensenova-u1.5-lite 生效。服务端默认开启（增加延迟）；插件提示词已增强，默认关闭并显式发送",
+                "default": false
+              },
+              "response_format": {
+                "description": "返回格式",
+                "type": "string",
+                "hint": "仅 sensenova-u1.5-lite 生效。b64_json 直接落盘避免链接过期；url 为 24 小时有效的临时链接",
+                "default": "b64_json",
+                "options": [
+                  "b64_json",
+                  "url"
                 ]
               }
             }

@@ -377,23 +377,35 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 
 ## sensenova_settings（SenseNova（商汤日日新）专用配置）
 
-配置路径：`provider_settings.provider_overrides` 中选择 `sensenova` 模板。仅支持文生图，尺寸限定为 11 种官方预设。
+配置路径：`provider_settings.provider_overrides` 中选择 `sensenova` 模板。支持两个模型：
+
+- `sensenova-u1.5-lite`（默认）：生成与编辑一体，尺寸按档位+长宽比自由换算
+- `sensenova-u1-fast`：纯文生图信息图模型，11 种官方固定尺寸
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `api_keys` | `[]` | SenseNova API Key 列表，控制台获取的 Bearer Token，支持多 Key 轮换 |
 | `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
-| `model` | `sensenova-u1-fast` | SenseNova 图像生成模型，目前仅支持 `sensenova-u1-fast` |
+| `model` | `sensenova-u1.5-lite` | `sensenova-u1.5-lite`（文生图+编辑）或 `sensenova-u1-fast`（纯文生图） |
 | `api_base` | `https://token.sensenova.cn` | API 端点地址 |
-| `default_size` | `2752x1536` | 未推导出合法比例时的兜底尺寸，必须为下表 11 种官方尺寸之一 |
+| `resolution` | `2K` | 分辨率档位（`1K`/`2K`/`4K`），u1.5-lite 按档位像素预算换算尺寸 |
+| `aspect_ratio` | `1:1` | 默认长宽比，快速模式传入覆盖值时优先 |
+| `watermark` | `false` | 是否添加日日新官方水印；仅 u1.5-lite 生效（服务端默认开启，插件显式关闭） |
+| `prompt_extend` | `false` | 提示词自动润色；仅 u1.5-lite 生效（服务端默认开启，插件显式关闭） |
+| `response_format` | `b64_json` | 仅 u1.5-lite 生效：`b64_json` 直接落盘，`url` 为 24 小时有效临时链接 |
+| `default_size` | `2752x1536` | 仅 u1-fast 生效的兜底尺寸，必须为官方 11 种尺寸之一 |
 | `proxy` | - | 独立代理地址，优先级高于全局代理和环境变量 |
 
-`sensenova` 供应商使用 SenseNova 官方图像端点：
+`sensenova` 供应商使用 SenseNova 官方图像端点（仅 u1.5-lite 支持编辑）：
 
 - 文生图：`POST /v1/images/generations`
-- 不支持图生图（由 provider 在 `build_request()` 阶段报错）
+- 图像编辑（u1.5-lite）：`POST /v1/images/edits`，`images` 数组最多 4 张（官方未公布上限，超出截取），首张为主编辑图；输入仅支持公网 URL 或 `data:image/*;base64,` 形态
 
-官方支持的 11 种固定尺寸（供应商条目的 `aspect_ratio` 会被映射到最接近的预设）：
+**模型级编辑门控**：仅 `sensenova-u1.5` 系列候选参与改图/参考图请求；`sensenova-u1-fast` 带参考图直接报错（不忽略、不发起无效调用）。
+
+尺寸规则：
+
+**`sensenova-u1-fast`** 固定 11 种尺寸，按 `aspect_ratio` 映射：
 
 | 尺寸 | 近似比例 |
 |------|---------|
@@ -409,9 +421,16 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 | `3072x1376` | 21:9 |
 | `1344x3136` | 超竖长 |
 
+**`sensenova-u1.5-lite`** 按 `resolution` 档位（1K/2K/4K）像素预算 × 长宽比换算，宽高为 [512, 4096] 内的 32 倍数，比例钳位 3:1 以内；编辑场景开启"改图保留参考图尺寸"时不下发 `size`，由服务端自动适配主图。
+
+其他注意事项：
+
+- u1-fast 的图片 URL 有效期 1 小时、u1.5-lite 为 24 小时；配置代理时插件会立即下载落盘
+- `n` 仅 u1-fast 支持（上限 4）；u1.5-lite 固定单张，不发送该参数
+
 官方文档：
 
-- <https://platform.sensenova.cn/doc?path=/chat/ImageGeneration/ImageGeneration.md>
+- <https://platform.sensenova.cn/docs>
 
 ## dashscope_settings（DashScope 阿里云百炼专用配置）
 

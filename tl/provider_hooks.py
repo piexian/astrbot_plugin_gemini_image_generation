@@ -371,6 +371,7 @@ def _make_model_prefix_edit_gate(*capable_prefixes: str):
 
 
 _stepfun_edit_gate = _make_model_prefix_edit_gate("step-image-edit")
+_sensenova_edit_gate = _make_model_prefix_edit_gate("sensenova-u1.5")
 _dashscope_edit_gate = _make_model_prefix_edit_gate(
     "wan2.7",
     "qwen-image-2.0",
@@ -382,6 +383,11 @@ _dashscope_edit_gate = _make_model_prefix_edit_gate(
 def stepfun_edit_capability(settings: dict[str, Any]) -> bool:
     """仅 step-image-edit 系列支持 /v1/images/edits。"""
     return _stepfun_edit_gate(settings)
+
+
+def sensenova_edit_capability(settings: dict[str, Any]) -> bool:
+    """仅 sensenova-u1.5 系列支持 /v1/images/edits。"""
+    return _sensenova_edit_gate(settings)
 
 
 def dashscope_edit_capability(settings: dict[str, Any]) -> bool:

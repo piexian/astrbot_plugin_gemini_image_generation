@@ -295,17 +295,17 @@ MiniMax 图片生成官方 provider。
 
 ### `api/sensenova.py`
 
-SenseNova（商汤日日新）provider，仅支持文生图。
+SenseNova（商汤日日新）provider，按模型分派：`sensenova-u1.5-lite`（文生图 + `/v1/images/edits` 编辑，32 倍数自由尺寸）与 `sensenova-u1-fast`（纯文生图，11 种固定尺寸；带参考图直接报错）。
 
 | 接口 | 说明 |
 |------|------|
-| `SenseNovaProvider.build_request()` | 构造 `/v1/images/generations` 请求 |
+| `SenseNovaProvider.build_request()` | 按 u1.5 / u1-fast 分派文生图或编辑请求 |
 | `SenseNovaProvider.parse_response()` | 解析 `data[].url` / `data[].b64_json` 响应 |
-| `_resolve_size()` | 将内部 resolution/aspect_ratio 映射到 11 种固定尺寸 |
+| `_resolve_size()` / `_resolve_u15_size()` | u1-fast 固定尺寸映射 / u1.5 档位+长宽比换算 32 倍数尺寸 |
 
 ### `api/dashscope.py`
 
-DashScope（阿里云百炼）provider，接入原生 multimodal-generation 同步端点，支持 wan2.7 / qwen-image-2.0 系列（文生图 + 多图编辑）；返回 URL 24 小时过期，故解析时强制下载落盘。
+DashScope（阿里云百炼）provider，接入原生 multimodal-generation 同步端点，支持 wan2.7 / qwen-image-2.0 / qwen-image-3.0 系列（文生图 + 多图编辑）与 z-image-turbo（纯文生图）；返回 URL 24 小时过期，故解析时强制下载落盘。
 
 | 接口 | 说明 |
 |------|------|

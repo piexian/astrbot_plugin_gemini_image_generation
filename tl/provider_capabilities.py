@@ -195,6 +195,20 @@ def doubao_capability(candidate: Any) -> dict[str, Any]:
 
 
 def sensenova_capability(candidate: Any) -> dict[str, Any]:
+    settings = _settings(candidate)
+    model = _model(candidate).lower()
+    if model.startswith("sensenova-u1.5"):
+        return _profile(
+            candidate,
+            native_batch_limit=1,
+            parameters={
+                "watermark": {
+                    "type": "boolean",
+                    "default_source": "provider_config",
+                }
+            },
+            request_setting_map={"watermark": "watermark", "image_count": "n"},
+        )
     return _profile(
         candidate,
         native_batch_limit=4,

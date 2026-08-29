@@ -80,8 +80,9 @@ _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
     ProviderSpec(
         "sensenova",
         "tl.api.sensenova.SenseNovaProvider",
-        supports_image_edit=False,
+        supports_image_edit=True,
         settings_attr="sensenova_settings",
+        edit_capability_path="tl.provider_hooks.sensenova_edit_capability",
         capability_profile_path="tl.provider_capabilities.sensenova_capability",
     ),
     ProviderSpec(
