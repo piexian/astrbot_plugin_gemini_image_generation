@@ -12,6 +12,7 @@ import aiohttp
 from astrbot.api import logger
 from astrbot.api.message_components import At, Image, Reply
 
+from .reference_image import host_matches_domain
 from .tl_utils import AvatarManager, encode_file_to_base64
 from .tl_utils import is_valid_base64_image_str as util_is_valid_base64_image_str
 
@@ -167,9 +168,10 @@ class ImageHandler:
             }
             if parsed.netloc:
                 headers["Referer"] = f"{parsed.scheme}://{parsed.netloc}"
-            if "qpic.cn" in (parsed.netloc or ""):
+            qq_host = parsed.hostname or ""
+            if host_matches_domain(qq_host, "qpic.cn"):
                 headers["Referer"] = "https://qun.qq.com"
-            if "nt.qq.com" in (parsed.netloc or ""):
+            if host_matches_domain(qq_host, "nt.qq.com"):
                 headers["Referer"] = "https://qun.qq.com"
                 headers["Origin"] = "https://qun.qq.com"
 
@@ -275,7 +277,7 @@ class ImageHandler:
 
             parsed_host = ""
             try:
-                parsed_host = urllib.parse.urlparse(source_str).netloc or ""
+                parsed_host = urllib.parse.urlparse(source_str).hostname or ""
             except Exception:
                 parsed_host = ""
 
@@ -334,7 +336,10 @@ class ImageHandler:
                 return None
 
             # QQ 图床优先转 base64，避免直链失效（含 nt.qq.com）
-            if parsed_host and ("qpic.cn" in parsed_host or "nt.qq.com" in parsed_host):
+            if parsed_host and (
+                host_matches_domain(parsed_host, "qpic.cn")
+                or host_matches_domain(parsed_host, "nt.qq.com")
+            ):
                 qq_data = await self.download_qq_image(source_str, event=event)
                 if qq_data:
                     if force_b64 and ";base64," in qq_data:
