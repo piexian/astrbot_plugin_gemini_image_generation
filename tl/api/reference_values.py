@@ -102,3 +102,76 @@ async def _resolve_single_value(
         return None
 
     return format_data_uri(strip_data_uri_prefix(b64_data), mime_type)
+
+
+# MiniMax 官方 image_file 仅支持 JPG/JPEG/PNG 且小于 10MB
+SUPPORTED_MIMES_JPEG_PNG: frozenset[str] = frozenset({"image/jpeg", "image/png"})
+_MAX_REFERENCE_IMAGE_BYTES: int = 10 * 1024 * 1024
+
+
+def normalize_image_mime(
+    b64_data: str,
+    mime_type: str | None,
+    *,
+    error_label: str = "minimax",
+) -> tuple[str, str]:
+    """将参考图 base64 归一化为受支持格式。
+
+    mime 在白名单内原样返回；其余格式（GIF/WebP/BMP 等）解码后转码为 PNG
+    （动图取首帧）；解码失败或超过 10MB 抛不可重试错误。
+    """
+    import base64
+    import io
+
+    mime = (mime_type or "").strip().lower()
+    try:
+        raw = base64.b64decode(strip_data_uri_prefix(b64_data), validate=True)
+    except Exception as e:
+        raise APIError(
+            f"参考图 base64 解码失败（{error_label}）：{e}",
+            None,
+            "invalid_reference_image",
+            retryable=False,
+        ) from e
+    if len(raw) > _MAX_REFERENCE_IMAGE_BYTES:
+        raise APIError(
+            f"参考图超过 10MB 大小限制（{error_label}）",
+            None,
+            "invalid_reference_image",
+            retryable=False,
+        )
+    if mime in SUPPORTED_MIMES_JPEG_PNG:
+        return b64_data, mime
+
+    from PIL import Image as PILImage
+
+    try:
+        with PILImage.open(io.BytesIO(raw)) as img:
+            img.seek(0)  # 动图（GIF/WebP）取首帧
+            if img.mode in ("RGBA", "LA", "P", "PA"):
+                img = img.convert("RGBA")
+            else:
+                img = img.convert("RGB")
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+    except Exception as e:
+        raise APIError(
+            f"参考图格式 {mime or '未知'} 无法转换为受支持的 PNG/JPEG（{error_label}）：{e}",
+            None,
+            "invalid_reference_image",
+            retryable=False,
+        ) from e
+    encoded = buf.getvalue()
+    if len(encoded) > _MAX_REFERENCE_IMAGE_BYTES:
+        raise APIError(
+            f"参考图转码后超过 10MB 大小限制（{error_label}）",
+            None,
+            "invalid_reference_image",
+            retryable=False,
+        )
+    logger.info(
+        "%s参考图 %s 不在 JPG/PNG 白名单，已转码为 PNG",
+        f"[{error_label}] ",
+        mime or "未知",
+    )
+    return base64.b64encode(encoded).decode("ascii"), "image/png"

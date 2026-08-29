@@ -537,8 +537,12 @@
               "model": {
                 "description": "模型名称",
                 "type": "string",
-                "hint": "MiniMax 图片模型名称，官方支持 image-01 / image-01-live",
-                "default": "image-01"
+                "hint": "image-01（全能力，支持 21:9 与显式宽高）；image-01-live（快速，仅 aspect_ratio，不支持 21:9）",
+                "default": "image-01",
+                "options": [
+                  "image-01",
+                  "image-01-live"
+                ]
               },
               "api_base": {
                 "description": "API 端点地址",
@@ -584,8 +588,8 @@
               "max_reference_images": {
                 "description": "最大参考图片数量",
                 "type": "int",
-                "hint": "该供应商本次请求最多使用的参考图片数量；超过后按顺序截取。文生图-only 供应商可保持默认。",
-                "default": 6
+                "hint": "subject_reference 官方未公布数量上限，插件按 9 张截取；超过按顺序截取。纯文生图可保持默认。",
+                "default": 9
               },
               "response_format": {
                 "description": "响应格式",
@@ -636,6 +640,25 @@
                 "type": "string",
                 "hint": "MiniMax subject_reference.type，默认 character 用于人物主体一致性",
                 "default": "character"
+              },
+              "style_type": {
+                "description": "画风（image-01-live 专属）",
+                "type": "string",
+                "hint": "仅 image-01-live 生效：画风类型 漫画/元气/中世纪/水彩；留空不传。其他模型配置了会自动忽略",
+                "default": "",
+                "options": [
+                  "",
+                  "漫画",
+                  "元气",
+                  "中世纪",
+                  "水彩"
+                ]
+              },
+              "style_weight": {
+                "description": "画风权重（image-01-live 专属）",
+                "type": "float",
+                "hint": "仅 style_type 非空时随 style 一起下发，取值范围 (0,1]，默认 0.8",
+                "default": 0.8
               },
               "width": {
                 "description": "自定义宽度",

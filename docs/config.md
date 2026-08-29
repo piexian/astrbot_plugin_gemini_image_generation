@@ -284,14 +284,17 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 |--------|--------|------|
 | `api_keys` | `[]` | MiniMax API Key 列表，支持多 Key 轮换 |
 | `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
-| `model` | `image-01` | MiniMax 图片模型，官方支持 `image-01` / `image-01-live` |
+| `model` | `image-01` | `image-01`（全能力，支持 21:9 与显式宽高）/ `image-01-live`（快速，仅 aspect_ratio，不支持 21:9） |
 | `api_base` | `https://api.minimaxi.com` | API 端点地址，插件会统一调用 `/v1/image_generation` |
 | `response_format` | `base64` | 响应格式：`base64` / `url`。官方 URL 有效期为 24 小时 |
 | `n` | `1` | 单次请求生成图片数量，官方范围 `1-9` |
+| `style_type` | 空 | 画风（**image-01-live 专属**）：`漫画` / `元气` / `中世纪` / `水彩`；留空不传，其他模型配置了自动忽略 |
+| `style_weight` | `0.8` | 画风权重，仅 `style_type` 非空时下发，范围 `(0,1]` |
 | `prompt_optimizer` | `false` | 是否开启 MiniMax 提示词自动优化 |
 | `aigc_watermark` | `false` | 是否添加 AIGC 水印 |
 | `reference_image_mode` | `auto` | 参考图传递方式：`auto` / `base64` / `url` |
 | `subject_reference_type` | `character` | `subject_reference.type`，默认用于人物主体一致性 |
+| `max_reference_images` | `9` | 参考图上限（官方未公布数量上限，按 9 张截取） |
 | `width` / `height` | `0` | 未传 `aspect_ratio` 时可同时设置，范围 `512-2048` 且为 `8` 的倍数；`0` 表示不传 |
 | `seed` | `0` | 固定随机种子，`0` 表示不传 |
 | `proxy` | - | 独立代理地址 |
@@ -300,6 +303,12 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 
 - 文生图：`POST /v1/image_generation`
 - 图生图：同一端点，通过 `subject_reference[].image_file` 传入参考图
+
+其他限制与防护：
+
+- prompt 官方上限 1500 字符，超限直接报错（不发起注定失败的服务端调用）
+- `image_file` 官方仅支持 JPG/JPEG/PNG 且小于 10MB：非白名单格式（GIF/WebP/BMP 等）由插件解码后转码为 PNG（动图取首帧），超过 10MB 直接报错
+- 全部图片被内容安全拦截时，错误信息会附带 `failed_count` 拦截数量
 
 供应商条目的 `resolution` 和 `aspect_ratio` 的适配规则：
 
