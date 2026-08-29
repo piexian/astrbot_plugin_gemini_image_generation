@@ -127,6 +127,9 @@ def minimax_capability(candidate: Any) -> dict[str, Any]:
 
 
 def stepfun_capability(candidate: Any) -> dict[str, Any]:
+    # negative_prompt/text_mode 仅 step-image-edit 系列支持，其余模型不声明
+    if not _model(candidate).lower().startswith("step-image-edit"):
+        return _profile(candidate)
     return _profile(
         candidate,
         parameters={

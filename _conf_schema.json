@@ -659,7 +659,7 @@
           },
           "stepfun": {
             "description": "阶跃星辰图片生成 API 覆盖配置",
-            "hint": "仅完全适配 step-image-edit-2 模型参数",
+            "hint": "适配 step-image-edit-2（文生图+编辑）与 step-2x-large（纯文生图）",
             "items": {
               "enabled": {
                 "description": "启用此条配置",
@@ -694,8 +694,12 @@
               "model": {
                 "description": "模型名称",
                 "type": "string",
-                "hint": "StepFun 图片模型名称",
-                "default": "step-image-edit-2"
+                "hint": "step-image-edit-2（推荐，文生图+编辑）；step-2x-large（快速文生图，不支持编辑/负向提示词/text_mode）",
+                "default": "step-image-edit-2",
+                "options": [
+                  "step-image-edit-2",
+                  "step-2x-large"
+                ]
               },
               "api_base": {
                 "description": "API 端点地址",
@@ -709,18 +713,15 @@
                 "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式。优先级高于全局代理和环境变量",
                 "default": ""
               },
-              "resolution": {
+                            "resolution": {
                 "description": "图像分辨率",
                 "type": "string",
-                "hint": "该供应商默认图像分辨率。快速模式传入覆盖值时优先使用快速模式。",
+                "hint": "StepFun 为固定预设尺寸，仅支持 1K 档；与长宽比组合映射到官方预设。",
                 "default": "1K",
                 "options": [
-                  "1K",
-                  "2K",
-                  "4K"
+                  "1K"
                 ]
-              },
-              "aspect_ratio": {
+              }, "aspect_ratio": {
                 "description": "长宽比",
                 "type": "string",
                 "hint": "该供应商默认长宽比。快速模式传入覆盖值时优先使用快速模式。",

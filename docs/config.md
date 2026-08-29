@@ -321,19 +321,19 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 
 ## stepfun_settings（StepFun 图片生成 API 专用配置）
 
-配置路径：`provider_settings.provider_overrides` 中选择 `stepfun` 模板。仅完全适配 `step-image-edit-2` 模型参数，其他模型名可填写但参数会按 step-image-edit-2 的格式透传。
+配置路径：`provider_settings.provider_overrides` 中选择 `stepfun` 模板。适配 `step-image-edit-2`（文生图 + 编辑）与 `step-2x-large`（纯文生图）。
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `api_keys` | `[]` | StepFun API Key 列表，支持多 Key 轮换 |
 | `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
-| `model` | `step-image-edit-2` | 图片模型名称，可改为其它 StepFun 图片模型 |
+| `model` | `step-image-edit-2` | 图片模型名称；`step-2x-large` 为纯文生图模型，不支持编辑/负向提示词/text_mode |
 | `api_base` | `https://api.stepfun.com` | API 端点；同时兼容 `https://api.stepfun.com/step_plan/v1` 写法，自动识别 `/v1` 后缀 |
 | `response_format` | `url` | `url` 返回临时签名链接（`res.stepfun.com`），`b64_json` 返回 base64 并由插件落盘 |
-| `steps` | `0` | 采样步数，`0` 表示不传（服务端默认 `8`） |
-| `cfg_scale` | `0` | 提示词引导强度，`0` 表示不传（服务端默认 `1.0`） |
-| `negative_prompt` | `""` | 负向提示词，留空不传 |
-| `text_mode` | `false` | 是否启用 step-image-edit-2 的 `text_mode`，适用于含文字生成场景 |
+| `steps` | `0` | 采样步数，`0` 表示不传（服务端默认 edit-2 `8` / 2x-large `50`）；非零值钳位到 [1, 50] |
+| `cfg_scale` | `0` | 提示词引导强度，`0` 表示不传（服务端默认 edit-2 `1.0` / 2x-large `6`）；非零值钳位到 [1.0, 10.0] |
+| `negative_prompt` | `""` | 负向提示词，留空不传；仅 `step-image-edit-2` 支持，其他模型自动忽略并记录日志 |
+| `text_mode` | `false` | 是否启用 `text_mode`；仅 `step-image-edit-2` 支持，其他模型自动忽略并记录日志 |
 | `seed` | `0` | 固定随机种子，`0` 表示不传 |
 | `proxy` | - | 独立代理地址，优先级高于全局代理和环境变量 |
 
@@ -354,12 +354,16 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 | 横图 16:9 / 4:3 | `1360x768` |
 | 横图 接近 5:4 | `1184x896` |
 
-**`step-1x-medium` 文生图（generations）** 支持六档：`256x256` / `512x512` / `768x768` / `1024x1024` / `1280x800` / `800x1280`，按目标长宽比自动选最近预设。
+**`step-2x-large` 文生图（generations）** 支持六档：`256x256` / `512x512` / `768x768` / `1024x1024` / `1280x800`（16:9）/ `800x1280`（9:16），按目标长宽比自动选最近预设。已下线的 `step-1x-medium` 沿用同尺寸表。
+
+**模型级编辑门控**：仅 `step-image-edit` 系列候选参与改图/参考图请求，`step-2x-large` 等纯文生图模型自动跳过。
 
 **图生图（edits）**：
 
 - `step-image-edit-2`：官方仅支持单图输入，传入多图会自动取首张并打 debug 日志；`size` 参数官方明确"该参数不生效"，因此插件不再下发，输出尺寸始终与输入图一致。
 - `step-1x-edit`：`size` 仅在 `512x512` / `768x768` / `1024x1024` 三档内透传。
+
+- 两个模型的 prompt 均为 512 字符硬上限，超限请求直接报错（不发起注定失败的服务端调用）。
 
 其他注意事项：
 

@@ -11,10 +11,14 @@ from astrbot.api import logger
 from ..api_types import APIError, ApiRequestConfig
 from ..tl_utils import save_base64_image
 from .base import ProviderRequest
+from .param_utils import coerce_float, coerce_int, ensure_prompt_length
 
 # generations 接口不同模型支持的 size 预设（WxH 格式）。
 # step-image-edit-2 的 edits 接口：size 不生效，输出始终与输入同尺寸。
 # step-1x-edit 的 edits 接口：仅支持 512x512 / 768x768 / 1024x1024。
+# 两个官方模型的 prompt 均为 512 字符硬上限
+_PROMPT_MAX_CHARS: int = 512
+
 _STEP_IMAGE_EDIT2_GEN_SIZES: list[tuple[int, int]] = [
     (1024, 1024),  # 1:1
     (768, 1360),  # ~9:16  竖
@@ -22,21 +26,24 @@ _STEP_IMAGE_EDIT2_GEN_SIZES: list[tuple[int, int]] = [
     (1360, 768),  # ~16:9  横
     (1184, 896),  # ~4:3   横
 ]
-_STEP_1X_MEDIUM_GEN_SIZES: list[tuple[int, int]] = [
+_STEP_2X_LARGE_GEN_SIZES: list[tuple[int, int]] = [
     (256, 256),
     (512, 512),
     (768, 768),
     (1024, 1024),
-    (1280, 800),  # 16:10
-    (800, 1280),  # 10:16
+    (1280, 800),  # 16:9
+    (800, 1280),  # 9:16
 ]
 _STEP1X_EDIT_SIZES: set[str] = {"512x512", "768x768", "1024x1024"}
 
 
 def _gen_size_presets_for(model: str) -> list[tuple[int, int]]:
     name = (model or "").strip().lower()
+    if name.startswith("step-2x"):
+        return _STEP_2X_LARGE_GEN_SIZES
     if name == "step-1x-medium":
-        return _STEP_1X_MEDIUM_GEN_SIZES
+        # 已下线模型，沿用同尺寸表保持旧配置可用
+        return _STEP_2X_LARGE_GEN_SIZES
     # 默认按 step-image-edit-2 的预设集处理
     return _STEP_IMAGE_EDIT2_GEN_SIZES
 
@@ -157,6 +164,12 @@ class StepfunProvider:
             url = f"{base}/{endpoint}"
         else:
             url = f"{base}/v1/{endpoint}"
+
+        ensure_prompt_length(
+            (config.prompt or "").strip(),
+            max_chars=_PROMPT_MAX_CHARS,
+            provider="StepFun",
+        )
 
         if has_ref:
             payload = self._prepare_edits_payload(
@@ -292,7 +305,9 @@ class StepfunProvider:
         if size_value:
             payload["size"] = size_value
 
-        self._apply_common_params(payload, config=config, settings=settings)
+        self._apply_common_params(
+            payload, config=config, settings=settings, model=model
+        )
         return payload
 
     # ------------------------------------------------------------------
@@ -351,17 +366,33 @@ class StepfunProvider:
         response_format = str(settings.get("response_format") or "url").strip() or "url"
         form.add_field("response_format", response_format)
 
-        try:
-            steps = int(settings.get("steps", 0) or 0)
-        except (TypeError, ValueError):
-            steps = 0
+        steps_setting = settings.get("steps", 0)
+        steps = (
+            coerce_int(
+                steps_setting,
+                lo=1,
+                hi=50,
+                default=0,
+                warn_prefix="[stepfun] steps",
+            )
+            if steps_setting
+            else 0
+        )
         if steps > 0:
             form.add_field("steps", str(steps))
 
-        try:
-            cfg_scale = float(settings.get("cfg_scale", 0) or 0)
-        except (TypeError, ValueError):
-            cfg_scale = 0.0
+        cfg_setting = settings.get("cfg_scale", 0)
+        cfg_scale = (
+            coerce_float(
+                cfg_setting,
+                lo=1.0,
+                hi=10.0,
+                default=0.0,
+                warn_prefix="[stepfun] cfg_scale",
+            )
+            if cfg_setting
+            else 0.0
+        )
         if cfg_scale > 0:
             form.add_field("cfg_scale", str(cfg_scale))
 
@@ -375,12 +406,18 @@ class StepfunProvider:
         elif config.seed is not None and int(config.seed) > 0:
             form.add_field("seed", str(int(config.seed)))
 
-        negative_prompt = str(settings.get("negative_prompt") or "").strip()
-        if negative_prompt:
-            form.add_field("negative_prompt", negative_prompt)
+        if not model.lower().startswith("step-image-edit"):
+            if settings.get("negative_prompt"):
+                logger.info("[stepfun] %s 不支持 negative_prompt，已忽略", model)
+            if settings.get("text_mode"):
+                logger.info("[stepfun] %s 不支持 text_mode，已忽略", model)
+        else:
+            negative_prompt = str(settings.get("negative_prompt") or "").strip()
+            if negative_prompt:
+                form.add_field("negative_prompt", negative_prompt)
 
-        if bool(settings.get("text_mode", False)):
-            form.add_field("text_mode", "true")
+            if bool(settings.get("text_mode", False)):
+                form.add_field("text_mode", "true")
 
         logger.debug(
             f"[stepfun] edits payload: model={model} ref_images={len(ref_images)} "
@@ -404,22 +441,39 @@ class StepfunProvider:
         *,
         config: ApiRequestConfig,
         settings: dict[str, Any],
+        model: str,
     ) -> None:
         """文生图 JSON 路径下的可选参数应用"""
         response_format = str(settings.get("response_format") or "url").strip() or "url"
         payload["response_format"] = response_format
 
-        try:
-            steps = int(settings.get("steps", 0) or 0)
-        except (TypeError, ValueError):
-            steps = 0
+        steps_setting = settings.get("steps", 0)
+        steps = (
+            coerce_int(
+                steps_setting,
+                lo=1,
+                hi=50,
+                default=0,
+                warn_prefix="[stepfun] steps",
+            )
+            if steps_setting
+            else 0
+        )
         if steps > 0:
             payload["steps"] = steps
 
-        try:
-            cfg_scale = float(settings.get("cfg_scale", 0) or 0)
-        except (TypeError, ValueError):
-            cfg_scale = 0.0
+        cfg_setting = settings.get("cfg_scale", 0)
+        cfg_scale = (
+            coerce_float(
+                cfg_setting,
+                lo=1.0,
+                hi=10.0,
+                default=0.0,
+                warn_prefix="[stepfun] cfg_scale",
+            )
+            if cfg_setting
+            else 0.0
+        )
         if cfg_scale > 0:
             payload["cfg_scale"] = cfg_scale
 
@@ -432,6 +486,14 @@ class StepfunProvider:
             payload["seed"] = seed_value
         elif config.seed is not None and int(config.seed) > 0:
             payload["seed"] = int(config.seed)
+
+        if not model.lower().startswith("step-image-edit"):
+            # negative_prompt / text_mode 仅 step-image-edit 系列支持
+            if settings.get("negative_prompt"):
+                logger.info("[stepfun] %s 不支持 negative_prompt，已忽略", model)
+            if settings.get("text_mode"):
+                logger.info("[stepfun] %s 不支持 text_mode，已忽略", model)
+            return
 
         negative_prompt = str(settings.get("negative_prompt") or "").strip()
         if negative_prompt:

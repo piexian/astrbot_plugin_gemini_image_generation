@@ -54,6 +54,7 @@ _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
         "stepfun",
         "tl.api.stepfun.StepfunProvider",
         settings_attr="stepfun_settings",
+        edit_capability_path="tl.provider_hooks.stepfun_edit_capability",
         capability_profile_path="tl.provider_capabilities.stepfun_capability",
     ),
     ProviderSpec(
