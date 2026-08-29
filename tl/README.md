@@ -177,8 +177,6 @@ generate_image()
 |------------|----------|
 | `google` | `GoogleProvider` |
 | `openai` | `OpenAICompatProvider`（默认兜底） |
-| `zai` | `ZaiProvider` |
-| `grok2api` | `Grok2ApiProvider` |
 | `agnes_ai` | `AgnesAIProvider` |
 | `xai` | `XAIProvider` |
 | `minimax` | `MiniMaxProvider` |
@@ -202,6 +200,7 @@ generate_image()
 | `api/provider_limits.py` | `MAX_REFERENCE_IMAGES_GOOGLE` / `MAX_REFERENCE_IMAGES_DOUBAO` / `MAX_REFERENCE_IMAGES_DOUBAO_SEEDREAM_5_PRO` / `MAX_REFERENCE_IMAGES_OPENAI_COMPAT` / `MAX_REFERENCE_IMAGES_MINIMAX` / `MAX_REFERENCE_IMAGES_DASHSCOPE` | 集中维护各 provider 参考图上限常量（`Final[int]`） |
 | `api/reference_intake.py` | `announce_reference_intake(references, max_count, *, log_prefix="")` | 参考图接收阶段统一日志，返回 `(收到数量, 采用数量)` |
 | `api/data_uri.py` | `format_data_uri(b64_data, mime_type=None)` / `strip_data_uri_prefix(s)` / `looks_like_base64(s)` | data URI 与 base64 字符串的格式化/识别助手 |
+| `api/compat_utils.py` | `origin_from_api_base()` / `is_temp_cache_url()` / `find_markdown_relative_image_urls()` / `build_generation_config()` / `resolve_relative_url()` | 已下线 zai / grok2api 沉淀的网关兼容辅助（相对路径图片、临时缓存 URL、generation_config 约定） |
 
 详见 [docs/新增API供应商.md](../docs/新增API供应商.md)。
 
@@ -321,24 +320,6 @@ StepFun provider。
 |------|------|
 | `StepfunProvider.build_request()` | 根据是否有参考图选择 `/v1/images/generations` 或 `/v1/images/edits` |
 | `StepfunProvider.parse_response()` | 解析 StepFun 图像响应 |
-
-### `api/zai.py`
-
-Zai provider，继承 `OpenAICompatProvider`。
-
-| 接口 | 说明 |
-|------|------|
-| `ZaiProvider._prepare_payload()` | 调整 Zai 所需的 `image_size`、`aspect_ratio`、`generation_config` |
-
-### `api/grok2api.py`
-
-grok2api provider，继承 `OpenAICompatProvider`。
-
-| 接口 | 说明 |
-|------|------|
-| `_find_additional_image_urls_in_text()` | 从 Markdown 中提取相对图片路径 |
-| `_handle_special_candidate_url()` | 处理相对路径和临时缓存图片 |
-| `_origin_from_api_base()` | 从 `api_base` 推导 origin |
 | `_is_temp_cache_url()` | 判断是否为需立即下载的临时缓存 URL |
 
 ## 图像生成与 LLM Tool

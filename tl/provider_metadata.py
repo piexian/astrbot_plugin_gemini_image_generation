@@ -31,8 +31,6 @@ class ProviderSpec:
 _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
     ProviderSpec("google", "tl.api.google.GoogleProvider"),
     ProviderSpec("openai", "tl.api.openai_compat.OpenAICompatProvider"),
-    ProviderSpec("zai", "tl.api.zai.ZaiProvider"),
-    ProviderSpec("grok2api", "tl.api.grok2api.Grok2ApiProvider"),
     ProviderSpec(
         "agnes_ai",
         "tl.api.agnes_ai.AgnesAIProvider",
