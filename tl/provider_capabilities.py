@@ -206,22 +206,25 @@ def dashscope_capability(candidate: Any) -> dict[str, Any]:
     settings = _settings(candidate)
     model = _model(candidate).lower()
     is_wan27 = model.startswith("wan2.7")
+    is_zimage = model.startswith("z-image")
     if is_wan27 and bool(settings.get("enable_sequential", False)):
         native_limit = 12
     elif is_wan27:
         native_limit = 4
-    elif model.startswith("qwen-image-2.0"):
+    elif model.startswith(("qwen-image-2.0", "qwen-image-3.0")):
         native_limit = 6
     else:
         native_limit = 1
-    parameters: dict[str, Any] = {
-        "watermark": {
+    parameters: dict[str, Any] = {}
+    setting_map = {"image_count": "n"}
+    if not is_zimage:
+        # z-image 为纯文生图最小参数集，不支持 watermark/negative_prompt
+        parameters["watermark"] = {
             "type": "boolean",
             "default_source": "provider_config",
         }
-    }
-    setting_map = {"watermark": "watermark", "image_count": "n"}
-    if not is_wan27:
+        setting_map["watermark"] = "watermark"
+    if not is_wan27 and not is_zimage:
         parameters["negative_prompt"] = {
             "type": "string",
             "default_source": "provider_config",

@@ -1292,13 +1292,16 @@
               "model": {
                 "description": "模型名称",
                 "type": "string",
-                "hint": "推荐 wan2.7-image-pro / wan2.7-image（文生图+编辑）；千问图像可选 qwen-image-2.0-pro / qwen-image-2.0（支持负向提示词）。仅支持同步调用模型。各端点模型支持差异见 docs/config.md。",
+                "hint": "推荐 wan2.7-image-pro / wan2.7-image（文生图+编辑）；千问图像可选 qwen-image-3.0-pro / qwen-image-3.0 / qwen-image-2.0-pro / qwen-image-2.0（支持负向提示词）；z-image-turbo 仅快速文生图（不支持编辑）。仅支持同步调用模型。各端点模型支持差异见 docs/config.md。",
                 "default": "wan2.7-image-pro",
                 "options": [
                   "wan2.7-image-pro",
                   "wan2.7-image",
+                  "qwen-image-3.0-pro",
+                  "qwen-image-3.0",
                   "qwen-image-2.0-pro",
                   "qwen-image-2.0",
+                  "z-image-turbo",
                   "qwen-image-plus",
                   "qwen-image-max",
                   "qwen-image"
@@ -1329,7 +1332,7 @@
               "max_reference_images": {
                 "description": "最大参考图片数量",
                 "type": "int",
-                "hint": "wan2.7 最多 9 张、wan2.6 最多 4 张；超过按顺序截取。纯文生图可保持默认。",
+                "hint": "wan2.7 / qwen-image-2.0 最多 9 张，qwen-image-3.0 最多 3 张；z-image 系列不支持参考图。超过按顺序截取。纯文生图可保持默认。",
                 "default": 9
               },
               "size_mode": {
@@ -1345,7 +1348,7 @@
               "resolution": {
                 "description": "图像分辨率档位",
                 "type": "string",
-                "hint": "与长宽比组合换算为官方推荐像素值。4K 仅 wan2.7-image-pro 文生图支持；qwen-image-2.0 上限 2K。",
+                "hint": "与长宽比组合换算为官方推荐像素值。4K 仅 wan2.7-image-pro 文生图支持，其余模型（含 qwen-image-3.0 / z-image-turbo）上限 2K，超出自动降档。",
                 "default": "2K",
                 "options": [
                   "1K",
@@ -1389,7 +1392,7 @@
               "n": {
                 "description": "单次生成图片数量",
                 "type": "int",
-                "hint": "按成功生成张数计费，测试建议 1。范围：wan2.7 标准 1-4 / 顺序模式 1-12；qwen-image-2.0 1-6；qwen-image-max/plus 仅 1。超出自动钳制。",
+                "hint": "按成功生成张数计费，测试建议 1。范围：wan2.7 标准 1-4 / 顺序模式 1-12；qwen-image-2.0 / 3.0 1-6；z-image-turbo 与 qwen-image-max/plus 仅 1。超出自动钳制。",
                 "default": 1
               },
               "watermark": {
@@ -1401,7 +1404,7 @@
               "negative_prompt": {
                 "description": "负向提示词",
                 "type": "string",
-                "hint": "描述要排除的元素。wan2.7-image-pro / wan2.7-image 不支持，会自动跳过并记录日志。",
+                "hint": "描述要排除的元素。wan2.7 与 z-image 系列不支持，会自动跳过并记录日志。",
                 "default": ""
               },
               "prompt_extend": {

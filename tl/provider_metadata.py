@@ -89,6 +89,7 @@ _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
         "tl.api.dashscope.DashScopeProvider",
         settings_attr="dashscope_settings",
         settings_normalizer_path="tl.provider_hooks.normalize_dashscope_settings",
+        edit_capability_path="tl.provider_hooks.dashscope_edit_capability",
         capability_profile_path="tl.provider_capabilities.dashscope_capability",
         parse_errors_with_provider=True,
     ),

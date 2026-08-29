@@ -371,8 +371,19 @@ def _make_model_prefix_edit_gate(*capable_prefixes: str):
 
 
 _stepfun_edit_gate = _make_model_prefix_edit_gate("step-image-edit")
+_dashscope_edit_gate = _make_model_prefix_edit_gate(
+    "wan2.7",
+    "qwen-image-2.0",
+    "qwen-image-3.0",
+    "qwen-image-edit",
+)
 
 
 def stepfun_edit_capability(settings: dict[str, Any]) -> bool:
     """仅 step-image-edit 系列支持 /v1/images/edits。"""
     return _stepfun_edit_gate(settings)
+
+
+def dashscope_edit_capability(settings: dict[str, Any]) -> bool:
+    """wan2.7 / qwen-image-2.0 / qwen-image-3.0 / qwen-image-edit 系列支持图像输入。"""
+    return _dashscope_edit_gate(settings)

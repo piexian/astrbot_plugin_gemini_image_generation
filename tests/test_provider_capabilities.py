@@ -209,3 +209,17 @@ def test_stepfun_negative_prompt_only_for_edit_models() -> None:
 
     candidates = [_candidate("stepfun", "step-2x-large")]
     assert select_candidates(candidates, required_parameters={"negative_prompt"}) == []
+
+
+def test_dashscope_zimage_omits_watermark_capability() -> None:
+    """z-image 纯文生图最小参数集：不声明 watermark，显式 watermark 请求不可路由。"""
+    zimage = candidate_capability(_candidate("dashscope", "z-image-turbo"))
+    assert "watermark" not in zimage["parameters"]
+    assert "watermark" not in zimage["request_setting_map"]
+    assert "negative_prompt" not in zimage["parameters"]
+
+    wan = candidate_capability(_candidate("dashscope", "wan2.7-image-pro"))
+    assert "watermark" in wan["parameters"]
+
+    candidates = [_candidate("dashscope", "z-image-turbo")]
+    assert select_candidates(candidates, required_parameters={"watermark"}) == []
