@@ -49,7 +49,7 @@ def test_reference_images_and_runtime_parameters_filter_capabilities() -> None:
     candidates = [
         _candidate("sensenova", "sensenova-u1-fast", supports_edit=False),
         _candidate("xai", "grok-imagine-image"),
-        _candidate("stepfun", "step-1x-medium"),
+        _candidate("stepfun", "step-image-edit-2"),
     ]
 
     edit_candidates = select_candidates(candidates, has_reference_images=True)
@@ -196,3 +196,30 @@ def test_provider_specific_optional_parameter_capabilities() -> None:
     assert "negative_prompt" not in dashscope_wan["parameters"]
     assert "negative_prompt" in dashscope_qwen["parameters"]
     assert dall_e_3["parameters"]["quality"]["enum"] == ["hd", "standard"]
+
+
+def test_stepfun_negative_prompt_only_for_edit_models() -> None:
+    """negative_prompt 仅 step-image-edit 系列声明，step-2x-large 等不参与该参数路由。"""
+    edit_cap = candidate_capability(_candidate("stepfun", "step-image-edit-2"))
+    t2i_cap = candidate_capability(_candidate("stepfun", "step-2x-large"))
+    assert "negative_prompt" in edit_cap["parameters"]
+    assert edit_cap["request_setting_map"].get("negative_prompt") == "negative_prompt"
+    assert "negative_prompt" not in t2i_cap["parameters"]
+    assert "negative_prompt" not in t2i_cap["request_setting_map"]
+
+    candidates = [_candidate("stepfun", "step-2x-large")]
+    assert select_candidates(candidates, required_parameters={"negative_prompt"}) == []
+
+
+def test_dashscope_zimage_omits_watermark_capability() -> None:
+    """z-image 纯文生图最小参数集：不声明 watermark，显式 watermark 请求不可路由。"""
+    zimage = candidate_capability(_candidate("dashscope", "z-image-turbo"))
+    assert "watermark" not in zimage["parameters"]
+    assert "watermark" not in zimage["request_setting_map"]
+    assert "negative_prompt" not in zimage["parameters"]
+
+    wan = candidate_capability(_candidate("dashscope", "wan2.7-image-pro"))
+    assert "watermark" in wan["parameters"]
+
+    candidates = [_candidate("dashscope", "z-image-turbo")]
+    assert select_candidates(candidates, required_parameters={"watermark"}) == []

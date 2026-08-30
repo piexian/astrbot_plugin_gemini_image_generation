@@ -21,13 +21,14 @@ tl/
     ├── xai.py              # xAI Images 官方接口
     ├── minimax.py          # MiniMax 图片生成接口
     ├── doubao.py           # 火山引擎 Ark / 豆包 Seedream
-    ├── zai.py              # Zai 适配
-    ├── grok2api.py         # grok2api 适配
     ├── sensenova.py        # SenseNova(商汤日日新)
     ├── stepfun.py          # StepFun
     ├── provider_limits.py  # 各 provider 参考图上限常量(共享)
     ├── reference_intake.py # 参考图接收阶段日志助手(共享)
-    └── data_uri.py         # data URI / base64 助手(共享)
+    ├── data_uri.py         # data URI / base64 助手(共享)
+    ├── compat_utils.py     # 已下线供应商沉淀的网关兼容辅助(共享)
+    ├── param_utils.py      # 共享参数钳制与 prompt 校验
+    └── reference_values.py # 参考图 → URL/data URI 归一化(共享)
 ```
 
 当前 `ProviderSpec` 顺序与 `_conf_schema.json` 中 `provider_settings.provider_overrides.templates` 严格一致，不再提供别名：
@@ -36,8 +37,6 @@ tl/
 |------------|----------|------|
 | `google` | `GoogleProvider` | Google/Gemini 官方接口 |
 | `openai` | `OpenAICompatProvider` | OpenAI Chat Completions 兼容格式（默认兜底） |
-| `zai` | `ZaiProvider` | Zai 兼容接口 |
-| `grok2api` | `Grok2ApiProvider` | grok2api 兼容接口 |
 | `agnes_ai` | `AgnesAIProvider` | Agnes AI `/v1/images/generations` |
 | `xai` | `XAIProvider` | xAI 官方图像接口 |
 | `minimax` | `MiniMaxProvider` | MiniMax `/v1/image_generation` |

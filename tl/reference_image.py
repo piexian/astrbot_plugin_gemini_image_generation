@@ -62,12 +62,21 @@ def extract_reference_image_source(image_input: Any) -> str:
     return image_str
 
 
+def host_matches_domain(host: str | None, domain: str) -> bool:
+    """Return whether host equals domain or is a subdomain of it."""
+    if not host:
+        return False
+    host_lower = host.lower().rstrip(".")
+    return host_lower == domain or host_lower.endswith("." + domain)
+
+
 def is_qq_image_host(host: str) -> bool:
     """Return whether host belongs to QQ image delivery."""
     if not host:
         return False
-    host_lower = host.lower()
-    return any(qq_host in host_lower for qq_host in QQ_REFERENCE_IMAGE_HOSTS)
+    return any(
+        host_matches_domain(host, qq_host) for qq_host in QQ_REFERENCE_IMAGE_HOSTS
+    )
 
 
 def detect_reference_image_mime(raw: bytes) -> str | None:

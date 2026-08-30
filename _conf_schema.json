@@ -7,12 +7,10 @@
       "provider_polling": {
         "description": "供应商轮询顺序",
         "type": "list",
-        "hint": "按列表从上到下尝试生成。请选择并按优先级排列：google / openai / zai / grok2api / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova / dashscope。留空时按配置表中的有效供应商顺序尝试。",
+        "hint": "按列表从上到下尝试生成。请选择并按优先级排列：google / openai / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova / dashscope。留空时按配置表中的有效供应商顺序尝试。",
         "options": [
           "google",
           "openai",
-          "zai",
-          "grok2api",
           "agnes_ai",
           "xai",
           "minimax",
@@ -275,184 +273,6 @@
               }
             }
           },
-          "zai": {
-            "description": "Zai API 覆盖配置",
-            "hint": "配置 Zai.is 的 API 密钥和端点",
-            "items": {
-              "enabled": {
-                "description": "启用此条配置",
-                "type": "bool",
-                "hint": "临时关闭本条模型配置而不删除它；关闭后该条不参与轮询和生图，同渠道其他条目不受影响。",
-                "default": true
-              },
-              "priority": {
-                "description": "优先级",
-                "type": "int",
-                "hint": "同类型供应商配置多条时按优先级从高到低尝试；相同优先级按配置表从上到下尝试。",
-                "default": 0
-              },
-              "api_keys": {
-                "description": "API Key 列表",
-                "type": "list",
-                "hint": "多个 API Key，支持轮换使用",
-                "default": []
-              },
-              "daily_limit_per_key": {
-                "description": "每个 Key 每日限额",
-                "type": "int",
-                "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
-                "default": 0
-              },
-              "model_alias": {
-                "description": "模型别名（可选）",
-                "type": "string",
-                "hint": "供指令和 LLM 工具选择模型使用；同一别名可在多个供应商中复用。实际请求仍发送原始模型名。",
-                "default": ""
-              },
-              "model": {
-                "description": "模型名称",
-                "type": "string",
-                "hint": "Zai 模型名称",
-                "default": "gemini-3-pro-image-preview"
-              },
-              "api_base": {
-                "description": "API 端点地址",
-                "type": "string",
-                "hint": "Zai API 地址",
-                "default": ""
-              },
-              "proxy": {
-                "description": "代理地址",
-                "type": "string",
-                "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式。优先级高于全局代理和环境变量",
-                "default": ""
-              },
-              "resolution": {
-                "description": "图像分辨率",
-                "type": "string",
-                "hint": "该供应商默认图像分辨率。快速模式传入覆盖值时优先使用快速模式。",
-                "default": "1K",
-                "options": [
-                  "1K",
-                  "2K",
-                  "4K"
-                ]
-              },
-              "aspect_ratio": {
-                "description": "长宽比",
-                "type": "string",
-                "hint": "该供应商默认长宽比。快速模式传入覆盖值时优先使用快速模式。",
-                "default": "1:1",
-                "options": [
-                  "1:1",
-                  "16:9",
-                  "4:3",
-                  "3:2",
-                  "9:16",
-                  "4:5",
-                  "5:4",
-                  "21:9",
-                  "3:4",
-                  "2:3"
-                ]
-              },
-              "max_reference_images": {
-                "description": "最大参考图片数量",
-                "type": "int",
-                "hint": "该供应商本次请求最多使用的参考图片数量；超过后按顺序截取。文生图-only 供应商可保持默认。",
-                "default": 6
-              }
-            }
-          },
-          "grok2api": {
-            "description": "grok2api 覆盖配置",
-            "hint": "配置 grok2api 的 API 密钥和端点",
-            "items": {
-              "enabled": {
-                "description": "启用此条配置",
-                "type": "bool",
-                "hint": "临时关闭本条模型配置而不删除它；关闭后该条不参与轮询和生图，同渠道其他条目不受影响。",
-                "default": true
-              },
-              "priority": {
-                "description": "优先级",
-                "type": "int",
-                "hint": "同类型供应商配置多条时按优先级从高到低尝试；相同优先级按配置表从上到下尝试。",
-                "default": 0
-              },
-              "api_keys": {
-                "description": "API Key 列表",
-                "type": "list",
-                "hint": "多个 API Key，支持轮换使用",
-                "default": []
-              },
-              "daily_limit_per_key": {
-                "description": "每个 Key 每日限额",
-                "type": "int",
-                "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
-                "default": 0
-              },
-              "model_alias": {
-                "description": "模型别名（可选）",
-                "type": "string",
-                "hint": "供指令和 LLM 工具选择模型使用；同一别名可在多个供应商中复用。实际请求仍发送原始模型名。",
-                "default": ""
-              },
-              "model": {
-                "description": "模型名称",
-                "type": "string",
-                "hint": "grok2api 模型名称",
-                "default": "gemini-3-pro-image-preview"
-              },
-              "api_base": {
-                "description": "API 端点地址",
-                "type": "string",
-                "hint": "grok2api API 地址",
-                "default": ""
-              },
-              "proxy": {
-                "description": "代理地址",
-                "type": "string",
-                "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式。优先级高于全局代理和环境变量",
-                "default": ""
-              },
-              "resolution": {
-                "description": "图像分辨率",
-                "type": "string",
-                "hint": "该供应商默认图像分辨率。快速模式传入覆盖值时优先使用快速模式。",
-                "default": "1K",
-                "options": [
-                  "1K",
-                  "2K",
-                  "4K"
-                ]
-              },
-              "aspect_ratio": {
-                "description": "长宽比",
-                "type": "string",
-                "hint": "该供应商默认长宽比。快速模式传入覆盖值时优先使用快速模式。",
-                "default": "1:1",
-                "options": [
-                  "1:1",
-                  "16:9",
-                  "4:3",
-                  "3:2",
-                  "9:16",
-                  "4:5",
-                  "5:4",
-                  "21:9",
-                  "3:4",
-                  "2:3"
-                ]
-              },
-              "max_reference_images": {
-                "description": "最大参考图片数量",
-                "type": "int",
-                "hint": "该供应商本次请求最多使用的参考图片数量；超过后按顺序截取。文生图-only 供应商可保持默认。",
-                "default": 6
-              }
-            }
-          },
           "agnes_ai": {
             "description": "Agnes AI 图片生成 API 覆盖配置",
             "hint": "配置 Agnes AI /v1/images/generations 端点的密钥和参数，支持文生图和参考图生图",
@@ -600,8 +420,11 @@
               "model": {
                 "description": "模型名称",
                 "type": "string",
-                "hint": "xAI 图像模型名称",
-                "default": "grok-imagine-image"
+                "hint": "grok-imagine-image-2.0（当前模型，quality 仅 low/medium）；旧模型名仍可手填但可能已被官方退役",
+                "default": "grok-imagine-image-2.0",
+                "options": [
+                  "grok-imagine-image-2.0"
+                ]
               },
               "api_base": {
                 "description": "API 端点地址",
@@ -629,19 +452,23 @@
               "aspect_ratio": {
                 "description": "长宽比",
                 "type": "string",
-                "hint": "该供应商默认长宽比。快速模式传入覆盖值时优先使用快速模式。",
+                "hint": "官方枚举：含 2:1/1:2/19.5:9/9:19.5/20:9/9:20 与 auto（模型自动选择）；不支持 4:5/5:4/21:9，传入自动忽略",
                 "default": "1:1",
                 "options": [
                   "1:1",
                   "16:9",
-                  "4:3",
-                  "3:2",
                   "9:16",
-                  "4:5",
-                  "5:4",
-                  "21:9",
+                  "4:3",
                   "3:4",
-                  "2:3"
+                  "3:2",
+                  "2:3",
+                  "2:1",
+                  "1:2",
+                  "19.5:9",
+                  "9:19.5",
+                  "20:9",
+                  "9:20",
+                  "auto"
                 ]
               },
               "max_reference_images": {
@@ -663,13 +490,12 @@
               "quality": {
                 "description": "图像质量",
                 "type": "string",
-                "hint": "透传给 xAI 图片接口，留空不传。建议仅在已确认接口支持时使用。",
+                "hint": "仅 grok-imagine-image-2.0 支持，官方仅 low/medium（服务端默认 medium）；high 传入自动降级为 medium，留空不传",
                 "default": "",
                 "options": [
                   "",
                   "low",
-                  "medium",
-                  "high"
+                  "medium"
                 ]
               },
               "n": {
@@ -717,8 +543,12 @@
               "model": {
                 "description": "模型名称",
                 "type": "string",
-                "hint": "MiniMax 图片模型名称，官方支持 image-01 / image-01-live",
-                "default": "image-01"
+                "hint": "image-01（全能力，支持 21:9 与显式宽高）；image-01-live（快速，仅 aspect_ratio，不支持 21:9）",
+                "default": "image-01",
+                "options": [
+                  "image-01",
+                  "image-01-live"
+                ]
               },
               "api_base": {
                 "description": "API 端点地址",
@@ -764,8 +594,8 @@
               "max_reference_images": {
                 "description": "最大参考图片数量",
                 "type": "int",
-                "hint": "该供应商本次请求最多使用的参考图片数量；超过后按顺序截取。文生图-only 供应商可保持默认。",
-                "default": 6
+                "hint": "subject_reference 官方未公布数量上限，插件按 9 张截取；超过按顺序截取。纯文生图可保持默认。",
+                "default": 9
               },
               "response_format": {
                 "description": "响应格式",
@@ -817,6 +647,25 @@
                 "hint": "MiniMax subject_reference.type，默认 character 用于人物主体一致性",
                 "default": "character"
               },
+              "style_type": {
+                "description": "画风（image-01-live 专属）",
+                "type": "string",
+                "hint": "仅 image-01-live 生效：画风类型 漫画/元气/中世纪/水彩；留空不传。其他模型配置了会自动忽略",
+                "default": "",
+                "options": [
+                  "",
+                  "漫画",
+                  "元气",
+                  "中世纪",
+                  "水彩"
+                ]
+              },
+              "style_weight": {
+                "description": "画风权重（image-01-live 专属）",
+                "type": "float",
+                "hint": "仅 style_type 非空时随 style 一起下发，取值范围 (0,1]，默认 0.8",
+                "default": 0.8
+              },
               "width": {
                 "description": "自定义宽度",
                 "type": "int",
@@ -839,7 +688,7 @@
           },
           "stepfun": {
             "description": "阶跃星辰图片生成 API 覆盖配置",
-            "hint": "仅完全适配 step-image-edit-2 模型参数",
+            "hint": "适配 step-image-edit-2（文生图+编辑）与 step-2x-large（纯文生图）",
             "items": {
               "enabled": {
                 "description": "启用此条配置",
@@ -874,8 +723,12 @@
               "model": {
                 "description": "模型名称",
                 "type": "string",
-                "hint": "StepFun 图片模型名称",
-                "default": "step-image-edit-2"
+                "hint": "step-image-edit-2（推荐，文生图+编辑）；step-2x-large（快速文生图，不支持编辑/负向提示词/text_mode）",
+                "default": "step-image-edit-2",
+                "options": [
+                  "step-image-edit-2",
+                  "step-2x-large"
+                ]
               },
               "api_base": {
                 "description": "API 端点地址",
@@ -889,18 +742,15 @@
                 "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式。优先级高于全局代理和环境变量",
                 "default": ""
               },
-              "resolution": {
+                            "resolution": {
                 "description": "图像分辨率",
                 "type": "string",
-                "hint": "该供应商默认图像分辨率。快速模式传入覆盖值时优先使用快速模式。",
+                "hint": "StepFun 为固定预设尺寸，仅支持 1K 档；与长宽比组合映射到官方预设。",
                 "default": "1K",
                 "options": [
-                  "1K",
-                  "2K",
-                  "4K"
+                  "1K"
                 ]
-              },
-              "aspect_ratio": {
+              }, "aspect_ratio": {
                 "description": "长宽比",
                 "type": "string",
                 "hint": "该供应商默认长宽比。快速模式传入覆盖值时优先使用快速模式。",
@@ -1325,7 +1175,7 @@
           },
           "sensenova": {
             "description": "SenseNova（商汤日日新）API 覆盖配置",
-            "hint": "配置 SenseNova U1 Fast 文生图 API 的密钥与端点",
+            "hint": "配置 SenseNova U1.5 Lite（生成+编辑）/ U1 Fast（纯文生图）API 的密钥与端点",
             "items": {
               "enabled": {
                 "description": "启用此条配置",
@@ -1360,9 +1210,10 @@
               "model": {
                 "description": "模型名称",
                 "type": "string",
-                "hint": "SenseNova 图像生成模型，目前固定为 sensenova-u1-fast",
-                "default": "sensenova-u1-fast",
+                "hint": "sensenova-u1.5-lite（推荐，文生图+编辑，尺寸自由换算）；sensenova-u1-fast（纯文生图信息图，11 种固定尺寸）",
+                "default": "sensenova-u1.5-lite",
                 "options": [
+                  "sensenova-u1.5-lite",
                   "sensenova-u1-fast"
                 ]
               },
@@ -1410,13 +1261,13 @@
               "max_reference_images": {
                 "description": "最大参考图片数量",
                 "type": "int",
-                "hint": "SenseNova 当前仅支持文生图；改图/参考图请求会跳过该供应商。保留此项用于统一配置表。",
+                "hint": "u1.5-lite 编辑接口最多 4 张参考图（官方未公布上限，超出截取）；u1-fast 不支持参考图，带图请求直接报错。",
                 "default": 6
               },
               "default_size": {
                 "description": "默认图像尺寸",
                 "type": "string",
-                "hint": "插件未指定 aspect_ratio 时使用的兜底尺寸；必须为官方支持的 11 种尺寸之一",
+                "hint": "仅 sensenova-u1-fast 生效：未推导出合法比例时的兜底尺寸，必须为官方 11 种尺寸之一；u1.5-lite 按分辨率档位+长宽比自动换算",
                 "default": "2752x1536",
                 "options": [
                   "2048x2048",
@@ -1430,6 +1281,28 @@
                   "2272x1824",
                   "3072x1376",
                   "1344x3136"
+                ]
+              },
+              "watermark": {
+                "description": "添加水印",
+                "type": "bool",
+                "hint": "是否添加日日新官方 Logo 水印，仅 sensenova-u1.5-lite 生效。服务端默认开启，插件默认关闭并显式发送",
+                "default": false
+              },
+              "prompt_extend": {
+                "description": "提示词智能改写",
+                "type": "bool",
+                "hint": "仅 sensenova-u1.5-lite 生效。服务端默认开启（增加延迟）；插件提示词已增强，默认关闭并显式发送",
+                "default": false
+              },
+              "response_format": {
+                "description": "返回格式",
+                "type": "string",
+                "hint": "仅 sensenova-u1.5-lite 生效。b64_json 直接落盘避免链接过期；url 为 24 小时有效的临时链接",
+                "default": "b64_json",
+                "options": [
+                  "b64_json",
+                  "url"
                 ]
               }
             }
@@ -1471,13 +1344,16 @@
               "model": {
                 "description": "模型名称",
                 "type": "string",
-                "hint": "推荐 wan2.7-image-pro / wan2.7-image（文生图+编辑）；千问图像可选 qwen-image-2.0-pro / qwen-image-2.0（支持负向提示词）。仅支持同步调用模型。各端点模型支持差异见 docs/config.md。",
+                "hint": "推荐 wan2.7-image-pro / wan2.7-image（文生图+编辑）；千问图像可选 qwen-image-3.0-pro / qwen-image-3.0 / qwen-image-2.0-pro / qwen-image-2.0（支持负向提示词）；z-image-turbo 仅快速文生图（不支持编辑）。仅支持同步调用模型。各端点模型支持差异见 docs/config.md。",
                 "default": "wan2.7-image-pro",
                 "options": [
                   "wan2.7-image-pro",
                   "wan2.7-image",
+                  "qwen-image-3.0-pro",
+                  "qwen-image-3.0",
                   "qwen-image-2.0-pro",
                   "qwen-image-2.0",
+                  "z-image-turbo",
                   "qwen-image-plus",
                   "qwen-image-max",
                   "qwen-image"
@@ -1508,7 +1384,7 @@
               "max_reference_images": {
                 "description": "最大参考图片数量",
                 "type": "int",
-                "hint": "wan2.7 最多 9 张、wan2.6 最多 4 张；超过按顺序截取。纯文生图可保持默认。",
+                "hint": "wan2.7 / qwen-image-2.0 最多 9 张，qwen-image-3.0 最多 3 张；z-image 系列不支持参考图。超过按顺序截取。纯文生图可保持默认。",
                 "default": 9
               },
               "size_mode": {
@@ -1524,7 +1400,7 @@
               "resolution": {
                 "description": "图像分辨率档位",
                 "type": "string",
-                "hint": "与长宽比组合换算为官方推荐像素值。4K 仅 wan2.7-image-pro 文生图支持；qwen-image-2.0 上限 2K。",
+                "hint": "与长宽比组合换算为官方推荐像素值。4K 仅 wan2.7-image-pro 文生图支持，其余模型（含 qwen-image-3.0 / z-image-turbo）上限 2K，超出自动降档。",
                 "default": "2K",
                 "options": [
                   "1K",
@@ -1568,7 +1444,7 @@
               "n": {
                 "description": "单次生成图片数量",
                 "type": "int",
-                "hint": "按成功生成张数计费，测试建议 1。范围：wan2.7 标准 1-4 / 顺序模式 1-12；qwen-image-2.0 1-6；qwen-image-max/plus 仅 1。超出自动钳制。",
+                "hint": "按成功生成张数计费，测试建议 1。范围：wan2.7 标准 1-4 / 顺序模式 1-12；qwen-image-2.0 / 3.0 1-6；z-image-turbo 与 qwen-image-max/plus 仅 1。超出自动钳制。",
                 "default": 1
               },
               "watermark": {
@@ -1580,7 +1456,7 @@
               "negative_prompt": {
                 "description": "负向提示词",
                 "type": "string",
-                "hint": "描述要排除的元素。wan2.7-image-pro / wan2.7-image 不支持，会自动跳过并记录日志。",
+                "hint": "描述要排除的元素。wan2.7 与 z-image 系列不支持，会自动跳过并记录日志。",
                 "default": ""
               },
               "prompt_extend": {

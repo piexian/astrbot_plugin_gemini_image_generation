@@ -57,7 +57,7 @@ google / openai_images / minimax
 支持的模板：
 
 ```text
-google / openai / zai / grok2api / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova / dashscope
+google / openai / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova / dashscope
 ```
 
 下方 `doubao_settings`、`openai_images_settings`、`agnes_ai_settings`、`xai_settings`、`minimax_settings`、`stepfun_settings`、`sensenova_settings`、`dashscope_settings` 章节对应这些模板的专用字段。代码中的同名 `*_settings` 字段仅作为兼容旧调用的首个候选投影；多候选场景以 `provider_settings.provider_overrides` 和运行时派生的 `provider_settings_by_type` 为准。
@@ -241,11 +241,11 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 |--------|--------|------|
 | `api_keys` | `[]` | API Key 列表，支持多 Key 轮换 |
 | `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
-| `model` | `grok-imagine-image` | xAI 图像模型名称 |
+| `model` | `grok-imagine-image-2.0` | 当前模型；旧模型名仍可手填但可能已被官方退役 |
 | `api_base` | `https://api.x.ai` | API 端点地址 |
 | `response_format` | `url` | 响应格式：`url` / `b64_json` |
-| `quality` | - | 透传给 xAI 图片接口，留空不传 |
-| `n` | `1` | 单次请求生成数量，当前最多 `10` |
+| `quality` | - | 仅 `grok-imagine-image-2.0` 支持，官方仅 `low` / `medium`（服务端默认 `medium`）；`high` 自动降级为 `medium`，留空不传 |
+| `n` | `1` | 单次请求生成数量，官方上限 `10` |
 | `proxy` | - | 独立代理地址 |
 
 `xai` 供应商会自动走 xAI 官方 JSON 图像接口：
@@ -253,7 +253,13 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 - 文生图：`/v1/images/generations`
 - 改图：`/v1/images/edits`
 
-改图请求会把参考图统一内联为 `data URI`，不使用 `multipart/form-data`。xAI 官方文档当前说明单次编辑最多支持 `5` 张参考图，分辨率支持 `1k/2k`，单图编辑时输出比例默认跟随输入图。
+改图请求会把参考图统一内联为 `data URI`，不使用 `multipart/form-data`。单次编辑最多支持 `3` 张参考图（超出截取前 3 张并记录日志），分辨率支持 `1k/2k`；多图编辑默认输出比例跟随第一张输入图，可用 `aspect_ratio` 覆盖，单图编辑始终跟随输入图。
+
+`aspect_ratio` 官方枚举：`1:1` / `16:9` / `9:16` / `4:3` / `3:4` / `3:2` / `2:3` / `2:1` / `1:2` / `19.5:9` / `9:19.5` / `20:9` / `9:20` / `auto`；`4:5` / `5:4` / `21:9` 不受支持，传入自动忽略并记录日志。
+
+官方文档：
+
+- <https://docs.x.ai/developers/model-capabilities/imagine>
 
 ## agnes_ai_settings（Agnes AI 图片生成 API 专用配置）
 
@@ -284,14 +290,17 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 |--------|--------|------|
 | `api_keys` | `[]` | MiniMax API Key 列表，支持多 Key 轮换 |
 | `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
-| `model` | `image-01` | MiniMax 图片模型，官方支持 `image-01` / `image-01-live` |
+| `model` | `image-01` | `image-01`（全能力，支持 21:9 与显式宽高）/ `image-01-live`（快速，仅 aspect_ratio，不支持 21:9） |
 | `api_base` | `https://api.minimaxi.com` | API 端点地址，插件会统一调用 `/v1/image_generation` |
 | `response_format` | `base64` | 响应格式：`base64` / `url`。官方 URL 有效期为 24 小时 |
 | `n` | `1` | 单次请求生成图片数量，官方范围 `1-9` |
+| `style_type` | 空 | 画风（**image-01-live 专属**）：`漫画` / `元气` / `中世纪` / `水彩`；留空不传，其他模型配置了自动忽略 |
+| `style_weight` | `0.8` | 画风权重，仅 `style_type` 非空时下发，范围 `(0,1]` |
 | `prompt_optimizer` | `false` | 是否开启 MiniMax 提示词自动优化 |
 | `aigc_watermark` | `false` | 是否添加 AIGC 水印 |
 | `reference_image_mode` | `auto` | 参考图传递方式：`auto` / `base64` / `url` |
 | `subject_reference_type` | `character` | `subject_reference.type`，默认用于人物主体一致性 |
+| `max_reference_images` | `9` | 参考图上限（官方未公布数量上限，按 9 张截取） |
 | `width` / `height` | `0` | 未传 `aspect_ratio` 时可同时设置，范围 `512-2048` 且为 `8` 的倍数；`0` 表示不传 |
 | `seed` | `0` | 固定随机种子，`0` 表示不传 |
 | `proxy` | - | 独立代理地址 |
@@ -300,6 +309,12 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 
 - 文生图：`POST /v1/image_generation`
 - 图生图：同一端点，通过 `subject_reference[].image_file` 传入参考图
+
+其他限制与防护：
+
+- prompt 官方上限 1500 字符，超限直接报错（不发起注定失败的服务端调用）
+- `image_file` 官方仅支持 JPG/JPEG/PNG 且小于 10MB：非白名单格式（GIF/WebP/BMP 等）由插件解码后转码为 PNG（动图取首帧），源图或转码产物超过 10MB 直接报错
+- 全部图片被内容安全拦截时，错误信息会附带 `failed_count` 拦截数量
 
 供应商条目的 `resolution` 和 `aspect_ratio` 的适配规则：
 
@@ -321,19 +336,19 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 
 ## stepfun_settings（StepFun 图片生成 API 专用配置）
 
-配置路径：`provider_settings.provider_overrides` 中选择 `stepfun` 模板。仅完全适配 `step-image-edit-2` 模型参数，其他模型名可填写但参数会按 step-image-edit-2 的格式透传。
+配置路径：`provider_settings.provider_overrides` 中选择 `stepfun` 模板。适配 `step-image-edit-2`（文生图 + 编辑）与 `step-2x-large`（纯文生图）。
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `api_keys` | `[]` | StepFun API Key 列表，支持多 Key 轮换 |
 | `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
-| `model` | `step-image-edit-2` | 图片模型名称，可改为其它 StepFun 图片模型 |
+| `model` | `step-image-edit-2` | 图片模型名称；`step-2x-large` 为纯文生图模型，不支持编辑/负向提示词/text_mode |
 | `api_base` | `https://api.stepfun.com` | API 端点；同时兼容 `https://api.stepfun.com/step_plan/v1` 写法，自动识别 `/v1` 后缀 |
 | `response_format` | `url` | `url` 返回临时签名链接（`res.stepfun.com`），`b64_json` 返回 base64 并由插件落盘 |
-| `steps` | `0` | 采样步数，`0` 表示不传（服务端默认 `8`） |
-| `cfg_scale` | `0` | 提示词引导强度，`0` 表示不传（服务端默认 `1.0`） |
-| `negative_prompt` | `""` | 负向提示词，留空不传 |
-| `text_mode` | `false` | 是否启用 step-image-edit-2 的 `text_mode`，适用于含文字生成场景 |
+| `steps` | `0` | 采样步数，`0` 表示不传（服务端默认 edit-2 `8` / 2x-large `50`）；非零值钳位到 [1, 50] |
+| `cfg_scale` | `0` | 提示词引导强度，`0` 表示不传（服务端默认 edit-2 `1.0` / 2x-large `6`）；非零值钳位到 [1.0, 10.0] |
+| `negative_prompt` | `""` | 负向提示词，留空不传；仅 `step-image-edit` 系列支持，其他模型自动忽略并记录日志 |
+| `text_mode` | `false` | 是否启用 `text_mode`；仅 `step-image-edit` 系列支持，其他模型自动忽略并记录日志 |
 | `seed` | `0` | 固定随机种子，`0` 表示不传 |
 | `proxy` | - | 独立代理地址，优先级高于全局代理和环境变量 |
 
@@ -354,12 +369,16 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 | 横图 16:9 / 4:3 | `1360x768` |
 | 横图 接近 5:4 | `1184x896` |
 
-**`step-1x-medium` 文生图（generations）** 支持六档：`256x256` / `512x512` / `768x768` / `1024x1024` / `1280x800` / `800x1280`，按目标长宽比自动选最近预设。
+**`step-2x-large` 文生图（generations）** 支持六档：`256x256` / `512x512` / `768x768` / `1024x1024` / `1280x800`（16:9）/ `800x1280`（9:16），按目标长宽比自动选最近预设。已下线的 `step-1x-medium` 沿用同尺寸表。
+
+**模型级编辑门控**：仅 `step-image-edit` 系列候选参与改图/参考图请求，`step-2x-large` 等纯文生图模型自动跳过。
 
 **图生图（edits）**：
 
 - `step-image-edit-2`：官方仅支持单图输入，传入多图会自动取首张并打 debug 日志；`size` 参数官方明确"该参数不生效"，因此插件不再下发，输出尺寸始终与输入图一致。
 - `step-1x-edit`：`size` 仅在 `512x512` / `768x768` / `1024x1024` 三档内透传。
+
+- 两个模型的 prompt 均为 512 字符硬上限，超限请求直接报错（不发起注定失败的服务端调用）。
 
 其他注意事项：
 
@@ -373,23 +392,35 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 
 ## sensenova_settings（SenseNova（商汤日日新）专用配置）
 
-配置路径：`provider_settings.provider_overrides` 中选择 `sensenova` 模板。仅支持文生图，尺寸限定为 11 种官方预设。
+配置路径：`provider_settings.provider_overrides` 中选择 `sensenova` 模板。支持两个模型：
+
+- `sensenova-u1.5-lite`（默认）：生成与编辑一体，尺寸按档位+长宽比自由换算
+- `sensenova-u1-fast`：纯文生图信息图模型，11 种官方固定尺寸
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `api_keys` | `[]` | SenseNova API Key 列表，控制台获取的 Bearer Token，支持多 Key 轮换 |
 | `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
-| `model` | `sensenova-u1-fast` | SenseNova 图像生成模型，目前仅支持 `sensenova-u1-fast` |
+| `model` | `sensenova-u1.5-lite` | `sensenova-u1.5-lite`（文生图+编辑）或 `sensenova-u1-fast`（纯文生图） |
 | `api_base` | `https://token.sensenova.cn` | API 端点地址 |
-| `default_size` | `2752x1536` | 未推导出合法比例时的兜底尺寸，必须为下表 11 种官方尺寸之一 |
+| `resolution` | `2K` | 分辨率档位（`1K`/`2K`/`4K`），u1.5-lite 按档位像素预算换算尺寸 |
+| `aspect_ratio` | `1:1` | 默认长宽比，快速模式传入覆盖值时优先 |
+| `watermark` | `false` | 是否添加日日新官方水印；仅 u1.5-lite 生效（服务端默认开启，插件显式关闭） |
+| `prompt_extend` | `false` | 提示词自动润色；仅 u1.5-lite 生效（服务端默认开启，插件显式关闭） |
+| `response_format` | `b64_json` | 仅 u1.5-lite 生效：`b64_json` 直接落盘，`url` 为 24 小时有效临时链接 |
+| `default_size` | `2752x1536` | 仅 u1-fast 生效的兜底尺寸，必须为官方 11 种尺寸之一 |
 | `proxy` | - | 独立代理地址，优先级高于全局代理和环境变量 |
 
-`sensenova` 供应商使用 SenseNova 官方图像端点：
+`sensenova` 供应商使用 SenseNova 官方图像端点（仅 u1.5-lite 支持编辑）：
 
 - 文生图：`POST /v1/images/generations`
-- 不支持图生图（由 provider 在 `build_request()` 阶段报错）
+- 图像编辑（u1.5-lite）：`POST /v1/images/edits`，`images` 数组最多 4 张（官方未公布上限，超出截取），首张为主编辑图；输入仅支持公网 URL 或 `data:image/*;base64,` 形态
 
-官方支持的 11 种固定尺寸（供应商条目的 `aspect_ratio` 会被映射到最接近的预设）：
+**模型级编辑门控**：仅 `sensenova-u1.5` 系列候选参与改图/参考图请求；`sensenova-u1-fast` 带参考图直接报错（不忽略、不发起无效调用）。
+
+尺寸规则：
+
+**`sensenova-u1-fast`** 固定 11 种尺寸，按 `aspect_ratio` 映射：
 
 | 尺寸 | 近似比例 |
 |------|---------|
@@ -405,29 +436,36 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 | `3072x1376` | 21:9 |
 | `1344x3136` | 超竖长 |
 
+**`sensenova-u1.5-lite`** 按 `resolution` 档位（1K/2K/4K）像素预算 × 长宽比换算，宽高为 [512, 4096] 内的 32 倍数，比例钳位 3:1 以内；编辑场景开启"改图保留参考图尺寸"时不下发 `size`，由服务端自动适配主图。
+
+其他注意事项：
+
+- u1-fast 的图片 URL 有效期 1 小时、u1.5-lite 为 24 小时；配置代理时插件会立即下载落盘
+- `n` 仅 u1-fast 支持（上限 4）；u1.5-lite 固定单张，不发送该参数
+
 官方文档：
 
-- <https://platform.sensenova.cn/doc?path=/chat/ImageGeneration/ImageGeneration.md>
+- <https://platform.sensenova.cn/docs>
 
 ## dashscope_settings（DashScope 阿里云百炼专用配置）
 
-配置路径：`provider_settings.provider_overrides` 中选择 `dashscope` 模板。接入 DashScope **原生** multimodal-generation 同步接口（非 OpenAI 兼容格式），支持通义万相 `wan2.7-image-pro` / `wan2.7-image`（文生图 + 多图编辑）与千问图像 `qwen-image-2.0` 系列。
+配置路径：`provider_settings.provider_overrides` 中选择 `dashscope` 模板。接入 DashScope **原生** multimodal-generation 同步接口（非 OpenAI 兼容格式），支持通义万相 `wan2.7-image-pro` / `wan2.7-image`（文生图 + 多图编辑）、千问图像 `qwen-image-3.0` / `qwen-image-2.0` 系列与 `z-image-turbo`（纯文生图）。
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `api_keys` | `[]` | DashScope API Key 列表（控制台获取的 Bearer Token），支持多 Key 轮换 |
 | `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
-| `model` | `wan2.7-image-pro` | 推荐 `wan2.7-image-pro` / `wan2.7-image`；千问图像可选 `qwen-image-2.0-pro` / `qwen-image-2.0`（支持负向提示词）。仅支持同步调用模型，wan2.5 及更早的纯异步模型不适用 |
+| `model` | `wan2.7-image-pro` | 推荐 `wan2.7-image-pro` / `wan2.7-image`；千问图像可选 `qwen-image-3.0-pro` / `qwen-image-3.0` / `qwen-image-2.0-pro` / `qwen-image-2.0`；`z-image-turbo` 仅快速文生图。仅支持同步调用模型，wan2.5 及更早的纯异步模型不适用 |
 | `endpoint_mode` | `dashscope` | 接入端点：`dashscope` 阿里云百炼官方端点；`token_plan` 千问 AI 平台 Token Plan 套餐端点 |
 | `api_base` | - | 可选覆盖；留空按 `endpoint_mode` 自动选择地址，仅自建反代等特殊场景需要填写 |
-| `max_reference_images` | `9` | 最大参考图数量（wan2.7 上限 9 张），超过按顺序截取 |
+| `max_reference_images` | `9` | 最大参考图数量：wan2.7 / qwen-image-2.0 上限 9 张，qwen-image-3.0 上限 3 张；z-image 系列不支持参考图（直接报错） |
 | `size_mode` | `preset` | `preset` 按分辨率+长宽比换算官方推荐像素；`custom` 直接发送 `custom_size` |
-| `resolution` | `2K` | 分辨率档位（`1K`/`2K`/`4K`）。4K 仅 `wan2.7-image-pro` 文生图支持；qwen-image-2.0 上限 2K |
+| `resolution` | `2K` | 分辨率档位（`1K`/`2K`/`4K`）。4K 仅 `wan2.7-image-pro` 文生图支持，带参考图（编辑）及其余模型上限 2K，超出自动降档 |
 | `aspect_ratio` | `1:1` | 默认长宽比，快速模式传入覆盖值时优先 |
-| `custom_size` | `2048*2048` | 仅 `size_mode=custom` 生效。格式 `WxH`（x/×/* 均可，发送时统一为 `W*H`），或 wan2.7 简写 `1K`/`2K`/`4K` |
+| `custom_size` | `2048*2048` | 仅 `size_mode=custom` 生效。格式 `WxH`（x/×/* 均可，发送时统一为 `W*H`），或 wan2.7 简写 `1K`/`2K`/`4K`。custom 为显式覆盖，原样发送、不参与 `resolution` 的自动降档 |
 | `n` | `1` | 单次生成图片数量，按成功张数计费，超出范围自动钳制 |
-| `watermark` | `false` | 是否添加水印 |
-| `negative_prompt` | - | 负向提示词，wan2.7 不支持（自动跳过并记录日志） |
+| `watermark` | `false` | 是否添加水印；z-image 系列不支持（自动跳过并记录日志） |
+| `negative_prompt` | - | 负向提示词，wan2.7 与 z-image 系列不支持（自动跳过并记录日志） |
 | `prompt_extend` | `false` | 提示词智能改写。服务端默认开启（增加 3-4 秒延迟）；插件提示词已增强，默认关闭并显式发送。wan2.7 不支持 |
 | `thinking_mode` | `true` | 增强推理，仅 wan2.7 生效；顺序模式下不可用 |
 | `enable_sequential` | `false` | 顺序组图生成，仅 wan2.7 生效；开启后 `n` 上限提高到 12，`thinking_mode` 随之失效 |
@@ -446,17 +484,21 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 - `endpoint_mode` 选 `token_plan`（自动使用 `https://token-plan.cn-beijing.maas.aliyuncs.com`）
 - `api_keys` 填套餐专属 Key（以 `sk-sp-` 为前缀）
 
-个人版 Token Plan 图像生成模型仅 `wan2.7-image` / `wan2.7-image-pro`；参数门控与尺寸换算规则与 DashScope 原生端点相同。完整模型列表以千问 AI 平台为准。
+个人版 Token Plan 图像生成模型现包括 `qwen-image-3.0-pro` / `qwen-image-3.0` / `wan2.7-image` / `wan2.7-image-pro` / `z-image-turbo`；参数门控与尺寸换算规则与 DashScope 原生端点相同。完整模型列表以千问 AI 平台为准。
 
 参数门控规则（由 provider 按模型自动处理）：
 
-| 参数 | wan2.7 系列 | qwen-image-2.0 系列 | 其他（qwen-image-plus/max 等） |
-|------|------------|--------------------|-------------------------------|
-| `negative_prompt` | 不支持（跳过） | 支持 | 支持 |
-| `prompt_extend` | 不支持（跳过） | 显式发送 | 显式发送 |
-| `thinking_mode` | 支持（非顺序模式） | 不发送 | 不发送 |
-| `enable_sequential` | 支持 | 不发送 | 不发送 |
-| `n` 范围 | 标准 1-4 / 顺序 1-12 | 1-6 | 仅 1 |
+| 参数 | wan2.7 系列 | qwen-image-2.0 / 3.0 系列 | z-image-turbo | 其他（qwen-image-plus/max 等） |
+|------|------------|--------------------|---------------|-------------------------------|
+| `negative_prompt` | 不支持（跳过） | 支持 | 不支持（跳过） | 支持 |
+| `prompt_extend` | 不支持（跳过） | 显式发送 | 不支持（跳过） | 显式发送 |
+| `watermark` | 支持 | 支持 | 不支持（跳过） | 支持 |
+| `thinking_mode` | 支持（非顺序模式） | 不发送 | 不发送 | 不发送 |
+| `enable_sequential` | 支持 | 不发送 | 不发送 | 不发送 |
+| `n` 范围 | 标准 1-4 / 顺序 1-12 | 1-6 | 仅 1 | 仅 1 |
+| 参考图上限 | 9 | qwen-image-2.0：9；qwen-image-3.0：3 | 不支持（报错） | 仅 qwen-image-edit 系列 |
+
+**模型级编辑门控**：仅 wan2.7 / qwen-image-2.0 / qwen-image-3.0 / qwen-image-edit 系列候选参与改图/参考图请求，`z-image-turbo` 等纯文生图模型自动跳过。
 
 preset 模式尺寸换算表（分辨率档位 × 长宽比 → 官方推荐像素）：
 

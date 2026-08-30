@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import math
 import re
-from pathlib import Path
 from typing import Any
 
 import aiohttp
@@ -16,9 +15,11 @@ from astrbot.api import logger
 
 from ..api_types import APIError, ApiRequestConfig
 from .base import ProviderRequest
-from .data_uri import format_data_uri, looks_like_base64, strip_data_uri_prefix
-from .provider_limits import MAX_REFERENCE_IMAGES_DASHSCOPE
-from .reference_intake import announce_reference_intake
+from .provider_limits import (
+    MAX_REFERENCE_IMAGES_DASHSCOPE,
+    MAX_REFERENCE_IMAGES_DASHSCOPE_QWEN3,
+)
+from .reference_values import resolve_reference_api_values
 
 # 官方默认 API Base
 _DEFAULT_API_BASE: str = "https://dashscope.aliyuncs.com"
@@ -40,6 +41,19 @@ _DEFAULT_MODEL: str = "wan2.7-image-pro"
 
 # wan2.7 专用简写尺寸
 _SHORTHAND_SIZES: frozenset[str] = frozenset({"1K", "2K", "4K"})
+
+# 各模型分辨率档位上限：官方仅 wan2.7-image-pro 文生图支持 4K，其余一律 2K 封顶
+_MAX_TIER_BY_MODEL_DEFAULT: str = "2K"
+_MAX_TIER_WAN27_PRO: str = "4K"
+
+
+def _max_tier_for(model: str, *, has_reference: bool = False) -> str:
+    name = (model or "").strip().lower()
+    # 4K 仅 wan2.7-image-pro 文生图支持；带参考图的编辑请求同样 2K 封顶
+    if not has_reference and name.startswith("wan2.7-image-pro"):
+        return _MAX_TIER_WAN27_PRO
+    return _MAX_TIER_BY_MODEL_DEFAULT
+
 
 # WxH / W×H / W*H 尺寸格式
 _SIZE_RE = re.compile(r"^(\d{2,5})\s*[x×*]\s*(\d{2,5})$")
@@ -166,7 +180,9 @@ def _compute_size(tier: str, rw: int, rh: int) -> str:
     return f"{w}*{h}"
 
 
-def _resolve_size(settings: dict[str, Any], config: ApiRequestConfig) -> str | None:
+def _resolve_size(
+    settings: dict[str, Any], config: ApiRequestConfig, model: str = ""
+) -> str | None:
     """决定最终 size；返回 None 表示不发送该参数。"""
     if getattr(config, "suppress_resolution", False):
         return None
@@ -183,6 +199,18 @@ def _resolve_size(settings: dict[str, Any], config: ApiRequestConfig) -> str | N
     if tier not in _TIER_PIXELS:
         logger.warning("[dashscope] resolution=%s 非法，已回退为 2K", config.resolution)
         tier = "2K"
+
+    max_tier = _max_tier_for(
+        model, has_reference=bool(getattr(config, "reference_images", None))
+    )
+    if _TIER_PIXELS[tier] > _TIER_PIXELS[max_tier]:
+        logger.info(
+            "[dashscope] %s 分辨率上限为 %s，已从 %s 降档",
+            model or "当前模型",
+            max_tier,
+            tier,
+        )
+        tier = max_tier
 
     ratio = _normalize_ratio(config.aspect_ratio or "1:1")
     preset = _SIZE_TABLE.get((tier, ratio))
@@ -264,12 +292,14 @@ class DashScopeProvider:
         for value in image_values:
             content.append({"image": value})
 
-        is_wan27 = model.startswith("wan2.7")
+        model_lc = model.lower()
+        is_wan27 = model_lc.startswith("wan2.7")
+        is_zimage = model_lc.startswith("z-image")
         enable_seq = is_wan27 and bool(settings.get("enable_sequential", False))
 
         params: dict[str, Any] = {}
 
-        size = _resolve_size(settings, config)
+        size = _resolve_size(settings, config, model)
         if size:
             params["size"] = size
 
@@ -278,32 +308,41 @@ class DashScopeProvider:
             n_max = 12
         elif is_wan27:
             n_max = 4
-        elif model.startswith("qwen-image-2.0"):
+        elif model_lc.startswith(("qwen-image-2.0", "qwen-image-3.0")):
             n_max = 6
         else:
             n_max = 1
         params["n"] = _coerce_n(settings.get("n", 1), n_max)
 
-        params["watermark"] = bool(settings.get("watermark", False))
-
-        neg = str(settings.get("negative_prompt") or "").strip()
-        if neg:
-            if is_wan27:
+        if is_zimage:
+            # z-image-turbo 仅文生图：参数保持最小集合
+            if settings.get("watermark"):
+                logger.info("[dashscope] %s 不支持 watermark，已忽略", model)
+            if settings.get("negative_prompt"):
                 logger.info("[dashscope] %s 不支持 negative_prompt，已忽略", model)
-            else:
-                params["negative_prompt"] = neg
-
-        if is_wan27:
-            if enable_seq:
-                # 与 thinking_mode 互斥
-                params["enable_sequential"] = True
-            else:
-                params["thinking_mode"] = bool(settings.get("thinking_mode", True))
+            if settings.get("prompt_extend"):
+                logger.info("[dashscope] %s 不支持 prompt_extend，已忽略", model)
         else:
-            if settings.get("enable_sequential"):
-                logger.info("[dashscope] enable_sequential 仅 wan2.7 支持，已忽略")
-            # 服务端默认 true，需显式关闭
-            params["prompt_extend"] = bool(settings.get("prompt_extend", False))
+            params["watermark"] = bool(settings.get("watermark", False))
+
+            neg = str(settings.get("negative_prompt") or "").strip()
+            if neg:
+                if is_wan27:
+                    logger.info("[dashscope] %s 不支持 negative_prompt，已忽略", model)
+                else:
+                    params["negative_prompt"] = neg
+
+            if is_wan27:
+                if enable_seq:
+                    # 与 thinking_mode 互斥
+                    params["enable_sequential"] = True
+                else:
+                    params["thinking_mode"] = bool(settings.get("thinking_mode", True))
+            else:
+                if settings.get("enable_sequential"):
+                    logger.info("[dashscope] enable_sequential 仅 wan2.7 支持，已忽略")
+                # 服务端默认 true，需显式关闭
+                params["prompt_extend"] = bool(settings.get("prompt_extend", False))
 
         payload: dict[str, Any] = {
             "model": model,
@@ -331,78 +370,33 @@ class DashScopeProvider:
     ) -> list[str]:  # noqa: ANN401
         """将参考图转换为 URL / data URI 列表（不支持 file://，本地路径转 base64）。"""
         refs = config.reference_images or []
-        if not refs:
-            return []
-
-        announce_reference_intake(
-            refs, MAX_REFERENCE_IMAGES_DASHSCOPE, log_prefix="[dashscope] "
+        settings = getattr(config, "provider_settings", None) or {}
+        model = (
+            str(settings.get("model") or getattr(config, "model", "") or "")
+            .strip()
+            .lower()
         )
-        force_b64 = (
-            getattr(config, "image_input_mode", "force_base64") == "force_base64"
+        if model.startswith("z-image") and refs:
+            # 防护：z-image 系列不支持图像输入，直接报错避免无效消耗
+            raise APIError(
+                "z-image 系列模型不支持参考图，请改用 wan2.7 / qwen-image 系列或去掉参考图",
+                None,
+                "invalid_reference_image",
+                retryable=False,
+            )
+        max_count = (
+            MAX_REFERENCE_IMAGES_DASHSCOPE_QWEN3
+            if model.startswith("qwen-image-3.0")
+            else MAX_REFERENCE_IMAGES_DASHSCOPE
         )
-
-        values: list[str] = []
-        for image_str in refs[:MAX_REFERENCE_IMAGES_DASHSCOPE]:
-            value = await self._process_single_image(
-                client=client,
-                config=config,
-                image_str=str(image_str or ""),
-                force_b64=force_b64,
-            )
-            if value:
-                values.append(value)
-        return values
-
-    async def _process_single_image(
-        self,
-        *,
-        client: Any,
-        config: ApiRequestConfig,
-        image_str: str,
-        force_b64: bool,
-    ) -> str | None:  # noqa: ANN401
-        if not image_str:
-            return None
-
-        # URL 输入且不强制 base64 → 原样透传
-        if image_str.startswith(("http://", "https://")) and not force_b64:
-            return image_str
-
-        # 已是标准 data URI → 原样
-        if image_str.startswith("data:image/") and ";base64," in image_str:
-            return image_str
-
-        # 裸 base64 → 补 data URI 前缀
-        if looks_like_base64(image_str) and not image_str.startswith("data:"):
-            return format_data_uri(strip_data_uri_prefix(image_str))
-
-        # 其余（本地路径 / 强制 base64 的 URL）走客户端归一化；
-        # 共享归一化器不认裸路径，先转 file:// URI
-        normalize_input = image_str
-        if "://" not in image_str and Path(image_str).is_file():
-            normalize_input = Path(image_str).resolve().as_uri()
-        try:
-            mime_type, b64_data = await client._normalize_reference_image_input(
-                normalize_input,
-                image_input_mode=getattr(config, "image_input_mode", "force_base64"),
-            )
-        except Exception as e:
-            logger.debug("[dashscope] normalize_reference_image_input failed: %s", e)
-            mime_type, b64_data = None, None
-
-        if not b64_data:
-            if force_b64:
-                raise APIError(
-                    "参考图转换失败（dashscope），请检查图片来源后重试。",
-                    None,
-                    "invalid_reference_image",
-                    retryable=False,
-                )
-            if image_str.startswith(("http://", "https://")):
-                return image_str
-            return None
-
-        return format_data_uri(strip_data_uri_prefix(b64_data), mime_type)
+        return await resolve_reference_api_values(
+            client,
+            config,
+            refs,
+            max_count=max_count,
+            log_prefix="[dashscope] ",
+            error_label="dashscope",
+        )
 
     async def parse_response(
         self,

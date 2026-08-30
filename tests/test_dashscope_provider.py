@@ -4,7 +4,7 @@ import pytest
 
 from tl.api.dashscope import DashScopeProvider
 from tl.api_types import APIError, ApiRequestConfig
-from tl.provider_hooks import normalize_dashscope_settings
+from tl.provider_hooks import dashscope_edit_capability, normalize_dashscope_settings
 
 
 class _FakeClient:
@@ -88,6 +88,57 @@ async def test_dashscope_size_9_16_4k() -> None:
         client=_FakeClient(), config=_make_config(resolution="4K", aspect_ratio="9:16")
     )
     assert request.payload["parameters"]["size"] == "2304*4096"
+
+
+@pytest.mark.asyncio
+async def test_dashscope_4k_edit_downgrades_to_2k() -> None:
+    """4K 仅 wan2.7-image-pro 文生图支持；带参考图时降为 2K。"""
+    provider = DashScopeProvider()
+    request = await provider.build_request(
+        client=_FakeClient(),
+        config=_make_config(
+            resolution="4K",
+            aspect_ratio="1:1",
+            reference_images=["https://example.com/a.png"],
+        ),
+    )
+    assert request.payload["parameters"]["size"] == "2048*2048"
+
+
+@pytest.mark.asyncio
+async def test_dashscope_4k_t2i_keeps_4k() -> None:
+    provider = DashScopeProvider()
+    request = await provider.build_request(
+        client=_FakeClient(), config=_make_config(resolution="4K", aspect_ratio="1:1")
+    )
+    assert request.payload["parameters"]["size"] == "4096*4096"
+
+
+@pytest.mark.asyncio
+async def test_dashscope_model_name_case_insensitive() -> None:
+    """大小写混合模型名与 gate 口径一致：WAN2.7 视为 wan2.7（丢 negative_prompt、4K 放行）。"""
+    provider = DashScopeProvider()
+    request = await provider.build_request(
+        client=_FakeClient(),
+        config=_make_config(
+            resolution="4K",
+            provider_settings={"model": "WAN2.7-Image-Pro", "negative_prompt": "模糊"},
+        ),
+    )
+    assert request.payload["parameters"]["size"] == "4096*4096"
+    assert "negative_prompt" not in request.payload["parameters"]
+
+
+@pytest.mark.asyncio
+async def test_dashscope_zimage_uppercase_with_refs_raises() -> None:
+    provider = DashScopeProvider()
+    config = _make_config(
+        provider_settings={"model": "Z-Image-Turbo"},
+        reference_images=["https://example.com/a.png"],
+    )
+    with pytest.raises(APIError) as exc_info:
+        await provider.build_request(client=_FakeClient(), config=config)
+    assert exc_info.value.retryable is False
 
 
 @pytest.mark.asyncio
@@ -552,3 +603,99 @@ def test_normalize_dashscope_settings_out_of_range_custom_size_preserved() -> No
     settings: dict = {"size_mode": "custom", "custom_size": "8192x8192"}
     normalize_dashscope_settings(settings)
     assert settings["custom_size"] == "8192x8192"
+
+
+def test_dashscope_edit_capability_gates_by_model() -> None:
+    assert dashscope_edit_capability({"model": "wan2.7-image-pro"})
+    assert dashscope_edit_capability({"model": "qwen-image-2.0"})
+    assert dashscope_edit_capability({"model": "qwen-image-3.0-pro"})
+    assert dashscope_edit_capability({"model": "qwen-image-edit-plus"})
+    assert not dashscope_edit_capability({"model": "z-image-turbo"})
+    assert not dashscope_edit_capability({"model": "qwen-image-max"})
+
+
+@pytest.mark.asyncio
+async def test_dashscope_qwen3_n_clamped_to_six() -> None:
+    provider = DashScopeProvider()
+    request = await provider.build_request(
+        client=_FakeClient(),
+        config=_make_config(provider_settings={"model": "qwen-image-3.0-pro", "n": 9}),
+    )
+    assert request.payload["parameters"]["n"] == 6
+
+
+@pytest.mark.asyncio
+async def test_dashscope_4k_downgrades_for_non_pro_models() -> None:
+    provider = DashScopeProvider()
+    for model in ("wan2.7-image", "qwen-image-3.0", "z-image-turbo"):
+        request = await provider.build_request(
+            client=_FakeClient(),
+            config=_make_config(resolution="4K", provider_settings={"model": model}),
+        )
+        size = request.payload["parameters"]["size"]
+        assert (
+            size in {"2048*2048", "4096*2304"}
+            or size.startswith("2")
+            or size.startswith("1536")
+        ), f"{model}: {size}"
+        width, height = (int(part) for part in size.split("*"))
+        assert max(width, height) <= 2048, f"{model}: {size}"
+
+
+@pytest.mark.asyncio
+async def test_dashscope_4k_kept_for_wan27_pro() -> None:
+    provider = DashScopeProvider()
+    request = await provider.build_request(
+        client=_FakeClient(),
+        config=_make_config(
+            resolution="4K", provider_settings={"model": "wan2.7-image-pro"}
+        ),
+    )
+    assert request.payload["parameters"]["size"] == "4096*4096"
+
+
+@pytest.mark.asyncio
+async def test_dashscope_z_image_minimal_params() -> None:
+    provider = DashScopeProvider()
+    request = await provider.build_request(
+        client=_FakeClient(),
+        config=_make_config(
+            provider_settings={
+                "model": "z-image-turbo",
+                "watermark": True,
+                "negative_prompt": "模糊",
+                "prompt_extend": True,
+            }
+        ),
+    )
+    params = request.payload["parameters"]
+    assert "watermark" not in params
+    assert "negative_prompt" not in params
+    assert "prompt_extend" not in params
+
+
+@pytest.mark.asyncio
+async def test_dashscope_z_image_reference_raises() -> None:
+    provider = DashScopeProvider()
+    config = _make_config(
+        reference_images=["https://example.com/a.png"],
+        provider_settings={"model": "z-image-turbo"},
+    )
+    with pytest.raises(Exception) as exc_info:
+        await provider._prepare_image_values(client=_FakeClient(), config=config)
+    assert getattr(exc_info.value, "retryable", True) is False
+
+
+@pytest.mark.asyncio
+async def test_dashscope_qwen3_reference_capped_at_three() -> None:
+    provider = DashScopeProvider()
+    refs = [f"https://example.com/{i}.png" for i in range(5)]
+    values = await provider._prepare_image_values(
+        client=_FakeClient(),
+        config=_make_config(
+            reference_images=refs,
+            image_input_mode="url",
+            provider_settings={"model": "qwen-image-3.0-pro"},
+        ),
+    )
+    assert len(values) == 3

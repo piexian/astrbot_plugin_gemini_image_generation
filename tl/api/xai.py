@@ -22,8 +22,30 @@ from .base import ProviderRequest
 
 _SUPPORTED_RESOLUTIONS: frozenset[str] = frozenset({"1k", "2k"})
 _SUPPORTED_RESPONSE_FORMATS: frozenset[str] = frozenset({"url", "b64_json"})
-_MAX_EDIT_IMAGES = 5
+# 官方编辑接口最多 3 张参考图
+_MAX_EDIT_IMAGES = 3
 _MAX_BATCH_IMAGES = 10
+# 官方 aspect_ratio 枚举（2026-08 文档）：不支持 4:5/5:4/21:9
+_SUPPORTED_ASPECT_RATIOS: frozenset[str] = frozenset(
+    {
+        "1:1",
+        "16:9",
+        "9:16",
+        "4:3",
+        "3:4",
+        "3:2",
+        "2:3",
+        "2:1",
+        "1:2",
+        "19.5:9",
+        "9:19.5",
+        "20:9",
+        "9:20",
+        "auto",
+    }
+)
+# quality 仅 low/medium（默认 medium，仅 grok-imagine-image-2.0 支持）
+_SUPPORTED_QUALITIES: frozenset[str] = frozenset({"low", "medium"})
 
 
 class XAIProvider:
@@ -207,7 +229,7 @@ class XAIProvider:
         settings: dict[str, Any],
     ) -> dict[str, Any]:
         model = str(
-            settings.get("model") or config.model or "grok-imagine-image"
+            settings.get("model") or config.model or "grok-imagine-image-2.0"
         ).strip()
         payload: dict[str, Any] = {
             "model": model,
@@ -262,15 +284,17 @@ class XAIProvider:
                 retryable=False,
             )
         if len(ref_images) > _MAX_EDIT_IMAGES:
-            raise APIError(
-                f"xAI /v1/images/edits 最多支持 {_MAX_EDIT_IMAGES} 张参考图",
-                None,
-                "too_many_images",
-                retryable=False,
+            # 与其他 provider 截断约定一致：超限静默截取前 N 张并告警
+            logger.warning(
+                "[xai] 参考图 %d 张超过 edits 上限 %d，已截取前 %d 张",
+                len(ref_images),
+                _MAX_EDIT_IMAGES,
+                _MAX_EDIT_IMAGES,
             )
+            ref_images = ref_images[:_MAX_EDIT_IMAGES]
 
         model = str(
-            settings.get("model") or config.model or "grok-imagine-image"
+            settings.get("model") or config.model or "grok-imagine-image-2.0"
         ).strip()
         payload: dict[str, Any] = {
             "model": model,
@@ -404,7 +428,12 @@ class XAIProvider:
     @staticmethod
     def _normalize_aspect_ratio(value: Any) -> str | None:
         aspect_ratio = str(value or "").strip()
-        return aspect_ratio or None
+        if not aspect_ratio:
+            return None
+        if aspect_ratio not in _SUPPORTED_ASPECT_RATIOS:
+            logger.warning("[xai] aspect_ratio=%s 不受官方支持，已忽略", aspect_ratio)
+            return None
+        return aspect_ratio
 
     @staticmethod
     def _normalize_resolution(value: Any) -> str | None:
@@ -435,7 +464,15 @@ class XAIProvider:
     @staticmethod
     def _normalize_quality(value: Any) -> str | None:
         quality = str(value or "").strip().lower()
-        return quality or None
+        if not quality:
+            return None
+        if quality in _SUPPORTED_QUALITIES:
+            return quality
+        if quality == "high":
+            logger.warning("[xai] quality=high 已不再支持，自动降级为 medium")
+            return "medium"
+        logger.warning("[xai] 忽略不支持的 quality=%s，仅支持 low/medium", value)
+        return None
 
     @staticmethod
     def _extension_from_mime_type(value: Any) -> str | None:

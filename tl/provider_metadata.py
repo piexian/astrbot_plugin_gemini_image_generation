@@ -31,8 +31,6 @@ class ProviderSpec:
 _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
     ProviderSpec("google", "tl.api.google.GoogleProvider"),
     ProviderSpec("openai", "tl.api.openai_compat.OpenAICompatProvider"),
-    ProviderSpec("zai", "tl.api.zai.ZaiProvider"),
-    ProviderSpec("grok2api", "tl.api.grok2api.Grok2ApiProvider"),
     ProviderSpec(
         "agnes_ai",
         "tl.api.agnes_ai.AgnesAIProvider",
@@ -56,6 +54,7 @@ _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
         "stepfun",
         "tl.api.stepfun.StepfunProvider",
         settings_attr="stepfun_settings",
+        edit_capability_path="tl.provider_hooks.stepfun_edit_capability",
         capability_profile_path="tl.provider_capabilities.stepfun_capability",
     ),
     ProviderSpec(
@@ -81,8 +80,9 @@ _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
     ProviderSpec(
         "sensenova",
         "tl.api.sensenova.SenseNovaProvider",
-        supports_image_edit=False,
+        supports_image_edit=True,
         settings_attr="sensenova_settings",
+        edit_capability_path="tl.provider_hooks.sensenova_edit_capability",
         capability_profile_path="tl.provider_capabilities.sensenova_capability",
     ),
     ProviderSpec(
@@ -90,6 +90,7 @@ _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
         "tl.api.dashscope.DashScopeProvider",
         settings_attr="dashscope_settings",
         settings_normalizer_path="tl.provider_hooks.normalize_dashscope_settings",
+        edit_capability_path="tl.provider_hooks.dashscope_edit_capability",
         capability_profile_path="tl.provider_capabilities.dashscope_capability",
         parse_errors_with_provider=True,
     ),

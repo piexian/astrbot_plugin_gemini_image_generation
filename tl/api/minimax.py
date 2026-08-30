@@ -14,7 +14,10 @@ from ..api_types import APIError, ApiRequestConfig
 from ..tl_utils import save_base64_image
 from .base import ProviderRequest
 from .data_uri import format_data_uri, strip_data_uri_prefix
+from .param_utils import ensure_prompt_length
 from .provider_limits import MAX_REFERENCE_IMAGES_MINIMAX
+from .reference_intake import announce_reference_intake
+from .reference_values import normalize_image_mime
 
 _SUPPORTED_ASPECT_RATIO_VALUES: tuple[str, ...] = (
     "1:1",
@@ -56,6 +59,9 @@ _ERROR_TYPES: dict[int, str] = {
 _RETRYABLE_ERROR_CODES: frozenset[int] = frozenset({1002})
 # 向后兼容别名;新代码请直接引用 provider_limits.MAX_REFERENCE_IMAGES_MINIMAX
 _MAX_IMAGES = MAX_REFERENCE_IMAGES_MINIMAX
+
+# 官方 prompt 硬上限（字符）
+_PROMPT_MAX_CHARS: int = 1500
 
 
 class MiniMaxProvider:
@@ -148,8 +154,11 @@ class MiniMaxProvider:
         if image_urls or image_paths:
             return image_urls, image_paths, None, None
 
+        failed_count = ""
+        if isinstance(metadata, dict) and metadata.get("failed_count"):
+            failed_count = f"（{metadata.get('failed_count')} 张因内容安全检查未返回）"
         raise APIError(
-            "MiniMax 未返回图片数据",
+            f"MiniMax 未返回图片数据{failed_count}",
             http_status,
             "no_image",
             retryable=False,
@@ -164,6 +173,12 @@ class MiniMaxProvider:
         is_retry: bool = False,
         retry_error: APIError | None = None,
     ) -> dict[str, Any]:
+        ensure_prompt_length(
+            (config.prompt or "").strip(),
+            max_chars=_PROMPT_MAX_CHARS,
+            provider="MiniMax",
+        )
+
         model = str(settings.get("model") or config.model or "image-01").strip().lower()
         payload: dict[str, Any] = {
             "model": model,
@@ -214,8 +229,8 @@ class MiniMaxProvider:
         payload["prompt_optimizer"] = bool(settings.get("prompt_optimizer", False))
         payload["aigc_watermark"] = bool(settings.get("aigc_watermark", False))
 
-        style = settings.get("style")
-        if isinstance(style, dict) and style and model == "image-01-live":
+        style = self._resolve_style(settings, model)
+        if style:
             payload["style"] = style
 
         subject_reference = await self._build_subject_reference(
@@ -342,6 +357,40 @@ class MiniMaxProvider:
                 image_paths.append(image_path)
                 logger.debug("[minimax] base64 图片已保存: %s", image_path)
 
+    def _resolve_style(
+        self, settings: dict[str, Any], model: str
+    ) -> dict[str, Any] | None:
+        """组装 style；仅 image-01-live 支持，其他模型忽略并记录日志。"""
+        style_type = str(settings.get("style_type") or "").strip()
+        if not style_type:
+            legacy = settings.get("style")
+            if isinstance(legacy, dict) and legacy and model == "image-01-live":
+                return legacy
+            return None
+        if model != "image-01-live":
+            logger.info("[minimax] %s 不支持 style，已忽略", model)
+            return None
+        style: dict[str, Any] = {"style_type": style_type}
+        style_weight = self._coerce_style_weight(settings.get("style_weight"))
+        if style_weight is not None:
+            style["style_weight"] = style_weight
+        return style
+
+    @staticmethod
+    def _coerce_style_weight(value: Any) -> float | None:
+        """画风权重合法范围 (0, 1]；非法或缺省返回 None（交服务端默认 0.8）。"""
+        if value in (None, ""):
+            return None
+        try:
+            weight = float(value)
+        except (TypeError, ValueError):
+            logger.warning("[minimax] style_weight=%r 无效，已忽略", value)
+            return None
+        if not 0 < weight <= 1:
+            logger.warning("[minimax] style_weight=%s 超出 (0,1]，已忽略", weight)
+            return None
+        return weight
+
     async def _build_subject_reference(
         self,
         *,
@@ -353,9 +402,12 @@ class MiniMaxProvider:
         if not ref_images:
             return []
 
+        announce_reference_intake(
+            ref_images, MAX_REFERENCE_IMAGES_MINIMAX, log_prefix="[minimax] "
+        )
         reference_type = str(settings.get("subject_reference_type") or "character")
         references: list[dict[str, str]] = []
-        for image_input in ref_images:
+        for image_input in ref_images[:MAX_REFERENCE_IMAGES_MINIMAX]:
             image_file = await self._to_image_file(
                 client, config, image_input, settings
             )
@@ -392,7 +444,12 @@ class MiniMaxProvider:
         if is_url and mode in {"auto", "url"}:
             return image_str
         if image_str.startswith("data:image/") and ";base64," in image_str:
-            return image_str
+            b64_data, mime = normalize_image_mime(
+                strip_data_uri_prefix(image_str),
+                image_str.split(";", 1)[0].removeprefix("data:"),
+                error_label="minimax",
+            )
+            return format_data_uri(b64_data, mime)
 
         mime_type, b64_data = await client._normalize_reference_image_input(
             image_str,
@@ -406,7 +463,9 @@ class MiniMaxProvider:
                 retryable=False,
             )
 
-        mime = mime_type or "image/png"
+        b64_data, mime = normalize_image_mime(
+            b64_data, mime_type or "image/png", error_label="minimax"
+        )
         return format_data_uri(b64_data, mime)
 
     @staticmethod

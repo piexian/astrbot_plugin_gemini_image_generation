@@ -4,6 +4,29 @@
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-08-30
+
+### Added
+
+- **DashScope 适配 `qwen-image-3.0` / `z-image-turbo`**：qwen-image-3.0 默认模型（`n`≤6、参考图≤3），z-image-turbo 纯文生图（不支持参考图/watermark/negative_prompt，带参考图直接报错）；4K 仅 `wan2.7-image-pro` 文生图支持，带参考图及其余模型自动降档 2K（`size_mode=custom` 为显式覆盖，不参与降档）。
+- **SenseNova 适配 `sensenova-u1.5-lite` 并设为默认**：支持文生图与 `/v1/images/edits` 编辑，按分辨率档位+长宽比换算 32 倍数尺寸（单边触顶 4096 时按比例重算另一维，比例不失真）；`sensenova-u1-fast` 保留为纯文生图固定尺寸模型。
+- **MiniMax 画风配置**：`image-01-live` 支持 `style_type`（漫画/元气/中世纪/水彩）与 `style_weight`；参考图 MIME 统一归一化（GIF/WebP/BMP 转 PNG，源与转码产物均限 10MB）。
+- **xAI 对齐 `grok-imagine-image-2.0`**：`quality` 白名单 low/medium（high 自动降级），`aspect_ratio` 采用官方新枚举（新增 2:1/1:2/19.5:9/9:19.5/20:9/9:20/auto，移除 4:5/5:4/21:9），编辑最多 3 张参考图（超出截取前 3 张）。
+- **参数按模型路由**：capability profile 按模型声明参数支持（如 negative_prompt 仅 step-image-edit 系列、watermark 不含 z-image），LLM 工具显式参数只路由到真正支持的候选。
+
+### Changed
+
+- **StepFun 默认 `step-2x-large`**：六档官方尺寸（256~1024 正方形 + 1280x800/800x1280），`steps`/`cfg_scale` 非零值分别钳位到 [1,50]/[1.0,10.0]，prompt 超 512 字符直接报错。
+- **MiniMax 对齐官方限制**：prompt 上限 1500 字符（超限报错），参考图上限 9 张（超出截取）。
+
+### Removed
+
+- **移除 `zai` / `grok2api` 供应商**：相关模板与适配器下线，配置中的旧条目会被忽略；相对路径图片、临时缓存 URL 等网关兼容逻辑沉淀为共享辅助（`tl/api/compat_utils.py`）供后续网关型供应商复用。
+
+### Security
+
+- QQ 图床域名校验改为精确后缀匹配，防止伪造域名绕过；收紧 CI 工作流权限。
+
 ## [2.6.0] - 2026-08-24
 
 ### Added
@@ -26,6 +49,9 @@
 ### Removed
 
 - 删除 `cache_settings` 配置分组（`cache_ttl_minutes` / `cleanup_interval_minutes` / `max_cache_files`）及对应的定时清理任务；旧配置键会被静默忽略，不影响启动。
+
+<details>
+<summary><strong>2.4.x ~ 1.10.x 历史版本</strong>（点击展开）</summary>
 
 ## [2.4.2] - 2026-08-05
 
@@ -274,6 +300,7 @@
 - 文档重构：README 精简为概览入口，详细配置参考、使用指南和故障排除拆分至 `docs/` 目录
 - 新增 `docs/config.md`（完整配置参考）、`docs/usage.md`（使用指南）、`docs/troubleshooting.md`（故障排除与配置迁移说明）
 - 扩展 `tl/README.md` 为完整的内部模块 API 文档索引
+</details>
 
 <details>
 <summary><strong>1.9.x 历史版本</strong>（点击展开）</summary>

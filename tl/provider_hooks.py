@@ -358,3 +358,38 @@ def normalize_dashscope_settings(settings: dict[str, Any]) -> None:
         except (TypeError, ValueError):
             _logger().warning("[配置加载] dashscope.n=%r 无效，已回退为 1", n_raw)
             settings["n"] = 1
+
+
+def _make_model_prefix_edit_gate(*capable_prefixes: str):
+    """构造按模型前缀判定编辑能力的 hook（供 edit_capability_path 使用）。"""
+
+    def gate(settings: dict[str, Any]) -> bool:
+        model = str(settings.get("model") or "").strip().lower()
+        return model.startswith(capable_prefixes)
+
+    return gate
+
+
+_stepfun_edit_gate = _make_model_prefix_edit_gate("step-image-edit")
+_sensenova_edit_gate = _make_model_prefix_edit_gate("sensenova-u1.5")
+_dashscope_edit_gate = _make_model_prefix_edit_gate(
+    "wan2.7",
+    "qwen-image-2.0",
+    "qwen-image-3.0",
+    "qwen-image-edit",
+)
+
+
+def stepfun_edit_capability(settings: dict[str, Any]) -> bool:
+    """仅 step-image-edit 系列支持 /v1/images/edits。"""
+    return _stepfun_edit_gate(settings)
+
+
+def sensenova_edit_capability(settings: dict[str, Any]) -> bool:
+    """仅 sensenova-u1.5 系列支持 /v1/images/edits。"""
+    return _sensenova_edit_gate(settings)
+
+
+def dashscope_edit_capability(settings: dict[str, Any]) -> bool:
+    """wan2.7 / qwen-image-2.0 / qwen-image-3.0 / qwen-image-edit 系列支持图像输入。"""
+    return _dashscope_edit_gate(settings)

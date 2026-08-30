@@ -10,8 +10,6 @@ from tl.provider_loader import load_callable
 _PROVIDER_MODULES = (
     "tl.api.google",
     "tl.api.openai_compat",
-    "tl.api.zai",
-    "tl.api.grok2api",
     "tl.api.agnes_ai",
     "tl.api.xai",
     "tl.api.minimax",
