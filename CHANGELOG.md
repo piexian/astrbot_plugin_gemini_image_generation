@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-08-30
+
 ### Added
 
 - **DashScope 适配 `qwen-image-3.0` / `z-image-turbo`**：qwen-image-3.0 默认模型（`n`≤6、参考图≤3），z-image-turbo 纯文生图（不支持参考图/watermark/negative_prompt，带参考图直接报错）；4K 仅 `wan2.7-image-pro` 文生图支持，带参考图及其余模型自动降档 2K（`size_mode=custom` 为显式覆盖，不参与降档）。
@@ -47,6 +49,9 @@
 ### Removed
 
 - 删除 `cache_settings` 配置分组（`cache_ttl_minutes` / `cleanup_interval_minutes` / `max_cache_files`）及对应的定时清理任务；旧配置键会被静默忽略，不影响启动。
+
+<details>
+<summary><strong>2.4.x ~ 1.10.x 历史版本</strong>（点击展开）</summary>
 
 ## [2.4.2] - 2026-08-05
 
@@ -295,6 +300,7 @@
 - 文档重构：README 精简为概览入口，详细配置参考、使用指南和故障排除拆分至 `docs/` 目录
 - 新增 `docs/config.md`（完整配置参考）、`docs/usage.md`（使用指南）、`docs/troubleshooting.md`（故障排除与配置迁移说明）
 - 扩展 `tl/README.md` 为完整的内部模块 API 文档索引
+</details>
 
 <details>
 <summary><strong>1.9.x 历史版本</strong>（点击展开）</summary>
