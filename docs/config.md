@@ -313,7 +313,7 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 其他限制与防护：
 
 - prompt 官方上限 1500 字符，超限直接报错（不发起注定失败的服务端调用）
-- `image_file` 官方仅支持 JPG/JPEG/PNG 且小于 10MB：非白名单格式（GIF/WebP/BMP 等）由插件解码后转码为 PNG（动图取首帧），超过 10MB 直接报错
+- `image_file` 官方仅支持 JPG/JPEG/PNG 且小于 10MB：非白名单格式（GIF/WebP/BMP 等）由插件解码后转码为 PNG（动图取首帧），源图或转码产物超过 10MB 直接报错
 - 全部图片被内容安全拦截时，错误信息会附带 `failed_count` 拦截数量
 
 供应商条目的 `resolution` 和 `aspect_ratio` 的适配规则：
@@ -347,8 +347,8 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 | `response_format` | `url` | `url` 返回临时签名链接（`res.stepfun.com`），`b64_json` 返回 base64 并由插件落盘 |
 | `steps` | `0` | 采样步数，`0` 表示不传（服务端默认 edit-2 `8` / 2x-large `50`）；非零值钳位到 [1, 50] |
 | `cfg_scale` | `0` | 提示词引导强度，`0` 表示不传（服务端默认 edit-2 `1.0` / 2x-large `6`）；非零值钳位到 [1.0, 10.0] |
-| `negative_prompt` | `""` | 负向提示词，留空不传；仅 `step-image-edit-2` 支持，其他模型自动忽略并记录日志 |
-| `text_mode` | `false` | 是否启用 `text_mode`；仅 `step-image-edit-2` 支持，其他模型自动忽略并记录日志 |
+| `negative_prompt` | `""` | 负向提示词，留空不传；仅 `step-image-edit` 系列支持，其他模型自动忽略并记录日志 |
+| `text_mode` | `false` | 是否启用 `text_mode`；仅 `step-image-edit` 系列支持，其他模型自动忽略并记录日志 |
 | `seed` | `0` | 固定随机种子，`0` 表示不传 |
 | `proxy` | - | 独立代理地址，优先级高于全局代理和环境变量 |
 
