@@ -178,10 +178,9 @@ def _build_tool_description(plugin: Any) -> str:
         "判断逻辑：对话中出现'改成'、'变成'、'基于'、'修改'、'改图'等词时，"
         "设置 use_reference_images=true；当前请求提到'根据我'、'我的头像'或@某人时，"
         "设置 use_reference_images=true 和 include_user_avatar=true。"
-        "需要控制输出分辨率时设置 resolution（仅限 1K/2K/4K 大写）；"
-        "需要控制输出比例时设置 aspect_ratio（仅限 "
-        + "/".join(ASPECT_RATIO_OPTIONS)
-        + "，极端/宽幅比例仅部分模型支持，不支持时自动忽略）。"
+        "需要控制输出分辨率或长宽比时设置 resolution / aspect_ratio；"
+        "各渠道与模型支持的具体取值不要猜测，先调用 gemini_image_provider_models 查询，"
+        "不支持的比例会被渠道忽略并记录日志。"
         "【重要】当当前请求明确要求将生成的图片发到论坛/AstrBook时，设置 for_forum=true。"
         "此时工具会等待图片生成完成后返回图片路径，你需要使用 upload_image 工具将图片上传到论坛图床获取URL，"
         "然后在发帖或回复时使用 Markdown 格式 ![描述](URL) 插入图片。"
@@ -195,7 +194,7 @@ def _build_tool_parameters(plugin: Any) -> dict[str, Any]:
     properties["resolution"] = {
         "type": "string",
         "description": (
-            "输出分辨率，可选；不传则使用插件配置或供应商默认值。仅支持：1K、2K、4K（必须大写英文）"
+            "输出分辨率，可选；不传则使用插件配置或供应商默认值。具体取值先用 gemini_image_provider_models 查询。"
         ),
         "enum": list(RESOLUTION_OPTIONS),
     }
@@ -203,9 +202,7 @@ def _build_tool_parameters(plugin: Any) -> dict[str, Any]:
         "type": "string",
         "description": (
             "输出长宽比，可选；不传则使用插件配置或供应商默认值。"
-            "仅支持："
-            + "、".join(ASPECT_RATIO_OPTIONS)
-            + "（极端/宽幅比例仅部分模型支持，不支持时由渠道忽略）"
+            "各模型支持的具体取值先用 gemini_image_provider_models 查询，不支持的比例由渠道忽略。"
         ),
         "enum": list(ASPECT_RATIO_OPTIONS),
     }
