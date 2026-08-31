@@ -29,6 +29,7 @@ from .openai_image_size import (
     validate_custom_size,
 )
 from .provider_capabilities import (
+    SUPPORTED_ASPECT_RATIOS,
     routing_description,
     routing_mode,
     select_candidates,
@@ -50,18 +51,7 @@ if TYPE_CHECKING:
 
 # 参数枚举常量（工具定义和验证共用）
 RESOLUTION_OPTIONS = ("1K", "2K", "4K")
-ASPECT_RATIO_OPTIONS = (
-    "1:1",
-    "16:9",
-    "4:3",
-    "3:2",
-    "9:16",
-    "4:5",
-    "5:4",
-    "21:9",
-    "3:4",
-    "2:3",
-)
+ASPECT_RATIO_OPTIONS = SUPPORTED_ASPECT_RATIOS
 VALID_RESOLUTIONS = set(RESOLUTION_OPTIONS)
 VALID_ASPECT_RATIOS = set(ASPECT_RATIO_OPTIONS)
 
@@ -189,7 +179,9 @@ def _build_tool_description(plugin: Any) -> str:
         "设置 use_reference_images=true；当前请求提到'根据我'、'我的头像'或@某人时，"
         "设置 use_reference_images=true 和 include_user_avatar=true。"
         "需要控制输出分辨率时设置 resolution（仅限 1K/2K/4K 大写）；"
-        "需要控制输出比例时设置 aspect_ratio（仅限 1:1/16:9/4:3/3:2/9:16/4:5/5:4/21:9/3:4/2:3）。"
+        "需要控制输出比例时设置 aspect_ratio（仅限 "
+        + "/".join(ASPECT_RATIO_OPTIONS)
+        + "，极端/宽幅比例仅部分模型支持，不支持时自动忽略）。"
         "【重要】当当前请求明确要求将生成的图片发到论坛/AstrBook时，设置 for_forum=true。"
         "此时工具会等待图片生成完成后返回图片路径，你需要使用 upload_image 工具将图片上传到论坛图床获取URL，"
         "然后在发帖或回复时使用 Markdown 格式 ![描述](URL) 插入图片。"
@@ -211,7 +203,9 @@ def _build_tool_parameters(plugin: Any) -> dict[str, Any]:
         "type": "string",
         "description": (
             "输出长宽比，可选；不传则使用插件配置或供应商默认值。"
-            "仅支持：1:1、16:9、4:3、3:2、9:16、4:5、5:4、21:9、3:4、2:3"
+            "仅支持："
+            + "、".join(ASPECT_RATIO_OPTIONS)
+            + "（极端/宽幅比例仅部分模型支持，不支持时由渠道忽略）"
         ),
         "enum": list(ASPECT_RATIO_OPTIONS),
     }

@@ -13,7 +13,9 @@ TEXT_TO_IMAGE = "text_to_image"
 IMAGE_TO_IMAGE = "image_to_image"
 
 _RESOLUTIONS = ["1K", "2K", "4K"]
-_ASPECT_RATIOS = [
+# 全渠道比例并集：Gemini 3.1 Flash 极端比例 + xAI 官方宽幅枚举。
+# 不支持某比例的渠道由 provider 层钳制/忽略，路由层不做按值过滤。
+SUPPORTED_ASPECT_RATIOS: tuple[str, ...] = (
     "1:1",
     "16:9",
     "4:3",
@@ -24,7 +26,18 @@ _ASPECT_RATIOS = [
     "21:9",
     "3:4",
     "2:3",
-]
+    "1:4",
+    "1:8",
+    "4:1",
+    "8:1",
+    "2:1",
+    "1:2",
+    "19.5:9",
+    "9:19.5",
+    "20:9",
+    "9:20",
+)
+_ASPECT_RATIOS = list(SUPPORTED_ASPECT_RATIOS)
 
 
 def _model(candidate: Any) -> str:
@@ -98,6 +111,9 @@ def _profile(
 
 
 def xai_capability(candidate: Any) -> dict[str, Any]:
+    # 官方白名单与全局并集不同（含 auto，无 4:5/5:4/21:9），按渠道精确声明
+    from .api.xai import SUPPORTED_ASPECT_RATIOS
+
     return _profile(
         candidate,
         native_batch_limit=10,
@@ -106,7 +122,12 @@ def xai_capability(candidate: Any) -> dict[str, Any]:
                 "type": "string",
                 "enum": ["low", "medium"],
                 "default_source": "provider_config",
-            }
+            },
+            "aspect_ratio": {
+                "type": "string",
+                "enum": sorted(SUPPORTED_ASPECT_RATIOS),
+                "default_source": "provider_config",
+            },
         },
         request_setting_map={"quality": "quality", "image_count": "n"},
     )
