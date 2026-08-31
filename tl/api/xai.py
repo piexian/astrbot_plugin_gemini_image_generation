@@ -26,7 +26,7 @@ _SUPPORTED_RESPONSE_FORMATS: frozenset[str] = frozenset({"url", "b64_json"})
 _MAX_EDIT_IMAGES = 3
 _MAX_BATCH_IMAGES = 10
 # 官方 aspect_ratio 枚举（2026-08 文档）：不支持 4:5/5:4/21:9
-_SUPPORTED_ASPECT_RATIOS: frozenset[str] = frozenset(
+SUPPORTED_ASPECT_RATIOS: frozenset[str] = frozenset(
     {
         "1:1",
         "16:9",
@@ -430,7 +430,7 @@ class XAIProvider:
         aspect_ratio = str(value or "").strip()
         if not aspect_ratio:
             return None
-        if aspect_ratio not in _SUPPORTED_ASPECT_RATIOS:
+        if aspect_ratio not in SUPPORTED_ASPECT_RATIOS:
             logger.warning("[xai] aspect_ratio=%s 不受官方支持，已忽略", aspect_ratio)
             return None
         return aspect_ratio

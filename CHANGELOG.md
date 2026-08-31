@@ -2,7 +2,7 @@
 
 > **升级提示**：v1.9.0 以后的配置文件格式不兼容旧版本。升级后如遇配置模板显示错误，请查看 [配置迁移说明](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/troubleshooting.md#配置迁移说明)。
 
-## [Unreleased]
+## [2.7.5] - 2026-08-31
 
 ### Added
 
@@ -11,6 +11,13 @@
 ### Changed
 
 - **Google 渠道默认模型修正**：`google` 模板默认模型由已不存在的 `gemini-3-pro-image-preview` 改为 `gemini-3-pro-image`；长宽比选项补充 `1:4`/`1:8`/`4:1`/`8:1`（仅 Gemini 3.1 Flash Image 支持）。仅影响新增配置的默认值，已保存配置不受影响。
+- **LLM 工具比例枚举并集化**：`aspect_ratio` 全局枚举（工具 schema、校验、文案）改为各渠道官方比例并集（新增 Gemini 极端比例与 xAI 宽幅枚举），LLM 调用可请求 `1:4`/`1:8`/`4:1`/`8:1`/`2:1`/`1:2`/`19.5:9`/`9:19.5`/`20:9`/`9:20`；xAI 能力档案改按官方白名单精确声明（含 `auto`，不含 `4:5`/`5:4`/`21:9`）。
+
+### Fixed
+
+- **轮询表 openai 选项**：修复新增 `gemini_interactions` 模板时误删 `provider_polling` 选项列表中 `openai` 的问题。
+- **gemini_interactions 参数门控**：`image_search` / `thinking_level` 仅对 `gemini-3.1-flash-image` 下发，lite 一律不启用搜索接地，不支持时忽略并记录日志。
+- **gemini_interactions 响应解析**：thought 中间帧不再交付（仅取最后一帧最终渲染图）；`uri` 图像块先下载落盘再进入本地路径列表，不再把远程 URL 当文件路径；错误消息剔除原始响应预览，思维链内容只写日志不外发。
 
 ## [2.7.0] - 2026-08-30
 
