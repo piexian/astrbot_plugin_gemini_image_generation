@@ -7,10 +7,10 @@
       "provider_polling": {
         "description": "供应商轮询顺序",
         "type": "list",
-        "hint": "按列表从上到下尝试生成。请选择并按优先级排列：google / openai / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova / dashscope。留空时按配置表中的有效供应商顺序尝试。",
+        "hint": "按列表从上到下尝试生成。请选择并按优先级排列：google / gemini_interactions / openai / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova / dashscope。留空时按配置表中的有效供应商顺序尝试。",
         "options": [
           "google",
-          "openai",
+          "gemini_interactions",
           "agnes_ai",
           "xai",
           "minimax",
@@ -84,8 +84,8 @@
               "model": {
                 "description": "模型名称",
                 "type": "string",
-                "hint": "Gemini 图像生成模型名称",
-                "default": "gemini-3-pro-image-preview"
+                "hint": "Gemini 图像生成模型名称，如 gemini-3-pro-image / gemini-2.5-flash-image",
+                "default": "gemini-3-pro-image"
               },
               "api_base": {
                 "description": "API 端点地址",
@@ -113,7 +113,7 @@
               "aspect_ratio": {
                 "description": "长宽比",
                 "type": "string",
-                "hint": "该供应商默认长宽比。快速模式传入覆盖值时优先使用快速模式。",
+                "hint": "该供应商默认长宽比。1:4/1:8/4:1/8:1 仅 Gemini 3.1 Flash Image 支持，旧端点其余模型可能报错。快速模式传入覆盖值时优先使用快速模式。",
                 "default": "1:1",
                 "options": [
                   "1:1",
@@ -125,7 +125,11 @@
                   "5:4",
                   "21:9",
                   "3:4",
-                  "2:3"
+                  "2:3",
+                  "1:4",
+                  "1:8",
+                  "4:1",
+                  "8:1"
                 ]
               },
               "max_reference_images": {
@@ -163,6 +167,128 @@
                 "type": "bool",
                 "hint": "启用后该 Google/Gemini 候选可使用 Google 搜索接地。仅确认模型支持时开启。",
                 "default": false
+              }
+            }
+          },
+          "gemini_interactions": {
+            "description": "Gemini Interactions API 覆盖配置",
+            "hint": "Gemini 官方 Interactions 端点（Nano Banana 系列：gemini-3.1-flash-image / gemini-3-pro-image / gemini-3.1-flash-lite-image）",
+            "items": {
+              "enabled": {
+                "description": "启用此条配置",
+                "type": "bool",
+                "hint": "临时关闭本条模型配置而不删除它；关闭后该条不参与轮询和生图，同渠道其他条目不受影响。",
+                "default": true
+              },
+              "priority": {
+                "description": "优先级",
+                "type": "int",
+                "hint": "同类型供应商配置多条时按优先级从高到低尝试；相同优先级按配置表从上到下尝试。",
+                "default": 0
+              },
+              "api_keys": {
+                "description": "API Key 列表",
+                "type": "list",
+                "hint": "多个 API Key，支持轮换使用",
+                "default": []
+              },
+              "daily_limit_per_key": {
+                "description": "每个 Key 每日限额",
+                "type": "int",
+                "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
+                "default": 0
+              },
+              "model_alias": {
+                "description": "模型别名（可选）",
+                "type": "string",
+                "hint": "供指令和 LLM 工具选择模型使用；同一别名可在多个供应商中复用。实际请求仍发送原始模型名。",
+                "default": ""
+              },
+              "model": {
+                "description": "模型名称",
+                "type": "string",
+                "hint": "如 gemini-3.1-flash-image（主力）/ gemini-3-pro-image / gemini-3.1-flash-lite-image（仅 1K）",
+                "default": "gemini-3.1-flash-image"
+              },
+              "api_base": {
+                "description": "API 端点地址",
+                "type": "string",
+                "hint": "Google AI API 地址，留空使用默认值；缺版本前缀时自动补 /v1beta",
+                "default": ""
+              },
+              "proxy": {
+                "description": "代理地址",
+                "type": "string",
+                "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式。优先级高于全局代理和环境变量",
+                "default": ""
+              },
+              "resolution": {
+                "description": "图像分辨率",
+                "type": "string",
+                "hint": "该供应商默认图像分辨率。gemini-3.1-flash-lite-image 仅支持 1K，超出自动降级。快速模式传入覆盖值时优先使用快速模式。",
+                "default": "1K",
+                "options": [
+                  "1K",
+                  "2K",
+                  "4K"
+                ]
+              },
+              "aspect_ratio": {
+                "description": "长宽比",
+                "type": "string",
+                "hint": "该供应商默认长宽比。1:4/1:8/4:1/8:1 仅 gemini-3.1-flash-image 支持，其他模型自动忽略。快速模式传入覆盖值时优先使用快速模式。",
+                "default": "1:1",
+                "options": [
+                  "1:1",
+                  "16:9",
+                  "4:3",
+                  "3:2",
+                  "9:16",
+                  "4:5",
+                  "5:4",
+                  "21:9",
+                  "3:4",
+                  "2:3",
+                  "1:4",
+                  "1:8",
+                  "4:1",
+                  "8:1"
+                ]
+              },
+              "max_reference_images": {
+                "description": "最大参考图片数量",
+                "type": "int",
+                "hint": "单次请求最多使用的参考图片数量，官方上限 14；超过后按顺序截取。",
+                "default": 14
+              },
+              "enable_text_response": {
+                "description": "启用文本响应",
+                "type": "bool",
+                "hint": "启用后同时返回图片与文本说明；关闭时仅返回图片。",
+                "default": false
+              },
+              "enable_grounding": {
+                "description": "启用 Google 搜索接地",
+                "type": "bool",
+                "hint": "启用后可使用 Google 搜索接地；gemini-3.1-flash-lite-image 不支持。仅确认模型支持时开启。",
+                "default": false
+              },
+              "image_search": {
+                "description": "启用谷歌图搜接地",
+                "type": "bool",
+                "hint": "在搜索接地中加入 Image Search（仅 gemini-3.1-flash-image 支持）；需先启用搜索接地。",
+                "default": false
+              },
+              "thinking_level": {
+                "description": "思考等级",
+                "type": "string",
+                "hint": "图像模型思考等级，仅 gemini-3.1-flash-image 支持；留空使用模型默认（minimal）。",
+                "default": "",
+                "options": [
+                  "",
+                  "minimal",
+                  "high"
+                ]
               }
             }
           },

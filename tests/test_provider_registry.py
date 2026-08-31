@@ -9,6 +9,7 @@ from tl.provider_loader import load_callable
 
 _PROVIDER_MODULES = (
     "tl.api.google",
+    "tl.api.gemini_interactions",
     "tl.api.openai_compat",
     "tl.api.agnes_ai",
     "tl.api.xai",

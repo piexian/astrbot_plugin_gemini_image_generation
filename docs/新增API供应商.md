@@ -17,6 +17,7 @@ tl/
     ├── openai_compat.py    # OpenAI Chat Completions 兼容基类
     ├── openai_images.py    # OpenAI Images 原生端点
     ├── google.py           # Google/Gemini 官方接口
+    ├── gemini_interactions.py  # Gemini Interactions API（Nano Banana 系列）
     ├── agnes_ai.py         # Agnes AI 图片生成接口
     ├── xai.py              # xAI Images 官方接口
     ├── minimax.py          # MiniMax 图片生成接口
@@ -36,6 +37,7 @@ tl/
 | `api_type` | Provider | 说明 |
 |------------|----------|------|
 | `google` | `GoogleProvider` | Google/Gemini 官方接口 |
+| `gemini_interactions` | `GeminiInteractionsProvider` | Gemini Interactions API（Nano Banana 系列） |
 | `openai` | `OpenAICompatProvider` | OpenAI Chat Completions 兼容格式（默认兜底） |
 | `agnes_ai` | `AgnesAIProvider` | Agnes AI `/v1/images/generations` |
 | `xai` | `XAIProvider` | xAI 官方图像接口 |
@@ -140,6 +142,7 @@ class MyProvider(OpenAICompatProvider):
 - `minimax.py`：MiniMax `/v1/image_generation`、`subject_reference` 图生图、`image_base64` / `image_urls` 响应解析。
 - `doubao.py`：火山 Ark 请求结构、尺寸映射、组图参数、Seedream 5.0 Pro 能力限制。
 - `google.py`：Google/Gemini 官方协议。
+- `gemini_interactions.py`：Gemini Interactions API 协议（`input` 内容块 + `response_format`）。
 
 ## 公共辅助模块（推荐复用）
 

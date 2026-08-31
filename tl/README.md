@@ -229,6 +229,17 @@ Google/Gemini 官方 provider。
 | `_prepare_payload()` | 组装 `contents`、参考图和 generation config |
 | `_parse_gresponse()` | 从响应中提取图片、文本和 `thought_signature` |
 
+### `api/gemini_interactions.py`
+
+Gemini Interactions API（Nano Banana 系列）provider。
+
+| 接口 | 说明 |
+|------|------|
+| `GeminiInteractionsProvider.build_request()` | 构造 `/v1beta/interactions` 请求（`input` 内容块、`store: false`） |
+| `GeminiInteractionsProvider.parse_response()` | 解析 `steps[]` 中 model_output/thought 的图像与文本块 |
+| `_normalize_params()` | 模型分层钳制：lite 仅 1K，极端比例仅 3.1 Flash Image |
+| `_build_response_format()` | 按 `enable_text_response` 生成单对象或数组形式 |
+
 ### `api/openai_images.py`
 
 OpenAI Images 原生端点 provider。

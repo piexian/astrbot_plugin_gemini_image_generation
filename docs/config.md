@@ -57,10 +57,10 @@ google / openai_images / minimax
 支持的模板：
 
 ```text
-google / openai / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova / dashscope
+google / gemini_interactions / openai / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova / dashscope
 ```
 
-下方 `doubao_settings`、`openai_images_settings`、`agnes_ai_settings`、`xai_settings`、`minimax_settings`、`stepfun_settings`、`sensenova_settings`、`dashscope_settings` 章节对应这些模板的专用字段。代码中的同名 `*_settings` 字段仅作为兼容旧调用的首个候选投影；多候选场景以 `provider_settings.provider_overrides` 和运行时派生的 `provider_settings_by_type` 为准。
+下方 `doubao_settings`、`openai_images_settings`、`agnes_ai_settings`、`xai_settings`、`minimax_settings`、`stepfun_settings`、`sensenova_settings`、`dashscope_settings` 章节对应这些模板的专用字段；`gemini_interactions` 无历史投影字段，全部配置都在模板内。代码中的同名 `*_settings` 字段仅作为兼容旧调用的首个候选投影；多候选场景以 `provider_settings.provider_overrides` 和运行时派生的 `provider_settings_by_type` 为准。
 
 ## image_generation_settings
 
@@ -517,3 +517,26 @@ preset 模式尺寸换算表（分辨率档位 × 长宽比 → 官方推荐像�
 - 文生图：<https://platform.qianwenai.com/docs/developer-guides/image-generation/text-to-image>
 - 图像编辑：<https://platform.qianwenai.com/docs/developer-guides/image-generation/wan-image-editing>
 - Token Plan 接入：<https://platform.qianwenai.com/docs/token-plan/best-practices/multimodal-generation>
+
+## gemini_interactions（Gemini Interactions API 专用配置）
+
+Gemini 官方 Interactions 端点（2026-06 GA），承载 Nano Banana 系列模型；与 legacy `google`（generateContent）并存，按需二选一或同时配置。
+
+模板字段：
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `model` | `gemini-3.1-flash-image` | 推荐 `gemini-3.1-flash-image` / `gemini-3-pro-image` / `gemini-3.1-flash-lite-image` |
+| `resolution` | `1K` | `1K`/`2K`/`4K`；lite 仅支持 `1K`，超出自动降级 |
+| `aspect_ratio` | `1:1` | 含 `1:4`/`1:8`/`4:1`/`8:1`，极端比例仅 3.1 Flash Image 支持，其他模型自动忽略 |
+| `max_reference_images` | `14` | 官方上限 14 张，超出截取 |
+| `enable_text_response` | `false` | 开启后 `response_format` 传数组，同时返回文本与图片 |
+| `enable_grounding` | `false` | 启用 Google 搜索接地（lite 不支持） |
+| `image_search` | `false` | 接地中加入 Image Search（仅 3.1 Flash Image 支持） |
+| `thinking_level` | 空 | `minimal`/`high`，仅 3.1 Flash Image 支持，留空用模型默认 |
+
+行为说明：
+
+- 请求固定 `store: false`，请求内容不在 Google 侧留存；Interactions API 暂不支持自定义 safety settings，配置了也会忽略并记录日志。
+- 自定义 `api_base` 缺版本前缀时自动补 `/v1beta`。
+- 官方文档：<https://ai.google.dev/gemini-api/docs/image-generation>；Imagen 系列已于 2026-08-17 停服，请勿再配置 Imagen 模型。

@@ -9,6 +9,8 @@ from typing import Final
 
 # 参考图最大数量(含编辑/识图/续图场景)。
 MAX_REFERENCE_IMAGES_GOOGLE: Final[int] = 14
+# Interactions API 官方上限 14 张（lite 14 / flash 10+4 / pro 6+5+3 按模型分层）
+MAX_REFERENCE_IMAGES_GEMINI_INTERACTIONS: Final[int] = 14
 MAX_REFERENCE_IMAGES_DOUBAO: Final[int] = 14
 MAX_REFERENCE_IMAGES_DOUBAO_SEEDREAM_5_PRO: Final[int] = 10
 MAX_REFERENCE_IMAGES_OPENAI_COMPAT: Final[int] = 6

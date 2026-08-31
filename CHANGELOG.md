@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- **新增 `gemini_interactions` 供应商**：对接 Gemini 官方 Interactions 端点（`/v1beta/interactions`，2026-06 GA），承载 Nano Banana 系列（默认 `gemini-3.1-flash-image`，支持 `gemini-3-pro-image` / `gemini-3.1-flash-lite-image`）。支持 `image_search` 谷歌图搜接地与 `thinking_level`（minimal/high）；请求固定 `store: false`；按模型分层钳制（lite 仅 1K，`1:4`/`1:8`/`4:1`/`8:1` 极端比例仅 3.1 Flash Image）；Interactions 暂不支持自定义 safety settings，配置时忽略并记录日志。与 legacy `google` 渠道并存，互不影响。
+
+### Changed
+
+- **Google 渠道默认模型修正**：`google` 模板默认模型由已不存在的 `gemini-3-pro-image-preview` 改为 `gemini-3-pro-image`；长宽比选项补充 `1:4`/`1:8`/`4:1`/`8:1`（仅 Gemini 3.1 Flash Image 支持）。仅影响新增配置的默认值，已保存配置不受影响。
+
 ## [2.7.0] - 2026-08-30
 
 ### Added
