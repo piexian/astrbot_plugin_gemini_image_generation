@@ -62,11 +62,11 @@ class GeminiInteractionsProvider:
             ),
         }
 
-        tools = self._build_tools(config)
+        tools = self._build_tools(model, config)
         if tools:
             payload["tools"] = tools
 
-        generation_config = self._build_generation_config(config)
+        generation_config = self._build_generation_config(model, config)
         if generation_config:
             payload["generation_config"] = generation_config
 
@@ -107,7 +107,7 @@ class GeminiInteractionsProvider:
         image_urls: list[str] = []
         image_paths: list[str] = []
         text_chunks: list[str] = []
-        thought_fallback: list[tuple[str, str]] = []
+        last_thought_image: tuple[str, str, bool] | None = None
 
         for step in response_data.get("steps") or []:
             if not isinstance(step, dict):
@@ -125,6 +125,7 @@ class GeminiInteractionsProvider:
             for block in blocks:
                 if not isinstance(block, dict):
                     continue
+                # 仅 model_output 文本对用户可见，thought 思维链文本一律丢弃
                 if (
                     step_type == "model_output"
                     and block.get("type") == "text"
@@ -132,28 +133,51 @@ class GeminiInteractionsProvider:
                 ):
                     text_chunks.append(block["text"])
                     continue
-                    text_chunks.append(block["text"])
-                    continue
                 if block.get("type") != "image":
                     continue
-                data = block.get("data")
                 mime_type = block.get("mime_type") or "image/png"
+                data = block.get("data")
+                uri = block.get("uri")
+                if step_type == "thought":
+                    # 中间帧不交付，只记录最后一帧（即最终渲染结果）
+                    if isinstance(data, str) and data:
+                        last_thought_image = (mime_type, data, False)
+                    elif isinstance(uri, str) and uri:
+                        last_thought_image = (mime_type, uri, True)
+                    continue
                 if isinstance(data, str) and data:
-                    if step_type == "thought":
-                        thought_fallback.append((mime_type, data))
-                    else:
-                        await self._append_saved_image(
-                            mime_type, data, image_urls, image_paths
-                        )
-                elif isinstance(block.get("uri"), str) and block["uri"]:
-                    image_urls.append(block["uri"])
-                    image_paths.append(block["uri"])
+                    await self._append_saved_image(
+                        mime_type, data, image_urls, image_paths
+                    )
+                elif isinstance(uri, str) and uri:
+                    await self._append_remote_image(
+                        client,
+                        uri,
+                        session,
+                        request_config,
+                        image_urls,
+                        image_paths,
+                    )
 
-        # thought 中间图兜底：官方约定最后一帧 thought 图即最终渲染结果
-        if not image_urls and thought_fallback:
-            logger.debug("[gemini_interactions] 无 model_output 图像，回退 thought 图")
-            for mime_type, data in thought_fallback:
-                await self._append_saved_image(mime_type, data, image_urls, image_paths)
+        # thought 兜底：仅取最后一帧，避免把中间渲染发给用户
+        if not image_urls and last_thought_image:
+            logger.debug(
+                "[gemini_interactions] 无 model_output 图像，取最后一帧 thought 图"
+            )
+            mime_type, payload, is_uri = last_thought_image
+            if is_uri:
+                await self._append_remote_image(
+                    client,
+                    payload,
+                    session,
+                    request_config,
+                    image_urls,
+                    image_paths,
+                )
+            else:
+                await self._append_saved_image(
+                    mime_type, payload, image_urls, image_paths
+                )
 
         text_content = (
             " ".join(chunk for chunk in text_chunks if chunk).strip()
@@ -171,20 +195,22 @@ class GeminiInteractionsProvider:
         if image_urls or image_paths:
             return image_urls, image_paths, text_content or None, None
 
+        # 原始响应可能含思维链内容，只写日志，不进用户可见错误消息
+        logger.debug(
+            "[gemini_interactions] 未生成图像的响应: %s", str(response_data)[:1000]
+        )
         if text_content:
             logger.warning(
                 "[gemini_interactions] API 只返回文本，未生成图像，将触发重试"
             )
             raise APIError(
-                f"图像生成失败：API只返回了文本响应，正在重试... | 响应预览: "
-                f"{str(response_data)[:300]}",
+                "图像生成失败：API只返回了文本响应，正在重试...",
                 500,
                 "no_image_retry",
             )
 
         raise APIError(
-            f"图像生成失败：响应格式异常，未找到有效的图像数据 | 响应: "
-            f"{str(response_data)[:300]}",
+            "图像生成失败：响应格式异常，未找到有效的图像数据",
             http_status,
             "invalid_response",
         )
@@ -319,21 +345,44 @@ class GeminiInteractionsProvider:
             return [{"type": "text"}, image_format]
         return image_format
 
-    def _build_tools(self, config: ApiRequestConfig) -> list[dict[str, Any]]:
+    def _build_tools(
+        self, model: str, config: ApiRequestConfig
+    ) -> list[dict[str, Any]]:
         if not config.enable_grounding:
+            return []
+        model_lc = model.lower()
+        if "flash-lite-image" in model_lc:
+            logger.warning(
+                "[gemini_interactions] %s 不支持 Google 搜索接地，已忽略", model
+            )
             return []
         settings = config.provider_settings or {}
         tool: dict[str, Any] = {"type": "google_search"}
         if settings.get("image_search"):
-            tool["search_types"] = ["web_search", "image_search"]
+            if "3.1-flash-image" in model_lc:
+                tool["search_types"] = ["web_search", "image_search"]
+            else:
+                logger.warning(
+                    "[gemini_interactions] image_search 仅 gemini-3.1-flash-image "
+                    "支持，%s 已忽略",
+                    model,
+                )
         return [tool]
 
-    def _build_generation_config(self, config: ApiRequestConfig) -> dict[str, Any]:
+    def _build_generation_config(
+        self, model: str, config: ApiRequestConfig
+    ) -> dict[str, Any]:
         settings = config.provider_settings or {}
         generation_config: dict[str, Any] = {}
         thinking_level = str(settings.get("thinking_level") or "").strip().lower()
         if thinking_level:
-            if thinking_level in _THINKING_LEVELS:
+            if "3.1-flash-image" not in model.lower():
+                logger.warning(
+                    "[gemini_interactions] thinking_level 仅 gemini-3.1-flash-image "
+                    "支持，%s 已忽略",
+                    model,
+                )
+            elif thinking_level in _THINKING_LEVELS:
                 generation_config["thinking_level"] = thinking_level
             else:
                 logger.warning(
@@ -401,6 +450,32 @@ class GeminiInteractionsProvider:
         except Exception as e:  # noqa: BLE001
             logger.warning("[gemini_interactions] inline 图像解码失败，跳过: %s", e)
 
+    async def _append_remote_image(
+        self,
+        client: Any,
+        uri: str,
+        session: aiohttp.ClientSession,
+        request_config: ApiRequestConfig | None,
+        image_urls: list[str],
+        image_paths: list[str],
+    ) -> None:
+        """远程图像先落盘；失败时仅 image_urls 保留直链，不污染本地路径列表。"""
+        path: str | None = None
+        try:
+            _, path = await client._download_image(
+                uri,
+                session,
+                use_cache=False,
+                proxy=client._request_http_proxy(request_config),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[gemini_interactions] 远程图像下载失败，回退直链: %s", e)
+        if path:
+            image_urls.append(path)
+            image_paths.append(path)
+        else:
+            image_urls.append(uri)
+
     async def _extract_from_text(
         self,
         client: Any,
@@ -410,18 +485,10 @@ class GeminiInteractionsProvider:
     ) -> tuple[list[str], list[str]]:
         """文本中兜底提取图像（第三方网关可能返回 Markdown 图链）。"""
         urls = client._find_image_urls_in_text(text)
-        if not urls:
-            return [], []
-        paths: list[str] = []
-        try:
-            _, path = await client._download_image(
-                urls[0],
-                session,
-                use_cache=False,
-                proxy=client._request_http_proxy(request_config),
+        extracted_urls: list[str] = []
+        extracted_paths: list[str] = []
+        for url in urls:
+            await self._append_remote_image(
+                client, url, session, request_config, extracted_urls, extracted_paths
             )
-            if path:
-                paths.append(path)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("[gemini_interactions] 文本图像下载失败: %s", e)
-        return list(urls), paths
+        return extracted_urls, extracted_paths

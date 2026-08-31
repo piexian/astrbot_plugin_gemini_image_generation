@@ -12,6 +12,9 @@ from tl.api_types import APIError, ApiRequestConfig
 
 
 class _FakeClient:
+    def __init__(self):
+        self.downloaded: list[str] = []
+
     async def _process_reference_image(self, image_input, idx, mode):
         return "image/png", image_input, False
 
@@ -23,6 +26,13 @@ class _FakeClient:
 
     def _find_image_urls_in_text(self, text):
         return []
+
+    async def _download_image(self, url, session, use_cache=False, proxy=None):
+        self.downloaded.append(url)
+        return None, f"/tmp/dl_{len(self.downloaded)}.png"
+
+    def _request_http_proxy(self, config):
+        return None
 
 
 def _make_config(**overrides) -> ApiRequestConfig:
@@ -292,3 +302,147 @@ async def test_parse_response_empty_raises_invalid() -> None:
             client=_FakeClient(), response_data={"status": "completed"}, session=None
         )
     assert exc_info.value.error_type == "invalid_response"
+
+
+@pytest.mark.asyncio
+async def test_lite_model_never_gets_grounding() -> None:
+    provider = _make_provider()
+    config = _make_config(
+        enable_grounding=True,
+        provider_settings={"model": "gemini-3.1-flash-lite-image"},
+    )
+    request = await provider.build_request(client=_FakeClient(), config=config)
+    assert "tools" not in request.payload
+
+
+@pytest.mark.asyncio
+async def test_flash_extras_gated_on_pro() -> None:
+    provider = _make_provider()
+    config = _make_config(
+        enable_grounding=True,
+        provider_settings={
+            "model": "gemini-3-pro-image",
+            "image_search": True,
+            "thinking_level": "high",
+        },
+    )
+    request = await provider.build_request(client=_FakeClient(), config=config)
+    assert request.payload["tools"] == [{"type": "google_search"}]
+    assert "thinking_level" not in request.payload["generation_config"]
+
+
+@pytest.mark.asyncio
+async def test_thought_fallback_only_keeps_last_frame(monkeypatch) -> None:
+    saved: list[str] = []
+
+    async def _fake_save(data, fmt):
+        path = f"/tmp/fake_{data}.{fmt}"
+        saved.append(path)
+        return path
+
+    monkeypatch.setattr("tl.api.gemini_interactions.save_base64_image", _fake_save)
+    provider = _make_provider()
+    urls, _, _, _ = await provider.parse_response(
+        client=_FakeClient(),
+        response_data=_completed_response(
+            [
+                {
+                    "type": "thought",
+                    "summary": [
+                        {"type": "image", "mime_type": "image/png", "data": "f1"},
+                        {"type": "image", "mime_type": "image/png", "data": "f2"},
+                    ],
+                }
+            ]
+        ),
+        session=None,
+    )
+    assert urls == ["/tmp/fake_f2.png"]
+    assert saved == ["/tmp/fake_f2.png"]
+
+
+@pytest.mark.asyncio
+async def test_uri_block_downloaded_to_local() -> None:
+    provider = _make_provider()
+    client = _FakeClient()
+    urls, paths, _, _ = await provider.parse_response(
+        client=client,
+        response_data=_completed_response(
+            [
+                {
+                    "type": "model_output",
+                    "content": [
+                        {
+                            "type": "image",
+                            "mime_type": "image/png",
+                            "uri": "https://x/y.png",
+                        }
+                    ],
+                }
+            ]
+        ),
+        session=None,
+    )
+    assert client.downloaded == ["https://x/y.png"]
+    assert urls == ["/tmp/dl_1.png"]
+    assert paths == ["/tmp/dl_1.png"]
+
+
+@pytest.mark.asyncio
+async def test_uri_download_failure_keeps_url_out_of_paths(monkeypatch) -> None:
+    async def _fail_download(url, session, use_cache=False, proxy=None):
+        raise RuntimeError("network down")
+
+    provider = _make_provider()
+    client = _FakeClient()
+    client._download_image = _fail_download
+    urls, paths, _, _ = await provider.parse_response(
+        client=client,
+        response_data=_completed_response(
+            [
+                {
+                    "type": "model_output",
+                    "content": [
+                        {
+                            "type": "image",
+                            "mime_type": "image/png",
+                            "uri": "https://x/y.png",
+                        }
+                    ],
+                }
+            ]
+        ),
+        session=None,
+    )
+    assert urls == ["https://x/y.png"]
+    assert paths == []
+
+
+@pytest.mark.asyncio
+async def test_error_messages_do_not_leak_response_content() -> None:
+    provider = _make_provider()
+    with pytest.raises(APIError) as exc_info:
+        await provider.parse_response(
+            client=_FakeClient(),
+            response_data=_completed_response(
+                [{"type": "model_output", "content": [{"type": "text", "text": "hi"}]}]
+            ),
+            session=None,
+        )
+    assert "hi" not in str(exc_info.value)
+
+    with pytest.raises(APIError) as exc_info:
+        await provider.parse_response(
+            client=_FakeClient(),
+            response_data=_completed_response(
+                [
+                    {
+                        "type": "thought",
+                        "summary": [{"type": "text", "text": "secret thinking"}],
+                    }
+                ]
+            ),
+            session=None,
+        )
+    assert exc_info.value.error_type == "invalid_response"
+    assert "secret thinking" not in str(exc_info.value)
