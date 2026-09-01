@@ -271,7 +271,7 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 |--------|--------|------|
 | `api_keys` | `[]` | Agnes AI API Key 列表，支持多 Key 轮换 |
 | `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
-| `model` | `agnes-image-2.1-flash` | Agnes AI 图片模型，可填写 `agnes-image-2.0-flash` / `agnes-image-2.1-flash` |
+| `model` | `agnes-image-2.5-flash` | Agnes AI 图片模型，可填写 `agnes-image-2.5-flash` / `agnes-image-2.1-flash` |
 | `api_base` | `https://apihub.agnes-ai.com` | API 端点地址，插件会统一调用 `/v1/images/generations` |
 | `response_format` | `url` | 响应格式：`url` / `b64_json` |
 | `reference_image_mode` | `base64` | 参考图传递方式：`base64` / `auto` / `url` |
@@ -281,6 +281,7 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 
 - 文生图：`POST /v1/images/generations`
 - 图生图：同一端点，通过 `extra_body.image` 传入参考图 URL 或 data URI
+- 尺寸：默认下发档位 `size`（`1K`/`2K`/`3K`/`4K`）+ 顶层 `ratio` 获得原生分辨率；`ratio` 官方白名单为 `1:1`/`3:4`/`4:3`/`16:9`/`9:16`/`2:3`/`3:2`/`21:9`，非白名单比例或显式像素尺寸时回退为本地计算的精确尺寸
 
 当 `response_format=b64_json` 且没有参考图时，插件会按 Agnes AI 文生图格式发送 `return_base64=true`；带参考图时会在 `extra_body.response_format` 中请求 `b64_json`。默认 `reference_image_mode=base64` 会把本地图片和 URL 参考图统一转成 data URI；如确认参考图是公开可访问 URL，可改为 `auto` 或 `url`。
 

@@ -50,7 +50,8 @@ async def test_agnes_ai_text_to_image_url_payload() -> None:
     assert request.payload == {
         "model": "agnes-image-2.1-flash",
         "prompt": "draw a cat",
-        "size": "1024x768",
+        "size": "1K",
+        "ratio": "4:3",
         "extra_body": {"response_format": "url"},
     }
 
@@ -147,6 +148,7 @@ async def test_agnes_ai_text_to_image_b64_uses_return_base64() -> None:
 
     assert request.payload["model"] == "agnes-image-2.0-flash"
     assert request.payload["size"] == "1024x768"
+    assert "ratio" not in request.payload
     assert request.payload["return_base64"] is True
     assert "extra_body" not in request.payload
     assert "response_format" not in request.payload
@@ -176,7 +178,8 @@ async def test_agnes_ai_reference_payload_uses_extra_body_image() -> None:
 
     assert client.normalized == [("/tmp/ref.png", "force_base64")]
     assert request.payload["model"] == "agnes-image-2.0-flash"
-    assert request.payload["size"] == "1024x1024"
+    assert request.payload["size"] == "1K"
+    assert request.payload["ratio"] == "1:1"
     assert request.payload["extra_body"] == {
         "image": ["data:image/png;base64,BASE64DATA"],
         "response_format": "b64_json",
@@ -204,6 +207,7 @@ async def test_agnes_ai_reference_payload_omits_size_when_suppressed() -> None:
     request = await provider.build_request(client=client, config=config)
 
     assert "size" not in request.payload
+    assert "ratio" not in request.payload
     assert request.payload["extra_body"] == {
         "image": ["data:image/png;base64,BASE64DATA"],
         "response_format": "url",
@@ -269,3 +273,77 @@ async def test_agnes_ai_parse_b64_response(monkeypatch: pytest.MonkeyPatch) -> N
     assert image_paths == ["/tmp/generated.png"]
     assert text_content is None
     assert thought_signature is None
+
+
+@pytest.mark.asyncio
+async def test_agnes_ai_default_model_is_25_flash() -> None:
+    provider = AgnesAIProvider()
+    config = ApiRequestConfig(
+        model="",
+        prompt="draw a cat",
+        api_type="agnes_ai",
+        api_key="test-key",
+        resolution="1K",
+        provider_settings={"response_format": "url"},
+    )
+
+    request = await provider.build_request(client=_FakeClient(), config=config)
+
+    assert request.payload["model"] == "agnes-image-2.5-flash"
+
+
+@pytest.mark.asyncio
+async def test_agnes_ai_3k_tier_and_wide_ratio_passthrough() -> None:
+    provider = AgnesAIProvider()
+    config = ApiRequestConfig(
+        model="agnes-image-2.5-flash",
+        prompt="draw a cat",
+        api_type="agnes_ai",
+        api_key="test-key",
+        resolution="3K",
+        aspect_ratio="21:9",
+        provider_settings={"response_format": "url"},
+    )
+
+    request = await provider.build_request(client=_FakeClient(), config=config)
+
+    assert request.payload["size"] == "3K"
+    assert request.payload["ratio"] == "21:9"
+
+
+@pytest.mark.asyncio
+async def test_agnes_ai_non_whitelisted_ratio_falls_back_to_pixels() -> None:
+    provider = AgnesAIProvider()
+    config = ApiRequestConfig(
+        model="agnes-image-2.5-flash",
+        prompt="draw a cat",
+        api_type="agnes_ai",
+        api_key="test-key",
+        resolution="1K",
+        aspect_ratio="4:5",
+        provider_settings={"response_format": "url"},
+    )
+
+    request = await provider.build_request(client=_FakeClient(), config=config)
+
+    assert request.payload["size"] == "816x1024"
+    assert "ratio" not in request.payload
+
+
+@pytest.mark.asyncio
+async def test_agnes_ai_unknown_resolution_falls_back_to_1k_tier() -> None:
+    provider = AgnesAIProvider()
+    config = ApiRequestConfig(
+        model="agnes-image-2.5-flash",
+        prompt="draw a cat",
+        api_type="agnes_ai",
+        api_key="test-key",
+        resolution="8K",
+        aspect_ratio="16:9",
+        provider_settings={"response_format": "url"},
+    )
+
+    request = await provider.build_request(client=_FakeClient(), config=config)
+
+    assert request.payload["size"] == "1K"
+    assert request.payload["ratio"] == "16:9"

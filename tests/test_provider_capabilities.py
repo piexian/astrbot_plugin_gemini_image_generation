@@ -223,3 +223,8 @@ def test_dashscope_zimage_omits_watermark_capability() -> None:
 
     candidates = [_candidate("dashscope", "z-image-turbo")]
     assert select_candidates(candidates, required_parameters={"watermark"}) == []
+
+
+def test_agnes_ai_capability_declares_3k_resolution() -> None:
+    cap = candidate_capability(_candidate("agnes_ai", "agnes-image-2.5-flash"))
+    assert cap["parameters"]["resolution"]["enum"] == ["1K", "2K", "3K", "4K"]
