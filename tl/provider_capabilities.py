@@ -110,6 +110,20 @@ def _profile(
     }
 
 
+def agnes_ai_capability(candidate: Any) -> dict[str, Any]:
+    # 档位式 size + ratio 原生输出，分辨率枚举比全局默认多 3K
+    return _profile(
+        candidate,
+        parameters={
+            "resolution": {
+                "type": "string",
+                "enum": ["1K", "2K", "3K", "4K"],
+                "default_source": "provider_config",
+            },
+        },
+    )
+
+
 def xai_capability(candidate: Any) -> dict[str, Any]:
     # 官方白名单与全局并集不同（含 auto，无 4:5/5:4/21:9），按渠道精确声明
     from .api.xai import SUPPORTED_ASPECT_RATIOS

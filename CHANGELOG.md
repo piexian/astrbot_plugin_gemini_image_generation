@@ -2,6 +2,16 @@
 
 > **升级提示**：v1.9.0 以后的配置文件格式不兼容旧版本。升级后如遇配置模板显示错误，请查看 [配置迁移说明](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/troubleshooting.md#配置迁移说明)。
 
+## [2.7.6] - 2026-09-01
+
+### Added
+
+- **Agnes AI 适配 `agnes-image-2.5-flash` 并设为默认**：尺寸改走官方档位式 `size`（1K/2K/3K/4K，新增 3K）+ 顶层 `ratio` 原生输出；非白名单比例或显式像素尺寸回退本地精确尺寸，旧配置行为不变。
+
+### Changed
+
+- **`xai` / `minimax` / `stepfun` 模板 `model` 字段解锁为自由填写**；`dashscope` / `sensenova` 模型分层需代码适配，保持下拉。
+
 ## [2.7.5] - 2026-08-31
 
 ### Added

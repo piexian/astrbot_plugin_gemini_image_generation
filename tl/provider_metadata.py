@@ -39,6 +39,7 @@ _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
         "agnes_ai",
         "tl.api.agnes_ai.AgnesAIProvider",
         settings_attr="agnes_ai_settings",
+        capability_profile_path="tl.provider_capabilities.agnes_ai_capability",
     ),
     ProviderSpec(
         "xai",

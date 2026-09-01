@@ -15,10 +15,15 @@ from .base import ProviderRequest
 from .data_uri import format_data_uri
 
 _DEFAULT_API_BASE = "https://apihub.agnes-ai.com"
-_DEFAULT_MODEL = "agnes-image-2.1-flash"
+_DEFAULT_MODEL = "agnes-image-2.5-flash"
 _SUPPORTED_RESPONSE_FORMATS: frozenset[str] = frozenset({"url", "b64_json"})
 _REFERENCE_IMAGE_MODES: frozenset[str] = frozenset({"auto", "base64", "url"})
-_RESOLUTION_MAP: dict[str, int] = {"1K": 1024, "2K": 2048, "4K": 3840}
+_SUPPORTED_SIZES: frozenset[str] = frozenset({"1K", "2K", "3K", "4K"})
+_SUPPORTED_RATIOS: frozenset[str] = frozenset(
+    {"1:1", "3:4", "4:3", "16:9", "9:16", "2:3", "3:2", "21:9"}
+)
+# 档位不可用（非白名单比例/显式像素尺寸）时的本地像素回退：长边=档位像素并按 16 对齐
+_RESOLUTION_MAP: dict[str, int] = {"1K": 1024, "2K": 2048, "3K": 3072, "4K": 3840}
 _SIZE_RE = re.compile(r"^\s*(\d{2,5})\s*[xX×]\s*(\d{2,5})\s*$")
 
 
@@ -171,10 +176,13 @@ class AgnesAIProvider:
             "prompt": config.prompt,
         }
         if not config.suppress_resolution:
-            payload["size"] = self._resolve_size(
+            size, ratio = self._resolve_size_and_ratio(
                 settings.get("size") or config.resolution,
                 config.aspect_ratio or settings.get("aspect_ratio"),
             )
+            payload["size"] = size
+            if ratio:
+                payload["ratio"] = ratio
 
         response_format = self._normalize_response_format(
             settings.get("response_format")
@@ -282,25 +290,47 @@ class AgnesAIProvider:
         return "base64"
 
     @staticmethod
-    def _resolve_size(resolution: Any, aspect_ratio: Any) -> str:
-        size = AgnesAIProvider._normalize_explicit_size(resolution)
-        if size:
-            return size
+    def _resolve_size_and_ratio(
+        resolution: Any, aspect_ratio: Any
+    ) -> tuple[str, str | None]:
+        explicit = AgnesAIProvider._normalize_explicit_size(resolution)
+        if explicit:
+            return explicit, None
 
-        resolution_key = str(resolution or "1K").strip().upper()
-        long_edge = _RESOLUTION_MAP.get(resolution_key)
-        if long_edge is None:
-            if resolution_key:
+        size = str(resolution or "1K").strip().upper()
+        if size not in _SUPPORTED_SIZES:
+            if size:
                 logger.warning(f"[agnes_ai] 未知 resolution={resolution}，已回退为 1K")
-            long_edge = _RESOLUTION_MAP["1K"]
+            size = "1K"
 
-        ratio = AgnesAIProvider._parse_ratio(aspect_ratio or "1:1")
+        ratio = AgnesAIProvider._parse_ratio(aspect_ratio)
         if ratio is None:
-            logger.warning(
-                f"[agnes_ai] 无法解析 aspect_ratio={aspect_ratio}，已回退为 1:1"
-            )
+            if aspect_ratio:
+                logger.warning(
+                    f"[agnes_ai] 无法解析 aspect_ratio={aspect_ratio}，已回退为 1:1"
+                )
             ratio = (1.0, 1.0)
-        width, height = AgnesAIProvider._compute_dimensions(ratio, long_edge)
+        canonical = AgnesAIProvider._format_ratio(ratio)
+        if canonical in _SUPPORTED_RATIOS:
+            return size, canonical
+
+        logger.warning(
+            f"[agnes_ai] ratio={canonical} 不在官方白名单，已回退为本地像素计算"
+        )
+        return AgnesAIProvider._fallback_pixel_size(size, ratio), None
+
+    @staticmethod
+    def _format_ratio(ratio: tuple[float, float]) -> str:
+        def _fmt(value: float) -> str:
+            return str(int(value)) if value.is_integer() else str(value)
+
+        return f"{_fmt(ratio[0])}:{_fmt(ratio[1])}"
+
+    @staticmethod
+    def _fallback_pixel_size(size: str, ratio: tuple[float, float]) -> str:
+        width, height = AgnesAIProvider._compute_dimensions(
+            ratio, _RESOLUTION_MAP[size]
+        )
         return f"{width}x{height}"
 
     @staticmethod

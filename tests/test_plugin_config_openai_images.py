@@ -495,7 +495,7 @@ def test_schema_contains_agnes_ai_template() -> None:
         "agnes_ai"
     ]
 
-    assert template["items"]["model"]["default"] == "agnes-image-2.1-flash"
+    assert template["items"]["model"]["default"] == "agnes-image-2.5-flash"
     assert template["items"]["api_base"]["default"] == "https://apihub.agnes-ai.com"
     assert template["items"]["response_format"]["options"] == ["url", "b64_json"]
     assert template["items"]["reference_image_mode"]["default"] == "base64"

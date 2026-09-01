@@ -437,8 +437,8 @@
               "model": {
                 "description": "模型名称",
                 "type": "string",
-                "hint": "Agnes AI 图片模型名称，支持 agnes-image-2.0-flash / agnes-image-2.1-flash",
-                "default": "agnes-image-2.1-flash"
+                "hint": "Agnes AI 图片模型名称，支持 agnes-image-2.5-flash / agnes-image-2.1-flash",
+                "default": "agnes-image-2.5-flash"
               },
               "api_base": {
                 "description": "API 端点地址",
@@ -460,6 +460,7 @@
                 "options": [
                   "1K",
                   "2K",
+                  "3K",
                   "4K"
                 ]
               },
@@ -548,10 +549,7 @@
                 "description": "模型名称",
                 "type": "string",
                 "hint": "grok-imagine-image-2.0（当前模型，quality 仅 low/medium）；旧模型名仍可手填但可能已被官方退役",
-                "default": "grok-imagine-image-2.0",
-                "options": [
-                  "grok-imagine-image-2.0"
-                ]
+                "default": "grok-imagine-image-2.0"
               },
               "api_base": {
                 "description": "API 端点地址",
@@ -671,11 +669,7 @@
                 "description": "模型名称",
                 "type": "string",
                 "hint": "image-01（全能力，支持 21:9 与显式宽高）；image-01-live（快速，仅 aspect_ratio，不支持 21:9）",
-                "default": "image-01",
-                "options": [
-                  "image-01",
-                  "image-01-live"
-                ]
+                "default": "image-01"
               },
               "api_base": {
                 "description": "API 端点地址",
@@ -851,11 +845,7 @@
                 "description": "模型名称",
                 "type": "string",
                 "hint": "step-image-edit-2（推荐，文生图+编辑）；step-2x-large（快速文生图，不支持编辑/负向提示词/text_mode）",
-                "default": "step-image-edit-2",
-                "options": [
-                  "step-image-edit-2",
-                  "step-2x-large"
-                ]
+                "default": "step-image-edit-2"
               },
               "api_base": {
                 "description": "API 端点地址",
