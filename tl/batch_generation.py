@@ -7,6 +7,7 @@ from typing import Any
 
 from astrbot.api import logger
 
+from .background_notify import report_background_failure
 from .generation_call import invoke_generation_core
 
 
@@ -146,7 +147,18 @@ async def _send_batch_results(
                 f"{result['generated_images']}/{result['requested_images']} 张，"
                 f"{result.get('error') or '未知错误'}"
             )
-    await event.send(event.plain_result("\n".join(summary_lines)))
+    summary = "\n".join(summary_lines)
+    if any(not result["success"] for result in results):
+        # 有失败项：聚合走失败通知出口（回灌 LLM 或按配置直发）
+        await report_background_failure(
+            plugin,
+            event,
+            summary,
+            scene=f"批量任务/{task_id}",
+            task_id=task_id,
+        )
+    else:
+        await event.send(event.plain_result(summary))
 
     for result in results:
         if not result["image_urls"] and not result["image_paths"]:
@@ -269,6 +281,12 @@ async def run_batch_job(
             items=[_public_item(value) for value in final_results],
         )
         try:
-            await event.send(event.plain_result(f"批量生图任务 {task_id} 失败：{exc}"))
+            await report_background_failure(
+                plugin,
+                event,
+                f"批量生图任务 {task_id} 失败：{exc}",
+                scene=f"批量任务/{task_id}",
+                task_id=task_id,
+            )
         except Exception:
             pass

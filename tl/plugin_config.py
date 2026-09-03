@@ -138,6 +138,7 @@ class PluginConfig:
     batch_max_tasks: int = 20
     batch_concurrency: int = 3
     background_task_retention_hours: int = 24
+    background_failure_notify_llm: bool = True
 
     # 表情包设置
     sticker_grid_rows: int = 4
@@ -666,6 +667,9 @@ class ConfigLoader:
         )
         config.background_task_retention_hours = _clean_positive_int(
             image_settings.get("background_task_retention_hours"), 24
+        )
+        config.background_failure_notify_llm = bool(
+            image_settings.get("background_failure_notify_llm", True)
         )
 
         # 表情包网格设置

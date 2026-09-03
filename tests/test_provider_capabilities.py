@@ -107,6 +107,7 @@ def test_config_loader_parses_alias_and_batch_limits() -> None:
                 "batch_max_tasks": 30,
                 "batch_concurrency": 4,
                 "background_task_retention_hours": 48,
+                "background_failure_notify_llm": False,
             },
         }
     ).load()
@@ -116,6 +117,7 @@ def test_config_loader_parses_alias_and_batch_limits() -> None:
     assert config.batch_max_tasks == 30
     assert config.batch_concurrency == 4
     assert config.background_task_retention_hours == 48
+    assert config.background_failure_notify_llm is False
 
 
 @pytest.mark.parametrize(

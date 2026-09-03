@@ -80,6 +80,7 @@ google / gemini_interactions / openai / agnes_ai / xai / minimax / stepfun / ope
 | `batch_max_tasks` | `20` | 一次 `batch_tasks` 允许的命名任务条目上限 |
 | `batch_concurrency` | `3` | 后台批量生成并发数；每个条目内部按供应商单次上限顺序补齐 |
 | `background_task_retention_hours` | `24` | 后台任务状态记录保留时间；插件重启会把未完成任务标记为 `interrupted` |
+| `background_failure_notify_llm` | `true` | LLM 工具触发的后台生图失败时走框架官方回灌链路（CronMessageEvent + 主 agent + send_message_to_user），由 AI 重新组织语言告知用户；关闭或官方 API 不可用时直发原始报错 |
 
 分辨率、长宽比、最大参考图数量、Google 文本响应、Google 搜索接地、OpenAI/OpenAI 兼容参数名等均在 `provider_settings.provider_overrides` 的各供应商条目内配置。
 
