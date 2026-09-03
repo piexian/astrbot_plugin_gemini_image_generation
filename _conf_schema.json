@@ -7,7 +7,7 @@
       "provider_polling": {
         "description": "供应商轮询顺序",
         "type": "list",
-        "hint": "按列表从上到下尝试生成。请选择并按优先级排列：google / gemini_interactions / openai / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova / dashscope / modelscope / siliconflow。留空时按配置表中的有效供应商顺序尝试。",
+        "hint": "按列表从上到下尝试生成；留空时按配置表中的有效供应商顺序尝试。",
         "options": [
           "google",
           "gemini_interactions",
@@ -1730,7 +1730,7 @@
           },
           "siliconflow": {
             "description": "SiliconFlow（硅基流动）覆盖配置",
-            "hint": "同步单端点渠道：文生图与编辑共用 /v1/images/generations，返回的图片 URL 仅 1 小时有效，插件会立即下载落盘。模型族差异：Kolors 支持批量、引导系数与单张参考图图生图，Qwen-Image 支持预设尺寸，Edit 系列不传尺寸、按参考图编辑（2509 最多 3 张）。",
+            "hint": "同步单端点渠道；返回图片 URL 仅 1 小时有效，插件会立即下载落盘。",
             "items": {
               "enabled": {
                 "description": "启用此条配置",
@@ -1747,7 +1747,7 @@
               "api_keys": {
                 "description": "API Key 列表",
                 "type": "list",
-                "hint": "多个 API Key，支持轮换使用（硅基流动控制台获取）",
+                "hint": "多个 API Key，支持轮换使用",
                 "default": []
               },
               "daily_limit_per_key": {
@@ -1765,13 +1765,13 @@
               "model": {
                 "description": "模型名称",
                 "type": "string",
-                "hint": "推荐 Qwen/Qwen-Image（文生图）、Kwai-Kolors/Kolors（批量 1-4 张）、Qwen/Qwen-Image-Edit-2509（编辑，最多 3 张参考图）、Qwen/Qwen-Image-Edit（经典编辑，单张参考图）。名称含 edit 的模型支持参考图。",
+                "hint": "推荐 Qwen/Qwen-Image、Kwai-Kolors/Kolors（批量+图生图）、Qwen/Qwen-Image-Edit-2509（编辑 3 图）、Qwen/Qwen-Image-Edit（编辑 1 图）。",
                 "default": "Qwen/Qwen-Image"
               },
               "api_base": {
                 "description": "API 端点地址",
                 "type": "string",
-                "hint": "SiliconFlow API 地址，留空使用默认值 https://api.siliconflow.cn",
+                "hint": "留空使用官方默认地址。",
                 "default": "https://api.siliconflow.cn"
               },
               "proxy": {
@@ -1783,7 +1783,7 @@
               "resolution": {
                 "description": "图像分辨率档位",
                 "type": "string",
-                "hint": "与长宽比组合映射 image_size：命中官方预设直接用（Kolors 3:4 按档位区分），未命中按档位预算本地计算并按模型族钳制（Kolors 长边 1440、Qwen-Image 1664）。Edit 系列不发送尺寸。",
+                "hint": "与长宽比组合映射 image_size；Edit 系列不发送尺寸。",
                 "default": "1K",
                 "options": [
                   "1K",
@@ -1811,7 +1811,7 @@
               "max_reference_images": {
                 "description": "最大参考图片数量",
                 "type": "int",
-                "hint": "仅编辑模型生效：Qwen-Image-Edit-2509 最多 3 张；经典 Qwen-Image-Edit 官方仅支持 1 张，超出部分截断；非编辑模型带图请求直接报错。",
+                "hint": "2509 最多 3 张；经典 Edit 与 Kolors 仅 1 张，超出截断。",
                 "default": 3
               },
               "negative_prompt": {
@@ -1823,13 +1823,13 @@
               "num_inference_steps": {
                 "description": "推理步数",
                 "type": "int",
-                "hint": "范围 1-100，超出自动钳制；0 表示不发送该参数（使用服务端默认 20）。",
+                "hint": "1-100；0 不发送（默认 20）。",
                 "default": 0
               },
               "guidance_scale": {
                 "description": "引导系数",
                 "type": "float",
-                "hint": "仅 Kolors 支持，范围 0-20，超出自动钳制；0 表示不发送该参数（使用服务端默认 7.5）。",
+                "hint": "仅 Kolors；0-20；0 不发送（默认 7.5）。",
                 "default": 0
               },
               "seed": {
