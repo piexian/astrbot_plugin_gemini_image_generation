@@ -1837,6 +1837,12 @@
           "max": 720,
           "step": 1
         }
+      },
+      "background_failure_notify_llm": {
+        "description": "后台失败回灌 LLM",
+        "type": "bool",
+        "hint": "开启后，LLM 工具触发的后台生图任务失败时不再向群内直发原始报错，而是让当前会话的 AI 重新组织语言告知用户；指令触发的流程不受影响。",
+        "default": true
       }
     }
   },

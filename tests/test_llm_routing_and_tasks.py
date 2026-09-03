@@ -44,6 +44,7 @@ sys.modules["astrbot.core.astr_agent_context"].AstrAgentContext = type(
     "AstrAgentContext", (), {}
 )
 
+from tl import batch_generation  # noqa: E402
 from tl.background_tasks import BackgroundTaskManager  # noqa: E402
 from tl.batch_generation import run_batch_job  # noqa: E402
 from tl.llm_query_tools import (  # noqa: E402
@@ -478,3 +479,217 @@ async def test_single_background_task_marks_delivery_failure_partial(tmp_path) -
     assert result is not None
     assert result["status"] == "partial_success"
     assert result["items"][0]["delivery_success"] is False
+
+
+def _notify_plugin(
+    manager, event, *, llm_text="图片生成失败，请稍后重试", llm_error=None
+):
+    """构造带可 mock 聊天模型 context 的插件替身，返回 (plugin, llm_prompts)。"""
+    llm_prompts: list[str] = []
+
+    class _Context:
+        async def get_current_chat_provider_id(self, umo: str) -> str:
+            return "chat-provider"
+
+        async def llm_generate(
+            self, *, chat_provider_id, prompt, contexts=None, **kwargs
+        ):
+            if llm_error is not None:
+                raise llm_error
+            llm_prompts.append(prompt)
+            return SimpleNamespace(completion_text=llm_text)
+
+    plugin = SimpleNamespace(
+        background_task_manager=manager,
+        message_sender=_MessageSender(),
+        avatar_manager=_AvatarManager(),
+        api_client=None,
+        context=_Context(),
+        cfg=SimpleNamespace(background_failure_notify_llm=True),
+    )
+    return plugin, llm_prompts
+
+
+@pytest.mark.asyncio
+async def test_background_failure_feeds_back_to_llm(tmp_path) -> None:
+    manager = BackgroundTaskManager(tmp_path)
+    event = _Event()
+    plugin, llm_prompts = _notify_plugin(manager, event)
+    record = await manager.create(
+        session_id=event.unified_msg_origin,
+        kind="single",
+        routing_mode="full_polling",
+        message="running",
+    )
+
+    async def failed_generation():
+        return False, "供应商 5xx", {}
+
+    await _await_generation_task_and_send(
+        plugin,
+        event,
+        asyncio.create_task(failed_generation()),
+        scene="test",
+        task_id=record["task_id"],
+        notify_llm=True,
+    )
+    result = await manager.get(record["task_id"], event.unified_msg_origin)
+
+    assert llm_prompts and "供应商 5xx" in llm_prompts[0]
+    assert event.sent == ["图片生成失败，请稍后重试"]
+    assert result is not None
+    assert result["status"] == "failed"
+    assert result["items"][0]["delivery_success"] is True
+
+
+@pytest.mark.asyncio
+async def test_background_exception_feeds_back_to_llm(tmp_path) -> None:
+    manager = BackgroundTaskManager(tmp_path)
+    event = _Event()
+    plugin, llm_prompts = _notify_plugin(manager, event)
+    record = await manager.create(
+        session_id=event.unified_msg_origin,
+        kind="single",
+        routing_mode="full_polling",
+        message="running",
+    )
+
+    async def raising_generation():
+        raise RuntimeError("APIError boom")
+
+    await _await_generation_task_and_send(
+        plugin,
+        event,
+        asyncio.create_task(raising_generation()),
+        scene="test",
+        task_id=record["task_id"],
+        notify_llm=True,
+    )
+    result = await manager.get(record["task_id"], event.unified_msg_origin)
+
+    assert event.sent == ["图片生成失败，请稍后重试"]
+    assert result is not None
+    assert result["status"] == "failed"
+    assert result["message"] == "后台生成异常: APIError boom"
+
+
+@pytest.mark.asyncio
+async def test_background_failure_notify_degrades_silently(tmp_path) -> None:
+    manager = BackgroundTaskManager(tmp_path)
+    event = _Event()
+    plugin, _ = _notify_plugin(manager, event, llm_error=RuntimeError("provider down"))
+    record = await manager.create(
+        session_id=event.unified_msg_origin,
+        kind="single",
+        routing_mode="full_polling",
+        message="running",
+    )
+
+    async def failed_generation():
+        return False, "供应商 5xx", {}
+
+    await _await_generation_task_and_send(
+        plugin,
+        event,
+        asyncio.create_task(failed_generation()),
+        scene="test",
+        task_id=record["task_id"],
+        notify_llm=True,
+    )
+    result = await manager.get(record["task_id"], event.unified_msg_origin)
+
+    assert event.sent == []
+    assert result is not None
+    assert result["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_background_failure_default_keeps_direct_send(tmp_path) -> None:
+    manager = BackgroundTaskManager(tmp_path)
+    event = _Event()
+    plugin, llm_prompts = _notify_plugin(manager, event)
+    record = await manager.create(
+        session_id=event.unified_msg_origin,
+        kind="single",
+        routing_mode="full_polling",
+        message="running",
+    )
+
+    async def failed_generation():
+        return False, "供应商 5xx", {}
+
+    await _await_generation_task_and_send(
+        plugin,
+        event,
+        asyncio.create_task(failed_generation()),
+        scene="test",
+        task_id=record["task_id"],
+    )
+    result = await manager.get(record["task_id"], event.unified_msg_origin)
+
+    assert llm_prompts == []
+    assert event.sent == ["供应商 5xx"]
+    assert result is not None
+    assert result["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_background_failure_switch_off_keeps_direct_send(tmp_path) -> None:
+    manager = BackgroundTaskManager(tmp_path)
+    event = _Event()
+    plugin, llm_prompts = _notify_plugin(manager, event)
+    plugin.cfg.background_failure_notify_llm = False
+    record = await manager.create(
+        session_id=event.unified_msg_origin,
+        kind="single",
+        routing_mode="full_polling",
+        message="running",
+    )
+
+    async def failed_generation():
+        return False, "供应商 5xx", {}
+
+    await _await_generation_task_and_send(
+        plugin,
+        event,
+        asyncio.create_task(failed_generation()),
+        scene="test",
+        task_id=record["task_id"],
+        notify_llm=True,
+    )
+
+    assert llm_prompts == []
+    assert event.sent == ["供应商 5xx"]
+
+
+@pytest.mark.asyncio
+async def test_batch_failure_summary_feeds_back_to_llm(tmp_path, monkeypatch) -> None:
+    manager = BackgroundTaskManager(tmp_path)
+    event = _Event()
+    plugin, llm_prompts = _notify_plugin(manager, event)
+    plugin.cfg = SimpleNamespace(
+        batch_concurrency=2,
+        background_failure_notify_llm=True,
+    )
+    plugin.image_generator = SimpleNamespace(get_request_stats=lambda: {})
+    record = await manager.create(
+        session_id=event.unified_msg_origin,
+        kind="batch",
+        routing_mode="provider_retry",
+        message="running",
+    )
+    item = {"name": "set-a", "prompt": "draw", "image_count": 2}
+
+    async def _fail(plugin=None, **kwargs):
+        return False, "boom"
+
+    monkeypatch.setattr(batch_generation, "invoke_generation_core", _fail)
+
+    await run_batch_job(plugin, event, record["task_id"], [item])
+    result = await manager.get(record["task_id"], event.unified_msg_origin)
+
+    assert llm_prompts and "boom" in llm_prompts[0]
+    assert event.sent == ["图片生成失败，请稍后重试"]
+    assert plugin.message_sender.deliveries == []
+    assert result is not None
+    assert result["status"] == "failed"

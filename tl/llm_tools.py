@@ -22,6 +22,7 @@ from astrbot.core.astr_agent_context import AstrAgentContext
 from pydantic import Field
 from pydantic.dataclasses import dataclass
 
+from .background_notify import report_background_failure
 from .batch_generation import run_batch_job
 from .generation_call import invoke_generation_core
 from .openai_image_size import (
@@ -648,6 +649,8 @@ async def _dispatch_generation_result(
     scene: str,
     fallback_text: str | None = None,
     force_text_response: bool = False,
+    notify_llm: bool = False,
+    task_id: str | None = None,
 ) -> bool:
     if success and isinstance(result_data, tuple):
         image_urls, image_paths, text_content, thought_signature = result_data
@@ -714,6 +717,14 @@ async def _dispatch_generation_result(
         return True
 
     error_msg = result_data if isinstance(result_data, str) else "❌ 图像生成失败"
+    if notify_llm:
+        return await report_background_failure(
+            plugin,
+            event,
+            error_msg,
+            scene=scene,
+            task_id=task_id,
+        )
     try:
         await event.send(event.plain_result(error_msg))
     except Exception as exc:
@@ -729,6 +740,7 @@ async def _await_generation_task_and_send(
     *,
     scene: str,
     task_id: str | None = None,
+    notify_llm: bool = False,
 ) -> None:
     try:
         success, result_data, stats = await generation_task
@@ -738,6 +750,8 @@ async def _await_generation_task_and_send(
             success=success,
             result_data=result_data,
             scene=scene,
+            notify_llm=notify_llm,
+            task_id=task_id,
         )
         if task_id:
             item = {
@@ -769,10 +783,19 @@ async def _await_generation_task_and_send(
             )
     except Exception as exc:
         logger.error(f"[{scene}] 后台图像生成异常: {exc}", exc_info=True)
-        try:
-            await event.send(event.plain_result(format_error_message(exc)))
-        except Exception as send_error:
-            logger.warning(f"[{scene}] 发送异常消息失败: {send_error}")
+        if notify_llm:
+            await report_background_failure(
+                plugin,
+                event,
+                format_error_message(exc),
+                scene=scene,
+                task_id=task_id,
+            )
+        else:
+            try:
+                await event.send(event.plain_result(format_error_message(exc)))
+            except Exception as send_error:
+                logger.warning(f"[{scene}] 发送异常消息失败: {send_error}")
         if task_id:
             await plugin.background_task_manager.update(
                 task_id,
@@ -790,6 +813,7 @@ def _schedule_generation_delivery(
     *,
     scene: str,
     task_id: str | None = None,
+    notify_llm: bool = False,
 ) -> asyncio.Task:
     coroutine = _await_generation_task_and_send(
         plugin=plugin,
@@ -797,6 +821,7 @@ def _schedule_generation_delivery(
         generation_task=generation_task,
         scene=scene,
         task_id=task_id,
+        notify_llm=notify_llm,
     )
     sender_task = (
         plugin.background_task_manager.attach(task_id, coroutine)
@@ -1343,6 +1368,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                     generation_task=generation_task,
                     scene="后台任务",
                     task_id=task_id,
+                    notify_llm=True,
                 )
                 return _background_json(task_id, request_routing_mode, message)
 
@@ -1404,6 +1430,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                         generation_task=done_task,
                         scene="后台任务(代理下载超时回退)",
                         task_id=task_id,
+                        notify_llm=True,
                     )
                     if config_value_notice:
                         result_message += f"\n{config_value_notice}"
@@ -1441,37 +1468,12 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                 generation_task=generation_task,
                 scene="后台任务",
                 task_id=task_id,
+                notify_llm=True,
             )
             return _background_json(task_id, request_routing_mode, message)
         except Exception as e:
             logger.error(f"[前台等待] 图像生成异常：{e}", exc_info=True)
             return f"❌ 图片生成过程中出错：{str(e)}"
-
-
-async def _background_generate_and_send(
-    plugin: GeminiImageGenerationPlugin,
-    event: Any,
-    prompt: str,
-    reference_images: list[str],
-    avatar_reference: list[str],
-    override_resolution: str | None = None,
-    override_aspect_ratio: str | None = None,
-) -> None:
-    generation_task = _create_generation_task(
-        plugin=plugin,
-        event=event,
-        prompt=prompt,
-        reference_images=reference_images,
-        avatar_reference=avatar_reference,
-        override_resolution=override_resolution,
-        override_aspect_ratio=override_aspect_ratio,
-    )
-    await _await_generation_task_and_send(
-        plugin=plugin,
-        event=event,
-        generation_task=generation_task,
-        scene="后台任务",
-    )
 
 
 # 保留旧的辅助函数以保持向后兼容（已弃用）

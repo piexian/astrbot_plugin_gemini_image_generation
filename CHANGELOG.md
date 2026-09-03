@@ -12,6 +12,10 @@
 
 - `provider_polling` 预制供应商列表与相关文档同步加入 `modelscope`；`tests/test_provider_registry.py` 纳入 `tl.api.modelscope` 并将 `capability_profile_path` 加入 spec 路径可加载性校验。
 
+### Fixed
+
+- **LLM 工具触发的后台生图任务失败不再向群内直发原始报错**：前台超时转后台后，失败/异常结果改为回灌当前会话的聊天模型（`Context.llm_generate` 单向生成，不带工具避免循环触发生图），由 AI 重新组织语言告知用户；会话历史自动注入、回灌问答写入会话记忆，通知链任何一步失败静默降级仅记日志（状态机 `failed` 记录与 `gemini_image_task_status` 查询不受影响）。批量任务失败汇总与整体异常同样聚合走该出口。新增开关 `image_generation_settings.background_failure_notify_llm`（默认开）；指令触发流程（`/生图` 等）行为不变。
+
 ## [2.7.6] - 2026-09-01
 
 ### Added
