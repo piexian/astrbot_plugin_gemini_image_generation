@@ -404,6 +404,41 @@ async def test_download_failure_falls_back_to_direct_url() -> None:
     assert paths == []
 
 
+@pytest.mark.asyncio
+async def test_octet_stream_extension_fixed_by_magic_sniff(tmp_path) -> None:
+    """SF OSS 回 application/octet-stream：按 PNG 魔数把落盘文件改名为 .png。"""
+    target = tmp_path / "img.octet-stream"
+    target.write_bytes(b"\x89PNG\x0d\x0a\x1a\x0a" + b"0" * 64)
+    provider = SiliconFlowProvider()
+    client = _FakeClient(download_path=str(target))
+    urls, paths, _, _ = await provider.parse_response(
+        client=client,
+        response_data={"images": [{"url": "https://cdn.example.com/a"}]},
+        session=None,  # type: ignore[arg-type]
+        http_status=200,
+        request_config=_make_config(),
+    )
+    assert urls == paths == [str(tmp_path / "img.png")]
+    assert (tmp_path / "img.png").exists() and not target.exists()
+
+
+@pytest.mark.asyncio
+async def test_unrecognized_content_keeps_original_extension(tmp_path) -> None:
+    """魔数识别不出时不改名，保持原路径（不破坏既有行为）。"""
+    target = tmp_path / "img.octet-stream"
+    target.write_bytes(b"\x00\x01\x02\x03unknown-bytes")
+    provider = SiliconFlowProvider()
+    client = _FakeClient(download_path=str(target))
+    urls, paths, _, _ = await provider.parse_response(
+        client=client,
+        response_data={"images": [{"url": "https://cdn.example.com/a"}]},
+        session=None,  # type: ignore[arg-type]
+        http_status=200,
+        request_config=_make_config(),
+    )
+    assert urls == paths == [str(target)]
+
+
 # ---------------------------------------------------------------------------
 # capability profile 与 spec 标志
 # ---------------------------------------------------------------------------

@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Any, Final
 
 import aiohttp
@@ -67,6 +69,15 @@ _SEED_MAX: Final[int] = 9999999999
 # 官方过载错误码，显式可重试
 _OVERLOAD_CODE: Final[int] = 50505
 
+# 图片魔数 → 扩展名：SF 的 OSS 常回 application/octet-stream，按内容修正
+_IMAGE_MAGIC: Final[tuple[tuple[bytes, str], ...]] = (
+    (b"\x89PNG", "png"),
+    (b"\xff\xd8\xff", "jpg"),
+    (b"GIF8", "gif"),
+    (b"RIFF", "webp"),  # 需再校验 WEBP 四字节
+    (b"BM", "bmp"),
+)
+
 
 def _model_family(model: str) -> str:
     """模型名小写匹配族；edit-2509 先于 edit 先于 qwen-image（前缀包含关系）。"""
@@ -80,6 +91,36 @@ def _model_family(model: str) -> str:
     if "kolors" in name:
         return "kolors"
     return "unknown"
+
+
+def _sniff_image_suffix(path: str) -> str | None:
+    """按文件头魔数识别图片格式；识别不出返回 None。"""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(12)
+    except OSError:
+        return None
+    for magic, suffix in _IMAGE_MAGIC:
+        if not head.startswith(magic):
+            continue
+        if magic == b"RIFF" and head[8:12] != b"WEBP":
+            return None
+        return suffix
+    return None
+
+
+def _normalize_image_extension(path: str) -> str:
+    """Content-Type 不可靠（octet-stream）时按魔数修正扩展名；失败则保持原样。"""
+    current = Path(path).suffix.lower().lstrip(".")
+    sniffed = _sniff_image_suffix(path)
+    if not sniffed or current in {"png", "jpg", "jpeg", "gif", "webp", "bmp"}:
+        return path
+    new_path = str(Path(path).with_suffix(f".{sniffed}"))
+    try:
+        os.replace(path, new_path)
+    except OSError:
+        return path
+    return new_path
 
 
 def _parse_ratio(value: Any) -> tuple[str, float] | None:
@@ -222,13 +263,16 @@ class SiliconFlowProvider:
             )
 
         if family == "kolors":
-            payload["batch_size"] = coerce_int(
-                settings.get("batch_size"),
-                lo=1,
-                hi=_BATCH_LIMIT_KOLORS,
-                default=1,
-                warn_prefix="[siliconflow] batch_size",
-            )
+            # batch_size 缺省时直接省略（服务端默认 1），避免对 None 钳制产生伪告警
+            raw_batch = settings.get("batch_size")
+            if raw_batch is not None:
+                payload["batch_size"] = coerce_int(
+                    raw_batch,
+                    lo=1,
+                    hi=_BATCH_LIMIT_KOLORS,
+                    default=1,
+                    warn_prefix="[siliconflow] batch_size",
+                )
             guidance = _optional_float(
                 settings.get("guidance_scale"), _GUIDANCE_BOUNDS, "guidance_scale"
             )
@@ -345,12 +389,13 @@ class SiliconFlowProvider:
             except Exception as e:  # noqa: BLE001 — 下载失败回退直链
                 logger.warning("[siliconflow] 图片下载失败，回退直链: %s", e)
             if image_path:
+                # SF 的 OSS 常回 octet-stream，按魔数修正扩展名防平台发送降级
+                image_path = _normalize_image_extension(image_path)
                 image_urls.append(image_path)
                 image_paths.append(image_path)
             else:
                 logger.warning("[siliconflow] 图片 URL 约 1 小时后失效，直链仅为兜底")
                 image_urls.append(url_value)
-
         if not image_urls:
             raise APIError(
                 "SiliconFlow 未返回图片",
