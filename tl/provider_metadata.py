@@ -26,6 +26,8 @@ class ProviderSpec:
     rebuild_on_retry: bool = False
     retry_error_arg: bool = False
     parse_errors_with_provider: bool = False
+    # 候选级最大并发（0=不限制；免费单并发渠道设 1，批量任务按候选串行）
+    max_concurrency: int = 0
 
 
 _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
@@ -98,6 +100,18 @@ _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
         edit_capability_path="tl.provider_hooks.dashscope_edit_capability",
         capability_profile_path="tl.provider_capabilities.dashscope_capability",
         parse_errors_with_provider=True,
+    ),
+    ProviderSpec(
+        "modelscope",
+        "tl.api.modelscope.ModelScopeProvider",
+        settings_attr="modelscope_settings",
+        edit_capability_path="tl.provider_hooks.modelscope_edit_capability",
+        capability_profile_path="tl.provider_capabilities.modelscope_capability",
+        parse_errors_with_provider=True,
+        # 轮询须与提交用同一把 Key：轮换后需重建以同步 config.api_key
+        rebuild_on_retry=True,
+        # 免费渠道官方单并发，批量任务按候选串行
+        max_concurrency=1,
     ),
 )
 

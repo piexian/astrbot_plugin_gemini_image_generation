@@ -59,10 +59,10 @@ google / openai_images / minimax
 支持的模板：
 
 ```text
-google / gemini_interactions / openai / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova / dashscope
+google / gemini_interactions / openai / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova / dashscope / modelscope
 ```
 
-下方 `doubao_settings`、`openai_images_settings`、`agnes_ai_settings`、`xai_settings`、`minimax_settings`、`stepfun_settings`、`sensenova_settings`、`dashscope_settings` 章节对应这些模板的专用字段；`gemini_interactions` 无历史投影字段，全部配置都在模板内。代码中的同名 `*_settings` 字段仅作为兼容旧调用的首个候选投影；多候选场景以 `provider_settings.provider_overrides` 和运行时派生的 `provider_settings_by_type` 为准。
+下方 `doubao_settings`、`openai_images_settings`、`agnes_ai_settings`、`xai_settings`、`minimax_settings`、`stepfun_settings`、`sensenova_settings`、`dashscope_settings`、`modelscope_settings` 章节对应这些模板的专用字段；`gemini_interactions` 无历史投影字段，全部配置都在模板内。代码中的同名 `*_settings` 字段仅作为兼容旧调用的首个候选投影；多候选场景以 `provider_settings.provider_overrides` 和运行时派生的 `provider_settings_by_type` 为准。
 
 ## image_generation_settings
 
@@ -520,6 +520,42 @@ preset 模式尺寸换算表（分辨率档位 × 长宽比 → 官方推荐像�
 - 文生图：<https://platform.qianwenai.com/docs/developer-guides/image-generation/text-to-image>
 - 图像编辑：<https://platform.qianwenai.com/docs/developer-guides/image-generation/wan-image-editing>
 - Token Plan 接入：<https://platform.qianwenai.com/docs/token-plan/best-practices/multimodal-generation>
+
+
+## modelscope_settings（ModelScope 魔搭社区专用配置）
+
+配置路径：`provider_settings.provider_overrides` 中选择 `modelscope` 模板。接入魔搭社区 API-Inference **异步任务制**接口（插件首个提交+轮询型 provider）。
+
+**定位与前提**：免费兜底渠道，非主渠道。官方单并发、动态限流；需绑定阿里云账号并完成实名认证，按魔粒计费（0.5/1/2 魔粒每车次）。模型清单会上下架，以魔搭社区为准。
+
+**批量并发**：批量生成（`batch_concurrency`）对 `modelscope` 候选固定按 1 并发串行执行，配置更大的批量并发对该渠道不生效；不同候选条目（独立凭证）之间仍互不阻塞。
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `model` | `Qwen/Qwen-Image` | AIGC 模型 ID（如 `Qwen/Qwen-Image`、`MAILAND/majicflus_v1`）；名称含 `edit` 的模型（如 `Qwen/Qwen-Image-Edit`）支持参考图 |
+| `api_base` | `https://api-inference.modelscope.cn` | API 端点地址 |
+| `resolution` | `1K` | 档位 `1K`/`2K`，与长宽比组合换算像素后按模型族钳制 |
+| `aspect_ratio` | `1:1` | 默认长宽比，快速模式传入覆盖值时优先 |
+| `max_reference_images` | `1` | 官方仅证实编辑模型单图输入；非 edit 模型带图请求直接报错 |
+| `negative_prompt` | 空 | 负向提示词，留空不发送（上限 2000 字符） |
+| `steps` | `0` | 推理步数 1-100，超出钳制；`0` 不发送 |
+| `guidance` | `0` | 引导系数 1.5-20，超出钳制；`0` 不发送 |
+| `seed` | `0` | `0` 表示随机 |
+| `loras` | 空 | 单个 LoRA 填 repo id；多个填 JSON 对象（权重和为 1，最多 6 个） |
+| `poll_interval` | `5` | 轮询间隔（秒），官方示例 5 秒 |
+| `poll_timeout` | `100` | 轮询截止（秒），应小于插件总超时（默认 120 秒） |
+
+调用链路（异步任务制）：
+
+- 提交：`POST /v1/images/generations`，请求头 `X-ModelScope-Async-Mode: true`，立即返回 `task_id`
+- 轮询：`GET /v1/tasks/{task_id}`，请求头 `X-ModelScope-Task-Type: image_generation`
+- 终态：`SUCCEED` 返回 `output_images`（公网 URL，配置代理时自动下载落盘）/ `FAILED` 报错（不可重试，含服务端 message）
+
+尺寸规则：`resolution` 档位（1K=1024²/2K=2048² 像素预算）× 长宽比换算为 8 的倍数，单边触界后按比例重算另一边；模型族上限——Qwen-Image 1664、FLUX 1024、Z-Image [512, 2048]、SD 系 [64, 2048]，未知模型保守 [512, 1024]。
+
+**超时重试代价**：轮询超时按可重试错误处理，但重试会重新提交任务（新 `task_id`）并再次消耗魔粒；`poll_timeout` 保持默认即可在插件总超时前主动收尾。
+
+官方文档：<https://modelscope.cn/docs/model-service/API-Inference/intro>
 
 ## gemini_interactions（Gemini Interactions API 专用配置）
 

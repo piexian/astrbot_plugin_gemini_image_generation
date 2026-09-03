@@ -153,6 +153,8 @@ class GeminiAPIClient:
         self.provider_candidates: list[Any] = []
         self._candidate_key_pools: dict[str, list[str]] = {}
         self._candidate_key_indices: dict[str, int] = {}
+        # 候选级并发闸门（按 spec.max_concurrency 声明；免费单并发渠道串行）
+        self._candidate_semaphores: dict[str, asyncio.Semaphore] = {}
         self._default_proxy = self.proxy
 
     async def _get_session(self, proxy: str | None = None) -> aiohttp.ClientSession:
@@ -876,7 +878,50 @@ class GeminiAPIClient:
             retryable=False,
         )
 
+    def _candidate_semaphore(
+        self, config: ApiRequestConfig
+    ) -> asyncio.Semaphore | None:
+        """按 spec.max_concurrency 返回候选级信号量；未声明返回 None（零开销）。"""
+        spec = get_provider_spec(config.api_type)
+        if spec is None or spec.max_concurrency <= 0:
+            return None
+        key = config.candidate_id or config.api_type
+        semaphore = self._candidate_semaphores.get(key)
+        if semaphore is None:
+            semaphore = asyncio.Semaphore(spec.max_concurrency)
+            # 同步代码段内 setdefault，事件循环单线程下无竞态
+            semaphore = self._candidate_semaphores.setdefault(key, semaphore)
+        return semaphore
+
     async def _generate_image_single(
+        self,
+        config: ApiRequestConfig,
+        max_retries: int = 3,
+        total_timeout: int = 120,
+        per_retry_timeout: int = None,
+        max_total_time: int = None,
+    ) -> tuple[list[str], list[str], str | None, str | None]:
+        # 单并发渠道：同一候选串行执行完整请求生命周期（含重试与轮询），
+        # 不同候选（独立凭证）互不阻塞；成功/失败/超时/取消均经 async with 释放
+        semaphore = self._candidate_semaphore(config)
+        if semaphore is None:
+            return await self._generate_image_single_inner(
+                config=config,
+                max_retries=max_retries,
+                total_timeout=total_timeout,
+                per_retry_timeout=per_retry_timeout,
+                max_total_time=max_total_time,
+            )
+        async with semaphore:
+            return await self._generate_image_single_inner(
+                config=config,
+                max_retries=max_retries,
+                total_timeout=total_timeout,
+                per_retry_timeout=per_retry_timeout,
+                max_total_time=max_total_time,
+            )
+
+    async def _generate_image_single_inner(
         self,
         config: ApiRequestConfig,
         max_retries: int = 3,

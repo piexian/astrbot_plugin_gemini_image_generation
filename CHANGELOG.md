@@ -2,6 +2,16 @@
 
 > **升级提示**：v1.9.0 以后的配置文件格式不兼容旧版本。升级后如遇配置模板显示错误，请查看 [配置迁移说明](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/troubleshooting.md#配置迁移说明)。
 
+## [Unreleased]
+
+### Added
+
+- **新增 `modelscope` 供应商（魔搭社区 API-Inference）**：插件首个异步任务制 provider——提交 `POST /v1/images/generations`（`X-ModelScope-Async-Mode: true`）拿到 `task_id` 后自动轮询 `GET /v1/tasks/{task_id}`（间隔/超时可配，默认 5s/100s），`SUCCEED` 返回 `output_images`（配代理时下载落盘，失败回退直链），`FAILED` 报错含服务端 message。尺寸按档位（1K/2K）×长宽比换算并按模型族钳制（Qwen-Image 1664 / FLUX 1024 / Z-Image 512-2048 / SD 系 64-2048 / 未知保守 512-1024）；仅名称含 `edit` 的模型支持参考图（默认 1 张，非 edit 模型带图直接报错）；支持 `negative_prompt` / `steps` / `guidance` / `seed` / `loras`。免费单并发兜底定位；批量生成对该渠道固定按 1 并发串行执行（不同候选互不阻塞）；轮询 deadline 硬约束（sleep/GET 超时按剩余预算封顶），轮询 404/其余 4xx 快速失败不可重试、429/5xx 视为瞬时故障继续等待，轮询超时重试会重新提交任务并再次消耗魔粒。
+
+### Changed
+
+- `provider_polling` 预制供应商列表与相关文档同步加入 `modelscope`；`tests/test_provider_registry.py` 纳入 `tl.api.modelscope` 并将 `capability_profile_path` 加入 spec 路径可加载性校验。
+
 ## [2.7.6] - 2026-09-01
 
 ### Added

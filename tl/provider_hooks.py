@@ -393,3 +393,9 @@ def sensenova_edit_capability(settings: dict[str, Any]) -> bool:
 def dashscope_edit_capability(settings: dict[str, Any]) -> bool:
     """wan2.7 / qwen-image-2.0 / qwen-image-3.0 / qwen-image-edit 系列支持图像输入。"""
     return _dashscope_edit_gate(settings)
+
+
+def modelscope_edit_capability(settings: dict[str, Any]) -> bool:
+    """ModelScope 模型 ID 含 edit（如 Qwen/Qwen-Image-Edit）才支持参考图。"""
+    model = str(settings.get("model") or "").strip().lower()
+    return "edit" in model

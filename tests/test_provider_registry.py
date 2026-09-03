@@ -19,6 +19,7 @@ _PROVIDER_MODULES = (
     "tl.api.doubao",
     "tl.api.sensenova",
     "tl.api.dashscope",
+    "tl.api.modelscope",
 )
 
 
@@ -59,6 +60,7 @@ def test_provider_paths_and_hook_paths_are_loadable() -> None:
             spec.edit_capability_path,
             spec.candidate_config_hook_path,
             spec.tool_profile_path,
+            spec.capability_profile_path,
         ):
             if path:
                 assert callable(load_callable(path))
