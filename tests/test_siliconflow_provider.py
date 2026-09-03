@@ -274,6 +274,18 @@ def test_siliconflow_edit_capability_gates_by_model() -> None:
     assert siliconflow_edit_capability({"model": "Qwen/Qwen-Image-Edit"})
     assert not siliconflow_edit_capability({"model": "Qwen/Qwen-Image"})
     assert not siliconflow_edit_capability({})
+    # 与 provider 族判定同源：非 Qwen-Image/Kolors 系即使含 edit 字样也不放行
+    assert not siliconflow_edit_capability({"model": "foo/whatever-edit-v2"})
+    assert siliconflow_edit_capability({"model": "Kwai-Kolors/Kolors"})
+
+
+def test_capability_aspect_ratio_enum_excludes_unrepresentable() -> None:
+    """[512,1440] 边界放不下 4:1/8:1/1:4/1:8，路由枚举必须剔除。"""
+    cap = candidate_capability(_Candidate(model="Qwen/Qwen-Image"))
+    enum = set(cap["parameters"]["aspect_ratio"]["enum"])
+    assert "4:1" not in enum and "8:1" not in enum
+    assert "1:4" not in enum and "1:8" not in enum
+    assert "21:9" in enum and "1:2" in enum and "1:1" in enum
 
 
 # ---------------------------------------------------------------------------
@@ -422,6 +434,122 @@ async def test_urls_downloaded_immediately_with_candidate_proxy() -> None:
     assert kwargs["proxy"] == "http://127.0.0.1:7890"
     assert text is None
     assert thought is None
+
+
+@pytest.mark.asyncio
+async def test_reference_conversion_passes_candidate_proxy() -> None:
+    """候选级代理必须同时覆盖参考图转换，而不是只覆盖生图请求与结果下载。"""
+    from types import SimpleNamespace
+
+    from tl.api.reference_values import resolve_reference_api_values
+
+    captured: dict = {}
+
+    class _Client:
+        proxy = "http://global:1"
+        _http_proxy = "http://global:1"
+
+        async def _get_session(self, proxy):
+            captured["session_proxy"] = proxy
+            return None
+
+        async def _normalize_reference_image_input(
+            self, image_input, image_input_mode="force_base64", **kwargs
+        ):
+            captured["kwargs"] = kwargs
+            return "image/png", "QUJD"
+
+    config = SimpleNamespace(
+        proxy="http://candidate:2", image_input_mode="force_base64"
+    )
+    values = await resolve_reference_api_values(
+        _Client(),
+        config,
+        ["https://cdn.example/a.png"],
+        max_count=1,
+        log_prefix="[t] ",
+        error_label="siliconflow",
+    )
+    assert values == ["data:image/png;base64,QUJD"]
+    assert captured["kwargs"]["request_proxy"] == "http://candidate:2"
+
+
+@pytest.mark.asyncio
+async def test_reference_conversion_without_candidate_proxy_keeps_global() -> None:
+    from types import SimpleNamespace
+
+    from tl.api.reference_values import resolve_reference_api_values
+
+    captured: dict = {}
+
+    class _Client:
+        proxy = "http://global:1"
+        _http_proxy = "http://global:1"
+
+        async def _get_session(self, proxy):
+            return None
+
+        async def _normalize_reference_image_input(
+            self, image_input, image_input_mode="force_base64", **kwargs
+        ):
+            captured["kwargs"] = kwargs
+            return "image/png", "QUJD"
+
+    config = SimpleNamespace(proxy=None, image_input_mode="force_base64")
+    await resolve_reference_api_values(
+        _Client(),
+        config,
+        ["https://cdn.example/a.png"],
+        max_count=1,
+        log_prefix="[t] ",
+        error_label="siliconflow",
+    )
+    # 未配置候选代理时不传新参数，保持全局回退且兼容旧客户端替身
+    assert "request_proxy" not in captured["kwargs"]
+
+
+@pytest.mark.asyncio
+async def test_normalize_reference_input_request_proxy_derivation(monkeypatch):
+    """客户端按候选代理派生 session/http-proxy：http 直用、socks 走 connector、缺省回退全局。"""
+    from tl.tl_api import GeminiAPIClient
+
+    client = GeminiAPIClient(api_keys=["k"])
+    seen: dict = {}
+
+    async def fake_get_session(proxy):
+        seen["session"] = proxy
+        return "SESSION"
+
+    async def fake_normalize(
+        image_input,
+        image_cache_dir=None,
+        image_input_mode="force_base64",
+        session=None,
+        proxy=None,
+    ):
+        seen["normalize"] = (session, proxy)
+        return "image/png", "QUJD"
+
+    monkeypatch.setattr(client, "_get_session", fake_get_session)
+    monkeypatch.setattr("tl.tl_api.normalize_reference_image_input", fake_normalize)
+
+    await client._normalize_reference_image_input(
+        "https://cdn.example/a.png", request_proxy="http://candidate:2"
+    )
+    assert seen["session"] == "http://candidate:2"
+    assert seen["normalize"] == ("SESSION", "http://candidate:2")
+
+    # socks 候选：per-request proxy 必须为 None，由 session connector 承担
+    await client._normalize_reference_image_input(
+        "https://cdn.example/a.png", request_proxy="socks5://candidate:2"
+    )
+    assert seen["session"] == "socks5://candidate:2"
+    assert seen["normalize"][1] is None
+
+    # 未传候选代理：回退全局（本客户端未配置全局代理）
+    await client._normalize_reference_image_input("https://cdn.example/a.png")
+    assert seen["session"] is None
+    assert seen["normalize"][1] is None
 
 
 @pytest.mark.asyncio

@@ -64,6 +64,25 @@ _EDIT_FAMILIES: Final[frozenset[str]] = frozenset(
 )
 # Kolors 支持单张参考图做图生图（官方 image 参数无模型限制，2026-09 实测通过）
 _KOLORS_MAX_REFS: Final[int] = 1
+# 渠道可表达比例：全局并集剔除 [512,1440] 边界放不下的 4:1/8:1/1:4/1:8（上限仅 2.81:1）
+SUPPORTED_ASPECT_RATIOS: Final[tuple[str, ...]] = (
+    "1:1",
+    "16:9",
+    "4:3",
+    "3:2",
+    "9:16",
+    "4:5",
+    "5:4",
+    "21:9",
+    "3:4",
+    "2:3",
+    "2:1",
+    "1:2",
+    "19.5:9",
+    "9:19.5",
+    "20:9",
+    "9:20",
+)
 _BATCH_LIMIT_KOLORS: Final[int] = 4
 _STEPS_BOUNDS: Final[tuple[int, int]] = (1, 100)
 _GUIDANCE_BOUNDS: Final[tuple[float, float]] = (0.0, 20.0)

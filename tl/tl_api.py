@@ -574,8 +574,13 @@ class GeminiAPIClient:
         image_input: Any,
         image_input_mode: str = "force_base64",
         image_cache_dir=None,
+        *,
+        request_proxy: str | None = None,
     ) -> tuple[str | None, str | None]:
-        """Normalize a reference image input with the dedicated normalizer."""
+        """Normalize a reference image input with the dedicated normalizer.
+
+        request_proxy: 候选级代理原始串（可含 socks），优先于全局代理；None 走全局。
+        """
         image_str = extract_reference_image_source(image_input)
 
         session = None
@@ -584,8 +589,12 @@ class GeminiAPIClient:
             parsed_url = urllib.parse.urlparse(image_str)
             is_qq = is_qq_image_host(parsed_url.netloc or "")
             if not is_qq:
-                session = await self._get_session(self.proxy)
-                proxy = self._http_proxy
+                raw_proxy = request_proxy if request_proxy is not None else self.proxy
+                session = await self._get_session(raw_proxy)
+                if raw_proxy and raw_proxy.lower().startswith("socks"):
+                    proxy = None
+                else:
+                    proxy = raw_proxy or None
 
         return await normalize_reference_image_input(
             image_input,

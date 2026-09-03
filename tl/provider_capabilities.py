@@ -308,13 +308,19 @@ def modelscope_capability(candidate: Any) -> dict[str, Any]:
 
 def siliconflow_capability(candidate: Any) -> dict[str, Any]:
     # 按模型族分层：仅 Kolors 支持批量（batch_size 1-4）；seed 仅声明不参与运行期注入（request_setting_map 不消费 seed）
-    from .api.siliconflow import _model_family
+    # 比例枚举按渠道可表达范围覆写（[512,1440] 边界放不下 4:1/8:1/1:4/1:8）
+    from .api.siliconflow import SUPPORTED_ASPECT_RATIOS, _model_family
 
     is_kolors = _model_family(_model(candidate)) == "kolors"
     return _profile(
         candidate,
         native_batch_limit=4 if is_kolors else 1,
         parameters={
+            "aspect_ratio": {
+                "type": "string",
+                "enum": list(SUPPORTED_ASPECT_RATIOS),
+                "default_source": "provider_config",
+            },
             "resolution": {
                 "type": "string",
                 "enum": ["1K", "2K"],

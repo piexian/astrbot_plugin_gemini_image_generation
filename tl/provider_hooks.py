@@ -402,6 +402,8 @@ def modelscope_edit_capability(settings: dict[str, Any]) -> bool:
 
 
 def siliconflow_edit_capability(settings: dict[str, Any]) -> bool:
-    """SiliconFlow：名称含 edit 的模型（2509 最多 3 图）或 Kolors（单图图生图）支持参考图。"""
-    model = str(settings.get("model") or "").strip().lower()
-    return "edit" in model or "kolors" in model
+    """SiliconFlow：Qwen-Image-Edit 系（2509 最多 3 图）与 Kolors（单图图生图）支持参考图。"""
+    from .api.siliconflow import _EDIT_FAMILIES, _model_family
+
+    family = _model_family(str(settings.get("model") or ""))
+    return family in _EDIT_FAMILIES or family == "kolors"
