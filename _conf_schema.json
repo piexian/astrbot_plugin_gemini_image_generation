@@ -94,7 +94,7 @@
                 "description": "API 端点地址",
                 "type": "string",
                 "hint": "Google AI API 地址，留空使用默认值",
-                "default": ""
+                "default": "https://generativelanguage.googleapis.com"
               },
               "proxy": {
                 "description": "代理地址",
@@ -217,7 +217,7 @@
                 "description": "API 端点地址",
                 "type": "string",
                 "hint": "Google AI API 地址，留空使用默认值；缺版本前缀时自动补 /v1beta",
-                "default": ""
+                "default": "https://generativelanguage.googleapis.com"
               },
               "proxy": {
                 "description": "代理地址",
@@ -339,7 +339,7 @@
                 "description": "API 端点地址",
                 "type": "string",
                 "hint": "OpenAI 兼容 API 地址",
-                "default": ""
+                "default": "https://api.openai.com/v1"
               },
               "proxy": {
                 "description": "代理地址",
@@ -979,7 +979,7 @@
                 "description": "API 端点地址",
                 "type": "string",
                 "hint": "OpenAI Images API 地址，留空使用默认 https://api.openai.com",
-                "default": ""
+                "default": "https://api.openai.com"
               },
               "proxy": {
                 "description": "代理地址",
