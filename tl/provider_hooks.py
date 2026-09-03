@@ -399,3 +399,9 @@ def modelscope_edit_capability(settings: dict[str, Any]) -> bool:
     """ModelScope 模型 ID 含 edit（如 Qwen/Qwen-Image-Edit）才支持参考图。"""
     model = str(settings.get("model") or "").strip().lower()
     return "edit" in model
+
+
+def siliconflow_edit_capability(settings: dict[str, Any]) -> bool:
+    """SiliconFlow 模型名含 edit（如 Qwen/Qwen-Image-Edit-2509）才支持参考图。"""
+    model = str(settings.get("model") or "").strip().lower()
+    return "edit" in model

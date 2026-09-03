@@ -306,6 +306,33 @@ def modelscope_capability(candidate: Any) -> dict[str, Any]:
     )
 
 
+def siliconflow_capability(candidate: Any) -> dict[str, Any]:
+    # 按模型族分层：仅 Kolors 支持批量（batch_size 1-4）；seed 仅声明不参与运行期注入（request_setting_map 不消费 seed）
+    from .api.siliconflow import _model_family
+
+    is_kolors = _model_family(_model(candidate)) == "kolors"
+    return _profile(
+        candidate,
+        native_batch_limit=4 if is_kolors else 1,
+        parameters={
+            "resolution": {
+                "type": "string",
+                "enum": ["1K", "2K"],
+                "default_source": "provider_config",
+            },
+            "negative_prompt": {
+                "type": "string",
+                "default_source": "provider_config",
+            },
+            "seed": {"type": "integer", "default_source": "provider_config"},
+        },
+        request_setting_map={
+            **({"image_count": "batch_size"} if is_kolors else {}),
+            "negative_prompt": "negative_prompt",
+        },
+    )
+
+
 def candidate_capability(candidate: Any) -> dict[str, Any]:
     """Return the effective tool capability for one configured candidate."""
     spec = get_provider_spec(getattr(candidate, "api_type", ""))

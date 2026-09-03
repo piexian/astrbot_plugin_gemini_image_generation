@@ -22,3 +22,5 @@ MAX_REFERENCE_IMAGES_SENSENOVA_U15: Final[int] = 4
 # ModelScope 编辑接口官方仅证实单图输入，保守默认 1 张（用户可在配置调高）
 MAX_REFERENCE_IMAGES_MODELSCOPE: Final[int] = 1
 MAX_REFERENCE_IMAGES_DASHSCOPE: Final[int] = 9
+# SiliconFlow 编辑模型参考图上限：Qwen-Image-Edit-2509 最多 3 张（经典 Edit 仅 1 张，provider 内分层）
+MAX_REFERENCE_IMAGES_SILICONFLOW: Final[int] = 3

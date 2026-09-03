@@ -59,10 +59,10 @@ google / openai_images / minimax
 支持的模板：
 
 ```text
-google / gemini_interactions / openai / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova / dashscope / modelscope
+google / gemini_interactions / openai / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova / dashscope / modelscope / siliconflow
 ```
 
-下方 `doubao_settings`、`openai_images_settings`、`agnes_ai_settings`、`xai_settings`、`minimax_settings`、`stepfun_settings`、`sensenova_settings`、`dashscope_settings`、`modelscope_settings` 章节对应这些模板的专用字段；`gemini_interactions` 无历史投影字段，全部配置都在模板内。代码中的同名 `*_settings` 字段仅作为兼容旧调用的首个候选投影；多候选场景以 `provider_settings.provider_overrides` 和运行时派生的 `provider_settings_by_type` 为准。
+下方 `doubao_settings`、`openai_images_settings`、`agnes_ai_settings`、`xai_settings`、`minimax_settings`、`stepfun_settings`、`sensenova_settings`、`dashscope_settings`、`modelscope_settings`、`siliconflow_settings` 章节对应这些模板的专用字段；`gemini_interactions` 无历史投影字段，全部配置都在模板内。代码中的同名 `*_settings` 字段仅作为兼容旧调用的首个候选投影；多候选场景以 `provider_settings.provider_overrides` 和运行时派生的 `provider_settings_by_type` 为准。
 
 ## image_generation_settings
 
@@ -557,6 +557,35 @@ preset 模式尺寸换算表（分辨率档位 × 长宽比 → 官方推荐像�
 **超时重试代价**：轮询超时按可重试错误处理，但重试会重新提交任务（新 `task_id`）并再次消耗魔粒；`poll_timeout` 保持默认即可在插件总超时前主动收尾。
 
 官方文档：<https://modelscope.cn/docs/model-service/API-Inference/intro>
+
+## siliconflow_settings（SiliconFlow 硅基流动专用配置）
+
+配置路径：`provider_settings.provider_overrides` 中选择 `siliconflow` 模板。接入硅基流动**同步单端点**图像接口（文生图与图像编辑共用 `/v1/images/generations`）。
+
+**调用链路（同步）**：`POST /v1/images/generations` 直接返回 `images[].url`，无任务轮询。**官方图片 URL 仅 1 小时有效**，插件解析阶段立即下载落盘（配置代理时走候选级代理），失败才回退直链并告警。
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `model` | `Qwen/Qwen-Image` | 推荐 `Qwen/Qwen-Image`（文生图）、`Kwai-Kolors/Kolors`（批量 1-4 张）、`Qwen/Qwen-Image-Edit-2509`（编辑，最多 3 张参考图）、`Qwen/Qwen-Image-Edit`（经典编辑，单张参考图） |
+| `api_base` | `https://api.siliconflow.cn` | API 端点地址 |
+| `resolution` | `1K` | 档位 `1K`/`2K`，与长宽比组合映射 `image_size` |
+| `aspect_ratio` | `1:1` | 默认长宽比，快速模式传入覆盖值时优先 |
+| `max_reference_images` | `3` | 仅编辑模型生效：Edit-2509 最多 3 张；经典 Edit 截断 1 张；非编辑模型带图直接报错 |
+| `negative_prompt` | 空 | 负向提示词，留空不发送 |
+| `num_inference_steps` | `0` | 推理步数 1-100，超出钳制；`0` 不发送（服务端默认 20） |
+| `guidance_scale` | `0` | 仅 Kolors，0-20，超出钳制；`0` 不发送（服务端默认 7.5） |
+| `seed` | `0` | `0` 表示随机，范围 0-9999999999 |
+
+模型族差异：
+
+- `Kolors`：`image_size` 命中官方预设（1:1 / 3:4 / 1:2 / 9:16，3:4 按 1K/2K 档位区分），支持 `batch_size`（1-4，LLM 工具批量映射）与 `guidance_scale`。
+- `Qwen-Image`：`image_size` 命中官方七档预设，档位不影响预设。
+- `Edit` 系列：不传 `image_size`；参考图按 `image`/`image2`/`image3` 键位发送（2509 最多 3 张）。
+- 未命中预设的比例按档位像素预算本地计算（8 对齐；Kolors 长边钳 1440、Qwen-Image 钳 1664，未知模型保守 [512, 1440]）。
+
+错误处理：非 200 响应体形态混杂（JSON 对象 / JSON 字符串 / 空 body），provider 自行解析；官方过载码 `50505` 显式可重试，其余交由框架按状态码通用判断（429/5xx 重试、401/403 多 Key 轮换）。
+
+官方文档：<https://docs.siliconflow.cn/cn/api-reference/images/images-generations>
 
 ## gemini_interactions（Gemini Interactions API 专用配置）
 

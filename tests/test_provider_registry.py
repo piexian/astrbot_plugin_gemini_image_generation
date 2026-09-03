@@ -20,6 +20,7 @@ _PROVIDER_MODULES = (
     "tl.api.sensenova",
     "tl.api.dashscope",
     "tl.api.modelscope",
+    "tl.api.siliconflow",
 )
 
 

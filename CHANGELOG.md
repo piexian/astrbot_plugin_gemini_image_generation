@@ -7,6 +7,7 @@
 ### Added
 
 - **新增 `modelscope` 供应商（魔搭社区 API-Inference）**：插件首个异步任务制 provider——提交 `POST /v1/images/generations`（`X-ModelScope-Async-Mode: true`）拿到 `task_id` 后自动轮询 `GET /v1/tasks/{task_id}`（间隔/超时可配，默认 5s/100s），`SUCCEED` 返回 `output_images`（配代理时下载落盘，失败回退直链），`FAILED` 报错含服务端 message。尺寸按档位（1K/2K）×长宽比换算并按模型族钳制（Qwen-Image 1664 / FLUX 1024 / Z-Image 512-2048 / SD 系 64-2048 / 未知保守 512-1024）；仅名称含 `edit` 的模型支持参考图（默认 1 张，非 edit 模型带图直接报错）；支持 `negative_prompt` / `steps` / `guidance` / `seed` / `loras`。免费单并发兜底定位；批量生成对该渠道固定按 1 并发串行执行（不同候选互不阻塞）；轮询 deadline 硬约束（sleep/GET 超时按剩余预算封顶），轮询 404/其余 4xx 快速失败不可重试、429/5xx 视为瞬时故障继续等待，轮询超时重试会重新提交任务并再次消耗魔粒。
+- **新增 `siliconflow` 供应商（硅基流动）**：插件首个同步单端点 provider——文生图与图像编辑共用 `POST /v1/images/generations`，直接返回 `images[].url` 无任务轮询；官方图片 URL 仅 1 小时有效，解析阶段无条件立即下载落盘（显式走候选级代理），失败回退直链并告警。按模型族分层：`Kwai-Kolors/Kolors` 支持预设尺寸 + `batch_size`（1-4，LLM 工具批量映射）+ `guidance_scale`；`Qwen/Qwen-Image` 走官方预设尺寸表；`Qwen/Qwen-Image-Edit(-2509)` 不传尺寸、参考图按 `image`/`image2`/`image3` 键位发送（2509 最多 3 张、经典 Edit 截断 1 张），仅名称含 `edit` 的模型支持参考图，非 edit 带图直接报错。未命中预设的比例按档位预算本地计算（8 对齐，Kolors 长边钳 1440 / Qwen-Image 1664 / 未知保守 [512, 1440]）。错误体形态混杂（JSON 对象/字符串/空 body）由 provider 解析，官方过载码 `50505` 显式可重试，其余交框架按状态码通用判断。
 
 ### Changed
 
