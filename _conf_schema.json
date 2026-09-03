@@ -1730,7 +1730,7 @@
           },
           "siliconflow": {
             "description": "SiliconFlow（硅基流动）覆盖配置",
-            "hint": "同步单端点渠道：文生图与编辑共用 /v1/images/generations，返回的图片 URL 仅 1 小时有效，插件会立即下载落盘。模型族差异：Kolors 支持批量与引导系数，Qwen-Image 支持预设尺寸，Edit 系列不传尺寸、按参考图编辑。",
+            "hint": "同步单端点渠道：文生图与编辑共用 /v1/images/generations，返回的图片 URL 仅 1 小时有效，插件会立即下载落盘。模型族差异：Kolors 支持批量、引导系数与单张参考图图生图，Qwen-Image 支持预设尺寸，Edit 系列不传尺寸、按参考图编辑（2509 最多 3 张）。",
             "items": {
               "enabled": {
                 "description": "启用此条配置",

@@ -566,7 +566,7 @@ preset 模式尺寸换算表（分辨率档位 × 长宽比 → 官方推荐像�
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
-| `model` | `Qwen/Qwen-Image` | 推荐 `Qwen/Qwen-Image`（文生图）、`Kwai-Kolors/Kolors`（批量 1-4 张）、`Qwen/Qwen-Image-Edit-2509`（编辑，最多 3 张参考图）、`Qwen/Qwen-Image-Edit`（经典编辑，单张参考图） |
+| `model` | `Qwen/Qwen-Image` | 推荐 `Qwen/Qwen-Image`（文生图）、`Kwai-Kolors/Kolors`（批量 1-4 张，单张参考图图生图）、`Qwen/Qwen-Image-Edit-2509`（编辑，最多 3 张参考图）、`Qwen/Qwen-Image-Edit`（经典编辑，单张参考图） |
 | `api_base` | `https://api.siliconflow.cn` | API 端点地址 |
 | `resolution` | `1K` | 档位 `1K`/`2K`，与长宽比组合映射 `image_size` |
 | `aspect_ratio` | `1:1` | 默认长宽比，快速模式传入覆盖值时优先 |
@@ -578,7 +578,7 @@ preset 模式尺寸换算表（分辨率档位 × 长宽比 → 官方推荐像�
 
 模型族差异：
 
-- `Kolors`：`image_size` 命中官方预设（1:1 / 3:4 / 1:2 / 9:16，3:4 按 1K/2K 档位区分），支持 `batch_size`（1-4，LLM 工具批量映射）与 `guidance_scale`。
+- `Kolors`：`image_size` 命中官方预设（1:1 / 3:4 / 1:2 / 9:16，3:4 按 1K/2K 档位区分），支持 `batch_size`（1-4，LLM 工具批量映射）与 `guidance_scale`；支持单张参考图图生图（`image` 键，超出截断）。
 - `Qwen-Image`：`image_size` 命中官方七档预设，档位不影响预设。
 - `Edit` 系列：不传 `image_size`；参考图按 `image`/`image2`/`image3` 键位发送（2509 最多 3 张）。
 - 未命中预设的比例按档位像素预算本地计算（8 对齐；Kolors 长边钳 1440、Qwen-Image 钳 1664，未知模型保守 [512, 1440]）。

@@ -62,6 +62,8 @@ _QWEN_IMAGE_PRESETS: Final[dict[str, tuple[int, int]]] = {
 _EDIT_FAMILIES: Final[frozenset[str]] = frozenset(
     {"qwen-image-edit", "qwen-image-edit-2509"}
 )
+# Kolors 支持单张参考图做图生图（官方 image 参数无模型限制，2026-09 实测通过）
+_KOLORS_MAX_REFS: Final[int] = 1
 _BATCH_LIMIT_KOLORS: Final[int] = 4
 _STEPS_BOUNDS: Final[tuple[int, int]] = (1, 100)
 _GUIDANCE_BOUNDS: Final[tuple[float, float]] = (0.0, 20.0)
@@ -290,7 +292,7 @@ class SiliconFlowProvider:
 
         refs = config.reference_images or []
         if refs:
-            if family not in _EDIT_FAMILIES:
+            if family not in _EDIT_FAMILIES and family != "kolors":
                 raise APIError(
                     f"SiliconFlow 模型 {model} 不支持参考图，"
                     "请改用编辑模型（如 Qwen/Qwen-Image-Edit-2509）或去掉参考图",
@@ -298,15 +300,19 @@ class SiliconFlowProvider:
                     "invalid_reference_image",
                     retryable=False,
                 )
-            max_count = (
-                _optional_int(
-                    settings.get("max_reference_images"),
-                    1,
-                    MAX_REFERENCE_IMAGES_SILICONFLOW,
-                    "max_reference_images",
+            if family == "kolors":
+                # Kolors 仅单张参考图（image 键），多张直接截断
+                max_count = _KOLORS_MAX_REFS
+            else:
+                max_count = (
+                    _optional_int(
+                        settings.get("max_reference_images"),
+                        1,
+                        MAX_REFERENCE_IMAGES_SILICONFLOW,
+                        "max_reference_images",
+                    )
+                    or MAX_REFERENCE_IMAGES_SILICONFLOW
                 )
-                or MAX_REFERENCE_IMAGES_SILICONFLOW
-            )
             if family == "qwen-image-edit":
                 # 经典 Edit 官方仅支持单张参考图，与 2509 的 3 张上限分层
                 max_count = 1

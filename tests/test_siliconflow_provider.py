@@ -234,6 +234,41 @@ async def test_non_edit_model_with_reference_raises_non_retryable() -> None:
     assert getattr(exc_info.value, "retryable", True) is False
 
 
+@pytest.mark.asyncio
+async def test_kolors_accepts_single_reference_image() -> None:
+    """Kolors 图生图：单张参考图走 image 键，尺寸仍发送。"""
+    provider = SiliconFlowProvider()
+    request = await provider.build_request(
+        client=object(),
+        config=_make_config(
+            provider_settings={"model": "Kwai-Kolors/Kolors"},
+            reference_images=[_DATA_URI],
+        ),
+    )
+    assert request.payload["image"] == _DATA_URI
+    assert "image2" not in request.payload and "image3" not in request.payload
+    assert request.payload.get("image_size") == "1024x1024"
+
+
+@pytest.mark.asyncio
+async def test_kolors_truncates_extra_references() -> None:
+    provider = SiliconFlowProvider()
+    request = await provider.build_request(
+        client=object(),
+        config=_make_config(
+            provider_settings={"model": "Kwai-Kolors/Kolors"},
+            reference_images=[_DATA_URI, _DATA_URI, _DATA_URI],
+        ),
+    )
+    assert request.payload["image"] == _DATA_URI
+    assert "image2" not in request.payload
+
+
+def test_kolors_model_passes_edit_capability_hook() -> None:
+    assert siliconflow_edit_capability({"model": "Kwai-Kolors/Kolors"}) is True
+    assert siliconflow_edit_capability({"model": "Qwen/Qwen-Image"}) is False
+
+
 def test_siliconflow_edit_capability_gates_by_model() -> None:
     assert siliconflow_edit_capability({"model": "Qwen/Qwen-Image-Edit-2509"})
     assert siliconflow_edit_capability({"model": "Qwen/Qwen-Image-Edit"})

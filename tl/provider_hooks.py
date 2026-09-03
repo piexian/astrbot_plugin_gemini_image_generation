@@ -402,6 +402,6 @@ def modelscope_edit_capability(settings: dict[str, Any]) -> bool:
 
 
 def siliconflow_edit_capability(settings: dict[str, Any]) -> bool:
-    """SiliconFlow 模型名含 edit（如 Qwen/Qwen-Image-Edit-2509）才支持参考图。"""
+    """SiliconFlow：名称含 edit 的模型（2509 最多 3 图）或 Kolors（单图图生图）支持参考图。"""
     model = str(settings.get("model") or "").strip().lower()
-    return "edit" in model
+    return "edit" in model or "kolors" in model
