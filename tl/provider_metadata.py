@@ -99,6 +99,16 @@ _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
         capability_profile_path="tl.provider_capabilities.dashscope_capability",
         parse_errors_with_provider=True,
     ),
+    ProviderSpec(
+        "modelscope",
+        "tl.api.modelscope.ModelScopeProvider",
+        settings_attr="modelscope_settings",
+        edit_capability_path="tl.provider_hooks.modelscope_edit_capability",
+        capability_profile_path="tl.provider_capabilities.modelscope_capability",
+        parse_errors_with_provider=True,
+        # 轮询须与提交用同一把 Key：轮换后需重建以同步 config.api_key
+        rebuild_on_retry=True,
+    ),
 )
 
 PROVIDER_TYPES: Final[tuple[str, ...]] = tuple(

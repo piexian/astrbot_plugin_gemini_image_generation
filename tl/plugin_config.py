@@ -112,6 +112,7 @@ class PluginConfig:
     openai_images_settings: dict[str, Any] = field(default_factory=dict)
     agnes_ai_settings: dict[str, Any] = field(default_factory=dict)
     dashscope_settings: dict[str, Any] = field(default_factory=dict)
+    modelscope_settings: dict[str, Any] = field(default_factory=dict)
 
     # 供应商配置覆盖
     # 结构：{candidate_id: {api_keys: [...], daily_limit_per_key: int, ...}}

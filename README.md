@@ -86,7 +86,7 @@ https://github.com/piexian/astrbot_plugin_gemini_image_generation
 各供应商的端点、参数、尺寸适配规则等完整说明见 [完整配置参考](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/config.md)：
 
 ```text
-google / gemini_interactions / openai / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova / dashscope
+google / gemini_interactions / openai / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova / dashscope / modelscope
 ```
 
 ## 项目结构

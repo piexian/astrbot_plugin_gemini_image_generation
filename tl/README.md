@@ -185,6 +185,7 @@ generate_image()
 | `doubao` | `DoubaoProvider` |
 | `sensenova` | `SenseNovaProvider` |
 | `dashscope` | `DashScopeProvider` |
+| `modelscope` | `ModelScopeProvider`（异步任务制：提交 + 轮询） |
 
 ### Provider 公共辅助模块
 

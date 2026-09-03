@@ -286,6 +286,26 @@ def dashscope_capability(candidate: Any) -> dict[str, Any]:
     )
 
 
+def modelscope_capability(candidate: Any) -> dict[str, Any]:
+    # 仅 1K/2K 档（像素上限 2K）；seed 仅声明不参与运行期注入（request_setting_map 不消费 seed）
+    return _profile(
+        candidate,
+        parameters={
+            "resolution": {
+                "type": "string",
+                "enum": ["1K", "2K"],
+                "default_source": "provider_config",
+            },
+            "negative_prompt": {
+                "type": "string",
+                "default_source": "provider_config",
+            },
+            "seed": {"type": "integer", "default_source": "provider_config"},
+        },
+        request_setting_map={"negative_prompt": "negative_prompt"},
+    )
+
+
 def candidate_capability(candidate: Any) -> dict[str, Any]:
     """Return the effective tool capability for one configured candidate."""
     spec = get_provider_spec(getattr(candidate, "api_type", ""))
