@@ -1,7 +1,8 @@
-"""后台生图失败时，将结果回灌给发起调用的 LLM 会话。
+"""后台生图失败时，走 AstrBot 官方后台任务回灌链路通知用户。
 
-工具触发且转后台的任务失败时，不再向群内直发原始报错，而是让当前会话的
-聊天模型重新组织语言告知用户；通知链任何一步失败仅记日志（静默降级）。
+复用框架 _wake_main_agent_for_background_result 的形态：CronMessageEvent +
+主 agent（仅挂 send_message_to_user 工具）+ persist_agent_history。
+任何一步失败仅记日志（静默降级）；开关关闭或官方 API 缺失时回退直发。
 """
 
 from __future__ import annotations
@@ -11,76 +12,41 @@ from typing import Any
 
 from astrbot.api import logger
 
-# 注入给回灌请求的会话历史上限，避免长对话撑爆通知请求
-_CONTEXT_HISTORY_LIMIT = 10
+try:  # 官方内部 API（_get_session_conv 为私有函数），版本漂移风险防御
+    from astrbot.core.agent.tool import ToolSet
+    from astrbot.core.astr_main_agent import (
+        MainAgentBuildConfig,
+        _get_session_conv,
+        build_main_agent,
+    )
+    from astrbot.core.astr_main_agent_resources import (
+        BACKGROUND_TASK_RESULT_WOKE_SYSTEM_PROMPT,
+    )
+    from astrbot.core.cron.events import CronMessageEvent
+    from astrbot.core.platform.message_session import MessageSession
+    from astrbot.core.provider.entites import ProviderRequest
+    from astrbot.core.tools.message_tools import SendMessageToUserTool
+    from astrbot.core.utils.history_saver import persist_agent_history
+
+    _OFFICIAL_API_READY = True
+except ImportError as e:  # pragma: no cover - 仅低版本框架触发
+    logger.warning(f"[后台失败回灌] AstrBot 官方回灌 API 导入失败，通知将静默降级: {e}")
+    _OFFICIAL_API_READY = False
+    # except 分支显式绑 None：保证模块符号恒存在，便于调用方/测试安全引用
+    ToolSet = MainAgentBuildConfig = _get_session_conv = build_main_agent = None
+    BACKGROUND_TASK_RESULT_WOKE_SYSTEM_PROMPT = CronMessageEvent = None
+    MessageSession = ProviderRequest = SendMessageToUserTool = None
+    persist_agent_history = None
 
 
 def _build_notice_prompt(task_id: str | None, failure_summary: str) -> str:
     tid = f"（任务号 {task_id}）" if task_id else ""
-    return (
-        f"你之前代表用户发起的后台图片生成任务{tid}已失败。失败摘要：{failure_summary}\n"
-        "请用一两句简短友好的中文告知用户生成失败，可建议稍后重试或调整参数；"
-        "不要复述内部错误细节。"
-    )
+    return f"后台图片生成任务{tid}失败。失败摘要：{failure_summary}"
 
 
 def notify_llm_enabled(plugin: Any) -> bool:
     cfg = getattr(plugin, "cfg", None)
     return bool(getattr(cfg, "background_failure_notify_llm", True))
-
-
-async def _load_conversation_contexts(
-    context: Any, umo: str
-) -> list[dict[str, Any]] | None:
-    """尽力取当前会话历史作为回灌上下文；API 形态不符时返回 None 跳过。"""
-    try:
-        conv_mgr = getattr(context, "conversation_manager", None)
-        if conv_mgr is None:
-            return None
-        cid = await conv_mgr.get_curr_conversation_id(umo)
-        if not cid:
-            return None
-        conv = await conv_mgr.get_conversation(umo, cid)
-        if conv is None:
-            return None
-        # v1 Conversation.history 为 OpenAI 格式消息列表的 JSON 字符串
-        raw = getattr(conv, "history", None)
-        history = json.loads(raw) if isinstance(raw, str) else raw
-        if not isinstance(history, list):
-            return None
-        msgs = [
-            m
-            for m in history
-            if isinstance(m, dict) and m.get("role") in ("user", "assistant")
-        ]
-        tail = msgs[-_CONTEXT_HISTORY_LIMIT:]
-        return tail or None
-    except Exception as e:
-        logger.debug(f"[后台失败回灌] 会话历史注入跳过: {e}")
-        return None
-
-
-async def _persist_notice_exchange(
-    context: Any,
-    umo: str,
-    prompt: str,
-    reply: str,
-) -> None:
-    """把回灌一问一答写入会话记忆，让 AI 后续轮次记得该失败；不符则跳过。"""
-    try:
-        conv_mgr = getattr(context, "conversation_manager", None)
-        if conv_mgr is None or not hasattr(conv_mgr, "add_message_pair"):
-            return
-        cid = await conv_mgr.get_curr_conversation_id(umo)
-        if not cid:
-            return
-        await conv_mgr.add_message_pair(
-            cid=cid,
-            user_message={"role": "user", "content": prompt},
-            assistant_message={"role": "assistant", "content": reply},
-        )
-    except Exception as e:
-        logger.debug(f"[后台失败回灌] 会话记忆写入跳过: {e}")
 
 
 async def notify_llm_background_failure(
@@ -91,31 +57,85 @@ async def notify_llm_background_failure(
     scene: str,
     task_id: str | None = None,
 ) -> bool:
-    """回灌失败通知：LLM 生成用户友好文案后发送；返回是否实际送达。"""
-    prompt = _build_notice_prompt(task_id, failure_summary)
+    """走官方回灌链路把失败结果交给主 agent 告知用户；返回是否送达。"""
+    notice = _build_notice_prompt(task_id, failure_summary)
     try:
+        if not _OFFICIAL_API_READY:
+            raise RuntimeError("AstrBot 官方回灌 API 不可用")
         context = getattr(plugin, "context", None)
         umo = getattr(event, "unified_msg_origin", None)
         if context is None or not umo:
             raise RuntimeError("缺少插件 context 或会话标识")
-        provider_id = await context.get_current_chat_provider_id(umo)
-        if not provider_id:
-            raise RuntimeError("当前会话未配置聊天模型")
-        contexts = await _load_conversation_contexts(context, umo)
-        # 单向生成、不带任何工具，避免 AI 再次触发生图形成循环
-        resp = await context.llm_generate(
-            chat_provider_id=provider_id,
-            prompt=prompt,
-            contexts=contexts,
+
+        task_result = {"task_id": task_id or "", "result": failure_summary}
+        extras = {"background_task_result": task_result}
+
+        session = MessageSession.from_str(umo)
+        cron_event = CronMessageEvent(
+            context=context,
+            session=session,
+            message=notice,
+            extras=extras,
+            message_type=session.message_type,
         )
-        text = str(getattr(resp, "completion_text", "") or "").strip()
-        if not text:
-            raise RuntimeError("回灌生成结果为空")
-        await event.send(event.plain_result(text))
-        await _persist_notice_exchange(context, umo, prompt, text)
+        cron_event.role = getattr(event, "role", None)
+
+        cfg = context.get_config(umo=umo) or {}
+        provider_settings = cfg.get("provider_settings") or {}
+        config = MainAgentBuildConfig(
+            tool_call_timeout=60,
+            streaming_response=False,
+            provider_settings=provider_settings,
+        )
+
+        req = ProviderRequest()
+        conv = await _get_session_conv(event=cron_event, plugin_context=context)
+        req.conversation = conv
+        history = json.loads(conv.history)
+        if history:
+            req.contexts = history
+            context_dump = req._print_friendly_context()
+            req.contexts = []
+            req.system_prompt += (
+                "\n\nBellow is you and user previous conversation history:\n"
+                f"{context_dump}"
+            )
+        req.system_prompt += BACKGROUND_TASK_RESULT_WOKE_SYSTEM_PROMPT.format(
+            background_task_result=json.dumps(
+                extras["background_task_result"], ensure_ascii=False
+            )
+        )
+        req.prompt = (
+            "请按照系统指令行事，用与用户历史对话一致的语言。"
+            "你必须调用 `send_message_to_user` 工具，把这条后台任务的失败结果简短告知用户，"
+            "否则用户将看不到任何结果。"
+            "若同一任务已连续多次失败，请先询问用户是否继续，再决定是否重试。"
+        )
+        req.func_tool = ToolSet()
+        req.func_tool.add_tool(
+            context.get_llm_tool_manager().get_builtin_tool(SendMessageToUserTool)
+        )
+
+        result = await build_main_agent(
+            event=cron_event, plugin_context=context, config=config, req=req
+        )
+        if not result:
+            raise RuntimeError("主 agent 构建失败")
+        runner = result.agent_runner
+        async for _ in runner.step_until_done(30):
+            # agent 通过 send_message_to_user 工具把结果发给用户
+            pass
+        await persist_agent_history(
+            context.conversation_manager,
+            event=cron_event,
+            req=req,
+            summary_note=(
+                f"[BackgroundTask] 图像生成任务 {task_id or '-'} 失败：{failure_summary}"
+            ),
+        )
         return True
     except Exception as e:
-        logger.warning(f"[{scene}] 后台失败回灌 LLM 未送达，已静默降级: {e}")
+        logger.warning(f"[{scene}] 后台失败回灌未送达，已静默降级: {e}")
         return False
 
 

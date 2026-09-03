@@ -14,7 +14,7 @@
 
 ### Fixed
 
-- **LLM 工具触发的后台生图任务失败不再向群内直发原始报错**：前台超时转后台后，失败/异常结果改为回灌当前会话的聊天模型（`Context.llm_generate` 单向生成，不带工具避免循环触发生图），由 AI 重新组织语言告知用户；会话历史自动注入、回灌问答写入会话记忆，通知链任何一步失败静默降级仅记日志（状态机 `failed` 记录与 `gemini_image_task_status` 查询不受影响）。批量任务失败汇总与整体异常同样聚合走该出口。新增开关 `image_generation_settings.background_failure_notify_llm`（默认开）；指令触发流程（`/生图` 等）行为不变。
+- **LLM 工具触发的后台生图任务失败不再向群内直发原始报错**：失败/异常结果改走框架官方后台任务回灌链路（`CronMessageEvent` + 主 agent + `send_message_to_user` 工具，仅挂该工具、天然无再次触发生图路径），由 AI 重新组织语言告知用户；官方 API 缺失或通知链异常时静默降级仅记日志（状态机 `failed` 记录与 `gemini_image_task_status` 查询不受影响）。批量任务失败汇总与整体异常同样聚合走该出口。新增开关 `image_generation_settings.background_failure_notify_llm`（默认开）；指令触发流程（`/生图` 等）行为不变。
 
 ## [2.7.6] - 2026-09-01
 

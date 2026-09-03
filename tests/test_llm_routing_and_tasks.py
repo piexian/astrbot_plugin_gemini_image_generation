@@ -481,40 +481,135 @@ async def test_single_background_task_marks_delivery_failure_partial(tmp_path) -
     assert result["items"][0]["delivery_success"] is False
 
 
-def _notify_plugin(
-    manager, event, *, llm_text="图片生成失败，请稍后重试", llm_error=None
-):
-    """构造带可 mock 聊天模型 context 的插件替身，返回 (plugin, llm_prompts)。"""
-    llm_prompts: list[str] = []
+def _install_official_wake_fakes(monkeypatch, *, build_error=None) -> dict:
+    """把 tl.background_notify 的官方回灌符号替换为可断言的假实现。"""
+    import tl.background_notify as background_notify
 
-    class _Context:
-        async def get_current_chat_provider_id(self, umo: str) -> str:
-            return "chat-provider"
+    calls: dict = {"builds": 0, "agent_reqs": [], "tools": [], "persists": []}
 
-        async def llm_generate(
-            self, *, chat_provider_id, prompt, contexts=None, **kwargs
-        ):
-            if llm_error is not None:
-                raise llm_error
-            llm_prompts.append(prompt)
-            return SimpleNamespace(completion_text=llm_text)
+    class _Session:
+        def __init__(self, raw: str):
+            platform_id, message_type, session_id = raw.split(":", 2)
+            self.platform_id = platform_id
+            self.message_type = message_type
+            self.session_id = session_id
 
-    plugin = SimpleNamespace(
+        @classmethod
+        def from_str(cls, raw: str):
+            return cls(raw)
+
+    class _CronEvent:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            session = kwargs["session"]
+            self.unified_msg_origin = (
+                f"{session.platform_id}:{session.message_type}:{session.session_id}"
+            )
+            self.role = None
+
+        def get_platform_id(self) -> str:
+            return self.kwargs["session"].platform_id
+
+    class _ProviderRequest:
+        def __init__(self):
+            self.system_prompt = ""
+            self.contexts: list | None = None
+            self.conversation = None
+            self.prompt: str | None = None
+            self.func_tool = None
+
+        def _print_friendly_context(self) -> str:
+            return "HIST"
+
+    class _ToolSet:
+        def add_tool(self, tool) -> None:
+            calls["tools"].append(tool)
+
+    class _Runner:
+        async def step_until_done(self, limit: int):
+            for i in range(2):
+                yield i
+
+    class _BuildResult:
+        agent_runner = _Runner()
+
+    async def _fake_get_session_conv(event=None, plugin_context=None):
+        return SimpleNamespace(history="[]")
+
+    async def _fake_build_main_agent(
+        event=None, plugin_context=None, config=None, req=None
+    ):
+        calls["builds"] += 1
+        if build_error is not None:
+            raise build_error
+        calls["agent_reqs"].append(req)
+        return _BuildResult()
+
+    async def _fake_persist(
+        conversation_manager, event=None, req=None, summary_note=""
+    ):
+        calls["persists"].append(summary_note)
+
+    monkeypatch.setattr(background_notify, "_OFFICIAL_API_READY", True, raising=False)
+    monkeypatch.setattr(background_notify, "MessageSession", _Session, raising=False)
+    monkeypatch.setattr(
+        background_notify, "CronMessageEvent", _CronEvent, raising=False
+    )
+    monkeypatch.setattr(
+        background_notify, "ProviderRequest", _ProviderRequest, raising=False
+    )
+    monkeypatch.setattr(background_notify, "ToolSet", _ToolSet, raising=False)
+    monkeypatch.setattr(
+        background_notify,
+        "BACKGROUND_TASK_RESULT_WOKE_SYSTEM_PROMPT",
+        "BG:{background_task_result}",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        background_notify, "SendMessageToUserTool", object(), raising=False
+    )
+    monkeypatch.setattr(
+        background_notify,
+        "MainAgentBuildConfig",
+        lambda **kw: SimpleNamespace(**kw),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        background_notify, "_get_session_conv", _fake_get_session_conv, raising=False
+    )
+    monkeypatch.setattr(
+        background_notify, "build_main_agent", _fake_build_main_agent, raising=False
+    )
+    monkeypatch.setattr(
+        background_notify, "persist_agent_history", _fake_persist, raising=False
+    )
+    return calls
+
+
+def _notify_plugin(manager, event):
+    """构造带官方回灌所需 context 的插件替身。"""
+    return SimpleNamespace(
         background_task_manager=manager,
         message_sender=_MessageSender(),
         avatar_manager=_AvatarManager(),
         api_client=None,
-        context=_Context(),
+        context=SimpleNamespace(
+            get_config=lambda umo=None: {},
+            get_llm_tool_manager=lambda: SimpleNamespace(
+                get_builtin_tool=lambda tool: ("SendMessageToUserTool", tool)
+            ),
+            conversation_manager=SimpleNamespace(),
+        ),
         cfg=SimpleNamespace(background_failure_notify_llm=True),
     )
-    return plugin, llm_prompts
 
 
 @pytest.mark.asyncio
-async def test_background_failure_feeds_back_to_llm(tmp_path) -> None:
+async def test_background_failure_wakes_official_agent(tmp_path, monkeypatch) -> None:
     manager = BackgroundTaskManager(tmp_path)
     event = _Event()
-    plugin, llm_prompts = _notify_plugin(manager, event)
+    plugin = _notify_plugin(manager, event)
+    calls = _install_official_wake_fakes(monkeypatch)
     record = await manager.create(
         session_id=event.unified_msg_origin,
         kind="single",
@@ -535,18 +630,25 @@ async def test_background_failure_feeds_back_to_llm(tmp_path) -> None:
     )
     result = await manager.get(record["task_id"], event.unified_msg_origin)
 
-    assert llm_prompts and "供应商 5xx" in llm_prompts[0]
-    assert event.sent == ["图片生成失败，请稍后重试"]
+    assert calls["builds"] == 1
+    req = calls["agent_reqs"][0]
+    assert "send_message_to_user" in req.prompt
+    assert "供应商 5xx" in req.system_prompt
+    assert len(calls["tools"]) == 1
+    assert len(calls["persists"]) == 1
+    assert record["task_id"] in calls["persists"][0]
+    assert event.sent == []
     assert result is not None
     assert result["status"] == "failed"
     assert result["items"][0]["delivery_success"] is True
 
 
 @pytest.mark.asyncio
-async def test_background_exception_feeds_back_to_llm(tmp_path) -> None:
+async def test_background_exception_wakes_official_agent(tmp_path, monkeypatch) -> None:
     manager = BackgroundTaskManager(tmp_path)
     event = _Event()
-    plugin, llm_prompts = _notify_plugin(manager, event)
+    plugin = _notify_plugin(manager, event)
+    calls = _install_official_wake_fakes(monkeypatch)
     record = await manager.create(
         session_id=event.unified_msg_origin,
         kind="single",
@@ -567,17 +669,21 @@ async def test_background_exception_feeds_back_to_llm(tmp_path) -> None:
     )
     result = await manager.get(record["task_id"], event.unified_msg_origin)
 
-    assert event.sent == ["图片生成失败，请稍后重试"]
+    assert calls["builds"] == 1
+    assert event.sent == []
     assert result is not None
     assert result["status"] == "failed"
     assert result["message"] == "后台生成异常: APIError boom"
 
 
 @pytest.mark.asyncio
-async def test_background_failure_notify_degrades_silently(tmp_path) -> None:
+async def test_background_wake_error_degrades_silently(tmp_path, monkeypatch) -> None:
     manager = BackgroundTaskManager(tmp_path)
     event = _Event()
-    plugin, _ = _notify_plugin(manager, event, llm_error=RuntimeError("provider down"))
+    plugin = _notify_plugin(manager, event)
+    calls = _install_official_wake_fakes(
+        monkeypatch, build_error=RuntimeError("agent down")
+    )
     record = await manager.create(
         session_id=event.unified_msg_origin,
         kind="single",
@@ -598,6 +704,44 @@ async def test_background_failure_notify_degrades_silently(tmp_path) -> None:
     )
     result = await manager.get(record["task_id"], event.unified_msg_origin)
 
+    assert calls["builds"] == 1
+    assert event.sent == []
+    assert result is not None
+    assert result["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_background_wake_api_missing_degrades_silently(tmp_path) -> None:
+    import tl.background_notify as background_notify
+
+    manager = BackgroundTaskManager(tmp_path)
+    event = _Event()
+    plugin = _notify_plugin(manager, event)
+    record = await manager.create(
+        session_id=event.unified_msg_origin,
+        kind="single",
+        routing_mode="full_polling",
+        message="running",
+    )
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(background_notify, "_OFFICIAL_API_READY", False, raising=False)
+    try:
+
+        async def failed_generation():
+            return False, "供应商 5xx", {}
+
+        await _await_generation_task_and_send(
+            plugin,
+            event,
+            asyncio.create_task(failed_generation()),
+            scene="test",
+            task_id=record["task_id"],
+            notify_llm=True,
+        )
+    finally:
+        monkeypatch.undo()
+    result = await manager.get(record["task_id"], event.unified_msg_origin)
+
     assert event.sent == []
     assert result is not None
     assert result["status"] == "failed"
@@ -607,7 +751,7 @@ async def test_background_failure_notify_degrades_silently(tmp_path) -> None:
 async def test_background_failure_default_keeps_direct_send(tmp_path) -> None:
     manager = BackgroundTaskManager(tmp_path)
     event = _Event()
-    plugin, llm_prompts = _notify_plugin(manager, event)
+    plugin = _notify_plugin(manager, event)
     record = await manager.create(
         session_id=event.unified_msg_origin,
         kind="single",
@@ -627,7 +771,6 @@ async def test_background_failure_default_keeps_direct_send(tmp_path) -> None:
     )
     result = await manager.get(record["task_id"], event.unified_msg_origin)
 
-    assert llm_prompts == []
     assert event.sent == ["供应商 5xx"]
     assert result is not None
     assert result["status"] == "failed"
@@ -637,7 +780,7 @@ async def test_background_failure_default_keeps_direct_send(tmp_path) -> None:
 async def test_background_failure_switch_off_keeps_direct_send(tmp_path) -> None:
     manager = BackgroundTaskManager(tmp_path)
     event = _Event()
-    plugin, llm_prompts = _notify_plugin(manager, event)
+    plugin = _notify_plugin(manager, event)
     plugin.cfg.background_failure_notify_llm = False
     record = await manager.create(
         session_id=event.unified_msg_origin,
@@ -658,15 +801,17 @@ async def test_background_failure_switch_off_keeps_direct_send(tmp_path) -> None
         notify_llm=True,
     )
 
-    assert llm_prompts == []
     assert event.sent == ["供应商 5xx"]
 
 
 @pytest.mark.asyncio
-async def test_batch_failure_summary_feeds_back_to_llm(tmp_path, monkeypatch) -> None:
+async def test_batch_failure_summary_wakes_official_agent(
+    tmp_path, monkeypatch
+) -> None:
     manager = BackgroundTaskManager(tmp_path)
     event = _Event()
-    plugin, llm_prompts = _notify_plugin(manager, event)
+    plugin = _notify_plugin(manager, event)
+    calls = _install_official_wake_fakes(monkeypatch)
     plugin.cfg = SimpleNamespace(
         batch_concurrency=2,
         background_failure_notify_llm=True,
@@ -688,8 +833,10 @@ async def test_batch_failure_summary_feeds_back_to_llm(tmp_path, monkeypatch) ->
     await run_batch_job(plugin, event, record["task_id"], [item])
     result = await manager.get(record["task_id"], event.unified_msg_origin)
 
-    assert llm_prompts and "boom" in llm_prompts[0]
-    assert event.sent == ["图片生成失败，请稍后重试"]
+    assert calls["builds"] == 1
+    assert "boom" in calls["agent_reqs"][0].system_prompt
+    assert len(calls["persists"]) == 1
+    assert event.sent == []
     assert plugin.message_sender.deliveries == []
     assert result is not None
     assert result["status"] == "failed"
