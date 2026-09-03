@@ -346,28 +346,77 @@ class ModelScopeProvider:
             "X-ModelScope-Task-Type": "image_generation",
         }
         proxy = client._request_http_proxy(request_config)
-        deadline = asyncio.get_running_loop().time() + poll_timeout
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + poll_timeout
+
+        def _timeout_error() -> APIError:
+            return APIError(
+                f"ModelScope 任务轮询超时（{poll_timeout:.0f} 秒），"
+                "任务仍在服务端运行，重试将重新提交并再次消耗额度",
+                None,
+                "timeout",
+                retryable=True,
+            )
+
         while True:
-            if asyncio.get_running_loop().time() >= deadline:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise _timeout_error()
+            # deadline 硬约束：sleep 与单次 GET 超时均按剩余预算封顶
+            await asyncio.sleep(min(interval, remaining))
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise _timeout_error()
+            get_timeout = aiohttp.ClientTimeout(
+                total=min(_POLL_REQUEST_TIMEOUT.total, remaining)
+            )
+            try:
+                async with session.get(
+                    url, headers=headers, proxy=proxy, timeout=get_timeout
+                ) as response:
+                    poll_status = getattr(response, "status", None)
+                    body = await response.text()
+            except asyncio.TimeoutError:
+                # GET 预算耗尽：已过 deadline 则收尾，否则视为瞬时慢响应
+                if loop.time() >= deadline:
+                    raise _timeout_error() from None
+                logger.warning("[modelscope] 轮询 GET 超时，继续等待")
+                continue
+            if poll_status == 404:
                 raise APIError(
-                    f"ModelScope 任务轮询超时（{poll_timeout:.0f} 秒），"
-                    "任务仍在服务端运行，重试将重新提交并再次消耗额度",
-                    None,
-                    "timeout",
-                    retryable=True,
+                    "ModelScope 任务不存在或已过期",
+                    poll_status,
+                    "api_error",
+                    retryable=False,
                 )
-            await asyncio.sleep(interval)
-            async with session.get(
-                url, headers=headers, proxy=proxy, timeout=_POLL_REQUEST_TIMEOUT
-            ) as response:
-                poll_status = getattr(response, "status", None)
-                body = await response.text()
+            if poll_status == 429 or (poll_status is not None and poll_status >= 500):
+                # 瞬时限流/服务端故障：受 deadline 约束继续等待，不做重提交
+                logger.warning(
+                    "[modelscope] 轮询瞬时故障 HTTP %s，继续等待", poll_status
+                )
+                continue
             if poll_status in (401, 403):
                 # 鉴权失败空转到超时只会白扣魔粒，直接失败
                 raise APIError(
                     f"ModelScope 轮询鉴权失败（HTTP {poll_status}），请检查 Access Token",
                     poll_status,
                     "auth",
+                    retryable=False,
+                )
+            if poll_status is not None and 400 <= poll_status < 500:
+                try:
+                    error_data = json.loads(body) if body else {}
+                except json.JSONDecodeError:
+                    error_data = {}
+                message = (
+                    self._extract_error_message(error_data)
+                    or (body.strip()[:200] if body else "")
+                    or f"HTTP {poll_status}"
+                )
+                raise APIError(
+                    f"ModelScope 轮询请求失败: {message}",
+                    poll_status,
+                    "api_error",
                     retryable=False,
                 )
             try:

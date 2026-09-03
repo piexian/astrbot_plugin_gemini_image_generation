@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -11,6 +12,7 @@ from tl.api.modelscope import ModelScopeProvider, _resolve_size
 from tl.api_types import APIError, ApiRequestConfig
 from tl.provider_capabilities import candidate_capability
 from tl.provider_hooks import modelscope_edit_capability
+from tl.provider_metadata import get_provider_spec
 
 _DATA_URI = "data:image/png;base64,QUJD"
 
@@ -458,6 +460,208 @@ async def test_download_failure_falls_back_to_direct_url() -> None:
     )
     assert urls == ["https://img.example/a.png"]
     assert paths == []
+
+
+class _TimeoutGetSession:
+    """模拟 aiohttp：单次 GET 实际耗时 min(delay, total)，total 不足即抛 TimeoutError。"""
+
+    def __init__(self, delay: float):
+        self._delay = delay
+
+    def get(self, url: str, **kwargs: Any) -> _TimeoutGet:
+        return _TimeoutGet(self._delay, float(kwargs["timeout"].total))
+
+
+class _TimeoutGet:
+    def __init__(self, delay: float, total: float):
+        self._delay = delay
+        self._total = total
+
+    async def __aenter__(self) -> _TimeoutGet:
+        await asyncio.sleep(min(self._delay, self._total))
+        if self._total < self._delay:
+            raise asyncio.TimeoutError()
+        return self
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+    async def text(self) -> str:
+        return _task_body("Running")
+
+
+@pytest.mark.asyncio
+async def test_poll_404_fails_fast_non_retryable() -> None:
+    provider = ModelScopeProvider()
+    session = _FakeSession([(404, json.dumps({"message": "task not found"}))])
+    config = _make_config(
+        provider_settings={"model": "Qwen/Qwen-Image", "poll_interval": 0.001}
+    )
+    with pytest.raises(APIError) as exc_info:
+        await provider.parse_response(
+            client=_FakeClient(),
+            response_data={"task_id": "task-1"},
+            session=session,
+            http_status=200,
+            request_config=config,
+        )
+    assert "任务不存在" in exc_info.value.message
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_poll_429_treated_as_transient_until_success() -> None:
+    provider = ModelScopeProvider()
+    session = _FakeSession(
+        [
+            (429, ""),
+            (429, ""),
+            _task_body("SUCCEED", output_images=["https://img.example/a.png"]),
+        ]
+    )
+    config = _make_config(
+        provider_settings={"model": "Qwen/Qwen-Image", "poll_interval": 0.001}
+    )
+    urls, _, _, _ = await provider.parse_response(
+        client=_FakeClient(),
+        response_data={"task_id": "task-1"},
+        session=session,
+        http_status=200,
+        request_config=config,
+    )
+    assert urls == ["https://img.example/a.png"]
+    # 两次 429 未中断轮询
+    assert len(session.calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_poll_other_4xx_fails_with_body_message() -> None:
+    provider = ModelScopeProvider()
+    session = _FakeSession([(400, json.dumps({"message": "invalid task type"}))])
+    config = _make_config(
+        provider_settings={"model": "Qwen/Qwen-Image", "poll_interval": 0.001}
+    )
+    with pytest.raises(APIError) as exc_info:
+        await provider.parse_response(
+            client=_FakeClient(),
+            response_data={"task_id": "task-1"},
+            session=session,
+            http_status=200,
+            request_config=config,
+        )
+    assert "invalid task type" in exc_info.value.message
+    assert exc_info.value.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_poll_deadline_bounds_slow_get() -> None:
+    """deadline 硬约束：GET 超时按剩余预算封顶，总耗时不得被慢 GET 拖垮。"""
+    provider = ModelScopeProvider()
+    session = _TimeoutGetSession(delay=10.0)
+    config = _make_config(
+        provider_settings={
+            "model": "Qwen/Qwen-Image",
+            "poll_interval": 0.05,
+            "poll_timeout": 0.3,
+        }
+    )
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    with pytest.raises(APIError) as exc_info:
+        await provider.parse_response(
+            client=_FakeClient(),
+            response_data={"task_id": "task-1"},
+            session=session,
+            http_status=200,
+            request_config=config,
+        )
+    elapsed = loop.time() - start
+    assert exc_info.value.error_type == "timeout"
+    assert exc_info.value.retryable is True
+    assert elapsed < 2.0
+
+
+class TestCandidateConcurrency:
+    """候选级并发闸门：max_concurrency 声明 + 按候选串行的框架级行为。"""
+
+    @staticmethod
+    def _client():
+        from tl.tl_api import GeminiAPIClient
+
+        return GeminiAPIClient(["key-1"])
+
+    def test_spec_max_concurrency_flags(self) -> None:
+        spec = get_provider_spec("modelscope")
+        assert spec is not None and spec.max_concurrency == 1
+        openai_spec = get_provider_spec("openai")
+        assert openai_spec is not None and openai_spec.max_concurrency == 0
+
+    def test_semaphore_registry_keyed_by_candidate(self) -> None:
+        client = self._client()
+        # 未声明的 provider 不加锁
+        assert client._candidate_semaphore(_make_config(api_type="openai")) is None
+        first = client._candidate_semaphore(_make_config(candidate_id="c1"))
+        again = client._candidate_semaphore(_make_config(candidate_id="c1"))
+        other = client._candidate_semaphore(_make_config(candidate_id="c2"))
+        assert first is not None
+        assert again is first
+        assert other is not None and other is not first
+
+    @pytest.mark.asyncio
+    async def test_wrapper_serializes_same_candidate(self) -> None:
+        client = self._client()
+        config = _make_config(candidate_id="c1")
+        state = {"active": 0, "peak": 0}
+
+        async def fake_inner(**kwargs: Any):
+            state["active"] += 1
+            state["peak"] = max(state["peak"], state["active"])
+            await asyncio.sleep(0.01)
+            state["active"] -= 1
+            return [], [], None, None
+
+        client._generate_image_single_inner = fake_inner  # type: ignore[method-assign]
+        await asyncio.gather(*(client._generate_image_single(config) for _ in range(3)))
+        assert state["peak"] == 1
+
+    @pytest.mark.asyncio
+    async def test_wrapper_parallel_across_candidates(self) -> None:
+        client = self._client()
+        c1 = _make_config(candidate_id="c1")
+        c2 = _make_config(candidate_id="c2")
+        state = {"active": 0, "peak": 0}
+
+        async def fake_inner(**kwargs: Any):
+            state["active"] += 1
+            state["peak"] = max(state["peak"], state["active"])
+            await asyncio.sleep(0.01)
+            state["active"] -= 1
+            return [], [], None, None
+
+        client._generate_image_single_inner = fake_inner  # type: ignore[method-assign]
+        await asyncio.gather(
+            client._generate_image_single(c1), client._generate_image_single(c2)
+        )
+        # 不同候选（独立凭证）互不阻塞
+        assert state["peak"] == 2
+
+    @pytest.mark.asyncio
+    async def test_wrapper_unlimited_for_undeclared_spec(self) -> None:
+        client = self._client()
+        config = _make_config(api_type="openai", candidate_id="c1")
+        state = {"active": 0, "peak": 0}
+
+        async def fake_inner(**kwargs: Any):
+            state["active"] += 1
+            state["peak"] = max(state["peak"], state["active"])
+            await asyncio.sleep(0.01)
+            state["active"] -= 1
+            return [], [], None, None
+
+        client._generate_image_single_inner = fake_inner  # type: ignore[method-assign]
+        await asyncio.gather(*(client._generate_image_single(config) for _ in range(3)))
+        assert state["peak"] == 3
 
 
 # ---------------------------------------------------------------------------
