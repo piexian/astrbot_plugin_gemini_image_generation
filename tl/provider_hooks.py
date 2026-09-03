@@ -399,3 +399,11 @@ def modelscope_edit_capability(settings: dict[str, Any]) -> bool:
     """ModelScope 模型 ID 含 edit（如 Qwen/Qwen-Image-Edit）才支持参考图。"""
     model = str(settings.get("model") or "").strip().lower()
     return "edit" in model
+
+
+def siliconflow_edit_capability(settings: dict[str, Any]) -> bool:
+    """SiliconFlow：Qwen-Image-Edit 系（2509 最多 3 图）与 Kolors（单图图生图）支持参考图。"""
+    from .api.siliconflow import _EDIT_FAMILIES, _model_family
+
+    family = _model_family(str(settings.get("model") or ""))
+    return family in _EDIT_FAMILIES or family == "kolors"

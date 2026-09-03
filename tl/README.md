@@ -186,6 +186,7 @@ generate_image()
 | `sensenova` | `SenseNovaProvider` |
 | `dashscope` | `DashScopeProvider` |
 | `modelscope` | `ModelScopeProvider`（异步任务制：提交 + 轮询） |
+| `siliconflow` | `SiliconFlowProvider`（同步单端点：文生图 + 编辑共用 generations，URL 1h 有效即刻落盘） |
 
 ### Provider 公共辅助模块
 

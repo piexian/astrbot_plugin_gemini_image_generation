@@ -7,7 +7,7 @@
       "provider_polling": {
         "description": "供应商轮询顺序",
         "type": "list",
-        "hint": "按列表从上到下尝试生成。请选择并按优先级排列：google / gemini_interactions / openai / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova / dashscope / modelscope。留空时按配置表中的有效供应商顺序尝试。",
+        "hint": "按列表从上到下尝试生成；留空时按配置表中的有效供应商顺序尝试。",
         "options": [
           "google",
           "gemini_interactions",
@@ -20,7 +20,8 @@
           "doubao",
           "sensenova",
           "dashscope",
-          "modelscope"
+          "modelscope",
+          "siliconflow"
         ],
         "default": []
       },
@@ -93,7 +94,7 @@
                 "description": "API 端点地址",
                 "type": "string",
                 "hint": "Google AI API 地址，留空使用默认值",
-                "default": ""
+                "default": "https://generativelanguage.googleapis.com"
               },
               "proxy": {
                 "description": "代理地址",
@@ -216,7 +217,7 @@
                 "description": "API 端点地址",
                 "type": "string",
                 "hint": "Google AI API 地址，留空使用默认值；缺版本前缀时自动补 /v1beta",
-                "default": ""
+                "default": "https://generativelanguage.googleapis.com"
               },
               "proxy": {
                 "description": "代理地址",
@@ -338,7 +339,7 @@
                 "description": "API 端点地址",
                 "type": "string",
                 "hint": "OpenAI 兼容 API 地址",
-                "default": ""
+                "default": "https://api.openai.com/v1"
               },
               "proxy": {
                 "description": "代理地址",
@@ -978,7 +979,7 @@
                 "description": "API 端点地址",
                 "type": "string",
                 "hint": "OpenAI Images API 地址，留空使用默认 https://api.openai.com",
-                "default": ""
+                "default": "https://api.openai.com"
               },
               "proxy": {
                 "description": "代理地址",
@@ -1599,7 +1600,7 @@
           },
           "modelscope": {
             "description": "ModelScope（魔搭社区）API-Inference 覆盖配置",
-            "hint": "免费异步任务制渠道（单并发、需阿里云实名+魔粒），定位兜底非主渠道。提交后自动轮询任务状态；批量生成对该渠道固定按 1 并发串行执行。",
+            "hint": "免费异步任务制渠道（单并发）；批量生成对该渠道固定按 1 并发串行。",
             "items": {
               "enabled": {
                 "description": "启用此条配置",
@@ -1616,7 +1617,7 @@
               "api_keys": {
                 "description": "API Key 列表",
                 "type": "list",
-                "hint": "多个 Access Token，支持轮换使用（魔搭控制台获取）",
+                "hint": "多个 Access Token，支持轮换使用",
                 "default": []
               },
               "daily_limit_per_key": {
@@ -1634,13 +1635,13 @@
               "model": {
                 "description": "模型名称",
                 "type": "string",
-                "hint": "AIGC 模型 ID，推荐 Qwen/Qwen-Image（文生图）；名称含 edit 的模型支持参考图（如 Qwen/Qwen-Image-Edit）。模型清单会上下架，完整列表见魔搭社区。注意轮询超时重试会重新提交并再次消耗魔粒。",
+                "hint": "AIGC 模型 ID；名称含 edit 支持参考图。推荐 Qwen/Qwen-Image。",
                 "default": "Qwen/Qwen-Image"
               },
               "api_base": {
                 "description": "API 端点地址",
                 "type": "string",
-                "hint": "ModelScope API-Inference 地址，留空使用默认值 https://api-inference.modelscope.cn",
+                "hint": "留空使用官方默认地址。",
                 "default": "https://api-inference.modelscope.cn"
               },
               "proxy": {
@@ -1652,7 +1653,7 @@
               "resolution": {
                 "description": "图像分辨率档位",
                 "type": "string",
-                "hint": "与长宽比组合换算为像素值，并按模型族钳制（Qwen-Image 上限 1664、FLUX 上限 1024、Z-Image 512-2048、SD 系 64-2048）。",
+                "hint": "与长宽比组合换算像素并按模型族钳制。",
                 "default": "1K",
                 "options": [
                   "1K",
@@ -1680,7 +1681,7 @@
               "max_reference_images": {
                 "description": "最大参考图片数量",
                 "type": "int",
-                "hint": "官方仅证实编辑模型单图输入，默认 1 张；含 edit 的模型生效，其他模型带图请求直接报错。",
+                "hint": "仅名称含 edit 的模型生效；超出截断。",
                 "default": 1
               },
               "negative_prompt": {
@@ -1692,13 +1693,13 @@
               "steps": {
                 "description": "推理步数",
                 "type": "int",
-                "hint": "范围 1-100，超出自动钳制；0 表示不发送该参数（使用服务端默认）。",
+                "hint": "1-100；0 不发送。",
                 "default": 0
               },
               "guidance": {
                 "description": "引导系数",
                 "type": "float",
-                "hint": "范围 1.5-20，超出自动钳制；0 表示不发送该参数（使用服务端默认）。",
+                "hint": "1.5-20；0 不发送。",
                 "default": 0
               },
               "seed": {
@@ -1710,7 +1711,7 @@
               "loras": {
                 "description": "LoRA 配置",
                 "type": "string",
-                "hint": "单个 LoRA 填 repo id（如 user/my-lora）；多个填 JSON 对象如 {\"user/lora1\":0.6,\"user/lora2\":0.4}（权重和为 1，最多 6 个）；留空不发送。",
+                "hint": "单个填 repo id；多个填 JSON 对象（权重和为 1，最多 6 个）；留空不发送。",
                 "default": ""
               },
               "poll_interval": {
@@ -1722,8 +1723,120 @@
               "poll_timeout": {
                 "description": "轮询超时（秒）",
                 "type": "int",
-                "hint": "任务轮询截止时间，应小于插件总超时（默认 120 秒）。超时后重试会重新提交任务并再次消耗魔粒。",
+                "hint": "应小于插件总超时；超时重试会重新提交任务并消耗魔粒。",
                 "default": 100
+              }
+            }
+          },
+          "siliconflow": {
+            "description": "SiliconFlow（硅基流动）覆盖配置",
+            "hint": "同步单端点渠道；返回图片 URL 仅 1 小时有效，插件会立即下载落盘。",
+            "items": {
+              "enabled": {
+                "description": "启用此条配置",
+                "type": "bool",
+                "hint": "临时关闭本条模型配置而不删除它；关闭后该条不参与轮询和生图，同渠道其他条目不受影响。",
+                "default": true
+              },
+              "priority": {
+                "description": "优先级",
+                "type": "int",
+                "hint": "同类型供应商配置多条时按优先级从高到低尝试；相同优先级按配置表从上到下尝试。",
+                "default": 0
+              },
+              "api_keys": {
+                "description": "API Key 列表",
+                "type": "list",
+                "hint": "多个 API Key，支持轮换使用",
+                "default": []
+              },
+              "daily_limit_per_key": {
+                "description": "每个 Key 每日限额",
+                "type": "int",
+                "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
+                "default": 0
+              },
+              "model_alias": {
+                "description": "模型别名（可选）",
+                "type": "string",
+                "hint": "供指令和 LLM 工具选择模型使用；同一别名可在多个供应商中复用。实际请求仍发送原始模型名。",
+                "default": ""
+              },
+              "model": {
+                "description": "模型名称",
+                "type": "string",
+                "hint": "推荐 Qwen/Qwen-Image、Kwai-Kolors/Kolors（批量+图生图）、Qwen/Qwen-Image-Edit-2509（编辑 3 图）、Qwen/Qwen-Image-Edit（编辑 1 图）。",
+                "default": "Qwen/Qwen-Image"
+              },
+              "api_base": {
+                "description": "API 端点地址",
+                "type": "string",
+                "hint": "留空使用官方默认地址。",
+                "default": "https://api.siliconflow.cn"
+              },
+              "proxy": {
+                "description": "代理地址",
+                "type": "string",
+                "hint": "填写即启用代理，留空使用全局代理或环境变量。支持 http://host:port、https://host:port、socks5://host:port 格式",
+                "default": ""
+              },
+              "resolution": {
+                "description": "图像分辨率档位",
+                "type": "string",
+                "hint": "与长宽比组合映射 image_size；Edit 系列不发送尺寸。",
+                "default": "1K",
+                "options": [
+                  "1K",
+                  "2K"
+                ]
+              },
+              "aspect_ratio": {
+                "description": "长宽比",
+                "type": "string",
+                "hint": "该供应商默认长宽比。快速模式传入覆盖值时优先使用快速模式。",
+                "default": "1:1",
+                "options": [
+                  "1:1",
+                  "16:9",
+                  "4:3",
+                  "3:2",
+                  "9:16",
+                  "4:5",
+                  "5:4",
+                  "21:9",
+                  "3:4",
+                  "2:3"
+                ]
+              },
+              "max_reference_images": {
+                "description": "最大参考图片数量",
+                "type": "int",
+                "hint": "2509 最多 3 张；经典 Edit 与 Kolors 仅 1 张，超出截断。",
+                "default": 3
+              },
+              "negative_prompt": {
+                "description": "负向提示词",
+                "type": "string",
+                "hint": "描述要排除的元素，留空不发送。",
+                "default": ""
+              },
+              "num_inference_steps": {
+                "description": "推理步数",
+                "type": "int",
+                "hint": "1-100；0 不发送（默认 20）。",
+                "default": 0
+              },
+              "guidance_scale": {
+                "description": "引导系数",
+                "type": "float",
+                "hint": "仅 Kolors；0-20；0 不发送（默认 7.5）。",
+                "default": 0
+              },
+              "seed": {
+                "description": "随机种子",
+                "type": "int",
+                "hint": "范围 0 到 9999999999；0 表示随机。",
+                "default": 0
               }
             }
           }

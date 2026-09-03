@@ -113,6 +113,14 @@ _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
         # 免费渠道官方单并发，批量任务按候选串行
         max_concurrency=1,
     ),
+    ProviderSpec(
+        "siliconflow",
+        "tl.api.siliconflow.SiliconFlowProvider",
+        settings_attr="siliconflow_settings",
+        edit_capability_path="tl.provider_hooks.siliconflow_edit_capability",
+        capability_profile_path="tl.provider_capabilities.siliconflow_capability",
+        parse_errors_with_provider=True,
+    ),
 )
 
 PROVIDER_TYPES: Final[tuple[str, ...]] = tuple(

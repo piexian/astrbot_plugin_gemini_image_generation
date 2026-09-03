@@ -84,6 +84,12 @@ async def _resolve_single_value(
         mime_type, b64_data = await client._normalize_reference_image_input(
             normalize_input,
             image_input_mode=getattr(config, "image_input_mode", "force_base64"),
+            # 候选级代理优先于全局：仅在配置时透传，兼容未声明该参数的旧客户端替身
+            **(
+                {"request_proxy": config.proxy}
+                if getattr(config, "proxy", None)
+                else {}
+            ),
         )
     except Exception as e:
         logger.debug("%s normalize_reference_image_input failed: %s", log_prefix, e)

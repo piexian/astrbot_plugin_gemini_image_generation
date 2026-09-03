@@ -25,6 +25,7 @@ tl/
     ├── sensenova.py        # SenseNova(商汤日日新)
     ├── stepfun.py          # StepFun
     ├── modelscope.py       # ModelScope 魔搭社区（异步任务制：提交+轮询）
+    ├── siliconflow.py      # SiliconFlow 硅基流动（同步单端点：文生图 + 编辑共用）
     ├── provider_limits.py  # 各 provider 参考图上限常量(共享)
     ├── reference_intake.py # 参考图接收阶段日志助手(共享)
     ├── data_uri.py         # data URI / base64 助手(共享)
@@ -49,6 +50,7 @@ tl/
 | `sensenova` | `SenseNovaProvider` | SenseNova（商汤日日新）`/v1/images/generations`（仅文生图，11 种固定尺寸） |
 | `dashscope` | `DashScopeProvider` | DashScope 原生 multimodal-generation 同步端点（wan2.7 / qwen-image-2.0） |
 | `modelscope` | `ModelScopeProvider` | 魔搭社区 API-Inference 异步任务制（提交 `/v1/images/generations` + 轮询 `/v1/tasks/{id}`，免费单并发兜底渠道） |
+| `siliconflow` | `SiliconFlowProvider` | 硅基流动同步单端点（`/v1/images/generations` 文生图 + 编辑共用，URL 1h 有效即刻下载落盘，Kolors 批量/Qwen-Image 预设/Edit 系列不传尺寸） |
 | 未知值 | - | 配置加载阶段记录错误并跳过，不进入轮询候选 |
 
 ## 核心接口
