@@ -42,6 +42,7 @@ async def test_begin_updates_and_complete_are_persisted(tmp_path) -> None:
         "aspect_ratio": None,
         "provider": None,
         "model": None,
+        "candidate_id": None,
         "image_count": 1,
         "quality": None,
     }
@@ -255,7 +256,8 @@ async def test_image_generator_uses_context_parent_and_item(monkeypatch) -> None
             config.successful_model = "image-model"
             return [], ["/tmp/generated.png"], None, None
 
-    async def archive(urls, paths):
+    async def archive(urls, paths, **kwargs):
+        assert kwargs["job_id"] == "job-one"
         return ["gallery.png"]
 
     tracker = Tracker()

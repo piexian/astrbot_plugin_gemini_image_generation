@@ -170,9 +170,14 @@ class ImageGenerator:
             return
         try:
             image_files = []
-            if self._archive_images_fn is not None:
-                image_files = await self._archive_images_fn(image_urls, image_paths)
             stats = self.get_request_stats()
+            if self._archive_images_fn is not None:
+                image_files = await self._archive_images_fn(
+                    image_urls,
+                    image_paths,
+                    candidate_id=stats.get("successful_candidate_id"),
+                    job_id=job_id,
+                )
             await self.tracker.complete(
                 job_id,
                 image_files=image_files,

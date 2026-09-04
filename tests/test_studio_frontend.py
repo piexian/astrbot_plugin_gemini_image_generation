@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,3 +36,41 @@ def test_seed_control_is_capability_driven_and_submitted() -> None:
     assert 'id="input-seed"' in INDEX_HTML
     assert "params.seed?.type === 'integer'" in APP_JS
     assert "seed," in APP_JS
+
+
+def test_workbench_uses_server_candidate_and_limits() -> None:
+    start = APP_JS.index("class WorkbenchView {")
+    end = APP_JS.index("class ProgressView {", start)
+    script = "const assert = require('node:assert/strict');\n"
+    script += "const SafeDOM = {setText() {}}; const Toast = {warning() {}};\n"
+    script += APP_JS[start:end]
+    script += """
+const view = Object.create(WorkbenchView.prototype);
+view.selectedModel = () => ({max_reference_images: 14});
+assert.equal(view.getMaxReferenceImages(), 14);
+view.selectedModel = () => ({max_reference_images: 0});
+assert.equal(view.getMaxReferenceImages(), 0);
+view.store = {mode: 'batch', batchItems: [{image_count: 3}, {image_count: 2}]};
+view.batchBudgetLimit = 4;
+view.batchMaxTasks = 2;
+view.formAvailable = true;
+view.btnAddBatchItem = {};
+view.batchBudgetInfo = {classList: {add() {}, remove() {}}};
+view.updateActionState = () => {};
+view.calculateBatchBudget();
+assert.equal(view.batchBudgetValid, false);
+assert.equal(view.btnAddBatchItem.disabled, true);
+view.batchBudgetLimit = 9;
+view.calculateBatchBudget();
+assert.equal(view.batchBudgetValid, true);
+view.batchMaxTasks = 1;
+view.calculateBatchBudget();
+assert.equal(view.batchBudgetValid, false);
+"""
+    subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    assert "candidate_id: selectedModel?.candidate_id" in APP_JS
+    assert "this.uploadMaxMb = limits.upload_max_mb" in APP_JS
+    assert "file.size > this.uploadMaxMb * 1024 * 1024" in APP_JS
+    assert 'id="upload-max-size"' in INDEX_HTML
+    assert "SafeDOM.setText(this.uploadLimitHint, `${this.uploadMaxMb}MB`)" in APP_JS
+    assert "≤20MB" not in INDEX_HTML

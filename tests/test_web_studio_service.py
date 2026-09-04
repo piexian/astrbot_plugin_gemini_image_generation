@@ -214,7 +214,7 @@ async def test_archive_supports_local_and_remote_sources(tmp_path, monkeypatch) 
     tracker = GenerationTracker(tmp_path, 20)
     service = WebStudioService(None, tracker, _config(), tmp_path)
 
-    async def fake_download(url: str) -> bytes:
+    async def fake_download(url: str, *, candidate_id=None) -> bytes:
         return encoded.tobytes()
 
     monkeypatch.setattr(service, "_download_remote_image", fake_download)
@@ -323,6 +323,8 @@ def test_capabilities_returns_flat_candidate_models(tmp_path) -> None:
     for entry in models:
         assert set(entry) == {
             "id",
+            "candidate_id",
+            "max_reference_images",
             "provider",
             "provider_display",
             "model",
@@ -494,6 +496,11 @@ async def test_gallery_image_base64_rejects_oversized_original(
     (gallery_dir / "oversized.jpg").write_bytes(
         b"\xff\xd8\xff" + b"x" * (6 * 1024 * 1024)
     )
+
+    def unexpected_encode(*args):
+        pytest.fail("超限原图不应进入 base64 编码")
+
+    monkeypatch.setattr(base64, "b64encode", unexpected_encode)
     service = WebStudioService(
         None,
         GenerationTracker(tmp_path, 20),

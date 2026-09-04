@@ -34,6 +34,7 @@ class ApiRequestConfig:
     proxy: str | None = None  # 当前请求使用的代理
     requested_provider: str | None = None  # 显式供应商选择
     requested_model: str | None = None  # 显式原始模型或别名选择
+    requested_candidate_id: str | None = None
     negative_prompt: str | None = None  # 请求级负面提示词覆盖
     watermark: bool | None = None  # 请求级水印覆盖
     quality: str | None = None  # 请求级质量覆盖

@@ -5,6 +5,7 @@ import re
 from types import SimpleNamespace
 
 import pytest
+from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, StreamingResponse
 
 from tl.generation_tracker import GenerationTracker
@@ -92,6 +93,89 @@ def _match(entries, subpath: str, method: str):
         if method.upper() in methods and matched:
             return handler, matched.groupdict()
     return None
+
+
+@pytest.mark.asyncio
+async def test_json_body_limit_counts_chunked_bytes(tmp_path, monkeypatch):
+    import tl.web_api as module
+
+    api = _api(tmp_path, monkeypatch)
+    chunks = iter([b'{"prompt":"', b"x" * 100, b'"}'])
+
+    async def receive():
+        return {"type": "http.request", "body": next(chunks), "more_body": True}
+
+    raw = Request({"type": "http", "method": "POST", "headers": []}, receive)
+
+    async def parse(default=None):
+        try:
+            return await raw.json()
+        except Exception:
+            return default
+
+    monkeypatch.setattr(module, "_JSON_MAX_BYTES", 32)
+    monkeypatch.setattr(
+        module,
+        "request",
+        SimpleNamespace(_request=raw, headers=raw.headers, json=parse),
+    )
+    response = await api.generate()
+    assert response.status_code == 400
+    assert raw._receive is receive
+    assert next(chunks) == b'"}'
+
+
+@pytest.mark.asyncio
+async def test_multipart_limit_closes_partial_uploads(monkeypatch):
+    import starlette.formparsers as parsers
+
+    import tl.web_api as module
+
+    handles = []
+    original = parsers.SpooledTemporaryFile
+
+    def temporary_file(*args, **kwargs):
+        handle = original(*args, **kwargs)
+        handles.append(handle)
+        return handle
+
+    monkeypatch.setattr(parsers, "SpooledTemporaryFile", temporary_file)
+    chunks = iter(
+        [
+            b'--boundary\r\nContent-Disposition: form-data; name="file"; filename="x.png"\r\nContent-Type: image/png\r\n\r\nx',
+            b"x" * 201,
+        ]
+    )
+
+    async def receive():
+        return {"type": "http.request", "body": next(chunks), "more_body": True}
+
+    raw = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "headers": [(b"content-type", b"multipart/form-data; boundary=boundary")],
+        },
+        receive,
+    )
+    monkeypatch.setattr(
+        module, "request", SimpleNamespace(_request=raw, headers=raw.headers)
+    )
+    with pytest.raises(StudioServiceError) as error:
+        with module._bounded_request(200):
+            await raw.form()
+    assert error.value.status_code == 413
+    assert handles and all(handle.closed for handle in handles)
+    assert raw._receive is receive
+
+
+def test_json_depth_is_bounded():
+    from tl.web_api import _valid_json_value
+
+    nested = {}
+    for _ in range(34):
+        nested = {"nested": nested}
+    assert not _valid_json_value(nested)
 
 
 def test_routes_include_plugin_name_and_match_full_path(tmp_path, monkeypatch) -> None:

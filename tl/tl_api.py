@@ -774,6 +774,7 @@ class GeminiAPIClient:
             self.provider_candidates,
             provider=config.requested_provider,
             model=config.requested_model,
+            candidate_id=config.requested_candidate_id,
             has_reference_images=has_reference_images,
             required_parameters=required_parameters,
             request_values=request_values,

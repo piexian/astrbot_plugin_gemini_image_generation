@@ -7,6 +7,7 @@ import copy
 import json
 import os
 import re
+import threading
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -31,6 +32,7 @@ _PARAM_KEYS = (
     "aspect_ratio",
     "provider",
     "model",
+    "candidate_id",
     "image_count",
     "quality",
 )
@@ -170,6 +172,7 @@ class GenerationTracker:
         self.gallery_dir = self.data_dir / "gallery"
         self.max_records = max(int(max_records), 1)
         self.enabled = bool(enabled)
+        self.gallery_lock = threading.RLock()
         self._lock = asyncio.Lock()
         self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
         self._closed = False
@@ -312,7 +315,14 @@ class GenerationTracker:
         source = params if isinstance(params, dict) else {}
         cleaned = {key: source.get(key) for key in _PARAM_KEYS}
         cleaned["image_count"] = _positive_int(cleaned.get("image_count"), 1)
-        for key in ("resolution", "aspect_ratio", "provider", "model", "quality"):
+        for key in (
+            "resolution",
+            "aspect_ratio",
+            "provider",
+            "model",
+            "candidate_id",
+            "quality",
+        ):
             value = cleaned.get(key)
             cleaned[key] = _bounded_text(value, 128) or None
         return cleaned
@@ -401,6 +411,7 @@ class GenerationTracker:
                 return
             allowed = {
                 "status",
+                "images",
                 "generated_images",
                 "requested_images",
                 "text_content",
@@ -421,6 +432,8 @@ class GenerationTracker:
                     record[key] = _bounded_text(value, 1000) or None
                 elif key == "stats":
                     record[key] = self._clean_stats(value)
+                elif key == "images":
+                    record[key] = self._clean_images(value)
                 elif key == "status" and value in TERMINAL_STATUSES | {"running"}:
                     record[key] = value
             if record.get("status") in TERMINAL_STATUSES:
@@ -447,11 +460,7 @@ class GenerationTracker:
             if record is None:
                 return
             previous_status = str(record.get("status") or "未知")
-            images = []
-            for value in image_files or []:
-                name = Path(str(value)).name
-                if name == str(value) and _SAFE_FILE_NAME.fullmatch(name):
-                    images.append(name)
+            images = self._clean_images(image_files)
             finished_at = _timestamp()
             record.update(
                 {
@@ -613,7 +622,21 @@ class GenerationTracker:
         await asyncio.to_thread(self._delete_gallery_files, files)
         return {"deleted": deleted, "failed": failed}
 
+    @staticmethod
+    def _clean_images(values: Any) -> list[str]:
+        return [
+            name
+            for name in (values or [])
+            if isinstance(name, str)
+            and name not in {".", ".."}
+            and _SAFE_FILE_NAME.fullmatch(name)
+        ]
+
     def _delete_gallery_files(self, names: set[str]) -> None:
+        with self.gallery_lock:
+            self._delete_gallery_files_locked(names)
+
+    def _delete_gallery_files_locked(self, names: set[str]) -> None:
         gallery_root = self.gallery_dir.resolve()
         for name in names:
             if not _SAFE_FILE_NAME.fullmatch(name):
@@ -623,6 +646,9 @@ class GenerationTracker:
                 continue
             try:
                 target.unlink(missing_ok=True)
+                thumbnail = self.gallery_dir / ".thumbs" / f"{name}.jpg"
+                if thumbnail.parent.resolve() == gallery_root / ".thumbs":
+                    thumbnail.unlink(missing_ok=True)
             except OSError as exc:
                 logger.warning(f"[生成历史] 删除 gallery 文件失败 {name}: {exc}")
 

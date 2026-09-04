@@ -25,6 +25,7 @@ from pydantic.dataclasses import dataclass
 from .background_notify import report_background_failure
 from .batch_generation import run_batch_job
 from .generation_call import invoke_generation_core
+from .generation_tracker import requester_from_event
 from .openai_image_size import (
     CUSTOM_SIZE_DEFAULT,
     validate_custom_size,
@@ -1175,9 +1176,27 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                 total_items=len(prepared_items),
             )
             task_id = record["task_id"]
+            tracker = getattr(plugin, "generation_tracker", None)
+            parent_job_id = None
+            if tracker is not None:
+                try:
+                    parent = await tracker.begin(
+                        source="llm_batch",
+                        prompt="",
+                        params={},
+                        requester=requester_from_event(event),
+                        requested_images=sum(
+                            item["image_count"] for item in prepared_items
+                        ),
+                    )
+                    parent_job_id = parent["job_id"]
+                except Exception as exc:
+                    logger.warning(f"[生成追踪] 创建批量父记录失败: {exc}")
             plugin.background_task_manager.attach(
                 task_id,
-                run_batch_job(plugin, event, task_id, prepared_items),
+                run_batch_job(
+                    plugin, event, task_id, prepared_items, parent_job_id=parent_job_id
+                ),
             )
             return _background_json(task_id, batch_mode, message)
 

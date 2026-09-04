@@ -1043,7 +1043,9 @@ class WorkbenchView {
     this.store = store;
     this.onJobSubmitted = onJobSubmitted;
     this.batchCounter = 0;
-    this.batchBudgetLimit = 40;
+    this.batchBudgetLimit = 0;
+    this.batchMaxTasks = 0;
+    this.uploadMaxMb = 0;
     this.formAvailable = false;
     this.isSubmitting = false;
     this.isUploading = false;
@@ -1084,6 +1086,7 @@ class WorkbenchView {
     this.submitBtnText = document.getElementById('submit-btn-text');
 
     this.fileUploadInput = document.getElementById('file-upload-input');
+    this.uploadLimitHint = document.getElementById('upload-max-size');
     this.btnTriggerUpload = document.getElementById('btn-trigger-upload');
     this.btnPickGallery = document.getElementById('btn-pick-gallery');
     this.referenceCounter = document.getElementById('reference-counter');
@@ -1151,6 +1154,17 @@ class WorkbenchView {
       const data = await BridgeClient.get('webui/capabilities');
       const models = Array.isArray(data?.models) ? data.models : [];
       this.store.capabilities = models;
+      const limits = data?.limits;
+      if (!limits || !['batch_total_budget', 'batch_max_tasks', 'upload_max_mb'].every(
+        (key) => Number.isSafeInteger(limits[key]) && limits[key] > 0
+      )) {
+        throw new Error('模型能力响应缺少有效限制');
+      }
+      this.batchBudgetLimit = limits.batch_total_budget;
+      this.batchMaxTasks = limits.batch_max_tasks;
+      this.uploadMaxMb = limits.upload_max_mb;
+      SafeDOM.setText(this.uploadLimitHint, `${this.uploadMaxMb}MB`);
+      SafeDOM.setText(this.batchMaxBudget, String(this.batchBudgetLimit));
 
       if (models.length === 0) {
         this.showGlobalBanner('未检测到可用的图像生成供应商，请在插件配置中添加 provider_candidates 后刷新');
@@ -1161,6 +1175,7 @@ class WorkbenchView {
       this.hideGlobalBanner();
       this.setFormDisabled(false);
       this.populateModels(models);
+      this.calculateBatchBudget();
     } catch (err) {
       console.error('[WorkbenchView] 加载 capabilities 失败:', err);
       const message = ErrorFeedback.isAuth(err)
@@ -1223,7 +1238,8 @@ class WorkbenchView {
       const group = SafeDOM.el('optgroup', { label });
       for (const { entry, index } of items) {
         const modelName = entry.model || '默认模型';
-        const text = entry.model_alias ? `${modelName}（${entry.model_alias}）` : modelName;
+        const displayName = entry.model_alias ? `${modelName}（${entry.model_alias}）` : modelName;
+        const text = `${displayName} · ${entry.candidate_id}`;
         group.appendChild(SafeDOM.el('option', { value: String(index) }, [text]));
       }
       this.selectModel.appendChild(group);
@@ -1367,6 +1383,10 @@ class WorkbenchView {
   }
 
   addBatchItem(initialName = '', initialPrompt = '', initialCount = 1) {
+    if (this.store.batchItems.length >= this.batchMaxTasks) {
+      Toast.warning(`批量任务数不能超过 ${this.batchMaxTasks}`);
+      return;
+    }
     this.batchCounter++;
     const itemId = `batch_item_${this.batchCounter}`;
     const name = initialName || `子任务 ${this.batchCounter}`;
@@ -1456,7 +1476,8 @@ class WorkbenchView {
     const total = this.store.batchItems.reduce((acc, it) => acc + (it.image_count || 1), 0);
     SafeDOM.setText(this.batchTotalCount, String(total));
     this.batchBudgetValid = this.store.mode !== 'batch'
-      || (total > 0 && total <= this.batchBudgetLimit);
+      || (total > 0 && total <= this.batchBudgetLimit && this.store.batchItems.length <= this.batchMaxTasks);
+    this.btnAddBatchItem.disabled = !this.formAvailable || this.store.batchItems.length >= this.batchMaxTasks;
 
     if (total > this.batchBudgetLimit) {
       this.batchBudgetInfo.classList.add('batch-budget-indicator--danger');
@@ -1468,10 +1489,8 @@ class WorkbenchView {
   }
 
   getMaxReferenceImages() {
-    const pName = this.selectedModel()?.provider || '';
-    if (pName === 'xai') return 3;
-    if (pName === 'doubao') return 10;
-    return 4;
+    const maximum = this.selectedModel()?.max_reference_images;
+    return Number.isSafeInteger(maximum) && maximum >= 0 ? maximum : 0;
   }
 
   updateReferenceCounter() {
@@ -1574,8 +1593,8 @@ class WorkbenchView {
           Toast.error(`文件 ${file.name} 不是支持的图片格式`);
           continue;
         }
-        if (file.size > 20 * 1024 * 1024) {
-          Toast.error(`文件 ${file.name} 大小超过 20MB 限制`);
+        if (file.size > this.uploadMaxMb * 1024 * 1024) {
+          Toast.error(`文件 ${file.name} 大小超过 ${this.uploadMaxMb}MB 限制`);
           continue;
         }
 
@@ -1792,10 +1811,11 @@ class WorkbenchView {
     SafeDOM.setText(this.promptCharCount, `${this.promptInput.value.length} / 2000`);
 
     let fellBack = false;
-    if (params.provider || params.model) {
+    if (params.provider || params.model || params.candidate_id) {
       const matchIndex = this.store.capabilities.findIndex(
         (entry) => (!params.provider || entry.provider === params.provider)
           && (!params.model || entry.model === params.model)
+          && (!params.candidate_id || entry.candidate_id === params.candidate_id)
       );
       if (matchIndex >= 0) {
         this.selectModel.value = String(matchIndex);
@@ -1857,6 +1877,9 @@ class WorkbenchView {
 
   async submit() {
     if (this.isSubmitting || !this.formAvailable) return;
+    this.calculateBatchBudget();
+    this.updateReferenceCounter();
+    if (!this.batchBudgetValid || !this.referencesValid || this.isUploading) return;
     const isBatch = this.store.mode === 'batch';
     let promptVal = this.promptInput.value.trim();
     let batchPayload = null;
@@ -1914,6 +1937,7 @@ class WorkbenchView {
     const payload = {
       provider: selectedModel?.provider || null,
       model: selectedModel?.model || null,
+      candidate_id: selectedModel?.candidate_id || null,
       resolution: this.selectResolution.value || null,
       aspect_ratio: this.selectAspectRatio.value || null,
       quality: this.itemQuality.style.display !== 'none' ? this.selectQuality.value : null,

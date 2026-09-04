@@ -242,6 +242,90 @@ async def test_single_tool_returns_task_id_only_after_backgrounding(tmp_path) ->
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcome", ["succeeded", "partial_success", "failed", "interrupted"]
+)
+async def test_llm_batch_entry_creates_tracker_parent(tmp_path, monkeypatch, outcome):
+    import tl.llm_tools as llm_tools
+    from tl.generation_tracker import GenerationTracker, current_tracking_context
+
+    tracker = GenerationTracker(tmp_path, 20)
+    manager = BackgroundTaskManager(tmp_path)
+    event = _Event()
+    started = asyncio.Event()
+    items = [
+        {
+            "name": "one",
+            "prompt": "draw",
+            "image_count": 2,
+            "routing_mode": "full_polling",
+        }
+    ]
+
+    async def allow(_event):
+        return True, None
+
+    async def prepare(*args):
+        return items, None
+
+    async def generate(plugin, event, item):
+        context = current_tracking_context()
+        assert tracker.get(context.parent_job_id)["source"] == "llm_batch"
+        child = await tracker.begin(
+            source=context.source,
+            parent_job_id=context.parent_job_id,
+            item_name=context.item_name,
+            prompt=item["prompt"],
+            params={},
+            requester={},
+            requested_images=2,
+        )
+        started.set()
+        if outcome == "interrupted":
+            await asyncio.Event().wait()
+        count = {"succeeded": 2, "partial_success": 1, "failed": 0}[outcome]
+        paths = [f"image-{i}.png" for i in range(count)]
+        await tracker.update(child["job_id"], status=outcome, generated_images=count)
+        return batch_generation._batch_item_result(item, collected=paths)
+
+    async def send(*args):
+        pass
+
+    monkeypatch.setattr(llm_tools, "_prepare_batch_tasks", prepare)
+    monkeypatch.setattr(
+        GeminiImageGenerationTool, "refresh_from_plugin", lambda self: None
+    )
+    monkeypatch.setattr(batch_generation, "_generate_batch_item", generate)
+    monkeypatch.setattr(batch_generation, "_send_batch_results", send)
+    plugin = SimpleNamespace(
+        api_client=object(),
+        generation_tracker=tracker,
+        background_task_manager=manager,
+        cfg=SimpleNamespace(batch_concurrency=1),
+        _check_and_consume_limit=allow,
+    )
+    tool = GeminiImageGenerationTool(plugin=plugin)
+    response = json.loads(
+        await tool.call(_context(event), batch_tasks=[{"prompt": "draw"}])
+    )
+    runtime_task = manager._runtime_tasks[response["task_id"]]
+    await started.wait()
+    if outcome == "interrupted":
+        runtime_task.cancel()
+    await asyncio.gather(runtime_task, return_exceptions=True)
+    records = tracker.records_snapshot()
+    parent = next(record for record in records if record["parent_job_id"] is None)
+    child = next(record for record in records if record["parent_job_id"])
+    assert parent["job_id"] != response["task_id"]
+    assert child["parent_job_id"] == parent["job_id"]
+    assert child["item_name"] == "one"
+    assert parent["requested_images"] == 2
+    assert parent["status"] == child["status"] == outcome
+    assert parent["generated_images"] == child["generated_images"]
+    assert parent["finished_at"]
+
+
+@pytest.mark.asyncio
 async def test_batch_job_refills_native_under_return(tmp_path) -> None:
     manager = BackgroundTaskManager(tmp_path)
     event = _Event()

@@ -8,6 +8,7 @@ import math
 import mimetypes
 import re
 from collections.abc import Callable
+from contextlib import contextmanager
 from typing import Any
 
 from astrbot.api import logger
@@ -36,15 +37,59 @@ except (ImportError, AttributeError):
 PLUGIN_NAME = "astrbot_plugin_gemini_image_generation"
 WEBUI_PREFIX = f"/{PLUGIN_NAME}/webui"
 _SAFE_FILE_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
+_JSON_MAX_BYTES = 2 * 1024 * 1024
 
 
-def _valid_json_value(value: Any) -> bool:
+@contextmanager
+def _bounded_request(maximum: int):
+    headers = getattr(request, "headers", {})
+    try:
+        content_length = int(headers.get("content-length", 0))
+    except (TypeError, ValueError):
+        content_length = 0
+    if content_length > maximum:
+        raise StudioServiceError("请求体超过大小限制", status_code=413)
+    # PluginRequest 的公共 files/json 会先完整解析；在 ASGI 接收层截断，
+    # MultiPartException 让 Starlette 同时关闭已经创建的上传临时文件。
+    raw_request = getattr(request, "_request", None)
+    if len(getattr(raw_request, "_body", b"")) > maximum:
+        raise StudioServiceError("请求体超过大小限制", status_code=413)
+    receive = getattr(raw_request, "_receive", None)
+    if receive is None:
+        yield
+        return
+    from starlette.formparsers import MultiPartException
+
+    received = 0
+    exceeded = False
+
+    async def bounded_receive():
+        nonlocal received, exceeded
+        message = await receive()
+        received += len(message.get("body", b""))
+        if received > maximum:
+            exceeded = True
+            raise MultiPartException("请求体超过大小限制")
+        return message
+
+    raw_request._receive = bounded_receive
+    try:
+        yield
+    finally:
+        raw_request._receive = receive
+        if exceeded:
+            raise StudioServiceError("请求体超过大小限制", status_code=413)
+
+
+def _valid_json_value(value: Any, depth: int = 0) -> bool:
+    if depth > 32:
+        return False
     if isinstance(value, float):
         return math.isfinite(value)
     if isinstance(value, dict):
-        return all(_valid_json_value(item) for item in value.values())
+        return all(_valid_json_value(item, depth + 1) for item in value.values())
     if isinstance(value, (list, tuple)):
-        return all(_valid_json_value(item) for item in value)
+        return all(_valid_json_value(item, depth + 1) for item in value)
     return True
 
 
@@ -76,6 +121,7 @@ class WebStudioAPI:
         self._web_closed = False
         self._is_closed = is_closed or (lambda: self._web_closed)
         self._registered_entries: list[tuple[Any, ...]] = []
+        self._upload_request_lock = asyncio.Lock()
 
     def register(self, context: Any) -> list[tuple[Any, ...]]:
         if not WEB_API_AVAILABLE:
@@ -308,8 +354,22 @@ class WebStudioAPI:
     async def upload(self):
         if closed := self._closed_response():
             return closed
+        async with self._upload_request_lock:
+            if closed := self._closed_response():
+                return closed
+            return await self._upload()
+
+    async def _upload(self):
         try:
-            uploaded = await request.files()
+            config = getattr(self.service, "config", None)
+            maximum = (
+                min(max(int(getattr(config, "webui_upload_max_mb", 20)), 1) * 4, 200)
+                * 1024
+                * 1024
+                + 65536
+            )
+            with _bounded_request(maximum):
+                uploaded = await request.files()
             files = []
             for key in uploaded.keys():
                 files.extend(uploaded.getlist(key))
@@ -324,7 +384,11 @@ class WebStudioAPI:
     @staticmethod
     async def _json_body() -> dict[str, Any] | None:
         sentinel = object()
-        payload = await request.json(default=sentinel)
+        try:
+            with _bounded_request(_JSON_MAX_BYTES):
+                payload = await request.json(default=sentinel)
+        except StudioServiceError:
+            return None
         if payload is sentinel or not isinstance(payload, dict):
             return None
         if not _valid_json_value(payload):

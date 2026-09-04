@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import io
 import math
 import mimetypes
 import os
@@ -19,11 +20,15 @@ import aiohttp
 import cv2
 import numpy as np
 from astrbot.api import logger
+from PIL import Image, UnidentifiedImageError
 
 from .api_types import ApiRequestConfig
 from .generation_tracker import TERMINAL_STATUSES, GenerationTracker, _timestamp
-from .plugin_config import max_configured_reference_images
-from .provider_capabilities import candidate_capability, select_candidates
+from .provider_capabilities import (
+    candidate_capability,
+    candidate_reference_limit,
+    select_candidates,
+)
 
 _SAFE_FILE_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 _REMOTE_IMAGE_MAX_BYTES = 20 * 1024 * 1024
@@ -87,13 +92,15 @@ def _string(value: Any, *, name: str, limit: int, required: bool = False) -> str
     return value
 
 
-def _contains_non_finite(value: Any) -> bool:
+def _contains_non_finite(value: Any, depth: int = 0) -> bool:
+    if depth > 32:
+        return True
     if isinstance(value, float):
         return not math.isfinite(value)
     if isinstance(value, dict):
-        return any(_contains_non_finite(item) for item in value.values())
+        return any(_contains_non_finite(item, depth + 1) for item in value.values())
     if isinstance(value, (list, tuple)):
-        return any(_contains_non_finite(item) for item in value)
+        return any(_contains_non_finite(item, depth + 1) for item in value)
     return False
 
 
@@ -117,6 +124,8 @@ class WebStudioService:
             max(int(getattr(config, "webui_max_concurrent_jobs", 2)), 1)
         )
         self._runtime_tasks: dict[str, asyncio.Task[Any]] = {}
+        self._gallery_lock = asyncio.Lock()
+        self._upload_lock = asyncio.Lock()
         self._admitted_jobs = 0
         self._closed = False
 
@@ -257,6 +266,7 @@ class WebStudioService:
             "aspect_ratio": payload.get("aspect_ratio"),
             "provider": payload.get("provider"),
             "model": payload.get("model"),
+            "candidate_id": payload.get("candidate_id"),
             "image_count": payload.get("image_count", 1),
             "quality": payload.get("quality"),
         }
@@ -291,6 +301,9 @@ class WebStudioService:
             "seed": self._optional_integer(source.get("seed"), "seed"),
             "provider": self._optional_text(source.get("provider"), "provider"),
             "model": self._optional_text(source.get("model"), "model", limit=256),
+            "candidate_id": self._optional_text(
+                source.get("candidate_id"), "candidate_id"
+            ),
             "negative_prompt": self._optional_text(
                 source.get("negative_prompt"), "negative_prompt", limit=500
             ),
@@ -300,11 +313,15 @@ class WebStudioService:
             ),
             "upload_names": self._name_list(source.get("upload_names"), "upload_names"),
         }
+        route_candidates = select_candidates(
+            getattr(self.config, "provider_candidates", []) or [],
+            provider=normalized["provider"],
+            model=normalized["model"],
+            candidate_id=normalized["candidate_id"],
+        )
         maximum_refs = max(
-            max_configured_reference_images(
-                getattr(self.config, "provider_candidates", [])
-            ),
-            1,
+            (candidate_reference_limit(candidate) for candidate in route_candidates),
+            default=0,
         )
         if (
             len(normalized["reference_names"]) + len(normalized["upload_names"])
@@ -347,16 +364,24 @@ class WebStudioService:
             if key != "reuse_job_id":
                 merged[key] = value
 
-        reused_route = not any(key in payload for key in ("provider", "model"))
-        if reused_route and (merged.get("provider") or merged.get("model")):
+        reused_route = not any(
+            key in payload for key in ("provider", "model", "candidate_id")
+        )
+        if not reused_route and "candidate_id" not in payload:
+            merged["candidate_id"] = None
+        if reused_route and (
+            merged.get("provider") or merged.get("model") or merged.get("candidate_id")
+        ):
             candidates = select_candidates(
                 getattr(self.config, "provider_candidates", []) or [],
                 provider=merged.get("provider"),
                 model=merged.get("model"),
+                candidate_id=merged.get("candidate_id"),
             )
             if not candidates:
                 merged["provider"] = None
                 merged["model"] = None
+                merged["candidate_id"] = None
                 return merged, "原记录的供应商或模型已不可用，已回退默认配置"
         return merged, None
 
@@ -470,11 +495,20 @@ class WebStudioService:
             configured,
             provider=payload.get("provider"),
             model=payload.get("model"),
+            candidate_id=payload.get("candidate_id"),
             has_reference_images=bool(payload.get("reference_images")),
             required_parameters=required,
         )
         if not candidates:
             raise StudioServiceError("没有匹配本次请求能力的供应商或模型")
+        reference_count = len(payload.get("reference_images") or [])
+        candidates = [
+            candidate
+            for candidate in candidates
+            if candidate_reference_limit(candidate) >= reference_count
+        ]
+        if not candidates:
+            raise StudioServiceError("参考图片数量超过目标候选上限")
 
         for field in ("resolution", "aspect_ratio", "quality"):
             value = payload.get(field)
@@ -502,6 +536,7 @@ class WebStudioService:
 
         seed = payload.get("seed")
         if seed is None:
+            payload["candidate_id"] = str(candidates[0].id)
             return
         accepted = []
         minimums: list[int] = []
@@ -530,9 +565,16 @@ class WebStudioService:
             if maximums:
                 data["maximum"] = max(maximums)
             raise StudioServiceError("seed 不受目标供应商支持", data=data)
+        payload["candidate_id"] = str(accepted[0].id)
 
     async def _run_single(self, job_id: str, payload: dict[str, Any]) -> None:
-        await self._execute_generation(job_id, payload)
+        try:
+            await self._execute_generation(job_id, payload)
+        except asyncio.CancelledError:
+            await self.tracker.update(
+                job_id, status="interrupted", error="工作台服务关闭，任务已中断"
+            )
+            raise
 
     async def _run_batch(
         self,
@@ -607,6 +649,7 @@ class WebStudioService:
         collected: list[str] = []
         text_parts: list[str] = []
         last_stats: dict[str, Any] = {}
+        source_candidates: dict[str, str | None] = {}
         error: str | None = None
         try:
             while len(collected) < target:
@@ -623,6 +666,7 @@ class WebStudioService:
                     image_input_mode="force_base64",
                     requested_provider=payload.get("provider"),
                     requested_model=payload.get("model"),
+                    requested_candidate_id=payload.get("candidate_id"),
                     negative_prompt=payload.get("negative_prompt"),
                     quality=payload.get("quality"),
                     seed=payload.get("seed"),
@@ -652,6 +696,11 @@ class WebStudioService:
                     error = "供应商未返回新的图片"
                     break
                 collected.extend(new_images[:remaining])
+                source_candidates.update(
+                    dict.fromkeys(
+                        new_images[:remaining], request_config.successful_candidate_id
+                    )
+                )
                 if text_content:
                     text_parts.append(str(text_content))
                 last_stats = {
@@ -676,7 +725,13 @@ class WebStudioService:
         except Exception as exc:
             error = str(exc) or type(exc).__name__
 
-        archived = await self.archive_sources(collected)
+        try:
+            archived = await self.archive_sources(
+                collected, candidate_ids=source_candidates, job_id=job_id
+            )
+        except StudioServiceError as exc:
+            archived = []
+            error = exc.message
         if not archived:
             await self.tracker.fail(job_id, error=error or "生成结果归档失败")
             self._log_job_outcome(job_id)
@@ -714,11 +769,18 @@ class WebStudioService:
         self,
         image_urls: list[str] | None,
         image_paths: list[str] | None,
+        *,
+        candidate_id: str | None = None,
+        job_id: str | None = None,
     ) -> list[str]:
         sources = [
             str(item) for item in (image_urls or []) + (image_paths or []) if item
         ]
-        return await self.archive_sources(sources)
+        return await self.archive_sources(
+            sources,
+            candidate_ids=dict.fromkeys(sources, candidate_id),
+            job_id=job_id,
+        )
 
     # 启动时纳入管理的历史生成图前缀（其余前缀仍按缓存处理）
     _LEGACY_IMAGE_PREFIXES = ("gemini_image_", "gemini_advanced_image_")
@@ -752,6 +814,8 @@ class WebStudioService:
         if self.gallery_dir.is_dir():
             for existing in self.gallery_dir.iterdir():
                 try:
+                    if not existing.is_file():
+                        continue
                     size = existing.stat().st_size
                 except OSError:
                     continue
@@ -811,7 +875,22 @@ class WebStudioService:
             logger.info(f"[WebUI] 已把 {imported} 张历史生成图纳入画廊管理")
         return imported
 
-    async def archive_sources(self, sources: list[str]) -> list[str]:
+    async def archive_sources(
+        self,
+        sources: list[str],
+        *,
+        candidate_ids: dict[str, str | None] | None = None,
+        job_id: str | None = None,
+    ) -> list[str]:
+        async with self._gallery_lock:
+            return await self._archive_sources(sources, candidate_ids or {}, job_id)
+
+    async def _archive_sources(
+        self,
+        sources: list[str],
+        candidate_ids: dict[str, str | None],
+        job_id: str | None,
+    ) -> list[str]:
         self.gallery_dir.mkdir(parents=True, exist_ok=True)
         archived: list[str] = []
         seen: set[str] = set()
@@ -821,11 +900,13 @@ class WebStudioService:
             seen.add(source)
             try:
                 if source.startswith(("http://", "https://")):
-                    data = await self._download_remote_image(source)
+                    data = await self._download_remote_image(
+                        source, candidate_id=candidate_ids.get(source)
+                    )
                 else:
                     path = Path(source[8:] if source.startswith("file:///") else source)
                     data = await asyncio.to_thread(path.read_bytes)
-                extension = self._validate_image_bytes(data)
+                extension = await asyncio.to_thread(self._validate_image_bytes, data)
                 name = self._gallery_name(extension)
                 await asyncio.to_thread(
                     self._write_atomic, self.gallery_dir / name, data
@@ -833,17 +914,49 @@ class WebStudioService:
                 archived.append(name)
             except Exception as exc:
                 logger.warning(f"[WebUI] gallery 归档失败: {exc}")
-        await self.enforce_gallery_quota()
+        if not await self._enforce_gallery_quota_locked(set(archived)):
+            await asyncio.to_thread(self.tracker._delete_gallery_files, set(archived))
+            raise StudioServiceError("画廊空间不足以保存本次结果", status_code=507)
+        # 归档与 complete 之间仍可能让出执行权，先让运行中记录持有文件。
+        if job_id:
+            await self.tracker.update(job_id, images=archived)
         logger.info(
             f"[WebUI] gallery 归档完成: 张数={len(archived)}, 文件名列表={archived}"
         )
         return archived
 
-    async def _download_remote_image(self, url: str) -> bytes:
+    async def _download_remote_image(
+        self, url: str, *, candidate_id: str | None = None
+    ) -> bytes:
         timeout = aiohttp.ClientTimeout(total=10)
         data = bytearray()
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url) as response:
+        candidate = next(
+            (
+                candidate
+                for candidate in getattr(self.config, "provider_candidates", []) or []
+                if candidate.id == candidate_id
+            ),
+            None,
+        )
+        settings = getattr(candidate, "settings", None) or {}
+        proxy = (
+            getattr(candidate, "proxy", None)
+            or settings.get("proxy")
+            or getattr(self.api_client, "_default_proxy", None)
+            or getattr(self.api_client, "proxy", None)
+            or getattr(self.config, "proxy", None)
+        )
+        connector = None
+        http_proxy = proxy
+        if proxy and proxy.lower().startswith("socks"):
+            from aiohttp_socks import ProxyConnector
+
+            connector = ProxyConnector.from_url(proxy)
+            http_proxy = None
+        async with aiohttp.ClientSession(
+            timeout=timeout, connector=connector
+        ) as session:
+            async with session.get(url, proxy=http_proxy) as response:
                 response.raise_for_status()
                 content_length = response.content_length
                 if content_length and content_length > _REMOTE_IMAGE_MAX_BYTES:
@@ -868,6 +981,18 @@ class WebStudioService:
             extension = "webp"
         else:
             raise StudioServiceError("不支持的图片格式")
+        try:
+            with Image.open(io.BytesIO(data)) as header:
+                width, height = header.size
+                if width > 8000 or height > 8000:
+                    raise StudioServiceError("图片像素尺寸不能超过 8000×8000")
+        except (
+            UnidentifiedImageError,
+            OSError,
+            ValueError,
+            Image.DecompressionBombError,
+        ) as exc:
+            raise StudioServiceError("图片内容无法解码或像素尺寸超限") from exc
         image = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
         if image is None or image.size == 0:
             raise StudioServiceError("图片内容无法解码")
@@ -888,32 +1013,73 @@ class WebStudioService:
         os.replace(temp, path)
 
     async def enforce_gallery_quota(self) -> None:
+        async with self._gallery_lock:
+            await self._enforce_gallery_quota_locked(set())
+
+    async def _enforce_gallery_quota_locked(self, protected: set[str]) -> bool:
         try:
             maximum_mb = float(getattr(self.config, "webui_gallery_max_size_mb", 512))
         except (TypeError, ValueError):
             maximum_mb = 512
         if maximum_mb <= 0 or not self.gallery_dir.is_dir():
-            return
+            return True
         maximum = int(maximum_mb * 1024 * 1024)
         records = self.tracker.records_snapshot()
-        await asyncio.to_thread(self._enforce_gallery_quota_sync, maximum, records)
+        return await asyncio.to_thread(
+            self._enforce_gallery_quota_sync, maximum, records, protected
+        )
 
     def _enforce_gallery_quota_sync(
         self,
         maximum: int,
         records: list[dict[str, Any]],
-    ) -> None:
-        files = [path for path in self.gallery_dir.iterdir() if path.is_file()]
-        sizes = {}
-        for path in files:
+        protected: set[str] | None = None,
+    ) -> bool:
+        with self.tracker.gallery_lock:
+            return self._enforce_gallery_quota_files(
+                maximum, records, set(protected or ())
+            )
+
+    def _enforce_gallery_quota_files(
+        self, maximum: int, records: list[dict[str, Any]], protected: set[str]
+    ) -> bool:
+        files = {
+            path.name: path
+            for path in self.gallery_dir.iterdir()
+            if path.is_file() and not path.is_symlink()
+        }
+        cache_dir = self.gallery_dir / ".thumbs"
+        thumbnails = {}
+        if cache_dir.is_dir() and not cache_dir.is_symlink():
+            thumbnails = {
+                path.name: path for path in cache_dir.iterdir() if path.is_file()
+            }
+        sizes: dict[Path, int] = {}
+        mtimes: dict[Path, float] = {}
+        for path in [*files.values(), *thumbnails.values()]:
             try:
-                sizes[path.name] = path.stat().st_size
+                stat = path.lstat()
+                sizes[path] = stat.st_size
+                mtimes[path] = stat.st_mtime
             except OSError:
-                sizes[path.name] = 0
+                continue
         total = sum(sizes.values())
-        if total <= maximum:
-            return
         original_total = total
+
+        def remove(path: Path) -> None:
+            nonlocal total
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                return
+            total -= sizes.pop(path, 0)
+
+        # 缓存可重建，先清孤儿和超额缩略图，避免只浏览画廊就挤掉原图。
+        for name, path in sorted(
+            thumbnails.items(), key=lambda item: mtimes.get(item[1], 0)
+        ):
+            if name.removesuffix(".jpg") not in files or total > maximum:
+                remove(path)
 
         groups: dict[str, list[dict[str, Any]]] = {}
         for record in records:
@@ -926,50 +1092,69 @@ class WebStudioService:
         removed: set[str] = set()
         removed_groups = 0
         for group in ordered:
+            names = {
+                str(name) for record in group for name in record.get("images") or []
+            }
+            if any(record.get("status") == "running" for record in group):
+                protected.update(names)
+        for group in ordered:
             if total <= maximum:
                 break
-            if any(record.get("status") == "running" for record in group):
+            names = {
+                str(name) for record in group for name in record.get("images") or []
+            }
+            if names & protected:
                 continue
             removed_before_group = len(removed)
             for record in group:
                 for name in record.get("images") or []:
-                    path = self.gallery_dir / str(name)
-                    try:
-                        path.unlink(missing_ok=True)
-                    except OSError:
+                    path = files.get(str(name))
+                    if path is None:
                         continue
-                    total -= sizes.get(str(name), 0)
+                    remove(path)
+                    thumbnail = thumbnails.get(f"{name}.jpg")
+                    if thumbnail is not None:
+                        remove(thumbnail)
                     removed.add(str(name))
             if len(removed) > removed_before_group:
                 removed_groups += 1
 
         if total > maximum:
             remaining = sorted(
-                (path for path in files if path.name not in removed),
-                key=lambda path: path.stat().st_mtime,
+                (
+                    path
+                    for name, path in files.items()
+                    if name not in removed | protected
+                ),
+                key=lambda path: mtimes.get(path, 0),
             )
             for path in remaining:
                 if total <= maximum:
                     break
-                try:
-                    size = path.stat().st_size
-                    path.unlink(missing_ok=True)
-                    total -= size
-                except OSError:
-                    continue
+                remove(path)
+                thumbnail = thumbnails.get(f"{path.name}.jpg")
+                if thumbnail is not None:
+                    remove(thumbnail)
         released = min(max(original_total - total, 0), original_total)
         if released:
             logger.info(
                 f"[WebUI] gallery 容量淘汰完成: 释放量={released} 字节, "
                 f"删除组数={removed_groups}"
             )
+        return total <= maximum
 
     async def save_uploads(self, files: list[Any]) -> list[str]:
+        try:
+            async with self._upload_lock:
+                return await self._save_uploads(files)
+        finally:
+            await self._close_uploads(files)
+
+    async def _save_uploads(self, files: list[Any]) -> list[str]:
         if not files:
             logger.info("[WebUI] 上传被拒绝: 原因=未找到上传文件")
             raise StudioServiceError("未找到上传文件")
         if len(files) > 4:
-            await self._close_uploads(files)
             logger.info("[WebUI] 上传被拒绝: 原因=单次最多上传 4 个文件")
             raise StudioServiceError("单次最多上传 4 个文件")
         self.upload_dir.mkdir(parents=True, exist_ok=True)
@@ -981,7 +1166,9 @@ class WebStudioService:
                 server_stem = f"upload-{uuid.uuid4().hex}"
                 try:
                     data = await self._read_upload(upload)
-                    extension = self._validate_image_bytes(data)
+                    extension = await asyncio.to_thread(
+                        self._validate_image_bytes, data
+                    )
                 except StudioServiceError as exc:
                     logger.debug(
                         f"[WebUI] 上传文件校验未通过: 文件名={server_stem}, "
@@ -1008,12 +1195,10 @@ class WebStudioService:
                 (self.upload_dir / name).unlink(missing_ok=True)
             logger.info(f"[WebUI] 上传被拒绝: 原因={exc.message}")
             raise
-        except Exception:
+        except BaseException:
             for name in saved:
                 (self.upload_dir / name).unlink(missing_ok=True)
             raise
-        finally:
-            await self._close_uploads(files)
 
     async def _read_upload(self, upload: Any) -> bytes:
         maximum = (
@@ -1094,16 +1279,24 @@ class WebStudioService:
         *,
         thumbnail: bool = False,
     ) -> dict[str, str]:
-        return await asyncio.to_thread(
-            self._gallery_image_base64_sync,
-            name,
-            thumbnail,
-        )
+        async with self._gallery_lock:
+            payload = await asyncio.to_thread(
+                self._gallery_image_base64_sync, name, thumbnail
+            )
+            if thumbnail:
+                await self._enforce_gallery_quota_locked({name})
+            return payload
 
     def _gallery_image_base64_sync(
         self,
         name: str,
         thumbnail: bool,
+    ) -> dict[str, str]:
+        with self.tracker.gallery_lock:
+            return self._gallery_image_base64_locked(name, thumbnail)
+
+    def _gallery_image_base64_locked(
+        self, name: str, thumbnail: bool
     ) -> dict[str, str]:
         path = self.gallery_file(name)
         if thumbnail:
@@ -1112,17 +1305,20 @@ class WebStudioService:
             limit = _THUMBNAIL_B64_MAX_BYTES
             error_message = "缩略图响应超过 2MB 限制"
         else:
+            limit = _ORIGINAL_B64_MAX_BYTES
+            error_message = "原图响应超过 8MB 限制，请使用下载功能"
             try:
-                raw = path.read_bytes()
+                with path.open("rb") as stream:
+                    raw = stream.read(limit // 4 * 3 + 1)
             except OSError as exc:
                 raise StudioServiceError(
                     "图片读取失败",
                     status_code=500,
                 ) from exc
             mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-            limit = _ORIGINAL_B64_MAX_BYTES
-            error_message = "原图响应超过 8MB 限制，请使用下载功能"
 
+        if ((len(raw) + 2) // 3) * 4 > limit:
+            raise StudioServiceError(error_message, status_code=413)
         encoded = base64.b64encode(raw).decode("ascii")
         if len(encoded) > limit:
             raise StudioServiceError(error_message, status_code=413)
@@ -1136,6 +1332,8 @@ class WebStudioService:
 
         cache_dir = self.gallery_dir / ".thumbs"
         cache_path = cache_dir / f"{source.name}.jpg"
+        if cache_dir.is_symlink() or cache_path.is_symlink():
+            raise StudioServiceError("非法缩略图缓存路径", status_code=400)
         try:
             cache_stat = cache_path.stat()
             if cache_stat.st_mtime_ns == source_stat.st_mtime_ns:
@@ -1224,6 +1422,10 @@ class WebStudioService:
             models.append(
                 {
                     "id": str(getattr(candidate, "id", "") or f"candidate-{index}"),
+                    "candidate_id": str(
+                        getattr(candidate, "id", "") or f"candidate-{index}"
+                    ),
+                    "max_reference_images": candidate_reference_limit(candidate),
                     "provider": name,
                     "provider_display": _DISPLAY_NAMES.get(name, name),
                     "model": str(getattr(candidate, "model", "") or ""),
@@ -1239,7 +1441,20 @@ class WebStudioService:
                 }
             )
         logger.debug(f"[WebUI] capabilities 计算完成: 模型数={len(models)}")
-        return {"models": models}
+        return {
+            "models": models,
+            "limits": {
+                "batch_total_budget": max(
+                    int(getattr(self.config, "webui_batch_total_budget", 40)), 1
+                ),
+                "upload_max_mb": max(
+                    int(getattr(self.config, "webui_upload_max_mb", 20)), 1
+                ),
+                "batch_max_tasks": max(
+                    int(getattr(self.config, "batch_max_tasks", 20)), 1
+                ),
+            },
+        }
 
     async def close(self) -> None:
         if self._closed:

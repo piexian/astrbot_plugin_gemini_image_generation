@@ -191,17 +191,44 @@ async def run_batch_job(
     event: Any,
     task_id: str,
     items: list[dict[str, Any]],
+    *,
+    parent_job_id: str | None = None,
 ) -> None:
     """Generate named items with flat configured concurrency and one final delivery."""
     manager = plugin.background_task_manager
     semaphore = asyncio.Semaphore(max(int(plugin.cfg.batch_concurrency), 1))
     progress_lock = asyncio.Lock()
     results: list[dict[str, Any] | None] = [None] * len(items)
+    tracker = getattr(plugin, "generation_tracker", None)
+
+    async def update_parent(status: str = "running", error: str | None = None) -> None:
+        if tracker is None or not parent_job_id:
+            return
+        try:
+            await tracker.update(
+                parent_job_id,
+                status=status,
+                error=error,
+                generated_images=sum(
+                    int(value["generated_images"]) for value in results if value
+                ),
+            )
+            if status == "interrupted":
+                for record in tracker.records_snapshot():
+                    if (
+                        record.get("parent_job_id") == parent_job_id
+                        and record.get("status") == "running"
+                    ):
+                        await tracker.update(
+                            record["job_id"], status="interrupted", error=error
+                        )
+        except Exception as exc:
+            logger.warning(f"[生成追踪] 更新批量记录失败: {exc}")
 
     async def run_one(index: int, item: dict[str, Any]) -> None:
         async with semaphore:
             await manager.update(task_id, current_item=item["name"])
-            with tracking_context("llm_batch", task_id, item["name"]):
+            with tracking_context("llm_batch", parent_job_id, item["name"]):
                 result = await _generate_batch_item(plugin, event, item)
         async with progress_lock:
             results[index] = result
@@ -216,6 +243,7 @@ async def run_batch_job(
                 current_item=None,
                 items=[_public_item(value) for value in results if value is not None],
             )
+            await update_parent()
 
     try:
         outcomes = await asyncio.gather(
@@ -248,6 +276,9 @@ async def run_batch_job(
             status = "partial_success"
         else:
             status = "failed"
+        await update_parent(
+            status, "所有批量任务均生成失败" if status == "failed" else None
+        )
         await _send_batch_results(plugin, event, task_id, final_results)
         await manager.update(
             task_id,
@@ -260,6 +291,7 @@ async def run_batch_job(
             items=[_public_item(value) for value in final_results],
         )
     except asyncio.CancelledError:
+        await update_parent("interrupted", "批量生成已中断")
         await manager.update(
             task_id,
             status="interrupted",
@@ -272,6 +304,9 @@ async def run_batch_job(
         final_results = [value for value in results if value is not None]
         succeeded = sum(bool(value["success"]) for value in final_results)
         generated = sum(int(value["generated_images"]) for value in final_results)
+        await update_parent(
+            "partial_success" if generated else "failed", f"批量任务异常: {exc}"
+        )
         await manager.update(
             task_id,
             status="partial_success" if generated else "failed",

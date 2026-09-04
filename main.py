@@ -638,6 +638,8 @@ class GeminiImageGenerationPlugin(Star):
                     archived = await self.web_studio_service.archive_images(
                         image_urls,
                         image_paths,
+                        candidate_id=config.successful_candidate_id,
+                        job_id=tracking_job_id,
                     )
                     if archived:
                         await self.generation_tracker.complete(
