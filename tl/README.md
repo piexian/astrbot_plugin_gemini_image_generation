@@ -388,6 +388,12 @@ prompt + provider + model + negative_prompt + watermark + quality
 - 批量任务以命名条目为并发单位；条目内部遵循供应商原生单次上限并在返回不足时继续补齐。
 - 最终发送保持输入顺序，任务状态区分 `succeeded`、`partial_success`、`failed` 和 `interrupted`。
 
+### WebUI 创作台（`generation_tracker.py` / `web_studio_service.py` / `web_api.py`）
+
+- `GenerationTracker`：全来源（指令/LLM 工具/LLM 批量/工作台）生成记录，创建即落盘 `generation_history.json`，SSE 有界队列扇出（快照+增量+resync）；`begin/update/complete/fail` + `import_legacy`（启动迁入存量图）+ `tracking_context`（ContextVar 传播批量父子关系）。
+- `WebStudioService`：工作台生成编排（全局并发准入、循环补足目标张数、partial_success）、gallery 归档（本地复制/远程流式下载、容量整组淘汰）、上传校验（流式截断+魔数+像素+配额）、`capabilities()` 扁平候选列表（白名单字段）。
+- `WebStudioAPI`：薄 HTTP 适配层，路由前缀 `/astrbot_plugin_gemini_image_generation/webui/`，标准 `{status/data}` 信封；图片经 `image_b64` 端点走 bridge 传输（插件页 iframe 为不透明源沙箱，`<img>` 直连不带 Cookie 必 401）。
+
 ### `thought_signature.py`
 
 | 接口 | 说明 |

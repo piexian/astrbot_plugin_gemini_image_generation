@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 from contextvars import ContextVar
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from astrbot.api import logger
 
+from .generation_tracker import current_tracking_context, requester_from_event
 from .thought_signature import log_thought_signature_debug
 from .tl_api import APIError, ApiRequestConfig
 
@@ -34,6 +35,8 @@ class ImageGenerator:
         max_reference_images: int = DEFAULT_MAX_REFERENCE_IMAGES,
         filter_valid_fn=None,
         get_tool_timeout_fn=None,
+        tracker=None,
+        archive_images_fn=None,
     ):
         """
         Args:
@@ -56,6 +59,8 @@ class ImageGenerator:
         )
         self._filter_valid_fn = filter_valid_fn
         self._get_tool_timeout_fn = get_tool_timeout_fn
+        self.tracker = tracker
+        self._archive_images_fn = archive_images_fn
         initial_request_stats: dict[str, object] = {
             "retry_count": 0,
             "token_usage": None,
@@ -110,6 +115,96 @@ class ImageGenerator:
 
     def _set_request_stats(self, stats: dict[str, object]) -> None:
         self.last_request_stats = stats
+
+    async def _begin_tracking(
+        self,
+        *,
+        event: Any,
+        prompt: str,
+        config: ApiRequestConfig,
+        is_tool_call: bool,
+    ) -> str | None:
+        if self.tracker is None:
+            return None
+        context = current_tracking_context()
+        source = (
+            context.source if context else ("llm_tool" if is_tool_call else "command")
+        )
+        try:
+            record = await self.tracker.begin(
+                source=source,
+                prompt=prompt,
+                params={
+                    "resolution": config.resolution,
+                    "aspect_ratio": config.aspect_ratio,
+                    "provider": config.requested_provider,
+                    "model": config.requested_model,
+                    "image_count": config.image_count,
+                    "quality": config.quality,
+                },
+                requester=requester_from_event(event),
+                parent_job_id=context.parent_job_id if context else None,
+                item_name=context.item_name if context else None,
+                requested_images=config.image_count,
+            )
+            job_id = str(record["job_id"])
+            logger.debug(
+                f"[生成追踪] 开始: job_id={job_id}, 来源={source}, "
+                f"目标张数={config.image_count}, "
+                f"供应商={config.requested_provider or '未指定'}, "
+                f"模型={config.requested_model or '未指定'}, prompt={prompt[:30]!r}"
+            )
+            return job_id
+        except Exception as exc:
+            logger.warning(f"[生成追踪] 创建记录失败，不影响本次生成: {exc}")
+            return None
+
+    async def _complete_tracking(
+        self,
+        job_id: str | None,
+        image_urls: list[str],
+        image_paths: list[str],
+        text_content: str | None,
+    ) -> None:
+        if not job_id or self.tracker is None:
+            return
+        try:
+            image_files = []
+            if self._archive_images_fn is not None:
+                image_files = await self._archive_images_fn(image_urls, image_paths)
+            stats = self.get_request_stats()
+            await self.tracker.complete(
+                job_id,
+                image_files=image_files,
+                text_content=text_content,
+                stats=stats,
+            )
+            logger.debug(
+                f"[生成追踪] 完成: job_id={job_id}, 归档张数={len(image_files)}, "
+                f"供应商={stats.get('successful_provider') or '未记录'}, "
+                f"模型={stats.get('successful_model') or '未记录'}"
+            )
+        except Exception as exc:
+            logger.warning(f"[生成追踪] 完成记录失败，不影响结果返回: {exc}")
+            try:
+                await self.tracker.fail(job_id, error=f"结果归档失败: {exc}")
+                logger.debug(
+                    f"[生成追踪] 转为失败: job_id={job_id}, "
+                    f"异常类型={type(exc).__name__}"
+                )
+            except Exception:
+                pass
+
+    async def _fail_tracking(self, job_id: str | None, error: Any) -> None:
+        if not job_id or self.tracker is None:
+            return
+        try:
+            await self.tracker.fail(job_id, error=error)
+            logger.debug(
+                f"[生成追踪] 失败: job_id={job_id}, 异常类型={type(error).__name__}"
+            )
+        except Exception as exc:
+            logger.warning(f"[生成追踪] 写入失败状态异常: {exc}")
 
     async def generate_image_core(
         self,
@@ -209,6 +304,12 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
             quality=quality,
             image_count=max(int(image_count or 1), 1),
         )
+        tracking_job_id = await self._begin_tracking(
+            event=event,
+            prompt=prompt,
+            config=request_config,
+            is_tool_call=is_tool_call,
+        )
 
         logger.info("图像生成请求:")
         logger.info(
@@ -279,6 +380,12 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
             available_paths = [p for p in image_paths if p]
             available_urls = [u for u in image_urls if u]
             if available_paths or available_urls:
+                await self._complete_tracking(
+                    tracking_job_id,
+                    image_urls,
+                    image_paths,
+                    text_content,
+                )
                 logger.debug(
                     f"图像生成完成，准备返回结果，文件路径 {len(available_paths)} 张，URL {len(available_urls)} 张"
                 )
@@ -295,8 +402,23 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
                 "✅ 建议：检查临时目录写入权限与磁盘空间，必要时重试。"
             )
             logger.error(error_msg)
+            await self._fail_tracking(tracking_job_id, error_msg)
             return False, error_msg
 
+        except asyncio.CancelledError:
+            if tracking_job_id and self.tracker is not None:
+                try:
+                    await self.tracker.update(
+                        tracking_job_id,
+                        status="interrupted",
+                        error="生成任务已取消",
+                    )
+                    logger.debug(f"[生成追踪] 已中断: job_id={tracking_job_id}")
+                except Exception as tracking_error:
+                    logger.warning(
+                        f"[生成追踪] 生成任务取消状态写入异常: {tracking_error}"
+                    )
+            raise
         except APIError as e:
             status_part = (
                 f"（状态码 {e.status_code}）" if e.status_code is not None else ""
@@ -330,8 +452,10 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
             else:
                 error_msg += "\n🧐 可能原因：请求参数异常或服务返回未知错误。\n✅ 建议：简化提示词/减少参考图后重试，并查看日志获取更多细节。"
             logger.error(error_msg)
+            await self._fail_tracking(tracking_job_id, error_msg)
             return False, error_msg
 
         except Exception as e:
             logger.error(f"生成图像时发生未预期的错误: {e}", exc_info=True)
+            await self._fail_tracking(tracking_job_id, e)
             return False, f"❌ 生成图像时发生错误: {str(e)}"

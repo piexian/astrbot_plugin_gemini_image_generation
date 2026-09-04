@@ -9,6 +9,7 @@ from astrbot.api import logger
 
 from .background_notify import report_background_failure
 from .generation_call import invoke_generation_core
+from .generation_tracker import tracking_context
 
 
 def _split_images(images: list[str]) -> tuple[list[str], list[str]]:
@@ -200,7 +201,8 @@ async def run_batch_job(
     async def run_one(index: int, item: dict[str, Any]) -> None:
         async with semaphore:
             await manager.update(task_id, current_item=item["name"])
-            result = await _generate_batch_item(plugin, event, item)
+            with tracking_context("llm_batch", task_id, item["name"]):
+                result = await _generate_batch_item(plugin, event, item)
         async with progress_lock:
             results[index] = result
             completed = sum(value is not None for value in results)

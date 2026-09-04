@@ -1959,6 +1959,74 @@
       }
     }
   },
+  "webui": {
+    "description": "WebUI 创作台",
+    "type": "object",
+    "hint": "配置生成历史、gallery、上传和工作台任务配额。",
+    "items": {
+      "history_enabled": {
+        "description": "记录生成历史",
+        "type": "bool",
+        "hint": "关闭后不将新的生成记录持久化到磁盘。",
+        "default": true
+      },
+      "history_max_records": {
+        "description": "历史记录上限",
+        "type": "int",
+        "hint": "按父子任务整组淘汰，运行中的任务不会被清理。",
+        "default": 500,
+        "slider": {
+          "min": 50,
+          "max": 5000,
+          "step": 50
+        }
+      },
+      "gallery_max_size_mb": {
+        "description": "Gallery 容量上限（MB）",
+        "type": "int",
+        "hint": "超限后从最旧任务整组清理图片；填 0 表示不自动清理。",
+        "default": 512,
+        "slider": {
+          "min": 0,
+          "max": 10240,
+          "step": 64
+        }
+      },
+      "upload_max_mb": {
+        "description": "单文件上传上限（MB）",
+        "type": "int",
+        "hint": "仅允许可解码的 PNG/JPEG/WebP/GIF/BMP 图片。",
+        "default": 20,
+        "slider": {
+          "min": 1,
+          "max": 64,
+          "step": 1
+        }
+      },
+      "max_concurrent_jobs": {
+        "description": "工作台全局并发任务数",
+        "type": "int",
+        "hint": "达到上限时拒绝新任务，避免形成无界等待队列。",
+        "default": 2,
+        "slider": {
+          "min": 1,
+          "max": 8,
+          "step": 1
+        }
+      },
+      "batch_total_budget": {
+        "description": "单次批量图片总预算",
+        "type": "int",
+        "hint": "所有批量条目的 image_count 之和不得超过此值。",
+        "default": 40,
+        "slider": {
+          "min": 4,
+          "max": 200,
+          "step": 1
+        }
+      }
+    }
+  },
   "quick_mode_settings": {
     "description": "快速模式参数覆盖",
     "type": "template_list",

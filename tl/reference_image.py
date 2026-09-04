@@ -6,6 +6,7 @@ import base64
 import binascii
 import hashlib
 import io
+import os
 import re
 import urllib.parse
 import urllib.request
@@ -258,8 +259,8 @@ async def normalize_reference_image_input(
     """
     Normalize a reference image input to (mime_type, base64_data).
 
-    Supports data URI, raw/relaxed base64, file:// and http(s) URLs.
-    Bare filesystem paths are resolved by GeminiAPIClient._process_reference_image.
+    Supports data URI, raw/relaxed base64, file://, bare filesystem paths and
+    http(s) URLs.
     """
     try:
         if image_input is None:
@@ -300,6 +301,21 @@ async def normalize_reference_image_input(
                     logger.warning(f"读取参考图 file:// 路径失败: {e}")
             else:
                 logger.warning(f"参考图 file:// 路径不存在: {image_str}")
+
+        try:
+            is_local_file = os.path.isfile(image_str)
+        except (OSError, ValueError):
+            is_local_file = False
+        if is_local_file:
+            image_path = Path(image_str)
+            suffix = image_path.suffix.lower().lstrip(".") or "png"
+            mime_type = f"image/{suffix}"
+            logger.debug(f"使用参考图本地路径: {image_path}")
+            try:
+                data_bytes = image_path.read_bytes()
+                return coerce_reference_image_bytes(mime_type, data_bytes)
+            except Exception as e:
+                logger.warning(f"读取参考图本地路径失败: {e}")
 
         if image_str.startswith(("http://", "https://")):
             cleaned_url = image_str.replace("&amp;", "&")

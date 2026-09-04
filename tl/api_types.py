@@ -59,6 +59,14 @@ class ApiRequestConfig:
     routing_mode: str = "full_polling"
     request_deadline: float | None = None  # 单调时钟；仅在一次请求生命周期内有效
 
+    def __post_init__(self) -> None:
+        if self.seed is None:
+            return
+        # 部分 provider 从候选 settings 取 seed，请求级值需覆盖候选默认值。
+        settings = dict(self.provider_settings or {})
+        settings["seed"] = self.seed
+        self.provider_settings = settings
+
 
 class APIError(Exception):
     """API 错误基类"""

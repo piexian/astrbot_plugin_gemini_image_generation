@@ -127,6 +127,18 @@ avatar / poster / wallpaper / card / mobile / figure / sticker
 
 NapCat v4.8.115+ 支持 Stream API。插件默认仍先按 `max_inline_image_size_mb` 规则发送本地图片；只有原始发送失败且文件大小达到 `napcat_stream_threshold_mb` 时，才会复用当前 NapCat/OneBot 连接调用 `upload_file_stream` 并重试一次。Docker / docker compose 部署仍建议共享 `AstrBot/data` 目录，以兼容普通本地文件发送路径。
 
+
+## webui（内置 WebUI 创作台）
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `history_enabled` | `true` | 生成历史记录总开关；关闭后不将新生成记录写入历史（不影响生成本身） |
+| `history_max_records` | `500` | 历史记录上限（50-5000），按父子任务整组淘汰，运行中的任务不会被清理 |
+| `gallery_max_size_mb` | `512` | 画廊目录容量上限（MB），超限后从最旧任务整组清理图片（记录保留）；`0` 表示不清理 |
+| `upload_max_mb` | `20` | 工作台参考图单文件上传上限（MB），仅允许可解码的 PNG/JPEG/WebP/GIF/BMP |
+| `max_concurrent_jobs` | `2` | 工作台全局并发任务数（1-8），达到上限拒绝新任务 |
+| `batch_total_budget` | `40` | 单次批量图片总预算（4-200），批量条目的 image_count 之和不得超过此值 |
+
 ## help_render_mode
 
 | 值 | 说明 |
