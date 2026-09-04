@@ -57,6 +57,7 @@ class ApiRequestConfig:
     successful_model: str | None = None
     successful_model_alias: str | None = None
     routing_mode: str = "full_polling"
+    request_deadline: float | None = None  # 单调时钟；仅在一次请求生命周期内有效
 
 
 class APIError(Exception):

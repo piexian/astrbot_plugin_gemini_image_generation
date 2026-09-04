@@ -1,9 +1,4 @@
-"""后台生图失败时，走 AstrBot 官方后台任务回灌链路通知用户。
-
-复用框架 _wake_main_agent_for_background_result 的形态：CronMessageEvent +
-主 agent（仅挂 send_message_to_user 工具）+ persist_agent_history。
-任何一步失败仅记日志（静默降级）；开关关闭或官方 API 缺失时回退直发。
-"""
+"""后台生图失败时，重新激活 AstrBot 主 Agent 处理结果。"""
 
 from __future__ import annotations
 
@@ -44,9 +39,29 @@ def _build_notice_prompt(task_id: str | None, failure_summary: str) -> str:
     return f"后台图片生成任务{tid}失败。失败摘要：{failure_summary}"
 
 
+def _build_safe_fallback_notice(task_id: str | None) -> str:
+    tid = f"（任务号 {task_id}）" if task_id else ""
+    return f"后台图片生成任务{tid}失败，请稍后重试。"
+
+
 def notify_llm_enabled(plugin: Any) -> bool:
     cfg = getattr(plugin, "cfg", None)
     return bool(getattr(cfg, "background_failure_notify_llm", True))
+
+
+def _configured_agent_max_steps(cfg: dict[str, Any]) -> int:
+    value = (
+        cfg.get("agent_runner", {})
+        .get("config", {})
+        .get("misc", {})
+        .get("max_steps", 30)
+    )
+    if isinstance(value, bool):
+        return 30
+    try:
+        return max(int(value), 1)
+    except (TypeError, ValueError):
+        return 30
 
 
 async def notify_llm_background_failure(
@@ -57,7 +72,7 @@ async def notify_llm_background_failure(
     scene: str,
     task_id: str | None = None,
 ) -> bool:
-    """走官方回灌链路把失败结果交给主 agent 告知用户；返回是否送达。"""
+    """按官方后台结果回灌路径唤醒主 Agent；返回是否实际送达。"""
     notice = _build_notice_prompt(task_id, failure_summary)
     try:
         if not _OFFICIAL_API_READY:
@@ -84,47 +99,46 @@ async def notify_llm_background_failure(
         provider_settings = cfg.get("provider_settings") or {}
         config = MainAgentBuildConfig(
             tool_call_timeout=60,
-            streaming_response=False,
+            streaming_response=provider_settings.get("stream", False),
             provider_settings=provider_settings,
         )
 
         req = ProviderRequest()
         conv = await _get_session_conv(event=cron_event, plugin_context=context)
         req.conversation = conv
-        history = json.loads(conv.history)
-        if history:
-            req.contexts = history
-            context_dump = req._print_friendly_context()
-            req.contexts = []
-            req.system_prompt += (
-                "\n\nBellow is you and user previous conversation history:\n"
-                f"{context_dump}"
-            )
+        req.contexts = json.loads(conv.history)
         req.system_prompt += BACKGROUND_TASK_RESULT_WOKE_SYSTEM_PROMPT.format(
             background_task_result=json.dumps(
                 extras["background_task_result"], ensure_ascii=False
             )
         )
         req.prompt = (
-            "请按照系统指令行事，用与用户历史对话一致的语言。"
-            "你必须调用 `send_message_to_user` 工具，把这条后台任务的失败结果简短告知用户，"
-            "否则用户将看不到任何结果。"
-            "若同一任务已连续多次失败，请先询问用户是否继续，再决定是否重试。"
+            "Proceed according to your system instructions. "
+            "Output using same language as previous conversation. "
+            "If you need to deliver the result to the user immediately, "
+            "you MUST use `send_message_to_user` tool to send the message directly to the user, "
+            "otherwise the user will not see the result. "
+            "After completing your task, summarize and output your actions and results. "
         )
-        req.func_tool = ToolSet()
+        if not req.func_tool:
+            req.func_tool = ToolSet()
         req.func_tool.add_tool(
             context.get_llm_tool_manager().get_builtin_tool(SendMessageToUserTool)
         )
 
         result = await build_main_agent(
-            event=cron_event, plugin_context=context, config=config, req=req
+            event=cron_event,
+            plugin_context=context,
+            config=config,
+            req=req,
         )
         if not result:
-            raise RuntimeError("主 agent 构建失败")
-        runner = result.agent_runner
-        async for _ in runner.step_until_done(30):
-            # agent 通过 send_message_to_user 工具把结果发给用户
+            raise RuntimeError("主 Agent 构建失败")
+        async for _ in result.agent_runner.step_until_done(
+            _configured_agent_max_steps(cfg)
+        ):
             pass
+
         await persist_agent_history(
             context.conversation_manager,
             event=cron_event,
@@ -133,6 +147,9 @@ async def notify_llm_background_failure(
                 f"[BackgroundTask] 图像生成任务 {task_id or '-'} 失败：{failure_summary}"
             ),
         )
+        if not getattr(cron_event, "_has_send_oper", False):
+            logger.warning(f"[{scene}] 后台通知 agent 未成功调用发送工具")
+            return False
         return True
     except Exception as e:
         logger.warning(f"[{scene}] 后台失败回灌未送达，已静默降级: {e}")
@@ -149,11 +166,16 @@ async def report_background_failure(
 ) -> bool:
     """工具触发的后台失败统一出口：按配置回灌 LLM，否则沿用直发。"""
     if notify_llm_enabled(plugin):
-        return await notify_llm_background_failure(
+        delivered = await notify_llm_background_failure(
             plugin, event, failure_summary, scene=scene, task_id=task_id
         )
+        if delivered:
+            return True
+        direct_notice = _build_safe_fallback_notice(task_id)
+    else:
+        direct_notice = failure_summary
     try:
-        await event.send(event.plain_result(failure_summary))
+        await event.send(event.plain_result(direct_notice))
     except Exception as e:
         logger.warning(f"[{scene}] 发送错误消息失败: {e}")
         return False

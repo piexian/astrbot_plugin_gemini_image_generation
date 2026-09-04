@@ -506,6 +506,7 @@ def _install_official_wake_fakes(monkeypatch, *, build_error=None) -> dict:
                 f"{session.platform_id}:{session.message_type}:{session.session_id}"
             )
             self.role = None
+            self._has_send_oper = False
 
         def get_platform_id(self) -> str:
             return self.kwargs["session"].platform_id
@@ -518,20 +519,26 @@ def _install_official_wake_fakes(monkeypatch, *, build_error=None) -> dict:
             self.prompt: str | None = None
             self.func_tool = None
 
-        def _print_friendly_context(self) -> str:
-            return "HIST"
-
     class _ToolSet:
+        def __init__(self) -> None:
+            self.tools = []
+
         def add_tool(self, tool) -> None:
+            self.tools.append(tool)
             calls["tools"].append(tool)
 
     class _Runner:
+        def __init__(self, event):
+            self.event = event
+
         async def step_until_done(self, limit: int):
+            self.event._has_send_oper = True
             for i in range(2):
                 yield i
 
     class _BuildResult:
-        agent_runner = _Runner()
+        def __init__(self, event):
+            self.agent_runner = _Runner(event)
 
     async def _fake_get_session_conv(event=None, plugin_context=None):
         return SimpleNamespace(history="[]")
@@ -543,7 +550,7 @@ def _install_official_wake_fakes(monkeypatch, *, build_error=None) -> dict:
         if build_error is not None:
             raise build_error
         calls["agent_reqs"].append(req)
-        return _BuildResult()
+        return _BuildResult(event)
 
     async def _fake_persist(
         conversation_manager, event=None, req=None, summary_note=""
@@ -705,7 +712,9 @@ async def test_background_wake_error_degrades_silently(tmp_path, monkeypatch) ->
     result = await manager.get(record["task_id"], event.unified_msg_origin)
 
     assert calls["builds"] == 1
-    assert event.sent == []
+    assert event.sent == [
+        f"后台图片生成任务（任务号 {record['task_id']}）失败，请稍后重试。"
+    ]
     assert result is not None
     assert result["status"] == "failed"
 
@@ -742,7 +751,9 @@ async def test_background_wake_api_missing_degrades_silently(tmp_path) -> None:
         monkeypatch.undo()
     result = await manager.get(record["task_id"], event.unified_msg_origin)
 
-    assert event.sent == []
+    assert event.sent == [
+        f"后台图片生成任务（任务号 {record['task_id']}）失败，请稍后重试。"
+    ]
     assert result is not None
     assert result["status"] == "failed"
 

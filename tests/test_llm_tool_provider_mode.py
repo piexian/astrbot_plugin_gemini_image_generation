@@ -206,3 +206,32 @@ def test_openai_custom_size_tool_params_fallback_when_config_invalid() -> None:
     assert resolution == CUSTOM_SIZE_DEFAULT
     assert aspect_ratio is None
     assert notice is None
+
+
+def test_agnes_3k_is_available_in_tool_schema_and_normalization() -> None:
+    plugin = _plugin_with_candidates(
+        SimpleNamespace(
+            api_type="agnes_ai",
+            model="gpt-image-1",
+            settings={"model": "gpt-image-1"},
+            supports_image_edit=True,
+        )
+    )
+
+    params = _build_tool_parameters(plugin)
+
+    assert params["properties"]["resolution"]["enum"] == [
+        "1K",
+        "2K",
+        "3K",
+        "4K",
+    ]
+    batch_resolution = params["properties"]["batch_tasks"]["items"]["properties"][
+        "resolution"
+    ]
+    assert batch_resolution["enum"] == ["1K", "2K", "3K", "4K"]
+    assert _resolve_tool_size_params(
+        plugin,
+        resolution="3k",
+        provider="agnes_ai",
+    ) == ("3K", None, None)

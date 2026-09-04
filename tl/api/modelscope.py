@@ -316,6 +316,18 @@ class ModelScopeProvider:
         poll_timeout = _coerce_positive_number(
             settings.get("poll_timeout"), _DEFAULT_POLL_TIMEOUT
         )
+        request_deadline = getattr(request_config, "request_deadline", None)
+        if request_deadline is not None:
+            remaining_total = request_deadline - asyncio.get_running_loop().time()
+            if remaining_total <= 0:
+                raise APIError(
+                    "ModelScope 总超时预算已耗尽；任务可能仍在服务端运行，"
+                    "为避免重复计费将不再重新提交",
+                    None,
+                    "timeout",
+                    retryable=False,
+                )
+            poll_timeout = min(poll_timeout, remaining_total)
         image_urls, image_paths = await self._poll_until_done(
             client=client,
             session=session,
@@ -352,10 +364,10 @@ class ModelScopeProvider:
         def _timeout_error() -> APIError:
             return APIError(
                 f"ModelScope 任务轮询超时（{poll_timeout:.0f} 秒），"
-                "任务仍在服务端运行，重试将重新提交并再次消耗额度",
+                "任务可能仍在服务端运行，为避免重复计费将不再重新提交",
                 None,
                 "timeout",
-                retryable=True,
+                retryable=False,
             )
 
         while True:

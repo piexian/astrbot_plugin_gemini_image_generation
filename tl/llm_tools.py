@@ -31,6 +31,7 @@ from .openai_image_size import (
 )
 from .provider_capabilities import (
     SUPPORTED_ASPECT_RATIOS,
+    candidate_capability,
     routing_description,
     routing_mode,
     select_candidates,
@@ -53,8 +54,42 @@ if TYPE_CHECKING:
 # 参数枚举常量（工具定义和验证共用）
 RESOLUTION_OPTIONS = ("1K", "2K", "4K")
 ASPECT_RATIO_OPTIONS = SUPPORTED_ASPECT_RATIOS
-VALID_RESOLUTIONS = set(RESOLUTION_OPTIONS)
 VALID_ASPECT_RATIOS = set(ASPECT_RATIO_OPTIONS)
+
+
+def _candidate_resolution_options(candidate: Any) -> tuple[str, ...]:
+    capability = candidate_capability(candidate)
+    descriptor = (capability.get("parameters") or {}).get("resolution") or {}
+    raw_values = descriptor.get("enum") or ()
+    return tuple(
+        dict.fromkeys(
+            str(value).strip().upper() for value in raw_values if str(value).strip()
+        )
+    )
+
+
+def _tool_resolution_options(
+    plugin: Any,
+    candidate: Any | None = None,
+) -> tuple[str, ...]:
+    candidates = (
+        [candidate]
+        if candidate is not None
+        else list(getattr(plugin.cfg, "provider_candidates", []) or [])
+    )
+    values: list[str] = []
+    for item in candidates:
+        values.extend(_candidate_resolution_options(item))
+    if not values:
+        return RESOLUTION_OPTIONS
+
+    unique = list(dict.fromkeys(values))
+
+    def resolution_sort_key(value: str) -> tuple[int, int, str]:
+        match = re.fullmatch(r"(\d+)K", value)
+        return (0, int(match.group(1)), "") if match else (1, 0, value)
+
+    return tuple(sorted(unique, key=resolution_sort_key))
 
 
 def _first_provider_candidate(
@@ -192,12 +227,13 @@ def _build_tool_description(plugin: Any) -> str:
 
 def _build_tool_parameters(plugin: Any) -> dict[str, Any]:
     properties = _build_tool_base_properties()
+    resolution_options = _tool_resolution_options(plugin)
     properties["resolution"] = {
         "type": "string",
         "description": (
             "输出分辨率，可选；不传则使用插件配置或供应商默认值。具体取值先用 gemini_image_provider_models 查询。"
         ),
-        "enum": list(RESOLUTION_OPTIONS),
+        "enum": list(resolution_options),
     }
     properties["aspect_ratio"] = {
         "type": "string",
@@ -247,7 +283,7 @@ def _build_tool_parameters(plugin: Any) -> dict[str, Any]:
                 },
                 "resolution": {
                     "type": "string",
-                    "enum": list(RESOLUTION_OPTIONS),
+                    "enum": list(resolution_options),
                 },
                 "aspect_ratio": {
                     "type": "string",
@@ -266,11 +302,14 @@ def _build_tool_parameters(plugin: Any) -> dict[str, Any]:
     }
 
 
-def _normalize_tool_resolution(value: Any) -> tuple[str | None, bool]:
+def _normalize_tool_resolution(
+    value: Any,
+    valid_resolutions: tuple[str, ...] = RESOLUTION_OPTIONS,
+) -> tuple[str | None, bool]:
     if value is None or not str(value).strip():
         return None, False
     resolution = str(value).strip().upper()
-    if resolution not in VALID_RESOLUTIONS:
+    if resolution not in set(valid_resolutions):
         logger.warning(f"[工具调用] resolution={value!r} 非法，已退回默认配置")
         return None, True
     return resolution, False
@@ -295,12 +334,16 @@ def _resolve_tool_size_params(
     provider: Any = None,
     model: Any = None,
 ) -> tuple[str | None, str | None, str | None]:
-    normalized_resolution, invalid_resolution = _normalize_tool_resolution(resolution)
+    candidate = _first_provider_candidate(plugin, provider, model)
+    resolution_options = _tool_resolution_options(plugin, candidate)
+    normalized_resolution, invalid_resolution = _normalize_tool_resolution(
+        resolution,
+        resolution_options,
+    )
     normalized_aspect_ratio, invalid_aspect_ratio = _normalize_tool_aspect_ratio(
         aspect_ratio
     )
 
-    candidate = _first_provider_candidate(plugin, provider, model)
     if (provider or model) and candidate is None:
         return normalized_resolution, normalized_aspect_ratio, None
     if not _is_custom_size_tool_mode(plugin, candidate):

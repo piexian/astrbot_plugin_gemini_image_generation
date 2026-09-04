@@ -377,7 +377,7 @@ async def test_poll_failed_raises_non_retryable_with_server_message() -> None:
 
 
 @pytest.mark.asyncio
-async def test_poll_timeout_raises_retryable_timeout() -> None:
+async def test_poll_timeout_does_not_resubmit_accepted_task() -> None:
     provider = ModelScopeProvider()
     session = _FakeSession([_task_body("Running")])
     config = _make_config(
@@ -396,7 +396,7 @@ async def test_poll_timeout_raises_retryable_timeout() -> None:
             request_config=config,
         )
     assert exc_info.value.error_type == "timeout"
-    assert exc_info.value.retryable is True
+    assert exc_info.value.retryable is False
 
 
 @pytest.mark.asyncio
@@ -578,8 +578,76 @@ async def test_poll_deadline_bounds_slow_get() -> None:
         )
     elapsed = loop.time() - start
     assert exc_info.value.error_type == "timeout"
-    assert exc_info.value.retryable is True
+    assert exc_info.value.retryable is False
     assert elapsed < 2.0
+
+
+@pytest.mark.asyncio
+async def test_poll_timeout_is_capped_by_request_total_deadline() -> None:
+    provider = ModelScopeProvider()
+    session = _TimeoutGetSession(delay=10.0)
+    config = _make_config(
+        provider_settings={
+            "model": "Qwen/Qwen-Image",
+            "poll_interval": 0.01,
+            "poll_timeout": 30,
+        }
+    )
+    loop = asyncio.get_running_loop()
+    config.request_deadline = loop.time() + 0.2
+    start = loop.time()
+
+    with pytest.raises(APIError) as exc_info:
+        await provider.parse_response(
+            client=_FakeClient(),
+            response_data={"task_id": "task-1"},
+            session=session,
+            http_status=200,
+            request_config=config,
+        )
+
+    assert loop.time() - start < 1.0
+    assert exc_info.value.error_type == "timeout"
+    assert exc_info.value.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_make_request_sets_total_deadline_before_provider_parse() -> None:
+    from tl.tl_api import GeminiAPIClient
+
+    client = GeminiAPIClient(["key-1"])
+    config = _make_config()
+    calls = 0
+
+    async def fake_get_session(proxy=None):
+        return object()
+
+    async def fake_perform_request(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        remaining = kwargs["request_config"].request_deadline
+        assert remaining is not None
+        assert 0 < remaining - asyncio.get_running_loop().time() <= 2
+        raise APIError(
+            "accepted task polling timed out", None, "timeout", retryable=False
+        )
+
+    client._get_session = fake_get_session  # type: ignore[method-assign]
+    client._perform_request = fake_perform_request  # type: ignore[method-assign]
+
+    with pytest.raises(APIError):
+        await client._make_request(
+            url="https://example.invalid/submit",
+            payload={},
+            headers={},
+            api_type="modelscope",
+            model="Qwen/Qwen-Image",
+            max_retries=3,
+            max_total_time=2,
+            config=config,
+        )
+
+    assert calls == 1
 
 
 class TestCandidateConcurrency:

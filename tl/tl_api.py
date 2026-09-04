@@ -1044,6 +1044,12 @@ class GeminiAPIClient:
         session = await self._get_session(request_proxy)
         loop = asyncio.get_running_loop()
         started_at = loop.time()
+        if config is not None:
+            config.request_deadline = (
+                started_at + max_total_time_int
+                if max_total_time_int is not None
+                else None
+            )
         last_error: APIError | None = None
         key_scope = config.candidate_id if config and config.candidate_id else api_type
 
