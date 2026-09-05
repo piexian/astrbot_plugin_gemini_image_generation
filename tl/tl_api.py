@@ -36,6 +36,7 @@ from .provider_capabilities import (
     select_candidates,
 )
 from .provider_loader import load_callable
+from .provider_settings import candidate_with_overrides
 
 _DOWNLOAD_PROXY_DEFAULT = object()
 
@@ -770,10 +771,26 @@ class GeminiAPIClient:
         started_at = loop.time()
         required_parameters = explicit_runtime_parameters(config)
         request_values = {name: getattr(config, name) for name in required_parameters}
+        configured = self.provider_candidates
+        if config.generation_settings:
+            if not config.requested_candidate_id:
+                raise APIError(
+                    "临时生成参数必须指定供应商候选",
+                    None,
+                    "invalid_request",
+                    retryable=False,
+                )
+            configured = [
+                candidate_with_overrides(candidate, config.generation_settings)
+                if candidate.id == config.requested_candidate_id
+                else candidate
+                for candidate in configured
+            ]
         candidates = select_candidates(
-            self.provider_candidates,
+            configured,
             provider=config.requested_provider,
             model=config.requested_model,
+            candidate_id=config.requested_candidate_id,
             has_reference_images=has_reference_images,
             required_parameters=required_parameters,
             request_values=request_values,

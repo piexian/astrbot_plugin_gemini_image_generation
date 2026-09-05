@@ -2,18 +2,27 @@
 
 > **升级提示**：v1.9.0 以后的配置文件格式不兼容旧版本。升级后如遇配置模板显示错误，请查看 [配置迁移说明](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/troubleshooting.md#配置迁移说明)。
 
-## [Unreleased]
+## [3.0.0] - 2026-09-05
 
 ### Added
 
+- **内置 WebUI 创作台（studio 插件页，需 AstrBot ≥4.24.2，旧版本自动跳过注册、其余功能不受影响）**：
+  - **工作台**：模型下拉按「供应商 · 模型」扁平直选（按供应商分组、显示别名）；常态仅展示模型/分辨率/画面比例/张数，画质/随机种子/负向提示词收进「更多参数」折叠；支持单任务多图（自动循环补足目标张数，部分完成记 partial_success）与多命名子任务批量生成（受 `batch_max_tasks` 与单次总预算约束）；参考图支持本地上传（流式大小截断、格式魔数与像素校验、暂存配额）与从历史画廊拾取。
+  - **任务进度**：指令/LLM 工具/LLM 批量/工作台全部来源的生成任务实时展示（SSE 快照+增量推送、断线自动重连），含状态、耗时、供应商/模型与结果缩略图，批量任务父子聚合；任务创建即落盘，刷新页面可继续查看，插件重启后未完成任务标记为已中断。
+  - **历史画廊**：分页与来源/群/用户/关键词筛选；图片支持查看原图（灯箱含加载动画与页面级字节缓存）、下载、删除（单个/批量，二次确认）、复制提示词、再次生成回填工作台、用作参考图。
+  - **生成历史持久化**：每次生成（含 QQ 指令与 LLM 工具）自动归档至独立 gallery 目录并记录元数据（提示词/来源/群/用户/耗时/供应商/模型）；升级后首次启动自动把存量生成图迁入画廊并补录历史记录；gallery 容量上限可配，超限整组清理图片、记录保留。
+  - 新增 `webui` 配置段：`history_enabled`（隐私总开关）/ `history_max_records` / `gallery_max_size_mb` / `upload_max_mb` / `max_concurrent_jobs` / `batch_total_budget`。
 - **新增 `modelscope` 供应商（魔搭社区 API-Inference）**：插件首个异步任务制 provider——提交 `POST /v1/images/generations`（`X-ModelScope-Async-Mode: true`）拿到 `task_id` 后自动轮询 `GET /v1/tasks/{task_id}`（间隔/超时可配，默认 5s/100s），`SUCCEED` 返回 `output_images`（配代理时下载落盘，失败回退直链），`FAILED` 报错含服务端 message。尺寸按档位（1K/2K）×长宽比换算并按模型族钳制（Qwen-Image 1664 / FLUX 1024 / Z-Image 512-2048 / SD 系 64-2048 / 未知保守 512-1024）；仅名称含 `edit` 的模型支持参考图（默认 1 张，非 edit 模型带图直接报错）；支持 `negative_prompt` / `steps` / `guidance` / `seed` / `loras`。免费单并发兜底定位；批量生成对该渠道固定按 1 并发串行执行（不同候选互不阻塞）；轮询 deadline 硬约束（sleep/GET 超时按剩余预算封顶），轮询 404/其余 4xx 快速失败不可重试、429/5xx 视为瞬时故障继续等待，轮询超时重试会重新提交任务并再次消耗魔粒。
 - **新增 `siliconflow` 供应商（硅基流动）**：插件首个同步单端点 provider——文生图与图像编辑共用 `POST /v1/images/generations`，直接返回 `images[].url` 无任务轮询；官方图片 URL 仅 1 小时有效，解析阶段无条件立即下载落盘（显式走候选级代理），失败回退直链并告警。按模型族分层：`Kwai-Kolors/Kolors` 支持预设尺寸 + `batch_size`（1-4，LLM 工具批量映射）+ `guidance_scale`；`Qwen/Qwen-Image` 走官方预设尺寸表；`Qwen/Qwen-Image-Edit(-2509)` 不传尺寸、参考图按 `image`/`image2`/`image3` 键位发送（2509 最多 3 张、经典 Edit 截断 1 张），仅名称含 `edit` 的模型支持参考图，非 edit 带图直接报错。未命中预设的比例按档位预算本地计算（8 对齐，Kolors 长边钳 1440 / Qwen-Image 1664 / 未知保守 [512, 1440]）。错误体形态混杂（JSON 对象/字符串/空 body）由 provider 解析，官方过载码 `50505` 显式可重试，其余交框架按状态码通用判断。
 
 ### Changed
 
 - `provider_polling` 预制供应商列表与相关文档同步加入 `modelscope`；`tests/test_provider_registry.py` 纳入 `tl.api.modelscope` 并将 `capability_profile_path` 加入 spec 路径可加载性校验。
+- 插件数据目录 `images/` 下的生成图不再随启动清理删除（改为升级后迁入 gallery 统一管理）；下载/头像缓存与帮助页渲染缓存的启动清理不变。
 
 ### Fixed
+
+- **参考图规范化支持裸本地文件路径**：`normalize_reference_image_input` 新增本地路径分支（此前仅支持 data URI / `file://` / http(s)），修复以本地文件路径作为参考图时 agnes/doubao/minimax/xai/openai 兼容等渠道报「无法转换为 data URI」的问题。
 
 - **LLM 工具触发的后台生图任务失败不再向群内直发原始报错**：失败/异常结果改走框架官方后台任务回灌链路（`CronMessageEvent` + 主 agent + `send_message_to_user` 工具，仅挂该工具、天然无再次触发生图路径），由 AI 重新组织语言告知用户；官方 API 缺失或通知链异常时静默降级仅记日志（状态机 `failed` 记录与 `gemini_image_task_status` 查询不受影响）。批量任务失败汇总与整体异常同样聚合走该出口。新增开关 `image_generation_settings.background_failure_notify_llm`（默认开）；指令触发流程（`/生图` 等）行为不变。
 

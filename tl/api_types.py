@@ -31,9 +31,11 @@ class ApiRequestConfig:
     suppress_resolution: bool = False  # 显式不发送分辨率/比例参数
     image_input_mode: str = "force_base64"  # 参考图统一转 base64
     provider_settings: dict | None = None  # 当前候选供应商的请求级配置
+    generation_settings: dict | None = None  # 已校验的 Studio 单次生成参数覆盖
     proxy: str | None = None  # 当前请求使用的代理
     requested_provider: str | None = None  # 显式供应商选择
     requested_model: str | None = None  # 显式原始模型或别名选择
+    requested_candidate_id: str | None = None
     negative_prompt: str | None = None  # 请求级负面提示词覆盖
     watermark: bool | None = None  # 请求级水印覆盖
     quality: str | None = None  # 请求级质量覆盖
@@ -58,6 +60,14 @@ class ApiRequestConfig:
     successful_model_alias: str | None = None
     routing_mode: str = "full_polling"
     request_deadline: float | None = None  # 单调时钟；仅在一次请求生命周期内有效
+
+    def __post_init__(self) -> None:
+        if self.seed is None:
+            return
+        # 部分 provider 从候选 settings 取 seed，请求级值需覆盖候选默认值。
+        settings = dict(self.provider_settings or {})
+        settings["seed"] = self.seed
+        self.provider_settings = settings
 
 
 class APIError(Exception):

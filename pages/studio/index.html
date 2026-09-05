@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gemini 图像生成 Studio</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="studio-body">
+  <div class="studio-shell">
+    <!-- 顶栏：标题与全局连接状态 -->
+    <header class="studio-header">
+      <div class="header-brand">
+        <span class="brand-badge">STUDIO</span>
+        <div>
+          <h1 class="brand-title">图像生成创作台</h1>
+          <p class="brand-desc">写下灵感，让画面发生。</p>
+        </div>
+      </div>
+      <div class="header-status">
+        <div id="sse-indicator" class="status-pill status-pill--idle" role="status" aria-live="polite">
+          <span class="status-dot"></span>
+          <span class="status-text" id="sse-indicator-text">已就绪</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- 导航切换：极简漫画风格 Tab 条 -->
+    <nav class="studio-nav" role="tablist" aria-label="页面导航">
+      <button type="button" class="tab-btn tab-btn--active" id="tab-btn-workbench"
+              role="tab" aria-selected="true" aria-controls="panel-workbench" tabindex="0">
+        <span class="tab-icon" data-icon="brush"></span>
+        <span class="tab-label">工作台</span>
+      </button>
+      <button type="button" class="tab-btn" id="tab-btn-progress"
+              role="tab" aria-selected="false" aria-controls="panel-progress" tabindex="-1">
+        <span class="tab-icon" data-icon="clock"></span>
+        <span class="tab-label">任务进度</span>
+        <span class="tab-badge" id="active-jobs-count" style="display: none;">0</span>
+      </button>
+      <button type="button" class="tab-btn" id="tab-btn-gallery"
+              role="tab" aria-selected="false" aria-controls="panel-gallery" tabindex="-1">
+        <span class="tab-icon" data-icon="grid"></span>
+        <span class="tab-label">历史画廊</span>
+      </button>
+    </nav>
+
+    <!-- 全局状态与错误横幅容器 -->
+    <div id="global-banner-container" class="banner-container" style="display: none;">
+      <div id="global-banner" class="comic-banner">
+        <span class="banner-icon" data-icon="alert"></span>
+        <span id="global-banner-text" class="banner-text"></span>
+      </div>
+    </div>
+
+    <!-- 主视图容器 -->
+    <main class="studio-main">
+      <!-- 1. 工作台面板 -->
+      <section id="panel-workbench" class="studio-panel studio-panel--active"
+               role="tabpanel" aria-labelledby="tab-btn-workbench" aria-hidden="false">
+        <div class="workbench-layout">
+          <!-- 公共参数面板 -->
+          <div class="params-card comic-card">
+            <div class="section-heading">
+              <span class="section-number" aria-hidden="true">01</span>
+              <h2 class="card-title">模型与参数</h2>
+            </div>
+            <div class="params-grid params-grid--common">
+              <div class="form-item form-item--wide">
+                <label for="select-model" class="form-label">生成模型</label>
+                <select id="select-model" class="comic-select"></select>
+              </div>
+              <div class="form-item" id="item-resolution">
+                <label for="select-resolution" class="form-label">分辨率</label>
+                <select id="select-resolution" class="comic-select"></select>
+              </div>
+              <div class="form-item" id="item-aspect-ratio">
+                <label for="select-aspect-ratio" class="form-label">画面比例</label>
+                <select id="select-aspect-ratio" class="comic-select"></select>
+              </div>
+              <div class="form-item" id="item-image-count">
+                <label for="input-image-count" class="form-label">单任务张数</label>
+                <input type="number" id="input-image-count" class="comic-input"
+                       min="1" max="10" value="1">
+              </div>
+            </div>
+
+            <div id="advanced-params-disclosure" class="advanced-params-disclosure" hidden>
+              <button type="button" id="btn-toggle-more-params"
+                      class="comic-btn comic-btn--outline advanced-params-toggle"
+                      aria-expanded="false" aria-controls="more-params-panel" hidden>
+                <span>供应商生成参数</span>
+                <span id="provider-override-count" class="optional-label"></span>
+                <span id="more-params-toggle-icon" class="btn-icon" data-icon="chevronDown"></span>
+              </button>
+              <div id="more-params-panel" class="advanced-params-panel" hidden>
+                <div class="provider-parameters-toolbar">
+                  <p class="field-hint">勾选需要临时覆盖的参数，仅影响本次任务。按浏览器记忆每个模型的选择。<span id="preferences-save-status" role="status"></span></p>
+                  <button type="button" id="btn-reset-provider-parameters" class="comic-btn comic-btn--sm comic-btn--outline">恢复供应商默认值</button>
+                </div>
+                <div id="provider-parameters-grid" class="provider-parameters-grid"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 提示词与参考图组合区 -->
+          <div class="creation-card comic-card">
+            <div class="creation-header">
+              <div class="section-heading">
+                <span class="section-number" aria-hidden="true">02</span>
+                <h2 class="card-title">创作内容</h2>
+              </div>
+              <div class="mode-toggle-group" id="mode-toggle-group" role="radiogroup" aria-label="生成模式">
+                <button type="button" class="mode-btn mode-btn--active" id="mode-btn-single"
+                        role="radio" aria-checked="true" tabindex="0">单任务</button>
+                <button type="button" class="mode-btn" id="mode-btn-batch"
+                        role="radio" aria-checked="false" tabindex="-1">批量任务</button>
+              </div>
+            </div>
+
+            <div class="creation-input-layout">
+              <div class="creation-prompt-col">
+                <!-- 单任务表单容器 -->
+                <div id="single-form-container" class="form-container">
+                  <div class="form-item">
+                    <div class="form-label-row">
+                      <label for="input-prompt" class="form-label">描述你的画面</label>
+                      <span class="char-count" id="prompt-char-count">0 / 2000</span>
+                    </div>
+                    <textarea id="input-prompt" class="comic-input comic-textarea"
+                              rows="5" maxlength="2000" placeholder="例如：一只猫坐在窗边，午后的阳光落在书页上，极简漫画风，温暖的奶油色调。"
+                              aria-describedby="prompt-hint"
+                              required></textarea>
+                    <p class="field-hint" id="prompt-hint">试着加上主体、场景、画风与光线，让想象更具体。</p>
+                  </div>
+                </div>
+
+                <!-- 批量任务表单容器（默认隐藏） -->
+                <div id="batch-form-container" class="form-container" style="display: none;">
+                  <div class="batch-header-row">
+                    <span class="form-label">批量任务列表</span>
+                    <div class="batch-budget-indicator" id="batch-budget-info">
+                      计划生成 <strong id="batch-total-count">0</strong> / <span id="batch-max-budget">—</span> 张
+                    </div>
+                  </div>
+                  <div id="batch-items-list" class="batch-items-list">
+                    <!-- 动态追加批量子任务行 -->
+                  </div>
+                  <button type="button" id="btn-add-batch-item" class="comic-btn comic-btn--outline">
+                    <span class="btn-icon" data-icon="plus"></span>
+                    <span>添加批量子任务</span>
+                  </button>
+                </div>
+              </div>
+
+              <aside class="reference-tray-card" aria-labelledby="reference-tray-title">
+                <div class="reference-tray-controls">
+                  <div class="tray-header">
+                    <h3 class="card-title" id="reference-tray-title">参考图 <span class="optional-label">可选</span></h3>
+                    <span class="tray-counter" id="reference-counter">0 / —</span>
+                  </div>
+                  <p class="tray-desc">上传图片或从画廊选取，单张上限 <span id="upload-max-size">加载中</span>。</p>
+
+                  <div class="tray-actions">
+                    <input type="file" id="file-upload-input" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" multiple style="display: none;">
+                    <button type="button" id="btn-trigger-upload" class="comic-btn comic-btn--sm">
+                      <span class="btn-icon" data-icon="upload"></span>
+                      <span>本地上传</span>
+                    </button>
+                    <button type="button" id="btn-pick-gallery" class="comic-btn comic-btn--sm comic-btn--outline">
+                      <span class="btn-icon" data-icon="image"></span>
+                      <span>从画廊选取</span>
+                    </button>
+                  </div>
+                </div>
+
+                <!-- 托盘预览网格 -->
+                <div id="reference-tray-grid" class="reference-grid">
+                  <div class="empty-tray-tip" id="empty-tray-tip">
+                    <span class="empty-tray-icon" data-icon="image" aria-hidden="true"></span>
+                    <span>让参考图补充你的灵感</span>
+                    <span class="empty-tray-desc">也可以只用文字开始创作</span>
+                  </div>
+                </div>
+              </aside>
+            </div>
+            <div class="submit-action-row">
+              <p class="submit-hint">生成后，在「任务进度」查看结果。</p>
+              <button type="button" id="btn-submit-generate" class="comic-btn comic-btn--cta">
+                <span class="btn-icon" data-icon="sparkle"></span>
+                <span class="btn-text" id="submit-btn-text">立即生成图像</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 2. 任务进度面板 -->
+      <section id="panel-progress" class="studio-panel"
+               role="tabpanel" aria-labelledby="tab-btn-progress" aria-hidden="true" hidden>
+        <div class="progress-toolbar">
+          <div class="toolbar-stats">
+            <span class="stat-item">运行中 <strong id="stat-active-count">0</strong></span>
+            <span class="stat-item">近 24 小时 <strong id="stat-recent-count">0</strong></span>
+          </div>
+          <button type="button" id="btn-refresh-jobs" class="comic-btn comic-btn--sm comic-btn--outline">
+            <span class="btn-icon" data-icon="refresh"></span>
+            <span>刷新任务状态</span>
+          </button>
+        </div>
+
+        <div id="jobs-stream-container" class="jobs-container">
+          <!-- 动态渲染任务卡片列表 -->
+          <div class="comic-empty-state" id="empty-jobs-tip" style="display: none;">
+            <div class="empty-icon" data-icon="inbox"></div>
+            <h2 class="empty-title">下一幅作品，从工作台开始</h2>
+            <p class="empty-desc">还没有近期任务。发起生成后，可以在这里实时查看进度与结果。</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 3. 历史画廊面板 -->
+      <section id="panel-gallery" class="studio-panel"
+               role="tabpanel" aria-labelledby="tab-btn-gallery" aria-hidden="true" hidden>
+        <!-- 画廊顶部过滤器 -->
+        <div class="gallery-filters comic-card">
+          <div class="filter-row">
+            <div class="filter-item filter-item--grow">
+              <label for="gallery-search-input" class="form-label">搜索作品</label>
+              <input type="text" id="gallery-search-input" class="comic-input"
+                     maxlength="100" placeholder="提示词、任务名称、用户或错误信息"
+                     aria-label="搜索历史任务关键词">
+            </div>
+            <div class="filter-item">
+              <label for="gallery-source-select" class="form-label">任务来源</label>
+              <select id="gallery-source-select" class="comic-select" aria-label="按任务来源筛选">
+                <option value="">全部来源</option>
+                <option value="webui">工作台 (webui)</option>
+                <option value="command">指令触发 (command)</option>
+                <option value="llm_tool">LLM 工具 (llm_tool)</option>
+                <option value="llm_batch">LLM 批量 (llm_batch)</option>
+                <option value="legacy">历史图片 (legacy)</option>
+              </select>
+            </div>
+            <div class="filter-item">
+              <label for="gallery-group-input" class="form-label">群组 ID</label>
+              <input type="text" id="gallery-group-input" class="comic-input"
+                     maxlength="128" placeholder="全部群组" aria-label="按群组 ID 筛选">
+            </div>
+            <div class="filter-item">
+              <label for="gallery-user-input" class="form-label">用户 ID</label>
+              <input type="text" id="gallery-user-input" class="comic-input"
+                     maxlength="128" placeholder="全部用户" aria-label="按用户 ID 筛选">
+            </div>
+            <button type="button" id="btn-search-gallery" class="comic-btn">
+              <span class="btn-icon" data-icon="search"></span>
+              <span>检索</span>
+            </button>
+            <button type="button" id="btn-reset-gallery" class="comic-btn comic-btn--outline">
+              <span>重置</span>
+            </button>
+          </div>
+
+          <!-- 批量操作控制行 -->
+          <div class="gallery-batch-bar" id="gallery-batch-bar">
+            <div class="batch-select-info">
+              <input type="checkbox" id="gallery-select-all" class="comic-checkbox">
+              <label for="gallery-select-all">全选本页 (<span id="selected-gallery-count">0</span> 项)</label>
+            </div>
+            <div class="batch-actions">
+              <button type="button" id="btn-batch-delete" class="comic-btn comic-btn--danger comic-btn--sm" disabled>
+                <span class="btn-icon" data-icon="trash"></span>
+                <span>批量删除</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 画廊主体网格 -->
+        <div id="gallery-grid" class="gallery-grid">
+          <!-- 动态渲染画廊卡片 -->
+        </div>
+
+        <!-- 画廊空状态提示 -->
+        <div class="comic-empty-state" id="empty-gallery-tip" style="display: none;">
+          <div class="empty-icon" data-icon="inbox"></div>
+          <h2 class="empty-title">这里会收下你的每一次灵感</h2>
+          <p class="empty-desc">暂时没有符合条件的记录。生成第一幅作品，或调整筛选条件再试试。</p>
+        </div>
+
+        <!-- 分页控件 -->
+        <div class="gallery-pagination" id="gallery-pagination">
+          <button type="button" id="btn-page-prev" class="comic-btn comic-btn--sm comic-btn--outline" disabled>上一页</button>
+          <span class="pagination-info" id="pagination-info" aria-live="polite">第 1 页 / 共 1 页</span>
+          <button type="button" id="btn-page-next" class="comic-btn comic-btn--sm comic-btn--outline" disabled>下一页</button>
+        </div>
+      </section>
+    </main>
+
+    <!-- 全局自绘模态层 (Modal) -->
+    <div id="app-modal-backdrop" class="comic-modal-backdrop" style="display: none;" aria-hidden="true">
+      <div class="comic-modal-window" role="dialog" aria-modal="true" aria-labelledby="modal-title" tabindex="-1">
+        <div class="modal-header">
+          <h3 id="modal-title" class="modal-title">确认操作</h3>
+          <button type="button" id="modal-close-btn" class="modal-close-btn" aria-label="关闭">&times;</button>
+        </div>
+        <div id="modal-body" class="modal-body"></div>
+        <div class="modal-footer" id="modal-footer"></div>
+      </div>
+    </div>
+
+    <!-- 全局全屏灯箱 (Lightbox) -->
+    <div id="app-lightbox" class="comic-lightbox" style="display: none;" role="dialog" aria-modal="true" aria-label="图片大图查看" aria-hidden="true">
+      <div class="lightbox-overlay" id="lightbox-backdrop"></div>
+      <div class="lightbox-container">
+        <button type="button" class="lightbox-close-btn" id="lightbox-close-btn" aria-label="关闭灯箱">&times;</button>
+        <button type="button" class="lightbox-nav-btn lightbox-nav-btn--prev" id="lightbox-prev-btn" aria-label="上一张">&lt;</button>
+        <button type="button" class="lightbox-nav-btn lightbox-nav-btn--next" id="lightbox-next-btn" aria-label="下一张">&gt;</button>
+        <div class="lightbox-img-wrap">
+          <img id="lightbox-img" src="" alt="大图预览">
+        </div>
+        <div class="lightbox-meta-bar" id="lightbox-meta-bar">
+          <p id="lightbox-prompt" class="lightbox-prompt-text"></p>
+          <div class="lightbox-info-tags" id="lightbox-tags"></div>
+          <div class="lightbox-actions">
+            <p id="lightbox-preview-notice" class="lightbox-preview-notice" role="status" hidden>当前为压缩预览，原图超过显示限制，请下载查看。</p>
+            <button type="button" id="lightbox-download-btn" class="comic-btn comic-btn--sm comic-btn--outline">下载原图</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 全局 Toast 提示容器 -->
+    <div id="toast-container" class="comic-toast-container" aria-live="assertive"></div>
+  </div>
+
+  <script src="/api/plugin/page/bridge-sdk.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

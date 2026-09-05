@@ -51,6 +51,31 @@ def _clean_positive_int(value: Any, default: int) -> int:
         return default
 
 
+def _clamp_int(
+    value: Any,
+    default: int,
+    minimum: int,
+    maximum: int,
+    *,
+    allow_zero: bool = False,
+) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    if allow_zero and parsed == 0:
+        return 0
+    return min(max(parsed, minimum), maximum)
+
+
+def _clean_bool(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() not in {"false", "0", "no", "off"}
+    return bool(value)
+
+
 def _clean_priority(value: Any) -> int:
     try:
         return int(value)
@@ -140,6 +165,14 @@ class PluginConfig:
     batch_concurrency: int = 3
     background_task_retention_hours: int = 24
     background_failure_notify_llm: bool = True
+
+    # WebUI 工作台
+    webui_history_enabled: bool = True
+    webui_history_max_records: int = 500
+    webui_gallery_max_size_mb: int = 512
+    webui_upload_max_mb: int = 20
+    webui_max_concurrent_jobs: int = 2
+    webui_batch_total_budget: int = 40
 
     # 表情包设置
     sticker_grid_rows: int = 4
@@ -671,6 +704,32 @@ class ConfigLoader:
         )
         config.background_failure_notify_llm = bool(
             image_settings.get("background_failure_notify_llm", True)
+        )
+
+        webui_settings = self.raw_config.get("webui") or {}
+        if not isinstance(webui_settings, dict):
+            webui_settings = {}
+        config.webui_history_enabled = _clean_bool(
+            webui_settings.get("history_enabled"), True
+        )
+        config.webui_history_max_records = _clamp_int(
+            webui_settings.get("history_max_records"), 500, 50, 5000
+        )
+        config.webui_gallery_max_size_mb = _clamp_int(
+            webui_settings.get("gallery_max_size_mb"),
+            512,
+            64,
+            10240,
+            allow_zero=True,
+        )
+        config.webui_upload_max_mb = _clamp_int(
+            webui_settings.get("upload_max_mb"), 20, 1, 64
+        )
+        config.webui_max_concurrent_jobs = _clamp_int(
+            webui_settings.get("max_concurrent_jobs"), 2, 1, 8
+        )
+        config.webui_batch_total_budget = _clamp_int(
+            webui_settings.get("batch_total_budget"), 40, 4, 200
         )
 
         # 表情包网格设置

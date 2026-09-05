@@ -349,6 +349,64 @@ def candidate_capability(candidate: Any) -> dict[str, Any]:
     return _profile(candidate)
 
 
+def candidate_reference_limit(candidate: Any) -> int:
+    """结合候选预截断与 provider 实际消费数量计算参考图上限。"""
+    if not getattr(candidate, "supports_image_edit", False):
+        return 0
+    from .api import provider_limits as limits
+
+    settings = _settings(candidate)
+    try:
+        configured = max(int(settings.get("max_reference_images", 6)), 0)
+    except (TypeError, ValueError):
+        configured = 6
+    api_type = normalize_api_type(getattr(candidate, "api_type", ""))
+    model = _model(candidate).lower()
+    native = {
+        "google": limits.MAX_REFERENCE_IMAGES_GOOGLE,
+        "gemini_interactions": limits.MAX_REFERENCE_IMAGES_GEMINI_INTERACTIONS,
+        "openai": limits.MAX_REFERENCE_IMAGES_OPENAI_COMPAT,
+        "minimax": limits.MAX_REFERENCE_IMAGES_MINIMAX,
+        "sensenova": limits.MAX_REFERENCE_IMAGES_SENSENOVA_U15,
+        "stepfun": 1,
+    }.get(api_type, configured)
+    if api_type == "xai":
+        from .api.xai import _MAX_EDIT_IMAGES
+
+        native = _MAX_EDIT_IMAGES
+    elif api_type == "doubao":
+        native = (
+            limits.MAX_REFERENCE_IMAGES_DOUBAO_SEEDREAM_5_PRO
+            if is_doubao_seedream_5_pro(model, settings)
+            else limits.MAX_REFERENCE_IMAGES_DOUBAO
+        )
+    elif api_type == "dashscope":
+        native = (
+            limits.MAX_REFERENCE_IMAGES_DASHSCOPE_QWEN3
+            if model.startswith("qwen-image-3.0")
+            else limits.MAX_REFERENCE_IMAGES_DASHSCOPE
+        )
+    elif api_type == "modelscope":
+        native = (
+            min(configured, 99)
+            if settings.get("max_reference_images")
+            else limits.MAX_REFERENCE_IMAGES_MODELSCOPE
+        )
+    elif api_type == "siliconflow":
+        from .api.siliconflow import _model_family
+
+        native = (
+            1
+            if _model_family(model) in {"kolors", "qwen-image-edit"}
+            else limits.MAX_REFERENCE_IMAGES_SILICONFLOW
+        )
+    elif api_type == "openai_images":
+        from .api.openai_images import _is_gpt_image_model
+
+        native = configured if _is_gpt_image_model(model) else 1
+    return min(configured, native)
+
+
 def routing_mode(provider: Any = None, model: Any = None) -> str:
     has_provider = bool(str(provider or "").strip())
     has_model = bool(str(model or "").strip())
@@ -387,6 +445,7 @@ def select_candidates(
     *,
     provider: Any = None,
     model: Any = None,
+    candidate_id: str | None = None,
     has_reference_images: bool = False,
     required_parameters: set[str] | None = None,
     request_values: dict[str, Any] | None = None,
@@ -398,6 +457,11 @@ def select_candidates(
     values = request_values or {}
     selected: list[Any] = []
     for candidate in candidates or []:
+        if (
+            candidate_id is not None
+            and str(getattr(candidate, "id", "")) != candidate_id
+        ):
+            continue
         if (
             provider_name
             and normalize_api_type(getattr(candidate, "api_type", "")) != provider_name
@@ -454,8 +518,13 @@ def apply_request_overrides(
         requested_count = max(int(getattr(config, "image_count", 1) or 1), 1)
     except (TypeError, ValueError):
         requested_count = 1
-    effective_count = min(requested_count, native_limit)
     count_setting = setting_map.get("image_count")
+    generation_settings = getattr(config, "generation_settings", None) or {}
+    if count_setting in generation_settings:
+        requested_count = min(
+            requested_count, max(int(generation_settings[count_setting]), 1)
+        )
+    effective_count = min(requested_count, native_limit)
     if count_setting and result.get(count_setting) != effective_count:
         set_request_value(count_setting, effective_count)
     return result, effective_count
