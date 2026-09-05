@@ -12,7 +12,10 @@
     <header class="studio-header">
       <div class="header-brand">
         <span class="brand-badge">STUDIO</span>
-        <h1 class="brand-title">图像生成创作台</h1>
+        <div>
+          <h1 class="brand-title">图像生成创作台</h1>
+          <p class="brand-desc">写下灵感，让画面发生。</p>
+        </div>
       </div>
       <div class="header-status">
         <div id="sse-indicator" class="status-pill status-pill--idle" role="status" aria-live="polite">
@@ -58,10 +61,13 @@
         <div class="workbench-layout">
           <!-- 公共参数面板 -->
           <div class="params-card comic-card">
-            <div class="card-title">模型与生成参数</div>
+            <div class="section-heading">
+              <span class="section-number" aria-hidden="true">01</span>
+              <h2 class="card-title">模型与参数</h2>
+            </div>
             <div class="params-grid params-grid--common">
               <div class="form-item form-item--wide">
-                <label for="select-model" class="form-label">模型（供应商 · 模型）</label>
+                <label for="select-model" class="form-label">生成模型</label>
                 <select id="select-model" class="comic-select"></select>
               </div>
               <div class="form-item" id="item-resolution">
@@ -95,7 +101,7 @@
                   <div class="form-item" id="item-seed" style="display: none;">
                     <label for="input-seed" class="form-label">随机种子</label>
                     <input type="number" id="input-seed" class="comic-input"
-                           step="1" placeholder="空 = 不设置">
+                           step="1" placeholder="留空不指定">
                   </div>
                   <div class="form-item form-item--wide" id="item-negative-prompt" style="display: none;">
                     <div class="form-label-row">
@@ -112,12 +118,17 @@
 
           <!-- 提示词与参考图组合区 -->
           <div class="creation-card comic-card">
-            <div class="card-title">创作内容</div>
-            <div class="mode-toggle-group" id="mode-toggle-group" role="radiogroup" aria-label="生成模式">
-              <button type="button" class="mode-btn mode-btn--active" id="mode-btn-single"
-                      role="radio" aria-checked="true" tabindex="0">单任务模式</button>
-              <button type="button" class="mode-btn" id="mode-btn-batch"
-                      role="radio" aria-checked="false" tabindex="-1">批量任务模式</button>
+            <div class="creation-header">
+              <div class="section-heading">
+                <span class="section-number" aria-hidden="true">02</span>
+                <h2 class="card-title">创作内容</h2>
+              </div>
+              <div class="mode-toggle-group" id="mode-toggle-group" role="radiogroup" aria-label="生成模式">
+                <button type="button" class="mode-btn mode-btn--active" id="mode-btn-single"
+                        role="radio" aria-checked="true" tabindex="0">单任务</button>
+                <button type="button" class="mode-btn" id="mode-btn-batch"
+                        role="radio" aria-checked="false" tabindex="-1">批量任务</button>
+              </div>
             </div>
 
             <div class="creation-input-layout">
@@ -126,12 +137,14 @@
                 <div id="single-form-container" class="form-container">
                   <div class="form-item">
                     <div class="form-label-row">
-                      <label for="input-prompt" class="form-label">提示词 (PROMPT)</label>
+                      <label for="input-prompt" class="form-label">描述你的画面</label>
                       <span class="char-count" id="prompt-char-count">0 / 2000</span>
                     </div>
                     <textarea id="input-prompt" class="comic-input comic-textarea"
-                              rows="4" maxlength="2000" placeholder="描述你希望生成的画面内容..."
+                              rows="5" maxlength="2000" placeholder="例如：一只猫坐在窗边，午后的阳光落在书页上，极简漫画风，温暖的奶油色调。"
+                              aria-describedby="prompt-hint"
                               required></textarea>
+                    <p class="field-hint" id="prompt-hint">试着加上主体、场景、画风与光线，让想象更具体。</p>
                   </div>
                 </div>
 
@@ -140,7 +153,7 @@
                   <div class="batch-header-row">
                     <span class="form-label">批量任务列表</span>
                     <div class="batch-budget-indicator" id="batch-budget-info">
-                      总预算消耗: <strong id="batch-total-count">0</strong> / <span id="batch-max-budget">—</span> 张
+                      计划生成 <strong id="batch-total-count">0</strong> / <span id="batch-max-budget">—</span> 张
                     </div>
                   </div>
                   <div id="batch-items-list" class="batch-items-list">
@@ -154,39 +167,43 @@
               </div>
 
               <aside class="reference-tray-card" aria-labelledby="reference-tray-title">
-                <div class="tray-header">
-                  <div class="card-title" id="reference-tray-title">参考图托盘</div>
-                  <span class="tray-counter" id="reference-counter">0 / —</span>
-                </div>
-                <p class="tray-desc">支持本地上传（单张上限 <span id="upload-max-size">加载中</span>）或从历史画廊拾取。</p>
+                <div class="reference-tray-controls">
+                  <div class="tray-header">
+                    <h3 class="card-title" id="reference-tray-title">参考图 <span class="optional-label">可选</span></h3>
+                    <span class="tray-counter" id="reference-counter">0 / —</span>
+                  </div>
+                  <p class="tray-desc">上传图片或从画廊选取，单张上限 <span id="upload-max-size">加载中</span>。</p>
 
-                <!-- 上传与选择按钮组 -->
-                <div class="tray-actions">
-                  <input type="file" id="file-upload-input" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" multiple style="display: none;">
-                  <button type="button" id="btn-trigger-upload" class="comic-btn comic-btn--sm">
-                    <span class="btn-icon" data-icon="upload"></span>
-                    <span>本地上传</span>
-                  </button>
-                  <button type="button" id="btn-pick-gallery" class="comic-btn comic-btn--sm comic-btn--outline">
-                    <span class="btn-icon" data-icon="image"></span>
-                    <span>从画廊拾取</span>
-                  </button>
+                  <div class="tray-actions">
+                    <input type="file" id="file-upload-input" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" multiple style="display: none;">
+                    <button type="button" id="btn-trigger-upload" class="comic-btn comic-btn--sm">
+                      <span class="btn-icon" data-icon="upload"></span>
+                      <span>本地上传</span>
+                    </button>
+                    <button type="button" id="btn-pick-gallery" class="comic-btn comic-btn--sm comic-btn--outline">
+                      <span class="btn-icon" data-icon="image"></span>
+                      <span>从画廊选取</span>
+                    </button>
+                  </div>
                 </div>
 
                 <!-- 托盘预览网格 -->
                 <div id="reference-tray-grid" class="reference-grid">
-                  <div class="empty-tray-tip" id="empty-tray-tip">未添加参考图（文生图模式）</div>
+                  <div class="empty-tray-tip" id="empty-tray-tip">
+                    <span class="empty-tray-icon" data-icon="image" aria-hidden="true"></span>
+                    <span>让参考图补充你的灵感</span>
+                    <span class="empty-tray-desc">也可以只用文字开始创作</span>
+                  </div>
                 </div>
               </aside>
             </div>
-          </div>
-
-          <!-- 提交动作条 -->
-          <div class="submit-action-row">
-            <button type="button" id="btn-submit-generate" class="comic-btn comic-btn--cta">
-              <span class="btn-icon" data-icon="sparkle"></span>
-              <span class="btn-text" id="submit-btn-text">立即生成图像</span>
-            </button>
+            <div class="submit-action-row">
+              <p class="submit-hint">生成后，在「任务进度」查看结果。</p>
+              <button type="button" id="btn-submit-generate" class="comic-btn comic-btn--cta">
+                <span class="btn-icon" data-icon="sparkle"></span>
+                <span class="btn-text" id="submit-btn-text">立即生成图像</span>
+              </button>
+            </div>
           </div>
         </div>
       </section>
@@ -196,8 +213,8 @@
                role="tabpanel" aria-labelledby="tab-btn-progress" aria-hidden="true" hidden>
         <div class="progress-toolbar">
           <div class="toolbar-stats">
-            <span class="stat-item">运行中: <strong id="stat-active-count">0</strong></span>
-            <span class="stat-item">24小时内任务: <strong id="stat-recent-count">0</strong></span>
+            <span class="stat-item">运行中 <strong id="stat-active-count">0</strong></span>
+            <span class="stat-item">近 24 小时 <strong id="stat-recent-count">0</strong></span>
           </div>
           <button type="button" id="btn-refresh-jobs" class="comic-btn comic-btn--sm comic-btn--outline">
             <span class="btn-icon" data-icon="refresh"></span>
@@ -209,8 +226,8 @@
           <!-- 动态渲染任务卡片列表 -->
           <div class="comic-empty-state" id="empty-jobs-tip" style="display: none;">
             <div class="empty-icon" data-icon="inbox"></div>
-            <div class="empty-title">当前暂无进行中或近期任务</div>
-            <div class="empty-desc">在工作台发起生成后，任务状态与结果将在此实时呈现。</div>
+            <h2 class="empty-title">下一幅作品，从工作台开始</h2>
+            <p class="empty-desc">还没有近期任务。发起生成后，可以在这里实时查看进度与结果。</p>
           </div>
         </div>
       </section>
@@ -222,13 +239,13 @@
         <div class="gallery-filters comic-card">
           <div class="filter-row">
             <div class="filter-item filter-item--grow">
-              <label for="gallery-search-input" class="sr-only">关键词</label>
+              <label for="gallery-search-input" class="form-label">搜索作品</label>
               <input type="text" id="gallery-search-input" class="comic-input"
-                     maxlength="100" placeholder="搜索提示词、条目名、用户或错误信息..."
+                     maxlength="100" placeholder="提示词、任务名称、用户或错误信息"
                      aria-label="搜索历史任务关键词">
             </div>
             <div class="filter-item">
-              <label for="gallery-source-select" class="sr-only">任务来源</label>
+              <label for="gallery-source-select" class="form-label">任务来源</label>
               <select id="gallery-source-select" class="comic-select" aria-label="按任务来源筛选">
                 <option value="">全部来源</option>
                 <option value="webui">工作台 (webui)</option>
@@ -239,14 +256,14 @@
               </select>
             </div>
             <div class="filter-item">
-              <label for="gallery-group-input" class="sr-only">群组 ID</label>
+              <label for="gallery-group-input" class="form-label">群组 ID</label>
               <input type="text" id="gallery-group-input" class="comic-input"
-                     maxlength="128" placeholder="群组 ID" aria-label="按群组 ID 筛选">
+                     maxlength="128" placeholder="全部群组" aria-label="按群组 ID 筛选">
             </div>
             <div class="filter-item">
-              <label for="gallery-user-input" class="sr-only">用户 ID</label>
+              <label for="gallery-user-input" class="form-label">用户 ID</label>
               <input type="text" id="gallery-user-input" class="comic-input"
-                     maxlength="128" placeholder="用户 ID" aria-label="按用户 ID 筛选">
+                     maxlength="128" placeholder="全部用户" aria-label="按用户 ID 筛选">
             </div>
             <button type="button" id="btn-search-gallery" class="comic-btn">
               <span class="btn-icon" data-icon="search"></span>
@@ -280,8 +297,8 @@
         <!-- 画廊空状态提示 -->
         <div class="comic-empty-state" id="empty-gallery-tip" style="display: none;">
           <div class="empty-icon" data-icon="inbox"></div>
-          <div class="empty-title">暂无历史任务记录</div>
-          <div class="empty-desc">已生成的图片与任务记录将归档在此处，支持管理与检索。</div>
+          <h2 class="empty-title">这里会收下你的每一次灵感</h2>
+          <p class="empty-desc">暂时没有符合条件的记录。生成第一幅作品，或调整筛选条件再试试。</p>
         </div>
 
         <!-- 分页控件 -->

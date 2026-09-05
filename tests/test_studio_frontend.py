@@ -6,6 +6,37 @@ APP_JS = (ROOT / "pages" / "studio" / "app.js").read_text(encoding="utf-8")
 INDEX_HTML = (ROOT / "pages" / "studio" / "index.html").read_text(encoding="utf-8")
 
 
+def test_safe_dom_false_disabled_keeps_buttons_clickable() -> None:
+    start = APP_JS.index("const SafeDOM = {")
+    end = APP_JS.index("const ImageLoader = {", start)
+    script = "const assert = require('node:assert/strict');\n"
+    script += """
+const document = {
+  createElement() {
+    return {
+      attributes: new Map(),
+      setAttribute(name, value) { this.attributes.set(name, String(value)); },
+      toggleAttribute(name, force) {
+        if (force) this.attributes.set(name, '');
+        else this.attributes.delete(name);
+      },
+      get disabled() { return this.attributes.has('disabled'); }
+    };
+  }
+};
+"""
+    script += APP_JS[start:end]
+    script += """
+assert.equal(SafeDOM.el('button', {disabled: false}).disabled, false);
+assert.equal(SafeDOM.el('button', {disabled: true}).disabled, true);
+assert.equal(SafeDOM.el('button').disabled, false);
+const button = SafeDOM.el('button', {disabled: false, 'aria-disabled': false});
+assert.equal(button.disabled, false);
+assert.equal(button.attributes.get('aria-disabled'), 'false');
+"""
+    subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+
+
 def _image_loader_source() -> str:
     start = APP_JS.index("const ImageLoader = {")
     end = APP_JS.index("// 3. BridgeClient", start)

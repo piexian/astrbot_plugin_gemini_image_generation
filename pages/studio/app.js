@@ -56,6 +56,8 @@ const SafeDOM = {
         }
       } else if (key === 'href' || key === 'srcdoc') {
         continue;
+      } else if (key === 'disabled') {
+        element.toggleAttribute('disabled', Boolean(val));
       } else {
         element.setAttribute(key, String(val));
       }
@@ -2637,10 +2639,10 @@ class GalleryView {
       this.grid.replaceChildren();
       const hasFilters = Object.entries(this.store.galleryQuery)
         .some(([key, value]) => !['page', 'size'].includes(key) && Boolean(value));
-      SafeDOM.setText(this.emptyTitle, hasFilters ? '未找到匹配的生成任务' : '暂无历史任务记录');
+      SafeDOM.setText(this.emptyTitle, hasFilters ? '未找到匹配的生成任务' : '这里会收下你的每一次灵感');
       SafeDOM.setText(
         this.emptyDescription,
-        hasFilters ? '请调整筛选条件或点击重置后重试。' : '已生成的图片与任务记录将归档在此处，支持管理与检索。'
+        hasFilters ? '请调整筛选条件或点击重置后重试。' : '还没有历史作品。在工作台生成第一幅图像，就可以在这里查看与管理。'
       );
       this.emptyTip.style.display = 'flex';
       this.updateSelectionUI();
@@ -2662,7 +2664,7 @@ class GalleryView {
     const card = SafeDOM.el('div', { className: 'gallery-card' });
 
     // 左上角勾选框
-    const selectWrap = SafeDOM.el('div', { className: 'gallery-card-select-wrap' });
+    const selectWrap = SafeDOM.el('label', { className: 'gallery-card-select-wrap' });
     const checkbox = SafeDOM.el('input', {
       type: 'checkbox',
       className: 'comic-checkbox gallery-card-checkbox',
