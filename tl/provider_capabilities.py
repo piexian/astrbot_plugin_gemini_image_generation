@@ -518,8 +518,13 @@ def apply_request_overrides(
         requested_count = max(int(getattr(config, "image_count", 1) or 1), 1)
     except (TypeError, ValueError):
         requested_count = 1
-    effective_count = min(requested_count, native_limit)
     count_setting = setting_map.get("image_count")
+    generation_settings = getattr(config, "generation_settings", None) or {}
+    if count_setting in generation_settings:
+        requested_count = min(
+            requested_count, max(int(generation_settings[count_setting]), 1)
+        )
+    effective_count = min(requested_count, native_limit)
     if count_setting and result.get(count_setting) != effective_count:
         set_request_value(count_setting, effective_count)
     return result, effective_count

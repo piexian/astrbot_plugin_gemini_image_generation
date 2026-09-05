@@ -119,6 +119,9 @@ async def test_begin_updates_and_complete_are_persisted(tmp_path) -> None:
         "candidate_id": None,
         "image_count": 1,
         "quality": None,
+        "seed": None,
+        "negative_prompt": None,
+        "generation_settings": {},
     }
     assert saved["stats"] == {
         "provider": "google",

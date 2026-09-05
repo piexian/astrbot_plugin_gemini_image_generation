@@ -2,11 +2,26 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from .api_normalize import normalize_api_type
 from .provider_loader import load_callable
 from .provider_metadata import get_provider_spec
+
+
+def candidate_with_overrides(candidate: Any, overrides: dict[str, Any]) -> Any:
+    """构造单次请求候选，保留原候选配置和其它并发任务的默认值。"""
+    if not overrides:
+        return candidate
+    settings = {**candidate.settings, **overrides}
+    changes = {"settings": settings}
+    spec = get_provider_spec(candidate.api_type)
+    if spec and spec.edit_capability_path and hasattr(candidate, "supports_image_edit"):
+        changes["supports_image_edit"] = bool(
+            load_callable(spec.edit_capability_path)(settings)
+        )
+    return replace(candidate, **changes)
 
 
 def _cfg(obj: Any) -> Any:

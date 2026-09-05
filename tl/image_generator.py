@@ -141,6 +141,8 @@ class ImageGenerator:
                     "model": config.requested_model,
                     "image_count": config.image_count,
                     "quality": config.quality,
+                    "seed": config.seed,
+                    "negative_prompt": config.negative_prompt,
                 },
                 requester=requester_from_event(event),
                 parent_job_id=context.parent_job_id if context else None,

@@ -131,6 +131,63 @@ const SafeDOM = {
     return labels[source] || source || '未知';
   },
 
+  displayRoute(record) {
+    const stats = record.stats || {};
+    const params = record.params || {};
+    const model = stats.model || params.model || '';
+    return {
+      provider: stats.provider || params.provider || '',
+      model: stats.model && stats.alias ? `${stats.alias}（${model}）` : model
+    };
+  },
+
+  routeMeta(record) {
+    const route = this.displayRoute(record);
+    const labels = [];
+    if (route.provider) labels.push(`供应商: ${route.provider}`);
+    if (route.model) labels.push(`模型: ${route.model}`);
+    return this.el('div', { className: 'job-meta-row' },
+      labels.map((label) => this.el('span', { className: 'meta-pill' }, [label]))
+    );
+  },
+
+  referenceStrip(record, onSelect) {
+    const names = Array.isArray(record.reference_names)
+      ? record.reference_names.filter((name) => this.isSafeImageName(name)) : [];
+    if (!names.length) return null;
+    const section = this.el('div', { className: 'reference-lineage' }, [
+      this.el('span', { className: 'reference-lineage-label' }, ['参考图 → 当前结果'])
+    ]);
+    const images = this.el('div', { className: 'reference-lineage-images' });
+    for (const name of names) {
+      const button = this.el('button', { type: 'button', className: 'reference-lineage-item',
+        title: '将这张历史图片设为参考图', 'aria-label': `设为参考图：${name}`,
+        onClick: async () => {
+          try {
+            const detail = await BridgeClient.get(`webui/history/${encodeURIComponent(record.job_id)}`);
+            if (!(detail.available_reference_names || []).includes(name)) {
+              button.disabled = true;
+              SafeDOM.setText(button, '参考图已清理');
+              Toast.warning('这张参考图已清理，请选择其它图片');
+              return;
+            }
+            onSelect?.(name);
+          } catch (error) {
+            ErrorFeedback.show(error, '确认参考图失败');
+          }
+        }
+      });
+      const img = this.el('img', { loading: 'lazy', alt: '历史参考图' });
+      installImageFallback(img, button, '参考图加载失败或已清理');
+      img.addEventListener('error', () => { button.disabled = true; });
+      ImageLoader.attach(img, name, { thumb: true });
+      button.appendChild(img);
+      images.appendChild(button);
+    }
+    section.appendChild(images);
+    return section;
+  },
+
   requesterLabels(requester, source) {
     const { user_id: userId, user_name: userName, group_id: groupId, chat_type: chatType } = requester || {};
     let chatLabel = '会话类型未知';
@@ -191,8 +248,8 @@ const ImageLoader = {
     const cacheKey = `${imageName}|${thumb ? 'thumb' : 'full'}`;
     const cached = this._cached(cacheKey);
     if (cached) {
-      img.src = cached;
-      return;
+      img.src = cached.dataUri;
+      return cached;
     }
     try {
       const payload = await BridgeClient.get(
@@ -207,9 +264,11 @@ const ImageLoader = {
         throw new Error('图片接口返回了无效数据');
       }
       const dataUri = `data:${mime};base64,${b64}`;
-      this._remember(cacheKey, dataUri);
+      const imageData = { dataUri, preview: payload.preview === true };
+      this._remember(cacheKey, imageData);
       if (img.imageLoaderRequestId === requestId) {
         img.src = dataUri;
+        return imageData;
       }
     } catch (error) {
       console.warn(`[ImageLoader] 加载图片失败 ${imageName}:`, error);
@@ -530,6 +589,8 @@ const Lightbox = {
   nextBtn: null,
   promptEl: null,
   tagsEl: null,
+  previewNotice: null,
+  downloadBtn: null,
   imgWrap: null,
   items: [],
   currentIndex: 0,
@@ -546,6 +607,18 @@ const Lightbox = {
     this.nextBtn = document.getElementById('lightbox-next-btn');
     this.promptEl = document.getElementById('lightbox-prompt');
     this.tagsEl = document.getElementById('lightbox-tags');
+    this.previewNotice = document.getElementById('lightbox-preview-notice');
+    this.downloadBtn = document.getElementById('lightbox-download-btn');
+    this.downloadBtn.addEventListener('click', async () => {
+      const item = this.items[this.currentIndex];
+      if (!item) return;
+      try {
+        await BridgeClient.download(`webui/image/${encodeURIComponent(item.imageName)}`, { download: '1' }, item.imageName);
+        Toast.success('已发起原图下载');
+      } catch (error) {
+        ErrorFeedback.show(error, '下载失败');
+      }
+    });
 
     this.closeBtn.addEventListener('click', () => this.close());
     this.backdrop.addEventListener('click', () => this.close());
@@ -577,7 +650,7 @@ const Lightbox = {
       } else if (e.key === 'ArrowRight') {
         this.next();
       } else if (e.key === 'Tab') {
-        const focusable = [this.closeBtn, this.prevBtn, this.nextBtn].filter((element) => element && element.style.display !== 'none');
+        const focusable = [this.closeBtn, this.prevBtn, this.nextBtn, this.downloadBtn].filter((element) => element && element.style.display !== 'none');
         if (focusable.length === 0) return;
         const first = focusable[0];
         const last = focusable[focusable.length - 1];
@@ -614,7 +687,12 @@ const Lightbox = {
       spinner.remove();
       this.img.style.display = 'block';
     }, { once: true });
-    ImageLoader.attach(this.img, item.imageName, { thumb: false });
+    this.previewNotice.hidden = true;
+    void ImageLoader.attach(this.img, item.imageName, { thumb: false }).then((loaded) => {
+      if (this.items[this.currentIndex] === item) {
+        this.previewNotice.hidden = !loaded?.preview;
+      }
+    });
     SafeDOM.setText(this.promptEl, item.prompt || '无提示词记录');
 
     this.tagsEl.replaceChildren();
@@ -1066,6 +1144,224 @@ class StopwatchTimer {
 // ==========================================================================
 // 10. WorkbenchView (工作台控制器)
 // ==========================================================================
+class StudioPreferences {
+  constructor() {
+    this.key = 'gemini-image-generation.studio.preferences.v1';
+    this.data = { selected: null, candidates: {} };
+    this.revision = 0;
+    this.remote = false;
+    this.ready = false;
+    try {
+      this.storage = window.localStorage;
+    } catch {
+      // AstrBot 的沙箱 iframe 没有存储权限，通过父页桥接使用浏览器专属 Cookie。
+      this.remote = true;
+    }
+    if (this.storage) {
+      try {
+        const saved = JSON.parse(this.storage.getItem(this.key) || 'null');
+        if (saved && typeof saved.candidates === 'object' && !Array.isArray(saved.candidates)) {
+          this.data = { selected: saved.selected || null, candidates: saved.candidates || {} };
+        }
+      } catch (error) {
+        console.warn('[Studio] 无法读取浏览器参数记忆:', error);
+      }
+    }
+    this.ready = !this.remote;
+  }
+
+  async load() {
+    if (this.remote) {
+      try {
+        const value = await BridgeClient.get('webui/preferences');
+        this.data = value.preferences;
+        this.revision = value.revision;
+      } catch (error) {
+        console.warn('[Studio] 无法恢复浏览器参数记忆:', error);
+        this.onStatus?.('参数记忆暂不可用');
+      }
+    }
+    this.ready = true;
+  }
+
+  matches(saved, candidate) {
+    return saved?.candidate_id === candidate.candidate_id
+      && saved.provider === candidate.provider && saved.model === candidate.model;
+  }
+
+  identity(candidate) {
+    return { candidate_id: candidate.candidate_id, provider: candidate.provider, model: candidate.model };
+  }
+
+  get(candidate) {
+    const saved = this.data.candidates[candidate.candidate_id];
+    return this.matches(saved, candidate) ? saved : null;
+  }
+
+  select(candidate) {
+    this.data.selected = this.identity(candidate);
+    this.flush();
+  }
+
+  remember(candidate, settings) {
+    this.data.selected = this.identity(candidate);
+    this.data.candidates[candidate.candidate_id] = { ...this.identity(candidate), ...settings };
+    this.flush();
+  }
+
+  reset(candidate) {
+    delete this.data.candidates[candidate.candidate_id];
+    this.flush();
+  }
+
+  flush() {
+    if (!this.ready) return;
+    if (this.remote) {
+      const revision = this.revision = Math.max(this.revision + 1, Date.now() * 1000);
+      this.onStatus?.('正在记忆参数…');
+      void BridgeClient.post('webui/preferences', {
+        revision, preferences: JSON.parse(JSON.stringify(this.data))
+      }).then(() => {
+        if (revision === this.revision) this.onStatus?.('已记住当前选择');
+      }).catch((error) => {
+        if (revision === this.revision) this.onStatus?.('参数记忆暂不可用');
+        console.warn('[Studio] 无法保存浏览器参数记忆:', error);
+      });
+      return;
+    }
+    try {
+      this.storage?.setItem(this.key, JSON.stringify(this.data));
+      this.onStatus?.('已记住当前选择');
+    } catch (error) {
+      this.onStatus?.('参数记忆暂不可用');
+      console.warn('[Studio] 无法保存浏览器参数记忆:', error);
+    }
+  }
+}
+
+class GenerationSettingsEditor {
+  constructor(container, onChange) {
+    this.container = container;
+    this.onChange = onChange;
+    this.fields = {};
+    this.controls = new Map();
+    this.disabled = false;
+  }
+
+  static valid(value, field) {
+    if (field.type === 'boolean' && typeof value !== 'boolean') return false;
+    if (field.type === 'integer' && !Number.isSafeInteger(value)) return false;
+    if (field.type === 'number' && (typeof value !== 'number' || !Number.isFinite(value))) return false;
+    if (field.type === 'string' && (typeof value !== 'string' || value.length > field.max_length)) return false;
+    if (field.enum && !field.enum.includes(value)) return false;
+    if (typeof value === 'number' && (value < (field.minimum ?? -Infinity) || value > (field.maximum ?? Infinity))) return false;
+    return true;
+  }
+
+  render(fields, saved = {}) {
+    this.fields = fields || {};
+    this.controls.clear();
+    this.container.replaceChildren();
+    let dropped = false;
+    for (const [name, field] of Object.entries(this.fields)) {
+      if (['resolution', 'aspect_ratio'].includes(name)) continue;
+      const row = SafeDOM.el('div', { className: 'provider-parameter', dataset: { parameter: name } });
+      const enabled = SafeDOM.el('input', { type: 'checkbox', className: 'comic-checkbox', 'aria-label': `临时覆盖${field.label}` });
+      const label = SafeDOM.el('label', { className: 'provider-parameter-toggle' }, [enabled, field.label]);
+      row.appendChild(label);
+      row.appendChild(SafeDOM.el('span', { className: 'provider-parameter-key' }, [name]));
+      const attrs = { id: `parameter-${name}`, 'aria-label': field.label };
+      let input;
+      if (field.type === 'boolean' || Array.isArray(field.enum)) {
+        input = SafeDOM.el('select', { ...attrs, className: 'comic-select' });
+        const options = field.type === 'boolean' ? [true, false] : field.enum;
+        for (const value of options) {
+          input.appendChild(SafeDOM.el('option', { value: String(value) }, [
+            field.type === 'boolean' ? (value ? '开启' : '关闭') : (value === '' ? '默认' : String(value))
+          ]));
+        }
+      } else if (field.multiline) {
+        input = SafeDOM.el('textarea', { ...attrs, className: 'comic-input', rows: 3, maxlength: field.max_length });
+      } else {
+        input = SafeDOM.el('input', { ...attrs, className: 'comic-input',
+          type: ['integer', 'number'].includes(field.type) ? 'number' : 'text',
+          min: field.minimum, max: field.maximum, step: field.type === 'integer' ? 1 : (field.step ?? 'any'),
+          maxlength: field.max_length
+        });
+      }
+      const hasSaved = Object.hasOwn(saved, name);
+      const validSaved = hasSaved && GenerationSettingsEditor.valid(saved[name], field);
+      enabled.checked = validSaved;
+      if (hasSaved && !validSaved) dropped = true;
+      input.value = String(validSaved ? saved[name] : (field.value ?? ''));
+      row.appendChild(input);
+      if (field.hint) {
+        row.appendChild(SafeDOM.el('details', { className: 'provider-parameter-help' }, [
+          SafeDOM.el('summary', {}, ['参数说明']), SafeDOM.el('p', {}, [field.hint])
+        ]));
+      }
+      const changed = () => { this.updateConditions(); this.onChange?.(); };
+      enabled.addEventListener('change', changed);
+      input.addEventListener('input', changed);
+      this.controls.set(name, { field, row, enabled, input });
+      this.container.appendChild(row);
+    }
+    if (Object.keys(saved).some((name) => !this.controls.has(name))) dropped = true;
+    this.updateConditions();
+    return dropped;
+  }
+
+  value(control) {
+    const { field, input } = control;
+    if (field.type === 'boolean') return input.value === 'true';
+    if (['integer', 'number'].includes(field.type)) return input.value.trim() ? Number(input.value) : NaN;
+    return input.value;
+  }
+
+  effectiveValues() {
+    const values = Object.fromEntries(Object.entries(this.fields).map(([name, field]) => [name, field.value]));
+    for (const [name, control] of this.controls) {
+      if (control.enabled.checked) values[name] = this.value(control);
+    }
+    return values;
+  }
+
+  matchesCondition(field, values = this.effectiveValues()) {
+    return Object.entries(field?.condition || {}).every(([name, value]) => values[name] === value);
+  }
+
+  updateConditions() {
+    const values = this.effectiveValues();
+    for (const control of this.controls.values()) {
+      control.row.hidden = !this.matchesCondition(control.field, values);
+      control.enabled.disabled = this.disabled;
+      control.input.disabled = this.disabled || !control.enabled.checked || control.row.hidden;
+    }
+  }
+
+  setDisabled(disabled) {
+    this.disabled = disabled;
+    this.updateConditions();
+  }
+
+  overrides({ validate = true, includeHidden = false } = {}) {
+    const values = {};
+    for (const [name, control] of this.controls) {
+      if (!control.enabled.checked || (!includeHidden && control.row.hidden)) continue;
+      const value = this.value(control);
+      if (!GenerationSettingsEditor.valid(value, control.field)) {
+        if (validate) {
+          control.input.focus();
+          throw new Error(`请检查${control.field.label}的值与范围`);
+        }
+        continue;
+      }
+      values[name] = value;
+    }
+    return values;
+  }
+}
+
 class WorkbenchView {
   constructor(store, onJobSubmitted) {
     this.store = store;
@@ -1097,13 +1393,16 @@ class WorkbenchView {
     this.selectModel = document.getElementById('select-model');
     this.selectResolution = document.getElementById('select-resolution');
     this.selectAspectRatio = document.getElementById('select-aspect-ratio');
-    this.itemQuality = document.getElementById('item-quality');
-    this.selectQuality = document.getElementById('select-quality');
-    this.itemSeed = document.getElementById('item-seed');
-    this.inputSeed = document.getElementById('input-seed');
-    this.itemNegativePrompt = document.getElementById('item-negative-prompt');
-    this.inputNegativePrompt = document.getElementById('input-negative-prompt');
-    this.negCharCount = document.getElementById('neg-char-count');
+    this.preferences = new StudioPreferences();
+    this.preferences.onStatus = (status) => SafeDOM.setText(document.getElementById('preferences-save-status'), status);
+    this.activeCandidate = null;
+    this.settingsEditor = new GenerationSettingsEditor(document.getElementById('provider-parameters-grid'), () => {
+      this.updateGenerationConditions();
+      this.updateReferenceCounter();
+      this.rememberParameters();
+    });
+    this.overrideCount = document.getElementById('provider-override-count');
+    this.resetParametersBtn = document.getElementById('btn-reset-provider-parameters');
     this.inputImageCount = document.getElementById('input-image-count');
     this.moreParamsDisclosure = document.getElementById('advanced-params-disclosure');
     this.btnToggleMoreParams = document.getElementById('btn-toggle-more-params');
@@ -1139,9 +1438,15 @@ class WorkbenchView {
       }
     });
 
-    this.inputNegativePrompt.addEventListener('input', () => {
-      const len = this.inputNegativePrompt.value.length;
-      SafeDOM.setText(this.negCharCount, `${len} / 500`);
+    for (const input of [this.selectResolution, this.selectAspectRatio, this.inputImageCount]) {
+      input.addEventListener('input', () => this.rememberParameters());
+    }
+    this.resetParametersBtn.addEventListener('click', () => {
+      const candidate = this.selectedModel();
+      if (!candidate) return;
+      this.preferences.reset(candidate);
+      this.handleModelChange({ remember: false, restore: false });
+      Toast.info('已恢复此供应商的默认参数');
     });
 
     // 模式切换
@@ -1166,6 +1471,7 @@ class WorkbenchView {
     this.btnToggleMoreParams.addEventListener('click', () => {
       this.moreParamsExpanded = !this.moreParamsExpanded;
       this.syncMoreParamsPanel(!this.btnToggleMoreParams.hidden);
+      this.rememberParameters();
     });
 
     // 上传与画廊拾取
@@ -1179,6 +1485,7 @@ class WorkbenchView {
 
   async loadCapabilities() {
     try {
+      await this.preferences.load();
       const data = await BridgeClient.get('webui/capabilities');
       const models = Array.isArray(data?.models) ? data.models : [];
       this.store.capabilities = models;
@@ -1230,9 +1537,7 @@ class WorkbenchView {
       this.selectModel,
       this.selectResolution,
       this.selectAspectRatio,
-      this.selectQuality,
-      this.inputSeed,
-      this.inputNegativePrompt,
+      this.resetParametersBtn,
       this.inputImageCount,
       this.modeBtnSingle,
       this.modeBtnBatch,
@@ -1240,6 +1545,7 @@ class WorkbenchView {
     ].forEach((element) => {
       element.disabled = disabled;
     });
+    this.settingsEditor.setDisabled(disabled);
     this.updateReferenceCounter();
     this.updateActionState();
   }
@@ -1272,7 +1578,9 @@ class WorkbenchView {
       }
       this.selectModel.appendChild(group);
     }
-    this.handleModelChange();
+    const rememberedIndex = models.findIndex((candidate) => this.preferences.matches(this.preferences.data.selected, candidate));
+    if (rememberedIndex >= 0) this.selectModel.value = String(rememberedIndex);
+    this.handleModelChange({ remember: false, persistSelection: false });
   }
 
   selectedModel() {
@@ -1281,91 +1589,56 @@ class WorkbenchView {
     return this.store.capabilities[index] || null;
   }
 
-  handleModelChange() {
+  handleModelChange({ remember = true, restore = true, persistSelection = true } = {}) {
+    if (remember) this.rememberParameters();
     const entry = this.selectedModel();
     if (!entry) return;
-
-    // 分辨率
-    this.selectResolution.replaceChildren();
-    const resolutions = entry.resolutions || [];
-    if (resolutions.length > 0) {
-      document.getElementById('item-resolution').style.display = 'block';
-      for (const r of resolutions) {
-        this.selectResolution.appendChild(SafeDOM.el('option', { value: r }, [r]));
-      }
-    } else {
-      document.getElementById('item-resolution').style.display = 'none';
+    this.activeCandidate = entry;
+    const saved = restore ? this.preferences.get(entry) : null;
+    const fields = entry.generation_fields || {};
+    this.settingsEditor.render(fields, saved?.generation_settings || {});
+    for (const [name, select, choices] of [
+      ['resolution', this.selectResolution, entry.resolutions || []],
+      ['aspect_ratio', this.selectAspectRatio, entry.aspect_ratios || []]
+    ]) {
+      select.replaceChildren(SafeDOM.el('option', { value: '' }, ['使用供应商配置']));
+      for (const value of choices) select.appendChild(SafeDOM.el('option', { value }, [value]));
+      const defaultValue = fields[name]?.value ?? '';
+      const desired = saved?.[name] ?? defaultValue;
+      select.value = Array.from(select.options).some((option) => option.value === String(desired))
+        ? String(desired) : String(defaultValue);
+      if (select.selectedIndex < 0) select.value = '';
     }
-
-    // 画面比例
-    this.selectAspectRatio.replaceChildren();
-    const ratios = entry.aspect_ratios || [];
-    if (ratios.length > 0) {
-      document.getElementById('item-aspect-ratio').style.display = 'block';
-      for (const ratio of ratios) {
-        this.selectAspectRatio.appendChild(SafeDOM.el('option', { value: ratio }, [ratio]));
-      }
-    } else {
-      document.getElementById('item-aspect-ratio').style.display = 'none';
-    }
-
-    // 画质 quality
-    const params = entry.parameters || {};
-    const supportsQuality = Boolean(
-      params.quality && Array.isArray(params.quality.enum) && params.quality.enum.length > 0
-    );
-    if (supportsQuality) {
-      this.itemQuality.style.display = 'block';
-      this.selectQuality.replaceChildren();
-      for (const q of params.quality.enum) {
-        this.selectQuality.appendChild(SafeDOM.el('option', { value: q }, [q]));
-      }
-    } else {
-      this.itemQuality.style.display = 'none';
-    }
-
-    // 随机种子
-    const supportsSeed = params.seed?.type === 'integer';
-    if (supportsSeed) {
-      this.itemSeed.style.display = 'block';
-      for (const bound of ['minimum', 'maximum']) {
-        const value = params.seed[bound];
-        const attribute = bound === 'minimum' ? 'min' : 'max';
-        if (Number.isSafeInteger(value)) {
-          this.inputSeed.setAttribute(attribute, String(value));
-        } else {
-          this.inputSeed.removeAttribute(attribute);
-        }
-      }
-    } else {
-      this.itemSeed.style.display = 'none';
-      this.inputSeed.value = '';
-      this.inputSeed.removeAttribute('min');
-      this.inputSeed.removeAttribute('max');
-    }
-
-    // 负向提示词
-    const supportsNegativePrompt = Boolean(params.negative_prompt);
-    if (supportsNegativePrompt) {
-      this.itemNegativePrompt.style.display = 'block';
-    } else {
-      this.itemNegativePrompt.style.display = 'none';
-      this.inputNegativePrompt.value = '';
-    }
-    this.syncMoreParamsPanel(
-      supportsQuality || supportsSeed || supportsNegativePrompt
-    );
-
-    // 单任务张数最大值
-    if (params.image_count && typeof params.image_count.maximum === 'number') {
-      this.inputImageCount.max = String(params.image_count.maximum);
-    } else {
-      this.inputImageCount.max = '10';
-    }
-    const maxImageCount = Number(this.inputImageCount.max) || 10;
-    this.inputImageCount.value = String(Math.min(Math.max(parseInt(this.inputImageCount.value, 10) || 1, 1), maxImageCount));
-
+    this.inputImageCount.max = String(entry.parameters?.image_count?.maximum || 10);
+    const maximum = Number(this.inputImageCount.max);
+    this.inputImageCount.value = String(Math.min(Math.max(Number(saved?.image_count) || 1, 1), maximum));
+    if (saved && typeof saved.expanded === 'boolean') this.moreParamsExpanded = saved.expanded;
+    this.syncMoreParamsPanel(this.settingsEditor.controls.size > 0);
+    this.updateGenerationConditions();
     this.updateReferenceCounter();
+    if (persistSelection) this.preferences.select(entry);
+  }
+
+  rememberParameters() {
+    if (!this.activeCandidate) return;
+    this.preferences.remember(this.activeCandidate, {
+      resolution: this.selectResolution.value,
+      aspect_ratio: this.selectAspectRatio.value,
+      image_count: Number(this.inputImageCount.value) || 1,
+      generation_settings: this.settingsEditor.overrides({ validate: false, includeHidden: true }),
+      expanded: this.moreParamsExpanded
+    });
+  }
+
+  updateGenerationConditions() {
+    const entry = this.selectedModel();
+    if (!entry) return;
+    for (const [name, choices] of [['resolution', entry.resolutions], ['aspect_ratio', entry.aspect_ratios]]) {
+      const visible = choices?.length > 0 && this.settingsEditor.matchesCondition(entry.generation_fields?.[name]);
+      document.getElementById(name === 'resolution' ? 'item-resolution' : 'item-aspect-ratio').style.display = visible ? 'block' : 'none';
+    }
+    const count = Object.keys(this.settingsEditor.overrides({ validate: false })).length;
+    SafeDOM.setText(this.overrideCount, count ? `${count} 项临时覆盖` : '使用供应商配置');
   }
 
   syncMoreParamsPanel(hasAdvancedParameters) {
@@ -1517,8 +1790,16 @@ class WorkbenchView {
   }
 
   getMaxReferenceImages() {
-    const maximum = this.selectedModel()?.max_reference_images;
-    return Number.isSafeInteger(maximum) && maximum >= 0 ? maximum : 0;
+    const entry = this.selectedModel();
+    const fields = entry?.generation_fields || {};
+    const values = this.settingsEditor?.effectiveValues() || {};
+    if (Object.entries(fields).some(([name, field]) =>
+      Object.hasOwn(field, 'disables_references_when') && values[name] === field.disables_references_when
+    )) return 0;
+    const override = this.settingsEditor?.overrides({ validate: false }).max_reference_images;
+    const maximum = override ?? fields.max_reference_images?.value ?? entry?.max_reference_images;
+    const nativeMaximum = entry?.native_max_reference_images ?? maximum;
+    return Number.isSafeInteger(maximum) && maximum >= 0 ? Math.min(maximum, nativeMaximum) : 0;
   }
 
   updateReferenceCounter() {
@@ -1832,12 +2113,24 @@ class WorkbenchView {
     return true;
   }
 
+  restoreReferences(names) {
+    for (const item of this.store.referenceTray) {
+      if (item.type === 'upload' && item.previewUrl?.startsWith('blob:')) URL.revokeObjectURL(item.previewUrl);
+    }
+    const available = [...new Set(names.filter((name) => SafeDOM.isSafeImageName(name)))];
+    this.store.referenceTray = available.slice(0, this.getMaxReferenceImages()).map((name) => ({
+      id: `ref_${Date.now()}_${Math.random()}`, type: 'gallery', name, previewUrl: ''
+    }));
+    this.renderReferenceTray();
+    return this.store.referenceTray.length;
+  }
+
   // 回填工作台参数（再次生成）
   refillParameters(prompt, params = {}) {
+    this.rememberParameters();
     this.switchMode('single');
     this.promptInput.value = prompt || '';
     SafeDOM.setText(this.promptCharCount, `${this.promptInput.value.length} / 2000`);
-
     let fellBack = false;
     if (params.provider || params.model || params.candidate_id) {
       const matchIndex = this.store.capabilities.findIndex(
@@ -1845,62 +2138,43 @@ class WorkbenchView {
           && (!params.model || entry.model === params.model)
           && (!params.candidate_id || entry.candidate_id === params.candidate_id)
       );
-      if (matchIndex >= 0) {
-        this.selectModel.value = String(matchIndex);
-        this.handleModelChange();
+      if (matchIndex >= 0) this.selectModel.value = String(matchIndex);
+      else fellBack = true;
+    }
+    this.handleModelChange({ remember: false, restore: false });
+    const fields = this.selectedModel()?.generation_fields || {};
+    const overrides = { ...params.generation_settings };
+    for (const name of ['quality', 'seed', 'negative_prompt', 'watermark']) {
+      if (params[name] === null || params[name] === undefined) continue;
+      const setting = Object.entries(fields).find(([, field]) => field.runtime_parameter === name);
+      if (setting) {
+        if (!Object.hasOwn(overrides, setting[0])) overrides[setting[0]] = params[name];
       } else {
         fellBack = true;
       }
     }
-    if (params.resolution) {
-      if (Array.from(this.selectResolution.options).some((o) => o.value === params.resolution)) {
-        this.selectResolution.value = params.resolution;
-      } else {
-        fellBack = true;
-      }
+    for (const [name, select] of [['resolution', this.selectResolution], ['aspect_ratio', this.selectAspectRatio]]) {
+      const value = params[name] ?? overrides[name];
+      delete overrides[name];
+      if (value === null || value === undefined) continue;
+      if (Array.from(select.options).some((option) => option.value === value)) select.value = value;
+      else fellBack = true;
     }
-    if (params.aspect_ratio) {
-      if (Array.from(this.selectAspectRatio.options).some((o) => o.value === params.aspect_ratio)) {
-        this.selectAspectRatio.value = params.aspect_ratio;
-      } else {
-        fellBack = true;
-      }
-    }
-    if (params.quality && this.itemQuality.style.display !== 'none') {
-      if (Array.from(this.selectQuality.options).some((o) => o.value === params.quality)) {
-        this.selectQuality.value = params.quality;
-      } else {
-        fellBack = true;
-      }
-    }
-    if (params.seed !== null && params.seed !== undefined
-        && this.itemSeed.style.display !== 'none') {
-      const seed = Number(params.seed);
-      const minimum = this.inputSeed.hasAttribute('min')
-        ? Number(this.inputSeed.min)
-        : Number.NEGATIVE_INFINITY;
-      const maximum = this.inputSeed.hasAttribute('max')
-        ? Number(this.inputSeed.max)
-        : Number.POSITIVE_INFINITY;
-      if (Number.isSafeInteger(seed) && seed >= minimum && seed <= maximum) {
-        this.inputSeed.value = String(seed);
-      } else {
-        this.inputSeed.value = '';
-        fellBack = true;
-      }
-    }
+    if (this.settingsEditor.render(fields, overrides)) fellBack = true;
     if (params.image_count) {
       const maximum = Number(this.inputImageCount.max) || 10;
       const count = Math.min(Math.max(Number(params.image_count) || 1, 1), maximum);
       this.inputImageCount.value = String(count);
       if (count !== Number(params.image_count)) fellBack = true;
     }
+    if (Object.keys(overrides).length) this.moreParamsExpanded = true;
+    this.syncMoreParamsPanel(this.settingsEditor.controls.size > 0);
+    this.updateGenerationConditions();
+    this.updateReferenceCounter();
+    this.rememberParameters();
     this.promptInput.focus();
-    if (fellBack) {
-      Toast.warning('已回填可用参数；原供应商、模型或画质不可用，已回退当前默认值');
-    } else {
-      Toast.info('已回填历史任务参数');
-    }
+    if (fellBack) Toast.warning('已回填可用参数；部分历史设置已失效或不受当前模型支持');
+    else Toast.info('已回填历史任务参数');
   }
 
   async submit() {
@@ -1947,31 +2221,31 @@ class WorkbenchView {
     }
 
     const selectedModel = this.selectedModel();
-    let seed = null;
-    if (this.itemSeed.style.display !== 'none' && this.inputSeed.value.trim()) {
-      seed = Number(this.inputSeed.value);
-      const minimum = this.inputSeed.hasAttribute('min')
-        ? Number(this.inputSeed.min)
-        : Number.NEGATIVE_INFINITY;
-      const maximum = this.inputSeed.hasAttribute('max')
-        ? Number(this.inputSeed.max)
-        : Number.POSITIVE_INFINITY;
-      if (!Number.isSafeInteger(seed) || seed < minimum || seed > maximum) {
-        Toast.warning('随机种子必须是有效范围内的整数');
-        this.inputSeed.focus();
-        return;
-      }
+    const imageCount = Number(this.inputImageCount.value);
+    const maximumCount = Number(this.inputImageCount.max) || 10;
+    if (!Number.isSafeInteger(imageCount) || imageCount < 1 || imageCount > maximumCount) {
+      Toast.warning(`单任务张数必须是 1 到 ${maximumCount} 的整数`);
+      this.inputImageCount.focus();
+      return;
     }
+    let generationSettings;
+    try {
+      generationSettings = this.settingsEditor.overrides();
+    } catch (error) {
+      this.moreParamsExpanded = true;
+      this.syncMoreParamsPanel(true);
+      Toast.warning(error.message);
+      return;
+    }
+    this.rememberParameters();
     const payload = {
       provider: selectedModel?.provider || null,
       model: selectedModel?.model || null,
       candidate_id: selectedModel?.candidate_id || null,
-      resolution: this.selectResolution.value || null,
-      aspect_ratio: this.selectAspectRatio.value || null,
-      quality: this.itemQuality.style.display !== 'none' ? this.selectQuality.value : null,
-      seed,
-      negative_prompt: this.itemNegativePrompt.style.display !== 'none' ? this.inputNegativePrompt.value.trim() || null : null,
-      image_count: parseInt(this.inputImageCount.value, 10) || 1,
+      resolution: document.getElementById('item-resolution').style.display !== 'none' ? this.selectResolution.value || null : null,
+      aspect_ratio: document.getElementById('item-aspect-ratio').style.display !== 'none' ? this.selectAspectRatio.value || null : null,
+      generation_settings: generationSettings,
+      image_count: imageCount,
       reference_names: referenceNames,
       upload_names: uploadNames
     };
@@ -2209,6 +2483,8 @@ class ProgressView {
     header.appendChild(headerRight);
     card.appendChild(header);
     card.appendChild(SafeDOM.requesterMeta(record));
+    const references = SafeDOM.referenceStrip(record, this.onSetReference);
+    if (references) card.appendChild(references);
 
     // 提示词区域
     if (record.prompt) {
@@ -2218,7 +2494,7 @@ class ProgressView {
 
     // 元数据行
     const metaRow = SafeDOM.el('div', { className: 'job-meta-row' });
-    const p = record.params || {};
+    const p = { ...record.params, ...SafeDOM.displayRoute(record) };
     if (p.provider) metaRow.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [`供应商: ${p.provider}`]));
     if (p.model) metaRow.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [`模型: ${p.model}`]));
     if (p.resolution) metaRow.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [`分辨率: ${p.resolution}`]));
@@ -2293,7 +2569,7 @@ class ProgressView {
       className: 'comic-btn comic-btn--sm comic-btn--outline',
       onClick: () => {
         if (typeof this.onRefillRequest === 'function') {
-          this.onRefillRequest(record.prompt, record.params);
+          this.onRefillRequest(record.prompt, record.params, record);
         }
       }
     });
@@ -2418,6 +2694,9 @@ class ProgressView {
       cHeader.appendChild(cName);
       cHeader.appendChild(cPill);
       childItem.appendChild(cHeader);
+      childItem.appendChild(SafeDOM.routeMeta(child));
+      const references = SafeDOM.referenceStrip(child, this.onSetReference);
+      if (references) childItem.appendChild(references);
 
       if (child.prompt) {
         childItem.appendChild(SafeDOM.el('div', { className: 'job-prompt-box' }, [child.prompt]));
@@ -2437,6 +2716,9 @@ class ProgressView {
               const previewItems = safeChildImages.map((name) => ({
                 imageName: name,
                 prompt: child.prompt,
+                ...SafeDOM.displayRoute(child),
+                resolution: child.params?.resolution,
+                aspect_ratio: child.params?.aspect_ratio,
                 duration_ms: child.duration_ms,
                 source: child.source,
                 requester: child.requester
@@ -2471,7 +2753,7 @@ class ProgressView {
       const childReuseBtn = SafeDOM.el('button', {
         type: 'button',
         className: 'comic-btn comic-btn--sm comic-btn--outline',
-        onClick: () => this.onRefillRequest?.(child.prompt, child.params)
+        onClick: () => this.onRefillRequest?.(child.prompt, child.params, child)
       }, ['再次生成']);
       childActions.appendChild(childReuseBtn);
       childItem.appendChild(childActions);
@@ -2741,8 +3023,7 @@ class GalleryView {
         const previewItems = safeImages.map((name) => ({
           imageName: name,
           prompt: item.prompt,
-          provider: item.params?.provider,
-          model: item.params?.model,
+          ...SafeDOM.displayRoute(item),
           resolution: item.params?.resolution,
           aspect_ratio: item.params?.aspect_ratio,
           duration_ms: item.duration_ms,
@@ -2776,6 +3057,9 @@ class GalleryView {
     info.appendChild(promptEl);
     info.appendChild(meta);
     info.appendChild(SafeDOM.requesterMeta(item));
+    info.appendChild(SafeDOM.routeMeta(item));
+    const references = SafeDOM.referenceStrip(item, this.onSetReference);
+    if (references) info.appendChild(references);
     card.appendChild(info);
 
     // 悬停操作工具栏
@@ -2830,7 +3114,7 @@ class GalleryView {
       onClick: (e) => {
         e.stopPropagation();
         if (typeof this.onRefillRequest === 'function') {
-          this.onRefillRequest(item.prompt, item.params);
+          this.onRefillRequest(item.prompt, item.params, item);
         }
       }
     });
@@ -2953,6 +3237,7 @@ class StudioApp {
     this.unsubscribeContext = null;
     this.navCleanups = [];
     this.destroyed = false;
+    this.refillRequestId = 0;
     this.handleUnload = () => {
       void this.destroy();
     };
@@ -2992,10 +3277,7 @@ class StudioApp {
 
     this.progress = new ProgressView(
       this.store,
-      (prompt, params) => {
-        this.switchTab('workbench');
-        this.workbench.refillParameters(prompt, params);
-      },
+      (_prompt, _params, record) => this.refillJob(record),
       (imageName) => {
         const added = this.workbench.addGalleryReference(imageName);
         if (added) this.switchTab('workbench');
@@ -3004,10 +3286,7 @@ class StudioApp {
 
     this.gallery = new GalleryView(
       this.store,
-      (prompt, params) => {
-        this.switchTab('workbench');
-        this.workbench.refillParameters(prompt, params);
-      },
+      (_prompt, _params, record) => this.refillJob(record),
       (imageName) => {
         const added = this.workbench.addGalleryReference(imageName);
         if (added) {
@@ -3038,6 +3317,26 @@ class StudioApp {
     await this.workbench.loadCapabilities();
     await this.sse.start();
 
+  }
+
+  async refillJob(record) {
+    const requestId = ++this.refillRequestId;
+    try {
+      const detail = await BridgeClient.get(`webui/history/${encodeURIComponent(record.job_id)}`);
+      if (requestId !== this.refillRequestId || this.destroyed) return;
+      this.switchTab('workbench');
+      this.workbench.refillParameters(detail.prompt, detail.params);
+      const available = detail.available_reference_names || [];
+      const added = this.workbench.restoreReferences(available);
+      const missing = (detail.missing_reference_names || []).length;
+      const excess = available.length - added;
+      const notices = [];
+      if (missing) notices.push(`${missing} 张历史参考图已清理`);
+      if (excess) notices.push(`${excess} 张参考图超出当前模型上限`);
+      if (notices.length) Toast.warning(`${notices.join('；')}，已跳过`);
+    } catch (error) {
+      if (requestId === this.refillRequestId && !this.destroyed) ErrorFeedback.show(error, '读取历史任务失败');
+    }
   }
 
   initThemeSync() {

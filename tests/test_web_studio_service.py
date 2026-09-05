@@ -106,7 +106,10 @@ class _SequenceClient:
 
 
 @pytest.mark.asyncio
-async def test_single_generation_loops_until_target(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("duplicate_refs", [False, True])
+async def test_single_generation_loops_until_target(
+    tmp_path, monkeypatch, duplicate_refs
+) -> None:
     import tl.web_studio_service as studio_module
 
     messages: list[str] = []
@@ -121,7 +124,17 @@ async def test_single_generation_loops_until_target(tmp_path, monkeypatch) -> No
         ),
     )
     paths = [_png(tmp_path / f"{index}.png", index) for index in range(3)]
-    client = _SequenceClient([([], [str(path)], None, None) for path in paths])
+    client = _SequenceClient(
+        [
+            (
+                [str(paths[0]), str(path), str(path)] if duplicate_refs else [],
+                [str(path)],
+                None,
+                None,
+            )
+            for path in paths
+        ]
+    )
     tracker = GenerationTracker(tmp_path, 20)
     service = WebStudioService(client, tracker, _config(), tmp_path)
 
@@ -325,6 +338,8 @@ def test_capabilities_returns_flat_candidate_models(tmp_path) -> None:
             "id",
             "candidate_id",
             "max_reference_images",
+            "native_max_reference_images",
+            "generation_fields",
             "provider",
             "provider_display",
             "model",
@@ -408,12 +423,69 @@ async def test_generation_passes_seed_to_request_settings(
             "provider": "modelscope",
             "model": "Qwen/Qwen-Image",
             "seed": 42,
+            "negative_prompt": "blurry",
         }
     )
-    await _wait_terminal(tracker, accepted["job_id"])
+    record = await _wait_terminal(tracker, accepted["job_id"])
 
     assert client.seeds == [42]
     assert client.provider_settings == [{"seed": 42}]
+    assert record["params"]["seed"] == 42
+    assert record["params"]["negative_prompt"] == "blurry"
+    await service.close()
+    await tracker.close()
+    restored = GenerationTracker(tmp_path, 20)
+    restored_service = WebStudioService(None, restored, service.config, tmp_path)
+    reused, warning = restored_service.validate_payload(
+        {"reuse_job_id": accepted["job_id"]}
+    )
+    assert warning is None
+    assert reused["seed"] == 42
+    assert reused["negative_prompt"] == "blurry"
+    await restored.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("supports_advanced", [False, True])
+async def test_reuse_missing_route_keeps_only_supported_inherited_parameters(
+    tmp_path, supports_advanced
+) -> None:
+    tracker = GenerationTracker(tmp_path, 20)
+    record = await tracker.begin(
+        source="webui",
+        prompt="draw",
+        requester={},
+        params={
+            "provider": "modelscope",
+            "model": "Qwen/Qwen-Image",
+            "candidate_id": "removed",
+            "seed": 42,
+            "negative_prompt": "blurry",
+        },
+    )
+    await tracker.complete(
+        record["job_id"], image_files=[], text_content=None, stats={}
+    )
+    config = _config()
+    if supports_advanced:
+        config.provider_candidates = [
+            ProviderCandidate(
+                id="replacement",
+                api_type="modelscope",
+                settings={"model": "Qwen/Qwen-Image", "api_keys": ["test"]},
+            )
+        ]
+    service = WebStudioService(None, tracker, config, tmp_path)
+    reused, warning = service.validate_payload({"reuse_job_id": record["job_id"]})
+    assert warning == "原记录的供应商或模型已不可用，已回退默认配置"
+    assert reused["candidate_id"] == config.provider_candidates[0].id
+    assert reused["seed"] == (42 if supports_advanced else None)
+    assert reused["negative_prompt"] == ("blurry" if supports_advanced else None)
+    if not supports_advanced:
+        for explicit in ({"seed": 42}, {"negative_prompt": "explicit"}):
+            with pytest.raises(StudioServiceError, match="没有匹配本次请求能力"):
+                service.validate_payload({"reuse_job_id": record["job_id"], **explicit})
+    await tracker.close()
 
 
 def test_seed_overrides_candidate_provider_settings_after_replace() -> None:
@@ -483,35 +555,50 @@ async def test_gallery_image_base64_returns_original_bytes(
     payload = await service.gallery_image_base64("original.png")
 
     assert payload["mime"] == "image/png"
+    assert payload["preview"] is False
     assert base64.b64decode(payload["b64"]) == source.read_bytes()
 
 
 @pytest.mark.asyncio
-async def test_gallery_image_base64_rejects_oversized_original(
-    tmp_path, monkeypatch
+async def test_gallery_image_base64_compresses_large_preview_keeps_original(
+    tmp_path,
 ) -> None:
-    monkeypatch.setattr(asyncio, "to_thread", _inline_to_thread)
     gallery_dir = tmp_path / "gallery"
     gallery_dir.mkdir()
-    (gallery_dir / "oversized.jpg").write_bytes(
-        b"\xff\xd8\xff" + b"x" * (6 * 1024 * 1024)
-    )
-
-    def unexpected_encode(*args):
-        pytest.fail("超限原图不应进入 base64 编码")
-
-    monkeypatch.setattr(base64, "b64encode", unexpected_encode)
+    source = gallery_dir / "large.png"
+    rng = np.random.default_rng(102)
+    pixels = rng.integers(0, 256, size=(1800, 2400, 3), dtype=np.uint8)
+    assert cv2.imwrite(str(source), pixels)
+    original = source.read_bytes()
+    assert len(original) > 6 * 1024 * 1024
     service = WebStudioService(
-        None,
-        GenerationTracker(tmp_path, 20),
-        _config(),
-        tmp_path,
+        None, GenerationTracker(tmp_path, 20), _config(), tmp_path
     )
 
-    with pytest.raises(StudioServiceError) as exc_info:
-        await service.gallery_image_base64("oversized.jpg")
+    payload = await service.gallery_image_base64(source.name)
 
-    assert exc_info.value.status_code == 413
+    assert payload["preview"] is True
+    assert payload["mime"] == "image/jpeg"
+    assert len(payload["b64"]) <= 8 * 1024 * 1024
+    preview = cv2.imdecode(
+        np.frombuffer(base64.b64decode(payload["b64"]), dtype=np.uint8),
+        cv2.IMREAD_COLOR,
+    )
+    assert preview.shape[:2] == (1536, 2048)
+    assert service.gallery_file(source.name).read_bytes() == original
+    assert sorted(path.name for path in gallery_dir.iterdir()) == [source.name]
+
+
+@pytest.mark.asyncio
+async def test_large_preview_rejects_undecodable_image(tmp_path) -> None:
+    service = WebStudioService(
+        None, GenerationTracker(tmp_path, 20), _config(), tmp_path
+    )
+    service.gallery_dir.mkdir()
+    (service.gallery_dir / "invalid.png").write_bytes(b"x" * (6 * 1024 * 1024 + 1))
+    with pytest.raises(StudioServiceError) as error:
+        await service.gallery_image_base64("invalid.png")
+    assert error.value.status_code == 422
 
 
 def test_import_legacy_images_moves_records_and_dedupes(tmp_path) -> None:

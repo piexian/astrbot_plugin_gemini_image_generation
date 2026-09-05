@@ -20,15 +20,27 @@ import aiohttp
 import cv2
 import numpy as np
 from astrbot.api import logger
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from .api_types import ApiRequestConfig
-from .generation_tracker import TERMINAL_STATUSES, GenerationTracker, _timestamp
+from .generation_tracker import (
+    TERMINAL_STATUSES,
+    GenerationTracker,
+    ReferenceImageUnavailableError,
+    _timestamp,
+)
 from .provider_capabilities import (
     candidate_capability,
     candidate_reference_limit,
     select_candidates,
 )
+from .provider_settings import candidate_with_overrides
+from .studio_parameters import (
+    generation_fields,
+    native_reference_limit,
+    validate_generation_settings,
+)
+from .studio_preferences import StudioPreferencesStore
 
 _SAFE_FILE_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 _REMOTE_IMAGE_MAX_BYTES = 20 * 1024 * 1024
@@ -118,6 +130,7 @@ class WebStudioService:
         self.tracker = tracker
         self.config = config
         self.data_dir = Path(data_dir)
+        self.preferences = StudioPreferencesStore(self.data_dir)
         self.gallery_dir = self.data_dir / "gallery"
         self.upload_dir = self.data_dir / "webui_uploads"
         self._api_semaphore = asyncio.Semaphore(
@@ -191,6 +204,9 @@ class WebStudioService:
                 response = await self._start_batch(normalized, requester)
             else:
                 response = await self._start_single(normalized, requester)
+        except ReferenceImageUnavailableError as exc:
+            self._admitted_jobs = max(self._admitted_jobs - 1, 0)
+            raise StudioServiceError(str(exc), status_code=404) from exc
         except Exception:
             self._admitted_jobs = max(self._admitted_jobs - 1, 0)
             raise
@@ -218,6 +234,7 @@ class WebStudioService:
             prompt=payload["prompt"],
             params=self._history_params(payload),
             requester=requester,
+            reference_names=payload["reference_names"],
             requested_images=payload["image_count"],
         )
         self._attach(record["job_id"], self._run_single(record["job_id"], payload))
@@ -235,6 +252,7 @@ class WebStudioService:
             prompt="",
             params=self._history_params(payload),
             requester=requester,
+            reference_names=payload["reference_names"],
             requested_images=requested_images,
         )
         child_jobs: list[tuple[str, dict[str, Any]]] = []
@@ -245,6 +263,7 @@ class WebStudioService:
                 prompt=item["prompt"],
                 params=self._history_params(child_payload),
                 requester=requester,
+                reference_names=payload["reference_names"],
                 parent_job_id=parent["job_id"],
                 item_name=item["name"],
                 requested_images=item["image_count"],
@@ -269,6 +288,9 @@ class WebStudioService:
             "candidate_id": payload.get("candidate_id"),
             "image_count": payload.get("image_count", 1),
             "quality": payload.get("quality"),
+            "seed": payload.get("seed"),
+            "negative_prompt": payload.get("negative_prompt"),
+            "generation_settings": payload.get("generation_settings") or {},
         }
 
     def validate_payload(
@@ -319,6 +341,24 @@ class WebStudioService:
             model=normalized["model"],
             candidate_id=normalized["candidate_id"],
         )
+        raw_settings = source.get("generation_settings", {})
+        if not isinstance(raw_settings, dict):
+            raise StudioServiceError("临时生成参数必须是 JSON 对象")
+        normalized["generation_settings"] = {}
+        if raw_settings:
+            if not normalized["candidate_id"] or len(route_candidates) != 1:
+                raise StudioServiceError("临时生成参数必须指定有效的供应商候选")
+            try:
+                normalized["generation_settings"] = validate_generation_settings(
+                    route_candidates[0], raw_settings
+                )
+            except ValueError as exc:
+                raise StudioServiceError(str(exc)) from exc
+            route_candidates = [
+                candidate_with_overrides(
+                    route_candidates[0], normalized["generation_settings"]
+                )
+            ]
         maximum_refs = max(
             (candidate_reference_limit(candidate) for candidate in route_candidates),
             default=0,
@@ -339,7 +379,7 @@ class WebStudioService:
                 source.get("prompt"), name="prompt", limit=2000, required=True
             )
 
-        self._validate_capabilities(normalized)
+        self._validate_capabilities(normalized, route_candidates)
         return normalized, warning
 
     def _apply_reuse(
@@ -364,6 +404,7 @@ class WebStudioService:
             if key != "reuse_job_id":
                 merged[key] = value
 
+        warning = None
         reused_route = not any(
             key in payload for key in ("provider", "model", "candidate_id")
         )
@@ -382,8 +423,91 @@ class WebStudioService:
                 merged["provider"] = None
                 merged["model"] = None
                 merged["candidate_id"] = None
-                return merged, "原记录的供应商或模型已不可用，已回退默认配置"
-        return merged, None
+                fallback_candidates = select_candidates(
+                    getattr(self.config, "provider_candidates", []) or [],
+                    required_parameters={
+                        field
+                        for field in ("seed", "negative_prompt", "quality")
+                        if field in payload and payload[field] not in (None, "")
+                    },
+                )
+                # 继承的高级参数不能阻断默认回退；显式传入的约束仍交给校验。
+                for field in ("seed", "negative_prompt"):
+                    value = merged.get(field)
+                    if field in payload or value is None:
+                        continue
+                    compatible = select_candidates(
+                        fallback_candidates, required_parameters={field}
+                    )
+                    if field == "seed":
+                        compatible = [
+                            candidate
+                            for candidate in compatible
+                            if all(
+                                not isinstance(bound, int)
+                                or (
+                                    value >= bound
+                                    if key == "minimum"
+                                    else value <= bound
+                                )
+                                for key, bound in candidate_capability(candidate)
+                                .get("parameters", {})
+                                .get("seed", {})
+                                .items()
+                                if key in {"minimum", "maximum"}
+                            )
+                        ]
+                    if compatible:
+                        fallback_candidates = compatible
+                    else:
+                        merged[field] = None
+                warning = "原记录的供应商或模型已不可用，已回退默认配置"
+        if "generation_settings" not in payload and merged.get("generation_settings"):
+            candidates = select_candidates(
+                getattr(self.config, "provider_candidates", []) or [],
+                provider=merged.get("provider"),
+                model=merged.get("model"),
+                candidate_id=merged.get("candidate_id"),
+            )
+            inherited = merged["generation_settings"]
+            retained = {}
+            if candidates:
+                for name, value in inherited.items():
+                    try:
+                        retained.update(
+                            validate_generation_settings(candidates[0], {name: value})
+                        )
+                    except ValueError:
+                        continue
+                if retained:
+                    merged["candidate_id"] = candidates[0].id
+            merged["generation_settings"] = retained
+            if retained != inherited and not warning:
+                warning = "部分历史生成参数已失效，已使用当前供应商默认值"
+        if "reference_names" not in payload:
+            references = self.reference_status(record.get("reference_names") or [])
+            merged["reference_names"] = references["available_reference_names"]
+            missing = len(references["missing_reference_names"])
+            if missing:
+                notice = f"{missing} 张历史参考图已清理，已跳过"
+                warning = f"{warning}；{notice}" if warning else notice
+        return merged, warning
+
+    def reference_status(self, names: list[str]) -> dict[str, list[str]]:
+        available = []
+        missing = []
+        with self.tracker.gallery_lock:
+            for name in dict.fromkeys(self.tracker._clean_images(names)):
+                try:
+                    self.gallery_file(name)
+                except StudioServiceError:
+                    missing.append(name)
+                else:
+                    available.append(name)
+        return {
+            "available_reference_names": available,
+            "missing_reference_names": missing,
+        }
 
     @staticmethod
     def _optional_text(value: Any, name: str, *, limit: int = 128) -> str | None:
@@ -480,9 +604,10 @@ class WebStudioService:
             raise StudioServiceError(f"批量图片总预算不能超过 {budget}")
         return items
 
-    def _validate_capabilities(self, payload: dict[str, Any]) -> None:
-        configured = list(getattr(self.config, "provider_candidates", []) or [])
-        if not configured:
+    def _validate_capabilities(
+        self, payload: dict[str, Any], configured: list[Any]
+    ) -> None:
+        if not getattr(self.config, "provider_candidates", []):
             raise StudioServiceError("没有可用的供应商配置", status_code=503)
         required = set()
         if payload.get("negative_prompt"):
@@ -670,6 +795,7 @@ class WebStudioService:
                     negative_prompt=payload.get("negative_prompt"),
                     quality=payload.get("quality"),
                     seed=payload.get("seed"),
+                    generation_settings=payload.get("generation_settings") or None,
                     image_count=remaining,
                 )
                 async with self._api_semaphore:
@@ -686,11 +812,12 @@ class WebStudioService:
                         ),
                     )
                 image_urls, image_paths, text_content, _signature = result
-                returned = [
+                # 部分供应商会把同一本地文件同时放入两个列表，计数前先去重。
+                returned = dict.fromkeys(
                     str(item)
                     for item in (image_urls or []) + (image_paths or [])
                     if item
-                ]
+                )
                 new_images = [item for item in returned if item not in collected]
                 if not new_images:
                     error = "供应商未返回新的图片"
@@ -1043,6 +1170,8 @@ class WebStudioService:
     def _enforce_gallery_quota_files(
         self, maximum: int, records: list[dict[str, Any]], protected: set[str]
     ) -> bool:
+        # 在线程持有 gallery_lock 时读取最新租用关系，避免旧快照漏掉新任务。
+        protected.update(self.tracker.protected_reference_names())
         files = {
             path.name: path
             for path in self.gallery_dir.iterdir()
@@ -1278,7 +1407,7 @@ class WebStudioService:
         name: str,
         *,
         thumbnail: bool = False,
-    ) -> dict[str, str]:
+    ) -> dict[str, Any]:
         async with self._gallery_lock:
             payload = await asyncio.to_thread(
                 self._gallery_image_base64_sync, name, thumbnail
@@ -1291,14 +1420,15 @@ class WebStudioService:
         self,
         name: str,
         thumbnail: bool,
-    ) -> dict[str, str]:
+    ) -> dict[str, Any]:
         with self.tracker.gallery_lock:
             return self._gallery_image_base64_locked(name, thumbnail)
 
     def _gallery_image_base64_locked(
         self, name: str, thumbnail: bool
-    ) -> dict[str, str]:
+    ) -> dict[str, Any]:
         path = self.gallery_file(name)
+        preview = False
         if thumbnail:
             raw = self._thumbnail_bytes(path)
             mime_type = "image/jpeg"
@@ -1316,13 +1446,44 @@ class WebStudioService:
                     status_code=500,
                 ) from exc
             mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            if ((len(raw) + 2) // 3) * 4 > limit:
+                raw = self._preview_bytes(path)
+                mime_type = "image/jpeg"
+                preview = True
 
         if ((len(raw) + 2) // 3) * 4 > limit:
             raise StudioServiceError(error_message, status_code=413)
         encoded = base64.b64encode(raw).decode("ascii")
         if len(encoded) > limit:
             raise StudioServiceError(error_message, status_code=413)
-        return {"mime": mime_type, "b64": encoded}
+        return {"mime": mime_type, "b64": encoded, "preview": preview}
+
+    @staticmethod
+    def _preview_bytes(source: Path) -> bytes:
+        """在内存中压缩大图；下载与归档始终使用原文件。"""
+        try:
+            with Image.open(source) as original:
+                image = ImageOps.exif_transpose(original)
+                image.thumbnail((2048, 2048))
+                if "A" in image.getbands() or "transparency" in image.info:
+                    rgba = image.convert("RGBA")
+                    image = Image.new("RGB", rgba.size, "white")
+                    image.paste(rgba, mask=rgba.getchannel("A"))
+                else:
+                    image = image.convert("RGB")
+                # 少数高细节图片仍可能超限，继续缩小到可传输尺寸。
+                for edge in (2048, 1536, 1024, 512):
+                    image.thumbnail((edge, edge))
+                    output = io.BytesIO()
+                    image.save(output, format="JPEG", quality=85)
+                    data = output.getvalue()
+                    if ((len(data) + 2) // 3) * 4 <= _ORIGINAL_B64_MAX_BYTES:
+                        return data
+        except (OSError, ValueError, Image.DecompressionBombError) as exc:
+            raise StudioServiceError(
+                "图片内容无法生成压缩预览", status_code=422
+            ) from exc
+        raise StudioServiceError("压缩预览超过显示限制，请下载查看", status_code=413)
 
     def _thumbnail_bytes(self, source: Path) -> bytes:
         try:
@@ -1426,6 +1587,8 @@ class WebStudioService:
                         getattr(candidate, "id", "") or f"candidate-{index}"
                     ),
                     "max_reference_images": candidate_reference_limit(candidate),
+                    "native_max_reference_images": native_reference_limit(candidate),
+                    "generation_fields": generation_fields(candidate),
                     "provider": name,
                     "provider_display": _DISPLAY_NAMES.get(name, name),
                     "model": str(getattr(candidate, "model", "") or ""),

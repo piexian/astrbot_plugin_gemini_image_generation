@@ -31,6 +31,7 @@ class ApiRequestConfig:
     suppress_resolution: bool = False  # 显式不发送分辨率/比例参数
     image_input_mode: str = "force_base64"  # 参考图统一转 base64
     provider_settings: dict | None = None  # 当前候选供应商的请求级配置
+    generation_settings: dict | None = None  # 已校验的 Studio 单次生成参数覆盖
     proxy: str | None = None  # 当前请求使用的代理
     requested_provider: str | None = None  # 显式供应商选择
     requested_model: str | None = None  # 显式原始模型或别名选择

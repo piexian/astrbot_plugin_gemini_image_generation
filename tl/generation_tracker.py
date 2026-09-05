@@ -19,6 +19,8 @@ from typing import Any
 
 from astrbot.api import logger
 
+from .studio_parameters import clean_history_settings
+
 TERMINAL_STATUSES = {
     "succeeded",
     "partial_success",
@@ -35,6 +37,9 @@ _PARAM_KEYS = (
     "candidate_id",
     "image_count",
     "quality",
+    "seed",
+    "negative_prompt",
+    "generation_settings",
 )
 
 
@@ -166,6 +171,10 @@ def requester_from_event(event: Any) -> dict[str, str]:
     }
 
 
+class ReferenceImageUnavailableError(ValueError):
+    """输入参考图已被删除或正在清理，任务尚未创建。"""
+
+
 class GenerationTracker:
     """维护可恢复的生成记录，并向多个 SSE 订阅者广播快照。"""
 
@@ -182,6 +191,8 @@ class GenerationTracker:
         self.max_records = max(int(max_records), 1)
         self.enabled = bool(enabled)
         self.gallery_lock = threading.RLock()
+        self._reference_leases: dict[str, set[str]] = {}
+        self._pending_image_deletions: set[str] = set()
         self._lock = asyncio.Lock()
         self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
         self._closed = False
@@ -290,6 +301,18 @@ class GenerationTracker:
     def _group_id(record: dict[str, Any]) -> str:
         return str(record.get("parent_job_id") or record.get("job_id") or "")
 
+    def protected_reference_names(self) -> set[str]:
+        with self.gallery_lock:
+            return (
+                set().union(*self._reference_leases.values())
+                if self._reference_leases
+                else set()
+            )
+
+    def _release_reference_lease(self, job_id: str) -> None:
+        with self.gallery_lock:
+            self._reference_leases.pop(job_id, None)
+
     def _prune_locked(self) -> list[dict[str, Any]]:
         removed: list[dict[str, Any]] = []
         if len(self._jobs) <= self.max_records:
@@ -303,10 +326,15 @@ class GenerationTracker:
             groups.values(),
             key=lambda group: str(group[0].get("created_at") or ""),
         )
+        protected = self.protected_reference_names()
         for group in ordered_groups:
             if len(self._jobs) <= self.max_records:
                 break
             if any(record.get("status") == "running" for record in group):
+                continue
+            if protected.intersection(
+                name for record in group for name in record.get("images") or []
+            ):
                 continue
             for record in group:
                 removed_record = self._jobs.pop(str(record.get("job_id")), None)
@@ -334,6 +362,14 @@ class GenerationTracker:
         ):
             value = cleaned.get(key)
             cleaned[key] = _bounded_text(value, 128) or None
+        seed = cleaned["seed"]
+        cleaned["seed"] = seed if type(seed) is int else None
+        cleaned["negative_prompt"] = (
+            _bounded_text(cleaned["negative_prompt"], 500) or None
+        )
+        cleaned["generation_settings"] = clean_history_settings(
+            cleaned["generation_settings"]
+        )
         return cleaned
 
     @staticmethod
@@ -380,6 +416,7 @@ class GenerationTracker:
         parent_job_id: str | None = None,
         item_name: str | None = None,
         requested_images: int = 1,
+        reference_names: list[str] | None = None,
     ) -> dict[str, Any]:
         if self._closed:
             raise RuntimeError("生成追踪器已关闭")
@@ -394,6 +431,9 @@ class GenerationTracker:
                 "prompt": _bounded_text(prompt, 2000),
                 "params": self._clean_params(params),
                 "requester": self._clean_requester(requester),
+                "reference_names": list(
+                    dict.fromkeys(self._clean_images(reference_names))
+                ),
                 "created_at": _timestamp(),
                 "finished_at": None,
                 "duration_ms": 0,
@@ -404,7 +444,20 @@ class GenerationTracker:
                 "error": None,
                 "stats": self._clean_stats({}),
             }
-            self._jobs[job_id] = record
+            with self.gallery_lock:
+                names = set(record["reference_names"])
+                root = self.gallery_dir.resolve()
+                if names & self._pending_image_deletions or any(
+                    (self.gallery_dir / name).resolve().parent != root
+                    or not (self.gallery_dir / name).is_file()
+                    for name in names
+                ):
+                    raise ReferenceImageUnavailableError(
+                        "参考图片不存在或正在清理，请重新选择"
+                    )
+                if names:
+                    self._reference_leases[job_id] = names
+                self._jobs[job_id] = record
             self._prune_locked()
             await self._save()
             self._broadcast(record)
@@ -454,6 +507,7 @@ class GenerationTracker:
                 finished_at = str(record.get("finished_at") or _timestamp())
                 record["finished_at"] = finished_at
                 record["duration_ms"] = self._duration_ms(record, finished_at)
+                self._release_reference_lease(job_id)
             self._prune_locked()
             await self._save()
             self._broadcast(record)
@@ -488,6 +542,7 @@ class GenerationTracker:
                     "stats": self._clean_stats(stats),
                 }
             )
+            self._release_reference_lease(job_id)
             self._prune_locked()
             await self._save()
             self._broadcast(record)
@@ -512,6 +567,7 @@ class GenerationTracker:
                     "error": _bounded_text(error, 1000) or "生成失败",
                 }
             )
+            self._release_reference_lease(job_id)
             self._prune_locked()
             await self._save()
             self._broadcast(record)
@@ -564,6 +620,8 @@ class GenerationTracker:
         user_id = _bounded_text(user_id, 128)
         records = []
         for record in self._jobs.values():
+            if record.get("status") == "failed":
+                continue
             requester = record.get("requester") or {}
             if source and record.get("source") != source:
                 continue
@@ -624,11 +682,26 @@ class GenerationTracker:
                 if any(record.get("status") == "running" for record in targets):
                     failed.append({"job_id": job_id, "error": "运行中的任务不能删除"})
                     continue
-                for record in targets:
-                    record_id = str(record.get("job_id"))
-                    self._jobs.pop(record_id, None)
-                    deleted.append(record_id)
-                    files.update(str(name) for name in record.get("images") or [])
+                with self.gallery_lock:
+                    output_names = {
+                        str(name)
+                        for record in targets
+                        for name in record.get("images") or []
+                    }
+                    if output_names & self.protected_reference_names():
+                        failed.append(
+                            {
+                                "job_id": job_id,
+                                "error": "图片正被运行中的任务用作参考图，暂时不能删除",
+                            }
+                        )
+                        continue
+                    self._pending_image_deletions.update(output_names)
+                    for record in targets:
+                        record_id = str(record.get("job_id"))
+                        self._jobs.pop(record_id, None)
+                        deleted.append(record_id)
+                    files.update(output_names)
             await self._save()
             if deleted:
                 self._broadcast_event({"type": "resync"})
@@ -648,11 +721,15 @@ class GenerationTracker:
 
     def _delete_gallery_files(self, names: set[str]) -> None:
         with self.gallery_lock:
-            self._delete_gallery_files_locked(names)
+            try:
+                self._delete_gallery_files_locked(names)
+            finally:
+                self._pending_image_deletions.difference_update(names)
 
     def _delete_gallery_files_locked(self, names: set[str]) -> None:
         gallery_root = self.gallery_dir.resolve()
-        for name in names:
+        protected = self.protected_reference_names()
+        for name in names - protected:
             if not _SAFE_FILE_NAME.fullmatch(name):
                 continue
             target = (self.gallery_dir / name).resolve()
@@ -714,6 +791,8 @@ class GenerationTracker:
                 return
             self._closed = True
             changed = self._mark_running_interrupted()
+            with self.gallery_lock:
+                self._reference_leases.clear()
             await self._save()
             for record in changed:
                 self._broadcast(record)

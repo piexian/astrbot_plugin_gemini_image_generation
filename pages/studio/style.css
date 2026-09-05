@@ -622,6 +622,71 @@ code, kbd, samp, pre, .mono {
   margin-top: 20px;
 }
 
+.provider-parameters-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.provider-parameters-toolbar .field-hint {
+  flex: 1;
+  min-width: 200px;
+  margin: 0;
+}
+
+.provider-parameters-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  align-items: start;
+  gap: 12px;
+}
+
+.provider-parameter {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--ink-faint);
+  background: var(--surface-alt);
+}
+
+.provider-parameter-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.provider-parameter-key {
+  color: var(--ink-muted);
+  font: 11px ui-monospace, monospace;
+  overflow-wrap: anywhere;
+}
+
+.provider-parameter textarea {
+  resize: vertical;
+}
+
+.provider-parameter-help {
+  color: var(--ink-muted);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.provider-parameter-help summary {
+  cursor: pointer;
+}
+
+.provider-parameter-help p {
+  margin-top: 8px;
+  white-space: pre-line;
+}
+
 .advanced-params-panel :is(.comic-input, .comic-select) {
   background-color: var(--surface);
 }
@@ -1364,6 +1429,44 @@ code, kbd, samp, pre, .mono {
   font-size: 12px;
 }
 
+.reference-lineage {
+  display: grid;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--ink-faint);
+}
+
+.reference-lineage-label {
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
+.reference-lineage-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.reference-lineage-item {
+  width: 72px;
+  height: 72px;
+  padding: 0;
+  border: 1px solid var(--ink-faint);
+  background: var(--surface-alt);
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.reference-lineage-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.reference-lineage-item:disabled {
+  cursor: default;
+}
+
 /* 分页控件 */
 .gallery-pagination {
   display: flex;
@@ -1626,6 +1729,22 @@ code, kbd, samp, pre, .mono {
   flex-wrap: wrap;
   font-size: 12px;
   font-family: ui-monospace, monospace;
+}
+
+.lightbox-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.lightbox-preview-notice {
+  flex: 1;
+  min-width: 160px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-muted);
 }
 
 /* 13. Toast 提示层 */

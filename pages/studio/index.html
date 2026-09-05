@@ -89,29 +89,16 @@
               <button type="button" id="btn-toggle-more-params"
                       class="comic-btn comic-btn--outline advanced-params-toggle"
                       aria-expanded="false" aria-controls="more-params-panel" hidden>
-                <span>更多参数</span>
+                <span>供应商生成参数</span>
+                <span id="provider-override-count" class="optional-label"></span>
                 <span id="more-params-toggle-icon" class="btn-icon" data-icon="chevronDown"></span>
               </button>
               <div id="more-params-panel" class="advanced-params-panel" hidden>
-                <div class="params-grid params-grid--advanced">
-                  <div class="form-item" id="item-quality" style="display: none;">
-                    <label for="select-quality" class="form-label">画质等级</label>
-                    <select id="select-quality" class="comic-select"></select>
-                  </div>
-                  <div class="form-item" id="item-seed" style="display: none;">
-                    <label for="input-seed" class="form-label">随机种子</label>
-                    <input type="number" id="input-seed" class="comic-input"
-                           step="1" placeholder="留空不指定">
-                  </div>
-                  <div class="form-item form-item--wide" id="item-negative-prompt" style="display: none;">
-                    <div class="form-label-row">
-                      <label for="input-negative-prompt" class="form-label">负向提示词</label>
-                      <span class="char-count" id="neg-char-count">0 / 500</span>
-                    </div>
-                    <input type="text" id="input-negative-prompt" class="comic-input"
-                           maxlength="500" placeholder="不希望出现的元素，如低质量、残缺肢体等">
-                  </div>
+                <div class="provider-parameters-toolbar">
+                  <p class="field-hint">勾选需要临时覆盖的参数，仅影响本次任务。按浏览器记忆每个模型的选择。<span id="preferences-save-status" role="status"></span></p>
+                  <button type="button" id="btn-reset-provider-parameters" class="comic-btn comic-btn--sm comic-btn--outline">恢复供应商默认值</button>
                 </div>
+                <div id="provider-parameters-grid" class="provider-parameters-grid"></div>
               </div>
             </div>
           </div>
@@ -335,6 +322,10 @@
         <div class="lightbox-meta-bar" id="lightbox-meta-bar">
           <p id="lightbox-prompt" class="lightbox-prompt-text"></p>
           <div class="lightbox-info-tags" id="lightbox-tags"></div>
+          <div class="lightbox-actions">
+            <p id="lightbox-preview-notice" class="lightbox-preview-notice" role="status" hidden>当前为压缩预览，原图超过显示限制，请下载查看。</p>
+            <button type="button" id="lightbox-download-btn" class="comic-btn comic-btn--sm comic-btn--outline">下载原图</button>
+          </div>
         </div>
       </div>
     </div>

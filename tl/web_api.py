@@ -7,6 +7,7 @@ import json
 import math
 import mimetypes
 import re
+import secrets
 from collections.abc import Callable
 from contextlib import contextmanager
 from typing import Any
@@ -14,6 +15,7 @@ from typing import Any
 from astrbot.api import logger
 
 from .generation_tracker import GenerationTracker
+from .studio_parameters import clean_browser_preferences
 from .web_studio_service import StudioServiceError, WebStudioService
 
 try:
@@ -38,6 +40,8 @@ PLUGIN_NAME = "astrbot_plugin_gemini_image_generation"
 WEBUI_PREFIX = f"/{PLUGIN_NAME}/webui"
 _SAFE_FILE_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 _JSON_MAX_BYTES = 2 * 1024 * 1024
+_PREFERENCES_COOKIE = "gemini_studio_browser"
+_BROWSER_ID = re.compile(r"^[0-9a-f]{32}$")
 
 
 @contextmanager
@@ -105,6 +109,7 @@ class WebStudioAPI:
         ("/image/<name>", "image", ["GET"], "读取 gallery 图片"),
         ("/image_b64/<name>", "image_b64", ["GET"], "读取 gallery 图片字节"),
         ("/capabilities", "capabilities", ["GET"], "WebUI 供应商能力"),
+        ("/preferences", "preferences", ["GET", "POST"], "WebUI 浏览器参数记忆"),
         ("/generate", "generate", ["POST"], "WebUI 发起生成"),
         ("/upload", "upload", ["POST"], "WebUI 上传参考图"),
     )
@@ -269,7 +274,10 @@ class WebStudioAPI:
         record = self.tracker.get(str(job_id or ""))
         if record is None:
             return error_response("生成记录不存在", status_code=404)
-        return self._ok(record)
+        references = await asyncio.to_thread(
+            self.service.reference_status, record.get("reference_names") or []
+        )
+        return self._ok({**record, **references})
 
     async def delete_history(self):
         if closed := self._closed_response():
@@ -325,6 +333,45 @@ class WebStudioAPI:
         except StudioServiceError as exc:
             return self._service_error(exc)
         return self._ok(payload)
+
+    async def preferences(self):
+        if closed := self._closed_response():
+            return closed
+        browser_id = request.cookies.get(_PREFERENCES_COOKIE, "")
+        if not _BROWSER_ID.fullmatch(browser_id):
+            browser_id = secrets.token_hex(16)
+        cookie = (
+            f"{_PREFERENCES_COOKIE}={browser_id}; Path={request.path}; "
+            "HttpOnly; SameSite=Lax; Max-Age=31536000"
+        )
+        if request._request.url.scheme == "https":
+            cookie += "; Secure"
+        candidates = list(getattr(self.service.config, "provider_candidates", []) or [])
+        if request.method == "POST":
+            payload = await self._json_body()
+            if (
+                payload is None
+                or type(payload.get("revision")) is not int
+                or not 0 <= payload["revision"] <= 2**53 - 1
+            ):
+                return error_response("无效的浏览器偏好版本", status_code=400)
+            preferences = clean_browser_preferences(
+                payload.get("preferences"), candidates
+            )
+            saved = await self.service.preferences.save(
+                browser_id, preferences, payload["revision"]
+            )
+        else:
+            saved = await self.service.preferences.load(browser_id)
+        value = {
+            "revision": saved["revision"],
+            "preferences": clean_browser_preferences(
+                saved.get("preferences"), candidates
+            ),
+        }
+        return json_response(
+            {"status": "ok", "data": value}, headers={"Set-Cookie": cookie}
+        )
 
     async def capabilities(self):
         if closed := self._closed_response():
