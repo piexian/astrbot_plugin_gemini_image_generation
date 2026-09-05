@@ -129,6 +129,32 @@ const SafeDOM = {
       legacy: '历史'
     };
     return labels[source] || source || '未知';
+  },
+
+  requesterLabels(requester, source) {
+    const { user_id: userId, user_name: userName, group_id: groupId, chat_type: chatType } = requester || {};
+    let chatLabel = '会话类型未知';
+    if (source === 'webui') {
+      chatLabel = '工作台提交';
+    } else if (chatType === 'private') {
+      chatLabel = '私聊';
+    } else if (chatType === 'group' || groupId) {
+      // 旧记录没有会话类型时，已有群号仍足以确认群聊；缺少群号不能反推私聊。
+      chatLabel = groupId ? `群聊 · 群号: ${groupId}` : '群聊 · 群号未记录';
+    }
+    const labels = [chatLabel];
+    if (userName && userId) labels.push(`用户: ${userName}（ID: ${userId}）`);
+    else if (userId) labels.push(`用户 ID: ${userId}`);
+    else if (userName) labels.push(`用户: ${userName}`);
+    return labels;
+  },
+
+  requesterMeta(record) {
+    return this.el('div', { className: 'job-meta-row requester-meta' },
+      this.requesterLabels(record.requester, record.source).map((label) =>
+        this.el('span', { className: 'meta-pill' }, [label])
+      )
+    );
   }
 };
 
@@ -610,8 +636,8 @@ const Lightbox = {
     if (item.source) {
       this.tagsEl.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [`来源: ${SafeDOM.sourceLabel(item.source)}`]));
     }
-    if (item.user_name) {
-      this.tagsEl.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [`用户: ${item.user_name}`]));
+    for (const label of SafeDOM.requesterLabels(item.requester, item.source)) {
+      this.tagsEl.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [label]));
     }
 
     const showNav = this.items.length > 1;
@@ -2182,6 +2208,7 @@ class ProgressView {
     header.appendChild(headerLeft);
     header.appendChild(headerRight);
     card.appendChild(header);
+    card.appendChild(SafeDOM.requesterMeta(record));
 
     // 提示词区域
     if (record.prompt) {
@@ -2220,7 +2247,7 @@ class ProgressView {
               aspect_ratio: p.aspect_ratio,
               duration_ms: record.duration_ms,
               source: record.source,
-              user_name: record.requester?.user_name
+              requester: record.requester
             }));
             Lightbox.open(previewItems, idx);
           }
@@ -2331,6 +2358,7 @@ class ProgressView {
     header.appendChild(headerLeft);
     header.appendChild(headerRight);
     card.appendChild(header);
+    card.appendChild(SafeDOM.requesterMeta(parent));
 
     // 进度条统计
     const totalRequested = children.reduce((acc, c) => acc + (c.requested_images || 1), 0);
@@ -2411,7 +2439,7 @@ class ProgressView {
                 prompt: child.prompt,
                 duration_ms: child.duration_ms,
                 source: child.source,
-                user_name: child.requester?.user_name
+                requester: child.requester
               }));
               Lightbox.open(previewItems, idx);
             }
@@ -2719,7 +2747,7 @@ class GalleryView {
           aspect_ratio: item.params?.aspect_ratio,
           duration_ms: item.duration_ms,
           source: item.source,
-          user_name: item.requester?.user_name
+          requester: item.requester
         }));
         Lightbox.open(previewItems, 0);
       });
@@ -2747,6 +2775,7 @@ class GalleryView {
 
     info.appendChild(promptEl);
     info.appendChild(meta);
+    info.appendChild(SafeDOM.requesterMeta(item));
     card.appendChild(info);
 
     // 悬停操作工具栏

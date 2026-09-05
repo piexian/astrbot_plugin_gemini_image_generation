@@ -150,10 +150,19 @@ def requester_from_event(event: Any) -> dict[str, str]:
         except Exception:
             pass
 
+    message_type = _event_value(event, "get_message_type")
+    chat_type = {
+        "GroupMessage": "group",
+        "FriendMessage": "private",
+    }.get(getattr(message_type, "value", message_type), "unknown")
+    if chat_type == "unknown" and group_id:
+        chat_type = "group"
+
     return {
         "user_id": _bounded_text(user_id, 128),
         "user_name": _bounded_text(user_name, 200),
         "group_id": _bounded_text(group_id, 128),
+        "chat_type": chat_type,
     }
 
 
@@ -330,10 +339,15 @@ class GenerationTracker:
     @staticmethod
     def _clean_requester(requester: Any) -> dict[str, str]:
         source = requester if isinstance(requester, dict) else {}
+        group_id = _bounded_text(source.get("group_id"), 128)
+        chat_type = _bounded_text(source.get("chat_type"), 32)
+        if chat_type not in {"group", "private"}:
+            chat_type = "group" if group_id else "unknown"
         return {
             "user_id": _bounded_text(source.get("user_id"), 128),
             "user_name": _bounded_text(source.get("user_name"), 200),
-            "group_id": _bounded_text(source.get("group_id"), 128),
+            "group_id": group_id,
+            "chat_type": chat_type,
         }
 
     @staticmethod

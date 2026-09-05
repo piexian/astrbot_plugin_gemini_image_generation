@@ -37,6 +37,31 @@ assert.equal(button.attributes.get('aria-disabled'), 'false');
     subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
 
 
+def test_requester_labels_distinguish_chats_and_legacy_records() -> None:
+    start = APP_JS.index("const SafeDOM = {")
+    end = APP_JS.index("const ImageLoader = {", start)
+    script = "const assert = require('node:assert/strict');\n" + APP_JS[start:end]
+    script += """
+const group = {chat_type: 'group', group_id: '123456', user_id: '10001', user_name: '小明'};
+assert.deepEqual(SafeDOM.requesterLabels(group, 'command'),
+  ['群聊 · 群号: 123456', '用户: 小明（ID: 10001）']);
+assert.deepEqual(SafeDOM.requesterLabels({chat_type: 'private', user_id: '10001'}, 'llm_tool'),
+  ['私聊', '用户 ID: 10001']);
+assert.deepEqual(SafeDOM.requesterLabels({chat_type: 'group'}, 'llm_batch'),
+  ['群聊 · 群号未记录']);
+assert.deepEqual(SafeDOM.requesterLabels({group_id: '654321'}, 'command'),
+  ['群聊 · 群号: 654321']);
+assert.deepEqual(SafeDOM.requesterLabels({user_id: '10001'}, 'command'),
+  ['会话类型未知', '用户 ID: 10001']);
+assert.deepEqual(SafeDOM.requesterLabels({user_name: 'admin'}, 'webui'),
+  ['工作台提交', '用户: admin']);
+assert.deepEqual(SafeDOM.requesterLabels(undefined, 'legacy'), ['会话类型未知']);
+assert.deepEqual(SafeDOM.requesterLabels({user_name: '<img onerror=alert(1)>'}, 'command'),
+  ['会话类型未知', '用户: <img onerror=alert(1)>']);
+"""
+    subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+
+
 def _image_loader_source() -> str:
     start = APP_JS.index("const ImageLoader = {")
     end = APP_JS.index("// 3. BridgeClient", start)

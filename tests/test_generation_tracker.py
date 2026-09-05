@@ -14,6 +14,80 @@ from tl.generation_tracker import (
 from tl.image_generator import ImageGenerator
 
 
+@pytest.mark.parametrize(
+    ("message_type", "group_id", "expected"),
+    [
+        ("GroupMessage", "123456", "group"),
+        ("GroupMessage", "", "group"),
+        ("FriendMessage", "", "private"),
+        ("OtherMessage", "", "unknown"),
+        (None, "", "unknown"),
+    ],
+)
+def test_requester_keeps_explicit_chat_type(message_type, group_id, expected):
+    event = SimpleNamespace(
+        get_sender_id=lambda: "10001",
+        get_group_id=lambda: group_id,
+        get_message_type=lambda: SimpleNamespace(value=message_type),
+    )
+    requester = requester_from_event(event)
+    assert requester["chat_type"] == expected
+    assert requester["group_id"] == group_id
+    assert requester["user_id"] == "10001"
+
+
+@pytest.mark.asyncio
+async def test_requester_survives_sse_reload_and_group_filter(tmp_path):
+    tracker = GenerationTracker(tmp_path, max_records=20)
+    queue = tracker.subscribe()
+    requesters = []
+    for group_id, message_type in [
+        ("123456", "GroupMessage"),
+        ("654321", "GroupMessage"),
+        ("", "FriendMessage"),
+    ]:
+        event = SimpleNamespace(
+            get_sender_id=lambda: "10001",
+            get_sender_name=lambda: "同一个用户",
+            get_group_id=lambda group_id=group_id: group_id,
+            get_message_type=lambda message_type=message_type: SimpleNamespace(
+                value=message_type
+            ),
+        )
+        requester = requester_from_event(event)
+        requesters.append(requester)
+        record = await tracker.begin(
+            source="command", prompt="draw", params={}, requester=requester
+        )
+        assert queue.get_nowait()["data"]["requester"] == requester
+        await tracker.complete(
+            record["job_id"], image_files=[], text_content="done", stats={}
+        )
+        assert queue.get_nowait()["data"]["requester"] == requester
+    await tracker.close()
+
+    restored = GenerationTracker(tmp_path, max_records=20)
+    query = {
+        "page": 1,
+        "size": 20,
+        "keyword": "",
+        "source": "",
+        "group_id": "",
+        "user_id": "10001",
+    }
+    records = restored.query_history(**query)["items"]
+    assert len(records) == 3
+    assert all(
+        requester in [record["requester"] for record in records]
+        for requester in requesters
+    )
+    query["group_id"] = "123456"
+    filtered = restored.query_history(**query)
+    assert filtered["total"] == 1
+    assert filtered["items"][0]["requester"] == requesters[0]
+    await restored.close()
+
+
 @pytest.mark.asyncio
 async def test_begin_updates_and_complete_are_persisted(tmp_path) -> None:
     tracker = GenerationTracker(tmp_path, max_records=20)
@@ -229,6 +303,7 @@ def test_requester_metadata_is_defensive_and_truncated() -> None:
 
     assert requester["user_id"] == "user"
     assert requester["group_id"] == "group"
+    assert requester["chat_type"] == "group"
     assert requester["user_name"].startswith("<script>")
     assert len(requester["user_name"]) <= 200
 
