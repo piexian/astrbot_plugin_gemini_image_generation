@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from starlette.requests import Request
@@ -95,34 +96,119 @@ def _match(entries, subpath: str, method: str):
     return None
 
 
-@pytest.mark.asyncio
-async def test_json_body_limit_counts_chunked_bytes(tmp_path, monkeypatch):
-    import tl.web_api as module
-
+@pytest.fixture(params=["generate", "preferences", "delete_history"])
+def json_endpoint(request, tmp_path, monkeypatch):
     api = _api(tmp_path, monkeypatch)
-    chunks = iter([b'{"prompt":"', b"x" * 100, b'"}'])
+    operation = AsyncMock()
+    api.service.config = SimpleNamespace(provider_candidates=[])
+    api.service.generate = operation
+    api.service.preferences = SimpleNamespace(save=operation)
+    api.tracker.delete = operation
+    return getattr(api, request.param), operation
 
-    async def receive():
-        return {"type": "http.request", "body": next(chunks), "more_body": True}
 
-    raw = Request({"type": "http", "method": "POST", "headers": []}, receive)
-
+def _json_request(raw):
     async def parse(default=None):
+        # Match AstrBot PluginRequest.json: parsing exceptions return the default.
         try:
             return await raw.json()
         except Exception:
             return default
 
-    monkeypatch.setattr(module, "_JSON_MAX_BYTES", 32)
-    monkeypatch.setattr(
-        module,
-        "request",
-        SimpleNamespace(_request=raw, headers=raw.headers, json=parse),
+    return SimpleNamespace(
+        _request=raw,
+        headers=raw.headers,
+        cookies=raw.cookies,
+        path=raw.url.path,
+        method=raw.method,
+        json=AsyncMock(side_effect=parse),
     )
-    response = await api.generate()
-    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body_source", ["content_length", "chunked", "cached"])
+async def test_json_endpoints_preserve_body_limit_413(
+    json_endpoint, monkeypatch, body_source
+):
+    import tl.web_api as module
+
+    endpoint, operation = json_endpoint
+    body = json.dumps(
+        {
+            "prompt": "画" * 20,
+            "revision": 1,
+            "preferences": {},
+            "job_ids": ["job-one"],
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+    maximum = len(body) - 2
+    headers = [(b"content-type", b"application/json")]
+    if body_source == "content_length":
+        headers.append((b"content-length", str(len(body)).encode()))
+    chunks = [body[:-2], body[-2:-1], body[-1:]] if body_source == "chunked" else [body]
+    receive = AsyncMock(
+        side_effect=[
+            {
+                "type": "http.request",
+                "body": chunk,
+                "more_body": index < len(chunks) - 1,
+            }
+            for index, chunk in enumerate(chunks)
+        ]
+    )
+    raw = Request(
+        {"type": "http", "method": "POST", "path": "/", "headers": headers},
+        receive,
+    )
+    if body_source == "cached":
+        await raw.json()
+        receive.reset_mock()
+    adapter = _json_request(raw)
+    monkeypatch.setattr(module, "_JSON_MAX_BYTES", maximum)
+    monkeypatch.setattr(module, "request", adapter)
+
+    response = await endpoint()
+
+    assert response.status_code == 413
+    assert json.loads(response.body) == {
+        "status": "error",
+        "message": "请求体超过大小限制",
+        "data": None,
+    }
+    operation.assert_not_awaited()
     assert raw._receive is receive
-    assert next(chunks) == b'"}'
+    assert receive.await_count == (2 if body_source == "chunked" else 0)
+    assert adapter.json.await_count == (1 if body_source == "chunked" else 0)
+
+
+@pytest.mark.asyncio
+async def test_json_endpoints_reject_malformed_json(json_endpoint, monkeypatch):
+    import tl.web_api as module
+
+    endpoint, operation = json_endpoint
+    body = b'{"prompt":'
+    receive = AsyncMock(
+        return_value={"type": "http.request", "body": body, "more_body": False}
+    )
+    raw = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/",
+            "headers": [(b"content-length", str(len(body)).encode())],
+        },
+        receive,
+    )
+    monkeypatch.setattr(module, "request", _json_request(raw))
+
+    response = await endpoint()
+
+    assert response.status_code == 400
+    assert json.loads(response.body)["status"] == "error"
+    operation.assert_not_awaited()
+    receive.assert_awaited_once()
+    assert raw._receive is receive
 
 
 @pytest.mark.asyncio

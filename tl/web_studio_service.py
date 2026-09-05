@@ -10,6 +10,7 @@ import math
 import mimetypes
 import os
 import re
+import threading
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -139,6 +140,9 @@ class WebStudioService:
         self._runtime_tasks: dict[str, asyncio.Task[Any]] = {}
         self._gallery_lock = asyncio.Lock()
         self._upload_lock = asyncio.Lock()
+        self._admission_lock = asyncio.Lock()
+        self._upload_file_lock = threading.RLock()
+        self._upload_ref_counts: dict[str, int] = {}
         self._admitted_jobs = 0
         self._closed = False
 
@@ -167,13 +171,22 @@ class WebStudioService:
             )
         self._admitted_jobs += 1
 
-    def _attach(self, job_id: str, coroutine: Any) -> None:
-        task = asyncio.create_task(coroutine)
+    def _attach(self, job_id: str, coroutine: Any, upload_names: list[str]) -> None:
+        leased = frozenset(upload_names)
+        try:
+            if self._closed:
+                raise StudioServiceError("工作台服务已关闭", status_code=503)
+            task = asyncio.create_task(coroutine)
+        except BaseException:
+            coroutine.close()
+            raise
         self._runtime_tasks[job_id] = task
 
         def done(done_task: asyncio.Task[Any]) -> None:
             self._runtime_tasks.pop(job_id, None)
             self._admitted_jobs = max(self._admitted_jobs - 1, 0)
+            # 完成回调也覆盖协程首次执行前就被取消的情况。
+            self._release_uploads(leased)
             if done_task.cancelled():
                 return
             exception = done_task.exception()
@@ -194,22 +207,24 @@ class WebStudioService:
         payload: dict[str, Any],
         requester: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        normalized, warning = self.validate_payload(payload)
-        if self.api_client is None:
-            raise StudioServiceError("API 客户端尚未初始化", status_code=503)
-        self._admit()
-        requester = requester or {}
-        try:
-            if normalized.get("batch") is not None:
-                response = await self._start_batch(normalized, requester)
-            else:
-                response = await self._start_single(normalized, requester)
-        except ReferenceImageUnavailableError as exc:
-            self._admitted_jobs = max(self._admitted_jobs - 1, 0)
-            raise StudioServiceError(str(exc), status_code=404) from exc
-        except Exception:
-            self._admitted_jobs = max(self._admitted_jobs - 1, 0)
-            raise
+        async with self._admission_lock:
+            normalized, warning = self.validate_payload(payload)
+            if self.api_client is None:
+                raise StudioServiceError("API 客户端尚未初始化", status_code=503)
+            self._admit()
+            leased: frozenset[str] = frozenset()
+            try:
+                leased = self._acquire_uploads(normalized["upload_names"])
+                if normalized.get("batch") is not None:
+                    response = await self._start_batch(normalized, requester or {})
+                else:
+                    response = await self._start_single(normalized, requester or {})
+            except BaseException as exc:
+                self._release_uploads(leased)
+                self._admitted_jobs = max(self._admitted_jobs - 1, 0)
+                if isinstance(exc, ReferenceImageUnavailableError):
+                    raise StudioServiceError(str(exc), status_code=404) from exc
+                raise
         if warning:
             response["warning"] = warning
         batch_items = normalized.get("batch") or []
@@ -237,7 +252,11 @@ class WebStudioService:
             reference_names=payload["reference_names"],
             requested_images=payload["image_count"],
         )
-        self._attach(record["job_id"], self._run_single(record["job_id"], payload))
+        self._attach(
+            record["job_id"],
+            self._run_single(record["job_id"], payload),
+            payload["upload_names"],
+        )
         return {"job_id": record["job_id"]}
 
     async def _start_batch(
@@ -272,6 +291,7 @@ class WebStudioService:
         self._attach(
             parent["job_id"],
             self._run_batch(parent["job_id"], child_jobs),
+            payload["upload_names"],
         )
         return {
             "job_id": parent["job_id"],
@@ -711,13 +731,22 @@ class WebStudioService:
         )
 
         async def run_child(job_id: str, payload: dict[str, Any]) -> None:
-            async with semaphore:
-                await self._execute_generation(job_id, payload)
+            leased = self._acquire_uploads(payload["upload_names"])
+            try:
+                async with semaphore:
+                    await self._execute_generation(job_id, payload)
+            finally:
+                self._release_uploads(leased)
 
         try:
-            await asyncio.gather(
-                *(run_child(job_id, payload) for job_id, payload in child_jobs)
+            # 异常不能让父任务提前结束并释放仍被其他子任务使用的上传。
+            results = await asyncio.gather(
+                *(run_child(job_id, payload) for job_id, payload in child_jobs),
+                return_exceptions=True,
             )
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result
             records = [self.tracker.get(job_id) for job_id, _ in child_jobs]
             generated = sum(
                 int(record.get("generated_images") or 0) for record in records if record
@@ -1363,33 +1392,58 @@ class WebStudioService:
             except Exception:
                 pass
 
+    def _acquire_uploads(self, names: list[str]) -> frozenset[str]:
+        leased = frozenset(names)
+        with self._upload_file_lock:
+            root = self.upload_dir.resolve()
+            for name in leased:
+                path = (self.upload_dir / name).resolve()
+                if path.parent != root or not path.is_file():
+                    raise StudioServiceError(f"参考图片不存在: {name}", status_code=404)
+            for name in leased:
+                self._upload_ref_counts[name] = self._upload_ref_counts.get(name, 0) + 1
+        return leased
+
+    def _release_uploads(self, names: frozenset[str]) -> None:
+        with self._upload_file_lock:
+            for name in names:
+                remaining = self._upload_ref_counts.get(name, 0) - 1
+                if remaining > 0:
+                    self._upload_ref_counts[name] = remaining
+                else:
+                    self._upload_ref_counts.pop(name, None)
+
     def _cleanup_uploads_sync(self) -> None:
-        if not self.upload_dir.is_dir():
-            return
-        cutoff = time.time() - timedelta(hours=_UPLOAD_EXPIRE_HOURS).total_seconds()
-        for path in self.upload_dir.iterdir():
-            try:
-                if path.is_file() and path.stat().st_mtime < cutoff:
-                    path.unlink(missing_ok=True)
-            except OSError:
-                continue
+        with self._upload_file_lock:
+            if not self.upload_dir.is_dir():
+                return
+            cutoff = time.time() - timedelta(hours=_UPLOAD_EXPIRE_HOURS).total_seconds()
+            for path in self.upload_dir.iterdir():
+                if path.name in self._upload_ref_counts:
+                    continue
+                try:
+                    if path.is_file() and path.stat().st_mtime < cutoff:
+                        path.unlink(missing_ok=True)
+                except OSError:
+                    continue
 
     def _enforce_upload_quota_sync(self, protected: set[str]) -> None:
-        files = sorted(
-            (path for path in self.upload_dir.iterdir() if path.is_file()),
-            key=lambda path: path.stat().st_mtime,
-        )
-        total = sum(path.stat().st_size for path in files)
-        for path in files:
-            if total <= _UPLOAD_QUOTA_BYTES:
-                break
-            if path.name in protected:
-                continue
-            size = path.stat().st_size
-            path.unlink(missing_ok=True)
-            total -= size
-        if total > _UPLOAD_QUOTA_BYTES:
-            raise StudioServiceError("上传暂存目录已达到容量上限", status_code=507)
+        with self._upload_file_lock:
+            files = sorted(
+                (path for path in self.upload_dir.iterdir() if path.is_file()),
+                key=lambda path: path.stat().st_mtime,
+            )
+            total = sum(path.stat().st_size for path in files)
+            for path in files:
+                if total <= _UPLOAD_QUOTA_BYTES:
+                    break
+                if path.name in protected or path.name in self._upload_ref_counts:
+                    continue
+                size = path.stat().st_size
+                path.unlink(missing_ok=True)
+                total -= size
+            if total > _UPLOAD_QUOTA_BYTES:
+                raise StudioServiceError("上传暂存目录已达到容量上限", status_code=507)
 
     def gallery_file(self, name: str) -> Path:
         if not isinstance(name, str) or not _SAFE_FILE_NAME.fullmatch(name):
@@ -1623,11 +1677,14 @@ class WebStudioService:
         if self._closed:
             return
         self._closed = True
-        tasks = list(self._runtime_tasks.values())
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        self._runtime_tasks.clear()
-        self._admitted_jobs = 0
+        async with self._admission_lock:
+            tasks = list(self._runtime_tasks.values())
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            self._runtime_tasks.clear()
+            self._admitted_jobs = 0
+            with self._upload_file_lock:
+                self._upload_ref_counts.clear()

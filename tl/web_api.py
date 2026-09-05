@@ -282,7 +282,10 @@ class WebStudioAPI:
     async def delete_history(self):
         if closed := self._closed_response():
             return closed
-        payload = await self._json_body()
+        try:
+            payload = await self._json_body()
+        except StudioServiceError as exc:
+            return self._service_error(exc)
         if payload is None:
             return error_response("请求体必须是有效的 JSON 对象", status_code=400)
         job_ids = payload.get("job_ids")
@@ -348,7 +351,10 @@ class WebStudioAPI:
             cookie += "; Secure"
         candidates = list(getattr(self.service.config, "provider_candidates", []) or [])
         if request.method == "POST":
-            payload = await self._json_body()
+            try:
+                payload = await self._json_body()
+            except StudioServiceError as exc:
+                return self._service_error(exc)
             if (
                 payload is None
                 or type(payload.get("revision")) is not int
@@ -381,10 +387,10 @@ class WebStudioAPI:
     async def generate(self):
         if closed := self._closed_response():
             return closed
-        payload = await self._json_body()
-        if payload is None:
-            return error_response("请求体必须是有效的 JSON 对象", status_code=400)
         try:
+            payload = await self._json_body()
+            if payload is None:
+                return error_response("请求体必须是有效的 JSON 对象", status_code=400)
             requester = {
                 "user_id": "",
                 "user_name": str(getattr(request, "username", "") or "")[:200],
@@ -431,11 +437,8 @@ class WebStudioAPI:
     @staticmethod
     async def _json_body() -> dict[str, Any] | None:
         sentinel = object()
-        try:
-            with _bounded_request(_JSON_MAX_BYTES):
-                payload = await request.json(default=sentinel)
-        except StudioServiceError:
-            return None
+        with _bounded_request(_JSON_MAX_BYTES):
+            payload = await request.json(default=sentinel)
         if payload is sentinel or not isinstance(payload, dict):
             return None
         if not _valid_json_value(payload):
