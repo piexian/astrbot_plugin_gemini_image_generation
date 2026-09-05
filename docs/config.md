@@ -152,11 +152,26 @@ NapCat v4.8.115+ 支持 Stream API。插件默认仍先按 `max_inline_image_siz
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `group_limit_mode` | `none` | 群限制模式：`none` / `whitelist` / `blacklist` |
-| `group_limit_list` | `[]` | 群号列表 |
-| `rate_limit_rules` | `[]` | 限流规则列表，`template_list` 格式 |
-| `default_rate_limit.enabled` | `false` | 默认限流开关，未匹配规则时使用 |
-| `default_rate_limit.period_seconds` | `60` | 默认限流周期，单位秒 |
-| `default_rate_limit.max_requests` | `5` | 默认单群周期内最大请求数 |
+| `group_limit_list` | `[]` | 黑/白名单共用的群号列表，最多 1000 项，每项最多 1024 字符 |
+| `global_rate_limit.enabled` | `false` | 共享全局限流开关，命令、LLM 与 Studio 累计计数 |
+| `global_rate_limit.period_seconds` | `60` | 全局滑动窗口，1-604800 秒 |
+| `global_rate_limit.max_requests` | `5` | 全局窗口内额度，1-10000 次 |
+| `rate_limit_rules` | `[]` | 按顺序匹配第一条启用规则，最多 100 条 |
+| `rate_limit_rules[].umos` | `[]` | 完整 UMO 列表，每条最多 500 项；空列表匹配所有会话并分别计数 |
+| `rate_limit_rules[].group_ids` | `[]` | 仅为旧群号迁移保留，不再作为限流计数键 |
+| `default_rate_limit.enabled` | `false` | 未匹配规则时启用默认会话额度，包含私聊 |
+| `default_rate_limit.period_seconds` | `60` | 会话滑动窗口，1-604800 秒 |
+| `default_rate_limit.max_requests` | `5` | 每个 UMO 窗口内额度，1-10000 次 |
+
+Studio「限流控制」页顶部统一配置群限制模式与名单，切换模式保留同一份群号列表。群名单仅控制群聊访问，不影响私聊和 Studio；**空白名单沿用原有行为，表示不限制群**，填写后才仅允许所列群。该名单与规则中的旧 `group_ids` 迁移字段不同，不需要改成 UMO。保存时模式与名单成对提交；旧版页面省略两项时保留原值。首次提交群访问字段会单独备份至插件数据目录 `group_access_config_backup.json`，不覆盖旧的限流迁移备份。
+
+UMO 格式为 `平台实例ID:消息类型:会话ID`，例如 `qq-bot:GroupMessage:123456`；直接沿用 AstrBot 的会话身份，包括群内独立会话，不按群号重新拼接。规则的 `rule_name`、`enabled`、`period_seconds`、`max_requests` 保持原字段，规则名称最多 100 字符，UMO 最多 1024 字符。全局额度与会话额度同时检查，任一不足均不扣减；会话规则不能绕过全局限制。
+
+单任务计 1 次，批量按子任务数量一次性预留；单任务多张、供应商重试和转后台不额外计数。明显无效输入、API 未就绪、准入拒绝不扣额度；Studio 挂入任务前失败会退还预留，任务受理后供应商失败不退。Studio 没有聊天 UMO，只占全局额度，仍受 `webui.max_concurrent_jobs` 和批量图片预算约束。
+
+Studio 保存仅更新群访问与限流字段，不修改供应商、不重载插件或清空已有计数。缩短窗口/修改次数即时生效；已清理的旧时间戳不能因延长窗口恢复，新增限制也不追溯未计数的请求。KV 加载失败暂拒请求；计数写入采用 1 秒合并保存，写失败保留内存计数并记录日志，正常卸载等待落盘，进程异常退出仍可能丢失尚未写入的短窗口。
+
+**旧配置迁移**：启用规则中仍有非空 `group_ids` 时，暂停聊天生图（不影响 Studio 的全局限流）。在 Studio 选择实际 UMO、点击「确认迁移」并保存；停用或删除旧规则也需显式保存。旧空群号规则仍是每会话规则，不会变成共享全局限流。首次保存将原限流字段备份到插件数据目录 `rate_limit_config_backup.json`，不包含供应商密钥；旧 `rate_limit_buckets` KV 不覆盖，新计数写入 `rate_limit_buckets_v2`。旧群桶无法精确拆分，未过期时保守等待原配置最大窗口结束后再放行聊天请求。回退旧版本前可从该备份恢复限流字段，保留当前其它配置，并重载插件；旧版不识别新增的全局/UMO 策略。
 
 ## doubao_settings（豆包生图专用配置）
 

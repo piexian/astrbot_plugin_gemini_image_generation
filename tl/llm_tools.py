@@ -1138,17 +1138,12 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
             return "❌ 工具未正确初始化，缺少插件实例引用"
 
         raw_batch_tasks = kwargs.get("batch_tasks")
-        is_batch = isinstance(raw_batch_tasks, list) and bool(raw_batch_tasks)
+        is_batch = raw_batch_tasks is not None
         prompt = str(kwargs.get("prompt") or "").strip()
         if not is_batch and not prompt:
             return "❌ 缺少必填参数：单图模式的图像描述不能为空"
         if is_batch and kwargs.get("for_forum"):
             return "❌ batch_tasks 固定进入后台，不能与 for_forum=true 同时使用"
-
-        # 检查限流
-        allowed, limit_message = await plugin._check_and_consume_limit(event)
-        if not allowed:
-            return limit_message or "请求过于频繁，请稍后再试"
 
         if not plugin.api_client:
             return (
@@ -1165,6 +1160,11 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
             )
             if error or not prepared_items:
                 return f"❌ 批量任务参数错误：{error or '没有有效任务'}"
+            allowed, limit_message = await plugin._check_and_consume_limit(
+                event, cost=len(prepared_items)
+            )
+            if not allowed:
+                return limit_message or "请求过于频繁，请稍后再试"
             modes = {item["routing_mode"] for item in prepared_items}
             batch_mode = next(iter(modes)) if len(modes) == 1 else "mixed"
             message = routing_description(batch_mode)
@@ -1278,6 +1278,9 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         )
         if not candidates:
             return "❌ 没有匹配所选供应商、模型、生成模式和参数能力的候选模型"
+        allowed, limit_message = await plugin._check_and_consume_limit(event)
+        if not allowed:
+            return limit_message or "请求过于频繁，请稍后再试"
         request_routing_mode = routing_mode(provider, model)
 
         # 日志记录（仅记录长度和参数摘要，避免记录用户原始内容）
@@ -1556,10 +1559,9 @@ async def execute_image_generation_tool(
 
     from astrbot.api.message_components import Image as AstrImage
 
-    # 检查限流
-    allowed, limit_message = await plugin._check_and_consume_limit(event)
-    if not allowed:
-        return [limit_message or "请求过于频繁，请稍后再试。"]
+    prompt = str(prompt or "").strip()
+    if not prompt:
+        return ["❌ 图像描述不能为空"]
 
     if not plugin.api_client:
         return [
@@ -1594,6 +1596,20 @@ async def execute_image_generation_tool(
         f"[工具调用] 收集到参考图：消息 {len(reference_images)} 张，"
         f"头像 {len(avatar_reference)} 张"
     )
+
+    if not _matching_candidates(
+        plugin,
+        provider=None,
+        model=None,
+        has_reference_images=bool(reference_images or avatar_reference),
+        negative_prompt=None,
+        watermark=None,
+        quality=None,
+    ):
+        return ["❌ 没有匹配本次请求能力的供应商或模型"]
+    allowed, limit_message = await plugin._check_and_consume_limit(event)
+    if not allowed:
+        return [limit_message or "请求过于频繁，请稍后再试。"]
 
     # 调用核心生成逻辑
     success, result_data = await plugin._generate_image_core_internal(

@@ -9,6 +9,7 @@ from typing import Any
 from astrbot.api import logger
 
 from . import provider_hooks as _provider_hooks
+from .limit_config import apply_limits, normalize_limits
 from .provider_loader import load_callable
 from .provider_metadata import (
     get_provider_spec,
@@ -205,6 +206,14 @@ class PluginConfig:
     # 限制设置
     group_limit_mode: str = "none"
     group_limit_list: set[str] = field(default_factory=set)
+    limit_config_error: str = ""
+    global_rate_limit: dict[str, Any] = field(
+        default_factory=lambda: {
+            "enabled": False,
+            "period_seconds": 60,
+            "max_requests": 5,
+        }
+    )
     # 限流规则列表
     rate_limit_rules: list[dict[str, Any]] = field(default_factory=list)
     # 默认限流设置（未匹配规则时使用）
@@ -844,68 +853,13 @@ class ConfigLoader:
     def _load_limit_settings(self, config: PluginConfig):
         """加载限制设置"""
         limit_settings = self.raw_config.get("limit_settings") or {}
+        if not isinstance(limit_settings, dict):
+            config.limit_config_error = "限制设置必须是对象"
+            logger.warning("[限流] 限制设置格式无效，暂停生成准入")
+            return
 
-        raw_mode = str(limit_settings.get("group_limit_mode") or "none").lower()
-        if raw_mode not in {"none", "whitelist", "blacklist"}:
-            raw_mode = "none"
-        config.group_limit_mode = raw_mode
-
-        raw_group_list = limit_settings.get("group_limit_list") or []
-        config.group_limit_list = {
-            str(group_id).strip()
-            for group_id in raw_group_list
-            if str(group_id).strip()
-        }
-
-        # 新版限流规则列表
-        rate_limit_rules_raw = limit_settings.get("rate_limit_rules") or []
-        config.rate_limit_rules = []
-        if isinstance(rate_limit_rules_raw, list):
-            for rule in rate_limit_rules_raw:
-                if isinstance(rule, dict):
-                    rule_copy = rule.copy()
-                    rule_copy.pop("__template_key", None)
-                    # 处理 group_ids 列表
-                    group_ids = rule_copy.get("group_ids") or []
-                    if isinstance(group_ids, list):
-                        rule_copy["group_ids"] = [
-                            str(gid).strip() for gid in group_ids if str(gid).strip()
-                        ]
-                    else:
-                        rule_copy["group_ids"] = []
-                    # 确保数值类型正确
-                    try:
-                        rule_copy["period_seconds"] = max(
-                            int(rule_copy.get("period_seconds", 60)), 1
-                        )
-                    except (TypeError, ValueError):
-                        rule_copy["period_seconds"] = 60
-                    try:
-                        rule_copy["max_requests"] = max(
-                            int(rule_copy.get("max_requests", 5)), 1
-                        )
-                    except (TypeError, ValueError):
-                        rule_copy["max_requests"] = 5
-                    rule_copy["enabled"] = bool(rule_copy.get("enabled", True))
-                    config.rate_limit_rules.append(rule_copy)
-
-        # 默认限流设置
-        default_rate_limit = limit_settings.get("default_rate_limit") or {}
-        if isinstance(default_rate_limit, dict):
-            config.default_rate_limit = {
-                "enabled": bool(default_rate_limit.get("enabled", False)),
-                "period_seconds": 60,
-                "max_requests": 5,
-            }
-            try:
-                config.default_rate_limit["period_seconds"] = max(
-                    int(default_rate_limit.get("period_seconds", 60)), 1
-                )
-            except (TypeError, ValueError):
-                pass
-            try:
-                config.default_rate_limit["max_requests"] = max(
-                    int(default_rate_limit.get("max_requests", 5)), 1
-                )
-            except (TypeError, ValueError):
-                pass
+        try:
+            apply_limits(config, normalize_limits(limit_settings, strict=False))
+        except ValueError as exc:
+            config.limit_config_error = str(exc)
+            logger.warning(f"[限流] 配置无效，暂停生成准入: {exc}")

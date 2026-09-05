@@ -132,6 +132,7 @@ class GeminiImageGenerationPlugin(Star):
 
         # 初始化各功能模块
         self._init_modules()
+        self.web_studio_service.rate_limiter = self.rate_limiter
 
         # 尝试加载 API 客户端（支持插件重载场景）
         self._load_api_client_from_config(quiet=True)
@@ -349,9 +350,19 @@ class GeminiImageGenerationPlugin(Star):
                     "[WebUI] 当前 AstrBot 版本不支持插件 Web API，已跳过工作台路由"
                 )
                 return
+            from .tl.studio_limits import StudioLimitsService
+
+            self.studio_limits = StudioLimitsService(
+                self.raw_config,
+                self.cfg,
+                self.rate_limiter,
+                self.context,
+                self._plugin_data_dir,
+            )
             self._web_api = WebStudioAPI(
                 self.generation_tracker,
                 self.web_studio_service,
+                limits_service=self.studio_limits,
                 is_closed=lambda: self._web_closed,
             )
             self._web_routes = self._web_api.register(self.context)
@@ -387,6 +398,10 @@ class GeminiImageGenerationPlugin(Star):
                 await self.api_client.close()
             except Exception as e:
                 logger.debug(f"关闭 API 会话失败: {e}")
+        try:
+            await self.rate_limiter.close()
+        except Exception as e:
+            logger.debug(f"关闭限流器失败: {e}")
         logger.info("Gemini 图像生成插件已卸载")
 
     # ===== 配置和客户端管理 =====
@@ -512,6 +527,26 @@ class GeminiImageGenerationPlugin(Star):
 
     # ===== 核心业务方法 =====
 
+    async def _check_command_generation_limit(
+        self,
+        event: AstrMessageEvent,
+        *,
+        requested_provider: str | None = None,
+        requested_model: str | None = None,
+        has_reference_images: bool = False,
+    ) -> tuple[bool, str | None]:
+        """命令在输入准备完成后检查 API/路由，再扣减一次额度。"""
+        if not self._ensure_api_client():
+            return False, "❌ API 客户端未初始化，请检查插件供应商配置。"
+        if not select_candidates(
+            getattr(self.cfg, "provider_candidates", []) or [],
+            provider=requested_provider,
+            model=requested_model,
+            has_reference_images=has_reference_images,
+        ):
+            return False, "❌ 没有匹配本次请求能力的供应商或模型"
+        return await self._check_and_consume_limit(event)
+
     async def _quick_generate_image(
         self,
         event: AstrMessageEvent,
@@ -526,6 +561,9 @@ class GeminiImageGenerationPlugin(Star):
         requested_model: str | None = None,
     ):
         """快捷图像生成"""
+        if not str(prompt or "").strip():
+            yield event.plain_result("❌ 图像描述不能为空")
+            return
         if not self._ensure_api_client():
             yield event.plain_result(
                 "❌ API 客户端未初始化。\n"
@@ -563,6 +601,17 @@ class GeminiImageGenerationPlugin(Star):
                         "请附上一张参考图片后再使用 /改图 指令。",
                     )
                 )
+                return
+
+            allowed, limit_message = await self._check_command_generation_limit(
+                event,
+                requested_provider=requested_provider,
+                requested_model=requested_model,
+                has_reference_images=bool(all_ref_images),
+            )
+            if not allowed:
+                if limit_message:
+                    yield event.plain_result(limit_message)
                 return
 
             effective_resolution = override_resolution
@@ -843,16 +892,12 @@ class GeminiImageGenerationPlugin(Star):
         **kwargs,
     ):
         """处理快速模式的通用逻辑"""
+        if not self.rate_limiter.allows_group(event):
+            return
         if requested_provider is None and requested_model is None:
             prompt, requested_provider, requested_model = self._parse_generation_route(
                 prompt
             )
-        allowed, limit_message = await self.rate_limiter.check_and_consume(event)
-        if not allowed:
-            if limit_message:
-                yield event.plain_result(limit_message)
-            return
-
         effective_resolution, effective_aspect_ratio = self._resolve_quick_mode_params(
             mode_key, resolution, aspect_ratio
         )
@@ -891,16 +936,15 @@ class GeminiImageGenerationPlugin(Star):
     @filter.command("生图")
     async def generate_image(self, event: AstrMessageEvent, prompt: str):
         """生图指令"""
-        allowed, limit_message = await self.rate_limiter.check_and_consume(event)
-        if not allowed:
-            if limit_message:
-                yield event.plain_result(limit_message)
+        if not self.rate_limiter.allows_group(event):
             return
-
         prompt = self._extract_prompt_from_message(event, prompt, ("生图",))
         prompt, requested_provider, requested_model = self._parse_generation_route(
             prompt
         )
+        if not prompt.strip():
+            yield event.plain_result("❌ 图像描述不能为空")
+            return
         use_avatar = await self.avatar_handler.should_use_avatar(event)
         generation_prompt = get_generation_prompt(prompt)
 
@@ -1016,18 +1060,14 @@ class GeminiImageGenerationPlugin(Star):
         - enable_sticker_split: 是否自动切割图片
         - enable_sticker_zip: 是否打包发送（如果发送失败则使用合并转发）
         """
+        if not self.rate_limiter.allows_group(event):
+            return
         prompt = self._extract_prompt_from_message(
             event, prompt, ("快速",), ("表情包",)
         )
         prompt, requested_provider, requested_model = self._parse_generation_route(
             prompt
         )
-        allowed, limit_message = await self.rate_limiter.check_and_consume(event)
-        if not allowed:
-            if limit_message:
-                yield event.plain_result(limit_message)
-            return
-
         yield event.plain_result("🎨 使用表情包模式生成图像...")
 
         use_avatar = await self.avatar_handler.should_use_avatar(event)
@@ -1091,6 +1131,17 @@ class GeminiImageGenerationPlugin(Star):
                 requested_model=requested_model,
             ):
                 yield result
+            return
+
+        allowed, limit_message = await self._check_command_generation_limit(
+            event,
+            requested_provider=requested_provider,
+            requested_model=requested_model,
+            has_reference_images=True,
+        )
+        if not allowed:
+            if limit_message:
+                yield event.plain_result(limit_message)
             return
 
         # 启用切割的表情包生成
@@ -1581,16 +1632,16 @@ class GeminiImageGenerationPlugin(Star):
     @filter.command("改图")
     async def modify_image(self, event: AstrMessageEvent, prompt: str):
         """根据提示词修改或重做图像"""
-        allowed, limit_message = await self.rate_limiter.check_and_consume(event)
-        if not allowed:
-            if limit_message:
-                yield event.plain_result(limit_message)
+        if not self.rate_limiter.allows_group(event):
             return
         prompt = self._extract_prompt_from_message(event, prompt, ("改图",))
         prompt, requested_provider, requested_model = self._parse_generation_route(
             prompt
         )
 
+        if not prompt.strip():
+            yield event.plain_result("❌ 修改描述不能为空")
+            return
         # 构造改图专用提示词，确保修改意图明确
         modification_prompt = get_modification_prompt(prompt)
 
@@ -1611,12 +1662,8 @@ class GeminiImageGenerationPlugin(Star):
     @filter.command("换风格")
     async def change_style(self, event: AstrMessageEvent, style: str, prompt: str = ""):
         """改变图像风格"""
-        allowed, limit_message = await self.rate_limiter.check_and_consume(event)
-        if not allowed:
-            if limit_message:
-                yield event.plain_result(limit_message)
+        if not self.rate_limiter.allows_group(event):
             return
-
         tail = self._extract_prompt_from_message(event, "", ("换风格",))
         tail, requested_provider, requested_model = self._parse_generation_route(tail)
         if tail:
@@ -1630,6 +1677,9 @@ class GeminiImageGenerationPlugin(Star):
             style = tail_tokens[0]
             prompt = " ".join(tail_tokens[1:]).strip()
 
+        if not str(style or "").strip():
+            yield event.plain_result("❌ 风格不能为空")
+            return
         full_prompt = get_style_change_prompt(style, prompt)
 
         combined_prompt = f"{style} {prompt}".strip()
@@ -1643,6 +1693,12 @@ class GeminiImageGenerationPlugin(Star):
             event, include_at_avatars=use_avatar
         )
 
+        reference_images = self.image_handler.filter_valid_reference_images(
+            reference_images, source="消息图片"
+        )
+        avatar_reference = self.image_handler.filter_valid_reference_images(
+            avatar_reference, source="头像"
+        )
         if not reference_images and not avatar_reference:
             yield event.plain_result(
                 _build_no_ref_msg(
@@ -1650,6 +1706,17 @@ class GeminiImageGenerationPlugin(Star):
                     "请附上一张参考图片后再使用 /换风格 指令。",
                 )
             )
+            return
+
+        allowed, limit_message = await self._check_command_generation_limit(
+            event,
+            requested_provider=requested_provider,
+            requested_model=requested_model,
+            has_reference_images=True,
+        )
+        if not allowed:
+            if limit_message:
+                yield event.plain_result(limit_message)
             return
 
         yield event.plain_result("🎨 开始转换风格...")
@@ -1788,10 +1855,10 @@ class GeminiImageGenerationPlugin(Star):
             yield res
 
     async def _check_and_consume_limit(
-        self, event: AstrMessageEvent
+        self, event: AstrMessageEvent, *, cost: int = 1
     ) -> tuple[bool, str | None]:
         """兼容旧 API：检查限流"""
-        return await self.rate_limiter.check_and_consume(event)
+        return await self.rate_limiter.check_and_consume(event, cost=cost)
 
     def _get_group_id_from_event(self, event: AstrMessageEvent) -> str | None:
         """兼容旧 API：获取群ID"""

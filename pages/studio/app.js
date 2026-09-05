@@ -7,6 +7,7 @@
 // 1. IconSet (极简漫画 2px 手绘 SVG 图标字典，静态安全常量)
 // ==========================================================================
 const IconSet = {
+  sliders: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h9m4 0h3M4 17h3m4 0h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg>`,
   brush: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9.06 11.9 8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08"/><path d="M7.07 14.94c-1.66 0-3 1.35-3 3.02 0 1.33-2.5 1.52-2 2.04 1.5.54 4.5 1 6.5-1 1-1 1.5-2.06 1.5-3.06 0-1.67-1.34-3-3-3z"/></svg>`,
   clock: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>`,
   grid: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>`,
@@ -3227,6 +3228,582 @@ class GalleryView {
 }
 
 // ==========================================================================
+// 限流控制（仅内存草稿，显式保存；与创作台数据流独立）
+// ==========================================================================
+class LimitsView {
+  constructor() {
+    this.root = document.getElementById('panel-limits');
+    this.editor = document.getElementById('limits-editor');
+    this.saveButton = document.getElementById('btn-save-limits');
+    this.reloadButton = document.getElementById('btn-reload-limits');
+    this.status = document.getElementById('limits-status');
+    this.dirtyLabel = document.getElementById('limits-dirty');
+    this.migrationLabel = document.getElementById('limits-migration');
+    this.draft = null;
+    this.baseline = '';
+    this.revision = null;
+    this.loaded = false;
+    this.attempted = false;
+    this.loading = false;
+    this.saving = false;
+    this.conflict = false;
+    this.destroyed = false;
+    this.requestId = 0;
+    this.pickerRequestId = 0;
+    this.picker = null;
+    this.sessionNames = new Map();
+    this.onClick = (event) => { void this.handleClick(event); };
+    this.onInput = (event) => this.handleInput(event);
+    this.onChange = (event) => this.handleChange(event);
+    this.onSubmit = (event) => {
+      if (event.target.dataset.limitsSearch !== undefined) {
+        event.preventDefault();
+        void this.searchSessions(1);
+      }
+    };
+    this.onBeforeUnload = (event) => {
+      if (!this.dirty) return;
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    this.root.addEventListener('click', this.onClick);
+    this.root.addEventListener('input', this.onInput);
+    this.root.addEventListener('change', this.onChange);
+    this.root.addEventListener('submit', this.onSubmit);
+    window.addEventListener('beforeunload', this.onBeforeUnload);
+  }
+
+  get dirty() {
+    return this.draft !== null && JSON.stringify(this.draft) !== this.baseline;
+  }
+
+  async open() {
+    if (this.attempted || this.destroyed) return;
+    this.attempted = true;
+    await this.load();
+  }
+
+  notice(message, warning = false) {
+    SafeDOM.setText(this.status, message);
+    this.status.classList.toggle('limits-notice--warning', warning);
+  }
+
+  updateState() {
+    const unavailable = !BridgeClient.isAvailable();
+    this.saveButton.disabled = !this.loaded || unavailable || this.loading || this.saving
+      || this.conflict || !this.dirty;
+    this.reloadButton.disabled = this.loading || this.saving || unavailable;
+    this.editor.disabled = !this.loaded || this.loading || this.saving || unavailable;
+    SafeDOM.setText(this.dirtyLabel, this.dirty
+      ? '有未保存的草稿 · 切换页签会保留，关闭页面会丢失。'
+      : (this.loaded ? '与服务器配置一致' : '尚未加载可编辑配置'));
+    SafeDOM.setText(this.saveButton, this.saving ? '保存中…' : '保存限流配置');
+  }
+
+  accept(payload) {
+    const limits = payload?.limits;
+    if (typeof payload?.revision !== 'string' || !limits
+        || !limits.global_rate_limit || !limits.default_rate_limit
+        || !['none', 'whitelist', 'blacklist'].includes(limits.group_limit_mode)
+        || !Array.isArray(limits.group_limit_list) || !limits.group_limit_list.every(id => typeof id === 'string')
+        || !Array.isArray(limits.rate_limit_rules)) {
+      throw new Error('Invalid limits response');
+    }
+    // 只复制管理范围内字段，绝不回传服务端其它配置。
+    const rate = (value) => ({enabled: value.enabled,
+      period_seconds: value.period_seconds, max_requests: value.max_requests});
+    const draft = {
+      group_limit_mode: limits.group_limit_mode,
+      group_limit_list: [...limits.group_limit_list],
+      global_rate_limit: rate(limits.global_rate_limit),
+      default_rate_limit: rate(limits.default_rate_limit),
+      rate_limit_rules: limits.rate_limit_rules.map((rule) => {
+        if (!Array.isArray(rule.umos) || (rule.group_ids !== undefined && !Array.isArray(rule.group_ids))) {
+          throw new Error('Invalid rule response');
+        }
+        return {rule_name: rule.rule_name, ...rate(rule), umos: [...rule.umos],
+          ...(rule.group_ids === undefined ? {} : {group_ids: [...rule.group_ids]})};
+      })
+    };
+    this.draft = draft;
+    this.revision = payload.revision;
+    this.baseline = JSON.stringify(draft);
+    this.loaded = true;
+    this.conflict = false;
+    this.closePicker();
+    const migration = payload.migration || {};
+    const notices = [];
+    if (migration.message) notices.push(String(migration.message));
+    else if (migration.pending) notices.push('存在启用的未迁移规则，聊天请求已暂停；请完成迁移后保存。');
+    if (Number(migration.cooldown_until) > Date.now() / 1000) {
+      notices.push(`冷却至 ${new Date(migration.cooldown_until * 1000).toLocaleString()}（服务器状态，以实际请求为准）。`);
+    }
+    SafeDOM.setText(this.migrationLabel, notices.join(' '));
+    this.migrationLabel.hidden = !notices.length;
+    this.render();
+  }
+
+  async load() {
+    if (this.destroyed || this.loading || this.saving) return;
+    if (!BridgeClient.isAvailable()) {
+      this.loaded = false;
+      this.notice('页面桥接不可用，请在 AstrBot Dashboard 中打开 Studio。', true);
+      this.updateState();
+      return;
+    }
+    const id = ++this.requestId;
+    this.loading = true;
+    this.closePicker();
+    this.notice('正在加载服务器限流配置…');
+    this.updateState();
+    try {
+      const payload = await BridgeClient.get('webui/limits');
+      if (this.destroyed || id !== this.requestId) return;
+      this.accept(payload);
+      this.notice('配置已加载。修改后请显式保存。');
+    } catch (error) {
+      if (this.destroyed || id !== this.requestId) return;
+      this.loaded = false;
+      console.warn('[LimitsView] 加载失败:', error);
+      this.notice('限流配置加载失败，保存已禁用；现有草稿保留，请重新加载。', true);
+    } finally {
+      if (!this.destroyed && id === this.requestId) {
+        this.loading = false;
+        this.updateState();
+      }
+    }
+  }
+
+  static validUmo(umo) {
+    if (typeof umo !== 'string' || [...umo].length > 1024 || /[\x00-\x1f\x7f]/.test(umo)) return false;
+    const match = umo.match(/^([^:]+):(GroupMessage|FriendMessage|OtherMessage):([\s\S]+)$/);
+    return !!match && !!match[1].trim() && !!match[3].trim();
+  }
+
+  validate() {
+    if (!['none', 'whitelist', 'blacklist'].includes(this.draft.group_limit_mode)) {
+      throw new Error('请选择群限制模式。');
+    }
+    if (this.draft.group_limit_list.length > 1000 || this.draft.group_limit_list.some(id =>
+      typeof id !== 'string' || !id.trim() || [...id].length > 1024 || /[\x00-\x1f\x7f]/.test(id))) {
+      throw new Error('群号列表最多 1000 项，每项须为不含控制字符的非空群号，最多 1024 字符。');
+    }
+    const rules = this.draft.rate_limit_rules;
+    if (rules.length > 100) throw new Error('最多允许 100 条指定会话规则。');
+    const entries = [['全局限流', this.draft.global_rate_limit], ['默认会话限流', this.draft.default_rate_limit],
+      ...rules.map((rule, index) => [`规则 ${index + 1}`, rule])];
+    for (const [name, rate] of entries) {
+      if (typeof rate.enabled !== 'boolean') throw new Error(`${name}：请选择启停状态。`);
+      for (const [key, max, label] of [['period_seconds', 604800, '周期'], ['max_requests', 10000, '次数']]) {
+        const value = Number(rate[key]);
+        if (!Number.isInteger(value) || value < 1 || value > max) {
+          throw new Error(`${name}：${label}须为 1–${max} 的整数。`);
+        }
+      }
+    }
+    rules.forEach((rule, index) => {
+      if (typeof rule.rule_name !== 'string' || !rule.rule_name.trim() || [...rule.rule_name].length > 100) {
+        throw new Error(`规则 ${index + 1}：名称须为 1–100 个字符。`);
+      }
+      if (rule.umos.length > 500 || !rule.umos.every(LimitsView.validUmo)) {
+        throw new Error(`规则 ${index + 1}：最多 500 个完整 UMO，每个不超过 1024 字符；请检查格式。`);
+      }
+      if (rule.enabled && rule.group_ids?.length) {
+        throw new Error(`规则 ${index + 1}：启用的旧群号规则尚未迁移，聊天请求将保持暂停。请选择非空 UMO 并点击“确认迁移”，或明确停用此规则后保存。`);
+      }
+    });
+  }
+
+  async save() {
+    if (this.destroyed) return;
+    this.updateState();
+    if (this.saveButton.disabled) return;
+    try { this.validate(); } catch (error) { this.notice(error.message, true); return; }
+    const limits = JSON.parse(JSON.stringify(this.draft));
+    for (const rate of [limits.global_rate_limit, limits.default_rate_limit, ...limits.rate_limit_rules]) {
+      rate.period_seconds = Number(rate.period_seconds);
+      rate.max_requests = Number(rate.max_requests);
+    }
+    const id = ++this.requestId;
+    this.saving = true;
+    this.closePicker();
+    this.updateState();
+    this.notice('正在保存…');
+    try {
+      const payload = await BridgeClient.post('webui/limits', {revision: this.revision, limits});
+      if (this.destroyed || id !== this.requestId) return;
+      this.accept(payload);
+      this.notice('限流配置已保存。');
+    } catch (error) {
+      if (this.destroyed || id !== this.requestId) return;
+      console.warn('[LimitsView] 保存失败:', error);
+      const status = Number(error?.status ?? error?.statusCode ?? error?.status_code ?? error?.code ?? error?.response?.status);
+      this.conflict = status === 409 || /\b409\b|conflict|revision|配置.*(?:变更|冲突|过期|更新)/i.test(String(error?.message || ''));
+      this.notice(this.conflict
+        ? '服务器配置已变更（409），草稿完整保留。请先核对草稿，再点击“重新加载服务器配置”；不会自动重试或覆盖。'
+        : '保存失败，草稿已保留。请检查规则、迁移状态与连接后重试。', true);
+    } finally {
+      if (!this.destroyed && id === this.requestId) {
+        this.saving = false;
+        this.updateState();
+      }
+    }
+  }
+
+  button(text, action, index, icon, disabled = false) {
+    const children = [];
+    if (icon) {
+      const span = SafeDOM.el('span', {className: 'btn-icon', 'aria-hidden': 'true'});
+      SafeDOM.setSvgIcon(span, icon);
+      children.push(span);
+    }
+    children.push(text);
+    return SafeDOM.el('button', {type: 'button', className: 'comic-btn comic-btn--sm comic-btn--outline',
+      disabled, dataset: {limitsAction: action, index: index ?? ''}}, children);
+  }
+
+  field(label, input) {
+    return SafeDOM.el('label', {className: 'form-item'}, [SafeDOM.el('span', {className: 'form-label'}, [label]), input]);
+  }
+
+  rateFields(rate, scope) {
+    const enabled = SafeDOM.el('input', {type: 'checkbox', dataset: {scope, field: 'enabled'}});
+    enabled.checked = rate.enabled === true;
+    return SafeDOM.el('div', {className: 'limits-rate-fields'}, [
+      SafeDOM.el('label', {className: 'limits-check'}, [enabled, '启用']),
+      ...[['period_seconds', '周期（秒）', 604800], ['max_requests', '最大次数', 10000]].map(([key, label, max]) =>
+        this.field(label, SafeDOM.el('input', {type: 'number', className: 'comic-input', min: 1, max, step: 1,
+          value: rate[key], required: '', dataset: {scope, field: key}})))
+    ]);
+  }
+
+  groupAccessCard() {
+    const mode = SafeDOM.el('select', {className: 'comic-select', 'aria-label': '群限制模式', dataset: {accessField: 'group_limit_mode'}},
+      [['none', '不限制'], ['whitelist', '白名单'], ['blacklist', '黑名单']].map(([value, label]) => SafeDOM.el('option', {value}, [label])));
+    mode.value = this.draft.group_limit_mode;
+    const list = SafeDOM.el('textarea', {className: 'comic-input', rows: 4, spellcheck: 'false',
+      placeholder: '每行一个群号，不填写 UMO', dataset: {accessField: 'group_limit_list'}});
+    list.value = this.draft.group_limit_list.join('\n');
+    this.groupListTitle = SafeDOM.el('span', {className: 'form-label'});
+    this.groupAccessNote = SafeDOM.el('p', {className: 'field-hint', role: 'status'});
+    this.updateGroupAccessNote();
+    return SafeDOM.el('section', {className: 'comic-card limits-card limits-card--access'}, [
+      SafeDOM.el('div', {className: 'section-heading'}, [SafeDOM.el('span', {className: 'section-number'}, ['01']),
+        SafeDOM.el('h3', {className: 'card-title'}, ['群限制与黑白名单'])]),
+      SafeDOM.el('div', {className: 'limits-access-fields'}, [
+        this.field('群限制模式', mode), SafeDOM.el('label', {className: 'form-item'}, [this.groupListTitle, list])]),
+      this.groupAccessNote, SafeDOM.el('p', {className: 'field-hint'}, ['按群号控制访问；私聊和 Studio 不受群名单影响，周期限流仍按 UMO 独立计数。'])
+    ]);
+  }
+
+  updateGroupAccessNote() {
+    const mode = this.draft.group_limit_mode;
+    const count = this.draft.group_limit_list.length;
+    SafeDOM.setText(this.groupListTitle, mode === 'whitelist' ? '白名单群号' : mode === 'blacklist' ? '黑名单群号' : '群号列表（暂不生效）');
+    const hint = mode === 'none' ? '不限制群访问；切换模式会保留名单。'
+      : mode === 'whitelist' ? (count ? '仅允许名单中的群使用，其他群静默拒绝。' : '白名单为空，沿用原行为：所有群均可使用。')
+      : (count ? '禁止名单中的群使用。' : '黑名单为空，未禁止任何群。');
+    SafeDOM.setText(this.groupAccessNote, `${hint} 已填 ${count} / 1000 个群号，每行一个。`);
+  }
+
+  render(focusAction, focusIndex) {
+    this.closePicker();
+    const cards = [['global_rate_limit', '02', '全局限流', '命令、LLM 与 Studio 生成共享此额度；会话规则不能绕过全局限制。'],
+      ['default_rate_limit', '03', '默认会话限流', '未命中指定规则的会话使用此额度，每个会话分别计数。']].map(([key, number, title, hint]) =>
+      SafeDOM.el('section', {className: 'comic-card limits-card'}, [
+        SafeDOM.el('div', {className: 'section-heading'}, [SafeDOM.el('span', {className: 'section-number'}, [number]),
+          SafeDOM.el('h3', {className: 'card-title'}, [title])]),
+        SafeDOM.el('p', {className: 'field-hint'}, [hint]), this.rateFields(this.draft[key], key)
+      ]));
+    cards.unshift(this.groupAccessCard());
+    this.rulesList = SafeDOM.el('div', {className: 'limits-rules'});
+    this.draft.rate_limit_rules.forEach((rule, index) => this.rulesList.appendChild(this.ruleRow(rule, index)));
+    cards.push(SafeDOM.el('section', {className: 'comic-card limits-card limits-card--rules'}, [
+      SafeDOM.el('div', {className: 'section-heading'}, [SafeDOM.el('span', {className: 'section-number'}, ['04']),
+        SafeDOM.el('h3', {className: 'card-title'}, ['指定会话规则'])]),
+      SafeDOM.el('p', {className: 'field-hint'}, ['按列表顺序匹配，首条命中的启用规则生效。最多 100 条，每条最多 500 个 UMO。']),
+      this.rulesList, this.button('添加规则', 'add-rule', null, 'plus', this.draft.rate_limit_rules.length >= 100)
+    ]));
+    this.editor.replaceChildren(...cards);
+    if (focusAction) this.editor.querySelector(`[data-limits-action="${focusAction}"][data-index="${focusIndex ?? ''}"]`)?.focus();
+  }
+
+  ruleRow(rule, index) {
+    const title = SafeDOM.el('h4', {}, [`规则 ${index + 1}`]);
+    const name = this.field('规则名称', SafeDOM.el('input', {type: 'text', className: 'comic-input', value: rule.rule_name,
+      dataset: {scope: String(index), field: 'rule_name'}}));
+    const row = SafeDOM.el('article', {className: 'limits-rule', dataset: {ruleIndex: index}}, [
+      SafeDOM.el('div', {className: 'limits-toolbar'}, [title,
+        SafeDOM.el('div', {className: 'limits-actions'}, [
+          this.button('上移', 'up-rule', index, 'chevronUp', index === 0),
+          this.button('下移', 'down-rule', index, 'chevronDown', index === this.draft.rate_limit_rules.length - 1),
+          this.button('删除规则', 'delete-rule', index, 'trash')])]),
+      name, this.rateFields(rule, String(index))
+    ]);
+    if (rule.group_ids?.length) {
+      row.appendChild(SafeDOM.el('div', {className: 'limits-notice limits-notice--warning'}, [
+        SafeDOM.el('p', {}, [`旧群号待迁移：${rule.group_ids.join('、')}`]),
+        SafeDOM.el('p', {}, ['旧群号不会自动转换或清除。启用的未迁移规则会暂停聊天请求，保存也会被拒绝。请选择非空完整 UMO，再明确确认迁移；停用不会清除旧群号。']),
+        this.button('确认迁移', 'migrate-rule', index, 'check', !rule.umos.length)
+      ]));
+    }
+    row.appendChild(SafeDOM.el('p', {className: 'field-hint'}, ['UMO 留空 = 所有会话分别计数，不是全局共享额度。']));
+    const selected = SafeDOM.el('div', {className: 'limits-selected', dataset: {selectedIndex: index}});
+    this.renderSelected(selected, rule, index);
+    row.appendChild(selected);
+    const choose = this.button('选择会话 / 手动粘贴 UMO', 'choose-sessions', index, 'search');
+    choose.setAttribute('aria-expanded', 'false');
+    choose.setAttribute('aria-controls', `limits-picker-${index}`);
+    row.appendChild(choose);
+    row.appendChild(SafeDOM.el('div', {id: `limits-picker-${index}`, dataset: {pickerIndex: index}}));
+    return row;
+  }
+
+  renderSelected(container, rule, index) {
+    container.replaceChildren(SafeDOM.el('p', {className: 'field-hint'}, [`已选 ${rule.umos.length} / 500 个会话`]));
+    rule.umos.forEach((umo) => {
+      const remove = this.button('移除', 'remove-umo', index, 'x');
+      remove.dataset.umo = umo;
+      remove.setAttribute('aria-label', `移除会话 ${umo}`);
+      container.appendChild(SafeDOM.el('div', {className: 'limits-session'}, [
+        SafeDOM.el('div', {className: 'limits-session-identity'}, [
+          SafeDOM.el('span', {}, [this.sessionNames.get(umo) || '名称未知（保留完整身份）']),
+          SafeDOM.el('code', {}, [umo])]), remove]));
+    });
+  }
+
+  refreshSelected(index) {
+    const rule = this.draft.rate_limit_rules[index];
+    this.renderSelected(this.editor.querySelector(`[data-selected-index="${index}"]`), rule, index);
+    const migrate = this.editor.querySelector(`[data-limits-action="migrate-rule"][data-index="${index}"]`);
+    if (migrate) migrate.disabled = !rule.umos.length;
+    if (this.picker?.index === index) {
+      this.picker.results.querySelectorAll('[data-session-umo]').forEach((input) => {
+        input.checked = rule.umos.includes(input.dataset.sessionUmo);
+      });
+    }
+    this.updateState();
+  }
+
+  handleInput(event) {
+    if (this.destroyed || this.editor.disabled) return;
+    if (event.target.dataset.accessField === 'group_limit_list') {
+      this.draft.group_limit_list = [...new Set(event.target.value.split(/\r?\n/).map(id => id.trim()).filter(Boolean))];
+      this.updateGroupAccessNote();
+      this.updateState();
+      return;
+    }
+    const {scope, field} = event.target.dataset;
+    if (scope === undefined || !['rule_name', 'period_seconds', 'max_requests'].includes(field)) return;
+    const rate = this.draft[scope] || this.draft.rate_limit_rules[Number(scope)];
+    if (!rate) return;
+    const value = event.target.value;
+    rate[field] = field !== 'rule_name' && value !== '' && Number.isFinite(Number(value)) ? Number(value) : value;
+    this.updateState();
+  }
+
+  handleChange(event) {
+    if (this.destroyed || this.editor.disabled) return;
+    const input = event.target;
+    if (input.dataset.accessField === 'group_limit_mode') {
+      this.draft.group_limit_mode = input.value;
+      this.updateGroupAccessNote();
+      this.updateState();
+      return;
+    }
+    if (input.dataset.field === 'enabled') {
+      const rate = this.draft[input.dataset.scope] || this.draft.rate_limit_rules[Number(input.dataset.scope)];
+      if (rate) rate.enabled = input.checked;
+      this.updateState();
+    } else if (input.dataset.sessionUmo !== undefined && this.picker) {
+      const rule = this.draft.rate_limit_rules[this.picker.index];
+      if (input.checked) {
+        if (!this.addUmos(rule, [input.dataset.sessionUmo])) input.checked = false;
+      } else rule.umos = rule.umos.filter((umo) => umo !== input.dataset.sessionUmo);
+      this.refreshSelected(this.picker.index);
+    } else if (input.dataset.sessionFilter !== undefined) {
+      void this.searchSessions(1);
+    }
+  }
+
+  async handleClick(event) {
+    if (this.destroyed) return;
+    const button = event.target.closest('button');
+    if (!button || !this.root.contains(button) || button.disabled) return;
+    if (button === this.saveButton) { await this.save(); return; }
+    if (button === this.reloadButton) {
+      if (this.loading || this.saving) return;
+      const confirmed = await Modal.confirm({title: '重新加载服务器配置？',
+        content: this.dirty ? '当前未保存草稿将被丢弃，以服务器配置替换。请先核对或复制需要保留的内容。' : '将重新读取服务器配置。',
+        confirmText: '确认重新加载', danger: this.dirty});
+      if (confirmed && !this.destroyed) await this.load();
+      return;
+    }
+    if (this.editor.disabled) return;
+    const action = button.dataset.limitsAction;
+    const index = Number(button.dataset.index);
+    const rules = this.draft.rate_limit_rules;
+    const rule = rules[index];
+    if (action === 'choose-sessions') { this.openPicker(index); return; }
+    if (action === 'close-picker') { this.closePicker(true); return; }
+    if (action === 'previous-sessions' || action === 'next-sessions') {
+      if (this.picker) await this.searchSessions(this.picker.page + (action === 'next-sessions' ? 1 : -1));
+      return;
+    }
+    if (action === 'paste-umos' && this.picker) {
+      const values = this.picker.manual.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      if (!values.length) { this.pickerNotice('请每行粘贴一个完整 UMO。'); return; }
+      if (this.addUmos(rule, values)) this.picker.manual.value = '';
+      this.refreshSelected(index);
+      return;
+    }
+    if (action === 'remove-umo' && rule) {
+      rule.umos = rule.umos.filter((umo) => umo !== button.dataset.umo);
+      this.refreshSelected(index);
+      this.editor.querySelector(`[data-limits-action="choose-sessions"][data-index="${index}"]`)?.focus();
+      return;
+    }
+    if (action === 'add-rule' && rules.length < 100) {
+      rules.push({rule_name: `规则 ${rules.length + 1}`, enabled: false, period_seconds: 60, max_requests: 5, umos: []});
+      this.render('choose-sessions', rules.length - 1);
+    } else if (action === 'delete-rule' && rule) {
+      rules.splice(index, 1);
+      this.render('add-rule');
+    } else if ((action === 'up-rule' || action === 'down-rule') && rule) {
+      const next = index + (action === 'up-rule' ? -1 : 1);
+      if (next < 0 || next >= rules.length) return;
+      [rules[index], rules[next]] = [rules[next], rules[index]];
+      this.render('choose-sessions', next);
+    } else if (action === 'migrate-rule' && rule?.group_ids?.length && rule.umos.length) {
+      if (!rule.umos.every(LimitsView.validUmo) || rule.umos.length > 500) {
+        this.notice('请先修正 UMO 格式与数量，再确认迁移。', true);
+        return;
+      }
+      rule.group_ids = [];
+      this.render('choose-sessions', index);
+      this.notice('已在草稿中确认迁移，旧群号仅在保存成功后清除。');
+    }
+    this.updateState();
+  }
+
+  addUmos(rule, values) {
+    if (!values.every(LimitsView.validUmo)) {
+      this.pickerNotice('UMO 格式无效：需要 Platform:GroupMessage|FriendMessage|OtherMessage:非空会话段，每个最多 1024 字符。不会按群号拼接。');
+      return false;
+    }
+    const merged = [...new Set([...rule.umos, ...values])];
+    if (merged.length > 500) { this.pickerNotice('每条规则最多选择 500 个 UMO，本次添加未生效。'); return false; }
+    rule.umos = merged;
+    this.pickerNotice('已填入草稿，尚未保存。翻页或筛选不会丢失已选会话。');
+    return true;
+  }
+
+  pickerNotice(message) {
+    if (this.picker) SafeDOM.setText(this.picker.feedback, message);
+    else this.notice(message, true);
+  }
+
+  closePicker(restoreFocus = false) {
+    ++this.pickerRequestId;
+    if (!this.picker) return;
+    const index = this.picker.index;
+    this.picker.host.replaceChildren();
+    this.picker = null;
+    const button = this.editor.querySelector(`[data-limits-action="choose-sessions"][data-index="${index}"]`);
+    button?.setAttribute('aria-expanded', 'false');
+    if (restoreFocus) button?.focus();
+  }
+
+  openPicker(index) {
+    if (this.picker?.index === index) { this.closePicker(true); return; }
+    this.closePicker();
+    const host = this.editor.querySelector(`[data-picker-index="${index}"]`);
+    const search = SafeDOM.el('input', {type: 'search', className: 'comic-input', placeholder: '名称或完整 UMO', 'aria-label': '搜索会话'});
+    const type = SafeDOM.el('select', {className: 'comic-select', dataset: {sessionFilter: 'type'}, 'aria-label': '会话类型'},
+      [['all', '全部类型'], ['group', '群聊'], ['private', '私聊']].map(([value, label]) => SafeDOM.el('option', {value}, [label])));
+    const platform = SafeDOM.el('input', {type: 'text', className: 'comic-input', placeholder: '全部平台', 'aria-label': '平台标识（精确筛选）'});
+    const results = SafeDOM.el('div', {className: 'limits-session-results'});
+    const feedback = SafeDOM.el('p', {className: 'field-hint', role: 'status', 'aria-live': 'polite'});
+    const resultStatus = SafeDOM.el('p', {className: 'field-hint', role: 'status', 'aria-live': 'polite'});
+    const pageLabel = SafeDOM.el('span', {className: 'field-hint'});
+    const previous = this.button('上一页', 'previous-sessions', index, null, true);
+    const next = this.button('下一页', 'next-sessions', index, null, true);
+    const manual = SafeDOM.el('textarea', {className: 'comic-input', rows: 3, spellcheck: 'false',
+      placeholder: '每行一个完整 UMO，例如 platform:GroupMessage:session:id', 'aria-label': '手动粘贴完整 UMO'});
+    const form = SafeDOM.el('form', {className: 'limits-search', dataset: {limitsSearch: ''}}, [
+      search, type, platform, SafeDOM.el('button', {type: 'submit', className: 'comic-btn comic-btn--sm'}, ['搜索'])]);
+    host.appendChild(SafeDOM.el('section', {className: 'limits-picker', 'aria-label': '会话多选器'}, [
+      SafeDOM.el('div', {className: 'limits-toolbar'}, [SafeDOM.el('h4', {}, ['选择会话']), this.button('收起', 'close-picker', index, 'x')]),
+      form, resultStatus, results, SafeDOM.el('div', {className: 'limits-actions'}, [previous, pageLabel, next]),
+      this.field('手动添加完整 UMO（不接受裸群号）', manual), this.button('添加到已选会话', 'paste-umos', index, 'plus'), feedback
+    ]));
+    this.picker = {index, host, search, type, platform, results, feedback, resultStatus, pageLabel, previous, next, manual, page: 1};
+    this.editor.querySelector(`[data-limits-action="choose-sessions"][data-index="${index}"]`)?.setAttribute('aria-expanded', 'true');
+    search.focus();
+    void this.searchSessions(1);
+  }
+
+  async searchSessions(page) {
+    const picker = this.picker;
+    if (!picker || this.destroyed || this.editor.disabled) return;
+    const id = ++this.pickerRequestId;
+    picker.previous.disabled = true;
+    picker.next.disabled = true;
+    picker.results.replaceChildren();
+    SafeDOM.setText(picker.resultStatus, '正在加载会话…');
+    const params = {page, page_size: 20, search: picker.search.value.trim(), message_type: picker.type.value || 'all', platform: picker.platform.value.trim()};
+    try {
+      const payload = await BridgeClient.get('webui/sessions', params);
+      if (this.destroyed || this.picker !== picker || id !== this.pickerRequestId) return;
+      if (!Array.isArray(payload?.sessions) || typeof payload.available !== 'boolean') throw new Error('Invalid sessions response');
+      picker.page = Number(payload.page) || page;
+      const total = Math.max(0, Number(payload.total) || 0);
+      const pageSize = Math.max(1, Number(payload.page_size) || 20);
+      const pages = Math.max(1, Math.ceil(total / pageSize));
+      SafeDOM.setText(picker.pageLabel, `第 ${picker.page} / ${pages} 页 · 共 ${total} 个`);
+      SafeDOM.setText(picker.resultStatus, [payload.warning,
+        !payload.available ? '会话列表暂不可用，已选项保留；仍可手动粘贴完整 UMO。' : (!payload.sessions.length ? '没有匹配的会话。' : '勾选即填入草稿；名称仅供辨认，以完整 UMO 为准。')].filter(Boolean).join(' '));
+      const rule = this.draft.rate_limit_rules[picker.index];
+      if (payload.available) {
+        payload.sessions.forEach((session) => {
+          if (!LimitsView.validUmo(session.umo)) return;
+          this.sessionNames.set(session.umo, String(session.display_name || '未命名会话'));
+          const input = SafeDOM.el('input', {type: 'checkbox', dataset: {sessionUmo: session.umo}});
+          input.checked = rule.umos.includes(session.umo);
+          picker.results.appendChild(SafeDOM.el('label', {className: 'limits-session limits-session--choice'}, [input,
+            SafeDOM.el('span', {className: 'limits-session-identity'}, [
+              SafeDOM.el('strong', {}, [String(session.display_name || '未命名会话')]),
+              SafeDOM.el('span', {className: 'field-hint'}, [`${session.platform} · ${session.message_type} · 会话 ID：${session.session_id}`]),
+              SafeDOM.el('code', {}, [session.umo])])]));
+        });
+        picker.previous.disabled = picker.page <= 1;
+        picker.next.disabled = picker.page >= pages;
+      }
+      this.refreshSelected(picker.index);
+    } catch (error) {
+      if (this.destroyed || this.picker !== picker || id !== this.pickerRequestId) return;
+      console.warn('[LimitsView] 会话列表加载失败:', error);
+      SafeDOM.setText(picker.resultStatus, '会话列表加载失败，已选项保留。可重新搜索或手动粘贴完整 UMO。');
+    }
+  }
+
+  destroy() {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    ++this.requestId;
+    this.closePicker();
+    this.root.removeEventListener('click', this.onClick);
+    this.root.removeEventListener('input', this.onInput);
+    this.root.removeEventListener('change', this.onChange);
+    this.root.removeEventListener('submit', this.onSubmit);
+    window.removeEventListener('beforeunload', this.onBeforeUnload);
+    this.editor.disabled = true;
+    this.saveButton.disabled = true;
+    this.reloadButton.disabled = true;
+  }
+}
+
+// ==========================================================================
 // 13. 应用入口启动器 (App Bootstrapper)
 // ==========================================================================
 class StudioApp {
@@ -3238,20 +3815,24 @@ class StudioApp {
     this.navCleanups = [];
     this.destroyed = false;
     this.refillRequestId = 0;
-    this.handleUnload = () => {
+    this.handleUnload = (event) => {
+      // 取消离开页面时仍须保留可用的编辑器；真正离开由 pagehide 清理。
+      if (event?.type === 'beforeunload' && this.limits?.dirty) return;
       void this.destroy();
     };
 
     this.tabBtns = {
       workbench: document.getElementById('tab-btn-workbench'),
       progress: document.getElementById('tab-btn-progress'),
-      gallery: document.getElementById('tab-btn-gallery')
+      gallery: document.getElementById('tab-btn-gallery'),
+      limits: document.getElementById('tab-btn-limits')
     };
 
     this.panels = {
       workbench: document.getElementById('panel-workbench'),
       progress: document.getElementById('panel-progress'),
-      gallery: document.getElementById('panel-gallery')
+      gallery: document.getElementById('panel-gallery'),
+      limits: document.getElementById('panel-limits')
     };
   }
 
@@ -3294,6 +3875,8 @@ class StudioApp {
         }
       }
     );
+
+    this.limits = new LimitsView();
 
     // 5. 绑定 Tab 切换事件
     this.initNavTabs();
@@ -3409,6 +3992,8 @@ class StudioApp {
 
     if (tabKey === 'gallery') {
       this.gallery.fetchGallery();
+    } else if (tabKey === 'limits') {
+      void this.limits.open();
     }
   }
 
@@ -3421,6 +4006,7 @@ class StudioApp {
     this.unsubscribeContext = null;
     this.navCleanups.forEach((cleanup) => cleanup());
     this.navCleanups = [];
+    this.limits?.destroy();
     this.progress?.destroy();
     this.gallery?.destroy();
     this.workbench?.destroy();

@@ -126,8 +126,11 @@ class WebStudioService:
         tracker: GenerationTracker,
         config: Any,
         data_dir: str | Path,
+        *,
+        rate_limiter: Any = None,
     ) -> None:
         self.api_client = api_client
+        self.rate_limiter = rate_limiter
         self.tracker = tracker
         self.config = config
         self.data_dir = Path(data_dir)
@@ -144,6 +147,7 @@ class WebStudioService:
         self._upload_file_lock = threading.RLock()
         self._upload_ref_counts: dict[str, int] = {}
         self._admitted_jobs = 0
+        self._attachment_count = 0
         self._closed = False
 
     @property
@@ -201,6 +205,7 @@ class WebStudioService:
                 )
 
         task.add_done_callback(done)
+        self._attachment_count += 1
 
     async def generate(
         self,
@@ -213,15 +218,35 @@ class WebStudioService:
                 raise StudioServiceError("API 客户端尚未初始化", status_code=503)
             self._admit()
             leased: frozenset[str] = frozenset()
+            limit_token: str | None = None
+            attachment_count = self._attachment_count
             try:
                 leased = self._acquire_uploads(normalized["upload_names"])
+                if self.rate_limiter is not None:
+                    decision = await self.rate_limiter.acquire(
+                        None, cost=len(normalized.get("batch") or []) or 1
+                    )
+                    if not decision.allowed:
+                        raise StudioServiceError(
+                            decision.message or "请求过于频繁，请稍后再试",
+                            status_code=429,
+                            data={
+                                "scope": decision.scope,
+                                "retry_after": decision.retry_after,
+                            },
+                        )
+                    limit_token = decision.token
                 if normalized.get("batch") is not None:
                     response = await self._start_batch(normalized, requester or {})
                 else:
                     response = await self._start_single(normalized, requester or {})
             except BaseException as exc:
-                self._release_uploads(leased)
-                self._admitted_jobs = max(self._admitted_jobs - 1, 0)
+                # 挂入后的资源由任务完成回调释放，供应商失败不退额度。
+                if self._attachment_count == attachment_count:
+                    self._release_uploads(leased)
+                    self._admitted_jobs = max(self._admitted_jobs - 1, 0)
+                    if self.rate_limiter is not None and limit_token is not None:
+                        await self.rate_limiter.refund(limit_token)
                 if isinstance(exc, ReferenceImageUnavailableError):
                     raise StudioServiceError(str(exc), status_code=404) from exc
                 raise

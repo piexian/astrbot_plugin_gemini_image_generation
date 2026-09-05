@@ -43,6 +43,11 @@
         <span class="tab-icon" data-icon="grid"></span>
         <span class="tab-label">历史画廊</span>
       </button>
+      <button type="button" class="tab-btn" id="tab-btn-limits"
+              role="tab" aria-selected="false" aria-controls="panel-limits" tabindex="-1">
+        <span class="tab-icon" data-icon="sliders"></span>
+        <span class="tab-label">限流控制</span>
+      </button>
     </nav>
 
     <!-- 全局状态与错误横幅容器 -->
@@ -294,6 +299,24 @@
           <span class="pagination-info" id="pagination-info" aria-live="polite">第 1 页 / 共 1 页</span>
           <button type="button" id="btn-page-next" class="comic-btn comic-btn--sm comic-btn--outline" disabled>下一页</button>
         </div>
+      </section>
+      <!-- 4. 限流控制：首次打开时独立加载，不影响创作与 SSE -->
+      <section id="panel-limits" class="studio-panel"
+               role="tabpanel" aria-labelledby="tab-btn-limits" aria-hidden="true" hidden>
+        <div class="limits-toolbar">
+          <div>
+            <h2 class="card-title">访问限制与生图限流</h2>
+            <p class="field-hint">群限制模式、黑白名单与全局／会话限流统一管理、统一保存，不修改供应商配置。</p>
+          </div>
+          <div class="limits-actions">
+            <button type="button" id="btn-reload-limits" class="comic-btn comic-btn--outline">重新加载服务器配置</button>
+            <button type="button" id="btn-save-limits" class="comic-btn comic-btn--cta" disabled>保存限流配置</button>
+          </div>
+        </div>
+        <p id="limits-dirty" class="field-hint" role="status" aria-live="polite">尚未加载</p>
+        <p id="limits-status" class="limits-notice" role="status" aria-live="polite">打开此页签后加载配置。</p>
+        <p id="limits-migration" class="limits-notice limits-notice--warning" role="status" hidden></p>
+        <fieldset id="limits-editor" class="limits-editor" disabled aria-label="限流配置草稿"></fieldset>
       </section>
     </main>
 

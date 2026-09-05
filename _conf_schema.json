@@ -2520,12 +2520,12 @@
   "limit_settings": {
     "description": "限制/限流设置",
     "type": "object",
-    "hint": "配置群聊限制模式（不限/白名单/黑名单）以及单群限流策略，用于控制在哪些群可以使用生图功能，以及单个群在一个周期内的最大调用次数",
+    "hint": "保留群黑白名单；共享全局额度与 UMO 会话额度同时生效。可在 Studio 的限流控制页选择已有会话并即时保存。",
     "items": {
       "group_limit_mode": {
         "description": "群限制模式",
         "type": "string",
-        "hint": "选择对群聊的限制策略：None 表示不限制；Whitelist 仅允许列表中的群使用；Blacklist 禁止列表中的群使用。",
+        "hint": "none 不限制；whitelist 仅允许名单中的群；blacklist 禁止名单中的群。空名单保持不限制的原行为。可在 Studio 与限流统一配置。",
         "default": "none",
         "options": [
           "none",
@@ -2536,13 +2536,13 @@
       "group_limit_list": {
         "description": "群号列表",
         "type": "list",
-        "hint": "根据上方的群限制模式配置需要生效的群号。群号请填写字符串形式，在 None 模式下此配置不生效。",
+        "hint": "填写群号而非 UMO，最多 1000 项，每项最多 1024 字符。黑白名单共用此列表，切换为 none 时保留列表但不生效；不影响私聊和 Studio。",
         "default": []
       },
       "rate_limit_rules": {
         "description": "限流规则列表",
         "type": "template_list",
-        "hint": "配置多个限流规则，按顺序匹配。空 group_ids 表示匹配所有群",
+        "hint": "按顺序匹配第一条启用规则，空 umos 匹配所有会话并分别计数；不会绕过共享全局额度。旧群号规则须在 Studio 明确迁移后恢复聊天生图。",
         "default": [],
         "templates": {
           "rule": {
@@ -2555,10 +2555,16 @@
                 "hint": "规则的描述性名称，方便识别",
                 "default": "默认规则"
               },
-              "group_ids": {
-                "description": "适用群号列表",
+              "umos": {
+                "description": "适用会话 UMO",
                 "type": "list",
-                "hint": "此规则适用的群号列表，留空表示匹配所有群",
+                "hint": "完整 UMO：平台实例ID:消息类型:会话ID。留空表示所有会话分别计数，可在 Studio 搜索并选择已有会话。",
+                "default": []
+              },
+              "group_ids": {
+                "description": "旧群号（仅迁移保留）",
+                "type": "list",
+                "hint": "不要新增裸群号。启用规则中此项非空会暂停聊天生图，请在 Studio 选择完整 UMO 并确认迁移。",
                 "default": []
               },
               "enabled": {
@@ -2583,10 +2589,34 @@
           }
         }
       },
-      "default_rate_limit": {
-        "description": "默认限流设置",
+      "global_rate_limit": {
+        "description": "共享全局限流",
         "type": "object",
-        "hint": "当没有规则匹配时使用的默认限流设置",
+        "hint": "所有聊天与 Studio 生成共享额度，单任务计 1 次，批量按子任务数计数。",
+        "items": {
+          "enabled": {
+            "description": "启用全局限流",
+            "type": "bool",
+            "default": false
+          },
+          "period_seconds": {
+            "description": "限流周期（秒）",
+            "type": "int",
+            "hint": "1-604800 秒",
+            "default": 60
+          },
+          "max_requests": {
+            "description": "最大请求数",
+            "type": "int",
+            "hint": "周期内共享请求额度，1-10000 次",
+            "default": 5
+          }
+        }
+      },
+      "default_rate_limit": {
+        "description": "默认会话限流",
+        "type": "object",
+        "hint": "未匹配规则的群聊、私聊等按完整 UMO 分别计数，不是共享全局额度。周期 1-604800 秒，次数 1-10000。",
         "items": {
           "enabled": {
             "description": "启用默认限流",

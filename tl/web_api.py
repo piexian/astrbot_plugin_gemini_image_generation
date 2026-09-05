@@ -112,6 +112,8 @@ class WebStudioAPI:
         ("/preferences", "preferences", ["GET", "POST"], "WebUI 浏览器参数记忆"),
         ("/generate", "generate", ["POST"], "WebUI 发起生成"),
         ("/upload", "upload", ["POST"], "WebUI 上传参考图"),
+        ("/limits", "limits", ["GET", "POST"], "WebUI 限流配置"),
+        ("/sessions", "sessions", ["GET"], "WebUI 已有 UMO 会话"),
     )
 
     def __init__(
@@ -119,10 +121,12 @@ class WebStudioAPI:
         tracker: GenerationTracker,
         service: WebStudioService,
         *,
+        limits_service: Any = None,
         is_closed: Callable[[], bool] | None = None,
     ) -> None:
         self.tracker = tracker
         self.service = service
+        self.limits_service = limits_service
         self._web_closed = False
         self._is_closed = is_closed or (lambda: self._web_closed)
         self._registered_entries: list[tuple[Any, ...]] = []
@@ -182,6 +186,55 @@ class WebStudioAPI:
             status_code=exc.status_code,
             data=exc.data,
         )
+
+    def _limits_guard(self):
+        if closed := self._closed_response():
+            return closed
+        # 路由由宿主鉴权；同时拒绝没有宿主身份的调用，不读取或转发凭据。
+        if not getattr(request, "username", None):
+            return error_response("请登录 AstrBot Dashboard 后操作", status_code=401)
+        if self.limits_service is None:
+            return error_response("限流管理服务不可用", status_code=503)
+        return None
+
+    async def limits(self):
+        if denied := self._limits_guard():
+            return denied
+        try:
+            if request.method == "POST":
+                payload = await self._json_body()
+                if payload is None:
+                    return error_response(
+                        "请求体必须是有效的 JSON 对象", status_code=400
+                    )
+                result = await self.limits_service.save_limits(payload)
+            else:
+                result = await self.limits_service.load_limits()
+            return self._ok(result)
+        except StudioServiceError as exc:
+            return self._service_error(exc)
+        except Exception:
+            logger.error("[限流] 配置管理请求失败", exc_info=True)
+            return error_response("限流配置暂时不可用", status_code=500)
+
+    async def sessions(self):
+        if denied := self._limits_guard():
+            return denied
+        try:
+            return self._ok(
+                await self.limits_service.sessions(
+                    page=self._query_int("page", 1, minimum=1, maximum=100000),
+                    page_size=self._query_int("page_size", 20, minimum=1, maximum=100),
+                    search=self._query_text("search", 100).strip(),
+                    message_type=self._query_text("message_type", 16) or "all",
+                    platform=self._query_text("platform", 1024).strip(),
+                )
+            )
+        except StudioServiceError as exc:
+            return self._service_error(exc)
+        except Exception:
+            logger.error("[限流] 会话查询失败", exc_info=True)
+            return error_response("会话列表暂时不可用", status_code=500)
 
     async def jobs(self):
         if closed := self._closed_response():

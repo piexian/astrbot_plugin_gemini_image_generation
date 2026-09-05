@@ -541,10 +541,15 @@ _prepare_foreground()
 
 | 接口 | 说明 |
 |------|------|
-| `RateLimiter(config, get_kv=None, put_kv=None)` | 群限制与限流管理器 |
-| `get_group_id_from_event(event)` | 从事件中解析群号 |
-| `check_and_consume(event)` | 检查黑白名单和限流，并消费一次额度 |
-| `reset()` | 清空限流桶 |
+| `RateLimiter(config, get_kv=None, put_kv=None)` | 全局与 UMO 滑动窗口，首次恢复与双额度扣减共用准入锁 |
+| `get_group_id_from_event(event)` / `allows_group(event)` | 群访问名单检查，不使用裸群号计数 |
+| `check_and_consume(event, cost=1)` | 保留聊天入口二元返回值，批量按逻辑子任务数消费 |
+| `acquire(umo, cost=1)` / `refund(token)` | 原子预留及启动失败回滚；Studio 传 `umo=None` 仅检查全局 |
+| `reset()` / `close()` | 清空状态／关闭准入并等待延迟计数落盘 |
+
+`limit_config.py` 统一 schema 加载与 WebUI 校验；`studio_limits.py` 负责窄范围配置保存、版本冲突、迁移备份和本体 UMO 查询（`ConversationV2.user_id` 与别名集合，仅投影身份，不读聊天正文）。Web API 的 `limits`（GET/POST）与 `sessions`（GET）沿用宿主鉴权及标准信封，保存不重载插件。新计数 KV 为 `rate_limit_buckets_v2`，旧群桶保留；旧规则与旧未过期计数采取显式迁移／窗口等待保护，详见 [配置说明](../docs/config.md#limit_settings)。
+
+群限制模式与名单通过同一个 `limits` 接口成对更新，旧客户端省略二者时不重置。保存后将名单转换为运行时 `set`；聊天准入在限流锁内复核访问权限，避免等待热保存期间仍按旧名单扣减放行。首次提交群访问字段另存 `group_access_config_backup.json`。
 
 `check_and_consume()` 返回：
 

@@ -262,7 +262,8 @@ async def test_llm_batch_entry_creates_tracker_parent(tmp_path, monkeypatch, out
         }
     ]
 
-    async def allow(_event):
+    async def allow(_event, *, cost=1):
+        assert cost == len(items)
         return True, None
 
     async def prepare(*args):
