@@ -9,7 +9,6 @@
 
 from __future__ import annotations
 
-import base64
 from typing import Any
 
 import aiohttp
@@ -24,6 +23,7 @@ from ..openai_image_size import (
 )
 from ..tl_utils import save_base64_image
 from .base import ProviderRequest
+from .reference_values import load_reference_bytes
 
 # ---------- 按模型族分的合法尺寸映射 ----------
 
@@ -415,7 +415,9 @@ class OpenAIImagesProvider:
                 retryable=False,
             )
 
-        image_data = self._decode_image_input(ref_images[0])
+        image_data = await load_reference_bytes(
+            client, config, ref_images[0], log_prefix="[openai_images]"
+        )
         if image_data is None:
             raise APIError(
                 "无法解码参考图为二进制数据",
@@ -433,7 +435,9 @@ class OpenAIImagesProvider:
         # ---- 多图支持 (GPT image 模型支持多张 image) ----
         if _is_gpt_image_model(model) and len(ref_images) > 1:
             for idx, extra_ref in enumerate(ref_images[1:], start=2):
-                extra_data = self._decode_image_input(extra_ref)
+                extra_data = await load_reference_bytes(
+                    client, config, extra_ref, log_prefix="[openai_images]"
+                )
                 if extra_data:
                     form.add_field(
                         "image",
@@ -481,25 +485,6 @@ class OpenAIImagesProvider:
             "model": model,
             "prompt": config.prompt,
         }
-
-    @staticmethod
-    def _decode_image_input(image_input: str) -> bytes | None:
-        """将 base64 字符串或 data URI 解码为二进制数据"""
-        s = (image_input or "").strip()
-        if not s:
-            return None
-
-        # 处理 data URI: data:image/png;base64,xxxx
-        if s.startswith("data:"):
-            parts = s.split(",", 1)
-            if len(parts) == 2:
-                s = parts[1]
-
-        try:
-            return base64.b64decode(s, validate=True)
-        except Exception:
-            logger.debug(f"[openai_images] 无法 base64 解码图片输入 (len={len(s)})")
-            return None
 
     @staticmethod
     def _probe_image_dims(image_bytes: bytes | None) -> tuple[int, int] | None:

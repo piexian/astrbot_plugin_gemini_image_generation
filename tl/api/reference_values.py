@@ -181,3 +181,70 @@ def normalize_image_mime(
         mime or "未知",
     )
     return base64.b64encode(encoded).decode("ascii"), "image/png"
+
+
+async def load_reference_bytes(
+    client: Any,  # noqa: ANN401
+    config: ApiRequestConfig,
+    image_input: Any,  # noqa: ANN401
+    *,
+    log_prefix: str,
+) -> bytes | None:
+    """把参考图输入解析为原始字节。
+
+    base64/data URI 直接解码；本地路径与远程 URL 交给客户端共享归一化
+    （与 :func:`_resolve_single_value` 相同的 file:// 转换与候选代理透传）。
+    解析失败返回 None，由调用方决定错误语义。
+    """
+    import base64
+
+    if isinstance(image_input, (bytes, bytearray)):
+        return bytes(image_input) or None
+    text = str(image_input or "").strip()
+    if not text:
+        return None
+
+    # 本地文件优先判定（短且无 scheme 的输入），避免纯 base64 字母表路径被误解码
+    is_local_file = (
+        "://" not in text
+        and not text.startswith("data:")
+        and len(text) <= 1024
+        and Path(text).is_file()
+    )
+    if not is_local_file:
+        payload = text
+        if payload.startswith("data:"):
+            parts = payload.split(",", 1)
+            if len(parts) == 2:
+                payload = parts[1]
+        try:
+            return base64.b64decode(payload, validate=True)
+        except Exception:
+            pass
+
+    normalize = getattr(client, "_normalize_reference_image_input", None)
+    if normalize is None:
+        logger.debug("%s 参考图非 base64 且客户端缺少共享归一化器", log_prefix)
+        return None
+    # 共享归一化器不认裸路径，先转 file:// URI
+    normalize_input = Path(text).resolve().as_uri() if is_local_file else text
+    try:
+        _mime, b64_data = await normalize(
+            normalize_input,
+            image_input_mode=getattr(config, "image_input_mode", "force_base64"),
+            **(
+                {"request_proxy": config.proxy}
+                if getattr(config, "proxy", None)
+                else {}
+            ),
+        )
+    except Exception as e:
+        logger.debug("%s 参考图归一化失败: %s", log_prefix, e)
+        return None
+    if not b64_data:
+        return None
+    try:
+        return base64.b64decode(strip_data_uri_prefix(b64_data), validate=True)
+    except Exception as e:
+        logger.debug("%s 参考图 base64 解码失败: %s", log_prefix, e)
+        return None

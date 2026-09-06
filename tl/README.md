@@ -189,7 +189,7 @@ generate_image()
 | `api/reference_intake.py` | `announce_reference_intake(references, max_count, *, log_prefix="")` | 参考图接收阶段统一日志，返回 `(收到数量, 采用数量)` |
 | `api/data_uri.py` | `format_data_uri(b64_data, mime_type=None)` / `strip_data_uri_prefix(s)` / `looks_like_base64(s)` | data URI 与 base64 字符串的格式化/识别助手 |
 | `api/param_utils.py` | `coerce_int()` / `coerce_float()` / `ensure_prompt_length()` | 共享参数钳制与 prompt 硬上限校验 |
-| `api/reference_values.py` | `resolve_reference_api_values(client, config, refs, *, max_count, ...)` | 参考图 → API URL / data URI 共享归一化 |
+| `api/reference_values.py` | `resolve_reference_api_values(client, config, refs, *, max_count, ...)` / `load_reference_bytes(client, config, image, ...)` | 参考图 → API URL / data URI 共享归一化；原始字节解析支持 data URI、裸 base64、本地路径（file:// 转换）与 URL（候选代理透传），openai_images 与 stepfun edits 复用 |
 | `api/compat_utils.py` | `origin_from_api_base()` / `is_temp_cache_url()` / `find_markdown_relative_image_urls()` / `build_generation_config()` / `resolve_relative_url()` | 已下线 zai / grok2api 沉淀的网关兼容辅助（相对路径图片、临时缓存 URL、generation_config 约定） |
 
 详见 [docs/新增API供应商.md](../docs/新增API供应商.md)。
