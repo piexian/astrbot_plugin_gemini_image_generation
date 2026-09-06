@@ -691,3 +691,134 @@ async def test_denied_groups_remain_silent_before_preparation(
     assert results == []
     assert command_plugin.rate_limiter.calls == []
     command_plugin.image_handler.fetch_images_from_event.assert_not_awaited()
+
+
+def _quick_harness(plugin, result, *, archive_error=None, archived=None):
+    """让快捷生成走完整跟踪块：返回 (sent, updates, generate_config)。"""
+
+    async def generate_image(config, **kwargs):
+        config.successful_provider = "openai_images"
+        config.successful_model = "gpt-image-2"
+        config.successful_candidate_id = "cand-1"
+        config.retry_count = 0
+        return result
+
+    plugin.api_client = SimpleNamespace(generate_image=generate_image)
+    plugin.image_handler.fetch_images_from_event = AsyncMock(return_value=([], []))
+
+    sent = []
+
+    async def send_results(**kwargs):
+        sent.append(kwargs)
+
+    async def duration(*args, **kwargs):
+        if False:
+            yield None
+
+    plugin.message_sender = SimpleNamespace(
+        send_results_with_stream_retry=send_results, send_api_duration=duration
+    )
+
+    async def archive_images(urls, paths, **kwargs):
+        if archive_error is not None:
+            raise archive_error
+        return list(archived or [])
+
+    plugin.web_studio_service = SimpleNamespace(archive_images=archive_images)
+    updates = []
+
+    async def update(job_id, **changes):
+        updates.append(changes)
+
+    plugin.generation_tracker = SimpleNamespace(
+        begin=AsyncMock(return_value={"job_id": "job-q"}),
+        complete=AsyncMock(),
+        update=update,
+        fail=AsyncMock(),
+    )
+    return sent, updates
+
+
+async def _run_quick(plugin):
+    event = _Event()
+    event.message_str = ""
+    return [
+        message
+        async for message in plugin._handle_quick_mode(
+            event, "draw", "2K", "3:2", "手办化", mode_key="figure"
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_quick_mode_archive_timeout_records_partial_success(command_plugin):
+    """归档下载超时（空消息 TimeoutError）不能把已发送结果记为失败。"""
+    plugin = command_plugin
+    sent, updates = _quick_harness(
+        plugin,
+        (["https://cdn.example/img.png"], [], None, None),
+        archive_error=TimeoutError(),
+    )
+
+    outputs = await _run_quick(plugin)
+
+    assert "🎨 使用手办化模式生成图像..." in outputs
+    assert sent and sent[0]["image_urls"] == ["https://cdn.example/img.png"]
+    tracker = plugin.generation_tracker
+    tracker.fail.assert_not_awaited()
+    kwargs = tracker.complete.await_args.kwargs
+    assert kwargs["status"] == "partial_success"
+    assert kwargs["image_files"] == []
+    assert kwargs["stats"]["provider"] == "openai_images"
+    assert kwargs["stats"]["model"] == "gpt-image-2"
+    assert len(updates) == 1
+    assert "画廊归档不完整（0/1）" in updates[0]["error"]
+    assert "TimeoutError" in updates[0]["error"]
+
+
+@pytest.mark.asyncio
+async def test_quick_mode_full_archive_records_succeeded(command_plugin):
+    plugin = command_plugin
+    sent, updates = _quick_harness(
+        plugin,
+        (["https://cdn.example/img.png"], [], None, None),
+        archived=["gallery-a.png"],
+    )
+
+    await _run_quick(plugin)
+
+    assert sent
+    tracker = plugin.generation_tracker
+    tracker.fail.assert_not_awaited()
+    kwargs = tracker.complete.await_args.kwargs
+    assert kwargs["status"] == "succeeded"
+    assert kwargs["image_files"] == ["gallery-a.png"]
+    assert updates == []
+
+
+@pytest.mark.asyncio
+async def test_quick_mode_text_only_result_is_partial_success(command_plugin):
+    plugin = command_plugin
+    _quick_harness(plugin, ([], [], "模型仅返回文本", None))
+
+    await _run_quick(plugin)
+
+    tracker = plugin.generation_tracker
+    tracker.fail.assert_not_awaited()
+    kwargs = tracker.complete.await_args.kwargs
+    assert kwargs["status"] == "partial_success"
+    assert kwargs["image_files"] == []
+    assert kwargs["text_content"] == "模型仅返回文本"
+
+
+@pytest.mark.asyncio
+async def test_quick_mode_empty_result_fails_with_clear_error(command_plugin):
+    plugin = command_plugin
+    _quick_harness(plugin, ([], [], None, None))
+
+    await _run_quick(plugin)
+
+    tracker = plugin.generation_tracker
+    tracker.complete.assert_not_awaited()
+    kwargs = tracker.fail.await_args.kwargs
+    assert kwargs["error"] == "供应商未返回图片或文本内容"

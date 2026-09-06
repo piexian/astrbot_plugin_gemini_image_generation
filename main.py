@@ -719,14 +719,41 @@ class GeminiImageGenerationPlugin(Star):
             api_duration = time.perf_counter() - api_start
 
             if tracking_job_id:
-                try:
-                    archived = await self.web_studio_service.archive_images(
-                        image_urls,
-                        image_paths,
-                        candidate_id=config.successful_candidate_id,
-                        job_id=tracking_job_id,
+                delivered = list(
+                    dict.fromkeys(
+                        str(item)
+                        for item in (image_urls or []) + (image_paths or [])
+                        if item
                     )
-                    if archived:
+                )
+                archived: list[str] = []
+                archive_note = ""
+                try:
+                    if delivered:
+                        try:
+                            archived = await self.web_studio_service.archive_images(
+                                image_urls,
+                                image_paths,
+                                candidate_id=config.successful_candidate_id,
+                                job_id=tracking_job_id,
+                            )
+                        except Exception as archive_error:
+                            # 图片仍会按原始来源发送，归档失败只降级记录，不算生成失败。
+                            archive_note = f"{type(archive_error).__name__}: {archive_error}".strip()
+                            logger.warning(
+                                f"[生成追踪] 快捷生成归档异常: {archive_note or '无详细信息'}"
+                            )
+                    if delivered and len(archived) < len(delivered):
+                        archive_note = (
+                            f"画廊归档不完整（{len(archived)}/{len(delivered)}）"
+                            + (f"：{archive_note}" if archive_note else "")
+                        )
+                    if delivered or text_content:
+                        status = (
+                            "succeeded"
+                            if delivered and len(archived) >= len(delivered)
+                            else "partial_success"
+                        )
                         await self.generation_tracker.complete(
                             tracking_job_id,
                             image_files=archived,
@@ -737,28 +764,39 @@ class GeminiImageGenerationPlugin(Star):
                                 "alias": config.successful_model_alias,
                                 "retry_count": config.retry_count,
                             },
+                            status=status,
                         )
+                        if archive_note:
+                            update = getattr(self.generation_tracker, "update", None)
+                            if update is not None:
+                                try:
+                                    await update(tracking_job_id, error=archive_note)
+                                except Exception:
+                                    pass
                         logger.debug(
                             f"[生成追踪] 快捷生成完成: job_id={tracking_job_id}, "
-                            f"归档张数={len(archived)}, "
+                            f"状态={status}, 归档张数={len(archived)}/{len(delivered)}, "
                             f"供应商={config.successful_provider or '未记录'}, "
                             f"模型={config.successful_model or '未记录'}"
                         )
                     else:
                         await self.generation_tracker.fail(
                             tracking_job_id,
-                            error="供应商未返回可归档的图片",
+                            error="供应商未返回图片或文本内容",
                         )
                         logger.debug(
                             f"[生成追踪] 快捷生成失败: job_id={tracking_job_id}, "
-                            "原因=无可归档图片"
+                            "原因=无图片或文本内容"
                         )
                 except Exception as tracking_error:
-                    logger.warning(f"[生成追踪] 快捷生成结果归档失败: {tracking_error}")
+                    logger.warning(
+                        f"[生成追踪] 快捷生成结果记录失败: "
+                        f"{type(tracking_error).__name__}: {tracking_error}"
+                    )
                     try:
                         await self.generation_tracker.fail(
                             tracking_job_id,
-                            error=f"结果归档失败: {tracking_error}",
+                            error=f"结果记录失败: {tracking_error}",
                         )
                         logger.debug(
                             f"[生成追踪] 快捷生成转为失败: job_id={tracking_job_id}, "

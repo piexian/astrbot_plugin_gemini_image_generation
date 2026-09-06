@@ -365,6 +365,167 @@ async def test_image_generator_uses_context_parent_and_item(monkeypatch) -> None
     assert tracker.completed[1]["image_files"] == ["gallery.png"]
 
 
+@pytest.mark.asyncio
+async def test_image_generator_archive_failure_records_partial_success(
+    monkeypatch,
+) -> None:
+    """归档异常（如下载超时）不能把已发送的生成结果记为失败。"""
+
+    class Tracker:
+        def __init__(self) -> None:
+            self.completed = None
+            self.updates: list[dict] = []
+
+        async def begin(self, **kwargs):
+            return {"job_id": "job-one"}
+
+        async def complete(self, job_id, **kwargs):
+            self.completed = (job_id, kwargs)
+
+        async def update(self, job_id, **changes):
+            self.updates.append(changes)
+
+        async def fail(self, job_id, **kwargs):
+            raise AssertionError(kwargs)
+
+    class Client:
+        async def generate_image(self, config, **kwargs):
+            config.successful_provider = "openai_images"
+            config.successful_model = "gpt-image-2"
+            return [], ["/tmp/generated.png"], None, None
+
+    async def broken_archive(urls, paths, **kwargs):
+        raise TimeoutError()  # aiohttp 下载超时的 str() 为空
+
+    tracker = Tracker()
+    generator = ImageGenerator(
+        context=None,
+        api_client=Client(),
+        filter_valid_fn=lambda images, source: images or [],
+        tracker=tracker,
+        archive_images_fn=broken_archive,
+    )
+    monkeypatch.setattr("tl.image_generator.Path.exists", lambda self: True)
+
+    success, _ = await generator.generate_image_core(
+        event=None,
+        prompt="draw",
+        reference_images=[],
+        avatar_reference=[],
+        is_tool_call=True,
+    )
+
+    assert success is True
+    assert tracker.completed[1]["status"] == "partial_success"
+    assert tracker.completed[1]["image_files"] == []
+    assert tracker.completed[1]["stats"]["successful_provider"] == "openai_images"
+    assert len(tracker.updates) == 1
+    assert "画廊归档不完整（0/1）" in tracker.updates[0]["error"]
+    assert "TimeoutError" in tracker.updates[0]["error"]
+
+
+@pytest.mark.asyncio
+async def test_image_generator_partial_archive_marks_partial_success(
+    monkeypatch,
+) -> None:
+    """归档返回空列表（静默下载失败）同样降级为部分成功而非失败。"""
+
+    class Tracker:
+        def __init__(self) -> None:
+            self.completed = None
+            self.updates: list[dict] = []
+
+        async def begin(self, **kwargs):
+            return {"job_id": "job-one"}
+
+        async def complete(self, job_id, **kwargs):
+            self.completed = (job_id, kwargs)
+
+        async def update(self, job_id, **changes):
+            self.updates.append(changes)
+
+        async def fail(self, job_id, **kwargs):
+            raise AssertionError(kwargs)
+
+    class Client:
+        async def generate_image(self, config, **kwargs):
+            config.successful_provider = "google"
+            config.successful_model = "image-model"
+            return ["https://cdn.example/a.png"], [], None, None
+
+    async def empty_archive(urls, paths, **kwargs):
+        return []
+
+    tracker = Tracker()
+    generator = ImageGenerator(
+        context=None,
+        api_client=Client(),
+        filter_valid_fn=lambda images, source: images or [],
+        tracker=tracker,
+        archive_images_fn=empty_archive,
+    )
+    monkeypatch.setattr("tl.image_generator.Path.exists", lambda self: True)
+
+    success, _ = await generator.generate_image_core(
+        event=None,
+        prompt="draw",
+        reference_images=[],
+        avatar_reference=[],
+        is_tool_call=True,
+    )
+
+    assert success is True
+    assert tracker.completed[1]["status"] == "partial_success"
+    assert "画廊归档不完整（0/1）" in tracker.updates[0]["error"]
+
+
+@pytest.mark.asyncio
+async def test_image_generator_without_archive_fn_keeps_succeeded(
+    monkeypatch,
+) -> None:
+    """未接入归档函数时（无 Studio）语义不变，仍记为成功。"""
+
+    class Tracker:
+        def __init__(self) -> None:
+            self.completed = None
+
+        async def begin(self, **kwargs):
+            return {"job_id": "job-one"}
+
+        async def complete(self, job_id, **kwargs):
+            self.completed = (job_id, kwargs)
+
+        async def fail(self, job_id, **kwargs):
+            raise AssertionError(kwargs)
+
+    class Client:
+        async def generate_image(self, config, **kwargs):
+            config.successful_provider = "google"
+            config.successful_model = "image-model"
+            return [], ["/tmp/generated.png"], None, None
+
+    tracker = Tracker()
+    generator = ImageGenerator(
+        context=None,
+        api_client=Client(),
+        filter_valid_fn=lambda images, source: images or [],
+        tracker=tracker,
+    )
+    monkeypatch.setattr("tl.image_generator.Path.exists", lambda self: True)
+
+    success, _ = await generator.generate_image_core(
+        event=None,
+        prompt="draw",
+        reference_images=[],
+        avatar_reference=[],
+        is_tool_call=True,
+    )
+
+    assert success is True
+    assert tracker.completed[1]["status"] == "succeeded"
+    assert tracker.completed[1]["image_files"] == []
+
+
 def test_import_legacy_inserts_and_dedupes(tmp_path) -> None:
     tracker = GenerationTracker(tmp_path, 20)
     record = {

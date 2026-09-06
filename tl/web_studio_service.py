@@ -1096,7 +1096,9 @@ class WebStudioService:
                 )
                 archived.append(name)
             except Exception as exc:
-                logger.warning(f"[WebUI] gallery 归档失败: {exc}")
+                logger.warning(
+                    f"[WebUI] gallery 归档失败: {type(exc).__name__}: {exc or '无详细信息'}"
+                )
         if not await self._enforce_gallery_quota_locked(set(archived)):
             await asyncio.to_thread(self.tracker._delete_gallery_files, set(archived))
             raise StudioServiceError("画廊空间不足以保存本次结果", status_code=507)
@@ -1111,7 +1113,8 @@ class WebStudioService:
     async def _download_remote_image(
         self, url: str, *, candidate_id: str | None = None
     ) -> bytes:
-        timeout = aiohttp.ClientTimeout(total=10)
+        # 归档下载与发送侧网络条件一致，慢 CDN 下 10s 会先于发送超时。
+        timeout = aiohttp.ClientTimeout(total=30)
         data = bytearray()
         candidate = next(
             (

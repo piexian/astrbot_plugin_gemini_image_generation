@@ -170,31 +170,68 @@ class ImageGenerator:
     ) -> None:
         if not job_id or self.tracker is None:
             return
+        delivered = list(
+            dict.fromkeys(
+                str(item) for item in (image_urls or []) + (image_paths or []) if item
+            )
+        )
         try:
-            image_files = []
+            image_files: list[str] = []
             stats = self.get_request_stats()
-            if self._archive_images_fn is not None:
-                image_files = await self._archive_images_fn(
-                    image_urls,
-                    image_paths,
-                    candidate_id=stats.get("successful_candidate_id"),
-                    job_id=job_id,
+            archive_note = ""
+            archive_attempted = bool(delivered) and self._archive_images_fn is not None
+            if archive_attempted:
+                try:
+                    image_files = await self._archive_images_fn(
+                        image_urls,
+                        image_paths,
+                        candidate_id=stats.get("successful_candidate_id"),
+                        job_id=job_id,
+                    )
+                except Exception as archive_error:
+                    # 图片仍按原始来源发送，归档失败只降级为部分成功。
+                    archive_note = (
+                        f"{type(archive_error).__name__}: {archive_error}".strip()
+                    )
+                    logger.warning(
+                        f"[生成追踪] 归档异常，不影响结果发送: {archive_note or '无详细信息'}"
+                    )
+            if archive_attempted and len(image_files) < len(delivered):
+                archive_note = (
+                    f"画廊归档不完整（{len(image_files)}/{len(delivered)}）"
+                    + (f"：{archive_note}" if archive_note else "")
                 )
+            status = (
+                "succeeded"
+                if not archive_attempted or len(image_files) >= len(delivered)
+                else "partial_success"
+            )
             await self.tracker.complete(
                 job_id,
                 image_files=image_files,
                 text_content=text_content,
                 stats=stats,
+                status=status,
             )
+            if archive_note:
+                update = getattr(self.tracker, "update", None)
+                if update is not None:
+                    try:
+                        await update(job_id, error=archive_note)
+                    except Exception:
+                        pass
             logger.debug(
-                f"[生成追踪] 完成: job_id={job_id}, 归档张数={len(image_files)}, "
+                f"[生成追踪] 完成: job_id={job_id}, 状态={status}, "
+                f"归档张数={len(image_files)}/{len(delivered)}, "
                 f"供应商={stats.get('successful_provider') or '未记录'}, "
                 f"模型={stats.get('successful_model') or '未记录'}"
             )
         except Exception as exc:
-            logger.warning(f"[生成追踪] 完成记录失败，不影响结果返回: {exc}")
+            logger.warning(
+                f"[生成追踪] 完成记录失败，不影响结果返回: {type(exc).__name__}: {exc}"
+            )
             try:
-                await self.tracker.fail(job_id, error=f"结果归档失败: {exc}")
+                await self.tracker.fail(job_id, error=f"结果记录失败: {exc}")
                 logger.debug(
                     f"[生成追踪] 转为失败: job_id={job_id}, "
                     f"异常类型={type(exc).__name__}"
