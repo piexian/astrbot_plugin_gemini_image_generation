@@ -387,13 +387,13 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 
 ## stepfun_settings（StepFun 图片生成 API 专用配置）
 
-配置路径：`provider_settings.provider_overrides` 中选择 `stepfun` 模板。适配 `step-image-edit-2`（文生图 + 编辑）与 `step-2x-large`（纯文生图）。
+配置路径：`provider_settings.provider_overrides` 中选择 `stepfun` 模板。适配 `step-image-edit-2`（文生图 + 编辑；官方 2026-10-10 下线）与 `step-2x-large`（纯文生图）。
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `api_keys` | `[]` | StepFun API Key 列表，支持多 Key 轮换 |
 | `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
-| `model` | `step-image-edit-2` | 图片模型名称；`step-2x-large` 为纯文生图模型，不支持编辑/负向提示词/text_mode |
+| `model` | `step-image-edit-2` | 图片模型名称；`step-2x-large` 为纯文生图模型，不支持编辑/负向提示词/text_mode。编辑模型官方 2026-10-10 下线，请尽快切换 |
 | `api_base` | `https://api.stepfun.com` | API 端点；同时兼容 `https://api.stepfun.com/step_plan/v1` 写法，自动识别 `/v1` 后缀 |
 | `response_format` | `url` | `url` 返回临时签名链接（`res.stepfun.com`），`b64_json` 返回 base64 并由插件落盘 |
 | `steps` | `0` | 采样步数，`0` 表示不传（服务端默认 edit-2 `8` / 2x-large `50`）；非零值钳位到 [1, 50] |
@@ -644,7 +644,7 @@ Gemini 官方 Interactions 端点（2026-06 GA），承载 Nano Banana 系列模
 |--------|--------|------|
 | `model` | `gemini-3.1-flash-image` | 推荐 `gemini-3.1-flash-image` / `gemini-3-pro-image` / `gemini-3.1-flash-lite-image` |
 | `resolution` | `1K` | `1K`/`2K`/`4K`；lite 仅支持 `1K`，超出自动降级 |
-| `aspect_ratio` | `1:1` | 含 `1:4`/`1:8`/`4:1`/`8:1`，极端比例仅 3.1 Flash Image 支持，其他模型自动忽略 |
+| `aspect_ratio` | `1:1` | 含 `1:4`/`1:8`/`4:1`/`8:1`，极端比例仅 3.1 系（Flash/Flash-Lite）支持 |
 | `max_reference_images` | `14` | 官方上限 14 张，超出截取 |
 | `enable_text_response` | `false` | 开启后 `response_format` 传数组，同时返回文本与图片 |
 | `enable_grounding` | `false` | 启用 Google 搜索接地（lite 不支持） |

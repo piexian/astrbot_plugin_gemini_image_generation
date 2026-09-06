@@ -34,16 +34,23 @@ class ProviderSpec:
 
 
 _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
-    ProviderSpec("google", "tl.api.google.GoogleProvider", model_catalog_kind="google"),
+    ProviderSpec(
+        "google",
+        "tl.api.google.GoogleProvider",
+        capability_profile_path="tl.provider_capabilities.gemini_image_capability",
+        model_catalog_kind="google",
+    ),
     ProviderSpec(
         "gemini_interactions",
         "tl.api.gemini_interactions.GeminiInteractionsProvider",
+        capability_profile_path="tl.provider_capabilities.gemini_image_capability",
         model_catalog_kind="google",
     ),
     ProviderSpec(
         "vertex",
         "tl.api.vertex.VertexProvider",
         settings_attr="vertex_settings",
+        capability_profile_path="tl.provider_capabilities.gemini_image_capability",
         settings_validator_path="tl.provider_hooks.validate_vertex_settings",
         requires_api_keys=False,
         parse_errors_with_provider=True,

@@ -11,6 +11,7 @@ import aiohttp
 from astrbot.api import logger
 
 from ..api_types import APIError, ApiRequestConfig
+from ..provider_capabilities import gemini_image_family
 from ..thought_signature import log_thought_signature_debug
 from ..tl_utils import get_temp_dir, save_base64_image
 from .base import ProviderRequest
@@ -189,6 +190,8 @@ class GoogleProvider:
                 "invalid_reference_image",
             )
 
+        family = gemini_image_family(config.model)
+
         contents = [{"role": "user", "parts": parts}]
 
         generation_config: dict[str, Any] = {"responseModalities": ["TEXT", "IMAGE"]}
@@ -219,7 +222,8 @@ class GoogleProvider:
         _aspect_key = (config.aspect_ratio_param_name or "").strip()
         aspect_ratio_key = _aspect_key if _aspect_key else "aspect_ratio"
 
-        if config.resolution:
+        if config.resolution and family != "legacy2_5":
+            # 2.5 系固定 ~1K 输出，无 image_size 档位：不注入分辨率
             resolution = config.resolution.upper()
 
             if resolution in ["1K", "1024X1024"]:
@@ -255,7 +259,12 @@ class GoogleProvider:
 
         tools: list[dict[str, Any]] = []
         if config.enable_grounding:
-            tools.append({"google_search": {}})
+            if family in ("lite", "legacy2_5"):
+                logger.warning(
+                    "[google] %s 不支持 Google 搜索接地，已忽略", config.model
+                )
+            else:
+                tools.append({"google_search": {}})
 
         payload: dict[str, Any] = {
             "contents": contents,

@@ -144,6 +144,7 @@ async def test_provider_query_defaults_to_modes_and_hides_detail() -> None:
     assert detail_result["models"][0]["parameters"]["quality"]["enum"] == [
         "low",
         "medium",
+        "auto",
     ]
     image_count = detail_result["models"][0]["parameters"]["image_count"]
     assert image_count["maximum"] == 12

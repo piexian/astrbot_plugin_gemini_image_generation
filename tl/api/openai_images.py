@@ -347,14 +347,14 @@ class OpenAIImagesProvider:
         if quality:
             payload["quality"] = quality
 
-        # ---- response_format ----
+        # ---- response_format（gpt-image 系恒返回 b64，官方不支持该参数）----
         response_format = str(settings.get("response_format") or "").strip()
-        if response_format:
+        if response_format and not _is_gpt_image_model(model):
             payload["response_format"] = response_format
 
         # ---- style (dall-e-3 only) ----
         style = str(settings.get("style") or "").strip()
-        if style:
+        if style and model.startswith("dall-e-3"):
             payload["style"] = style
 
         # ---- GPT image 模型专属参数 ----

@@ -237,6 +237,10 @@ class GeminiInteractionsProvider:
         resolution = (config.resolution or "").strip().upper() or None
         aspect_ratio = (config.aspect_ratio or "").strip() or None
 
+        if "2.5-flash-image" in model_lc:
+            # 2.5 系固定 ~1K 输出，无 image_size 档位：不注入
+            resolution = None
+
         if (
             resolution
             and resolution not in ("1K", "1024X1024")
@@ -249,7 +253,10 @@ class GeminiInteractionsProvider:
             )
             resolution = "1K"
 
-        if aspect_ratio in _EXTREME_RATIOS and "3.1-flash-image" not in model_lc:
+        supports_extreme = (
+            "3.1-flash-image" in model_lc or "flash-lite-image" in model_lc
+        )
+        if aspect_ratio in _EXTREME_RATIOS and not supports_extreme:
             logger.warning(
                 "[gemini_interactions] 极端比例 %s 仅 3.1 Flash Image 支持，"
                 "%s 已忽略该比例",
@@ -376,7 +383,9 @@ class GeminiInteractionsProvider:
         generation_config: dict[str, Any] = {}
         thinking_level = str(settings.get("thinking_level") or "").strip().lower()
         if thinking_level:
-            if "3.1-flash-image" not in model.lower():
+            if "3.1-flash-image" not in model.lower() and (
+                "flash-lite-image" not in model.lower()
+            ):
                 logger.warning(
                     "[gemini_interactions] thinking_level 仅 gemini-3.1-flash-image "
                     "支持，%s 已忽略",

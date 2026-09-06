@@ -137,7 +137,7 @@ async def test_upload_rejects_large_dimensions_before_decoding(tmp_path, monkeyp
         ("google", "gemini", 30, 14),
         ("gemini_interactions", "gemini", 30, 14),
         ("openai", "model", 20, 6),
-        ("xai", "grok-imagine-image", 10, 3),
+        ("xai", "grok-imagine-image", 10, 5),
         ("xai", "grok-imagine-image", 2, 2),
         ("doubao", "doubao-seedream-4-0", 20, 14),
         ("doubao", "doubao-seedream-5-0-pro", 20, 10),

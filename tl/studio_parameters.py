@@ -79,8 +79,12 @@ def generation_fields(candidate: Any) -> dict[str, dict[str, Any]]:
     setting_map = capability.get("request_setting_map") or {}
     reverse_map = {setting: runtime for runtime, setting in setting_map.items()}
     fields: dict[str, dict[str, Any]] = {}
+    unsupported = capability.get("unsupported_settings") or {}
     for name, schema in template.get("items", {}).items():
         if name not in GENERATION_SETTING_KEYS:
+            continue
+        if name in unsupported:
+            # 该模型不支持此参数：工作台不显示，临时覆盖也不接受
             continue
         field = {
             "type": {

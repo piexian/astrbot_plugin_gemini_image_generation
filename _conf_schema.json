@@ -339,7 +339,9 @@
               "service_account_files": {
                 "description": "服务账号 JSON 凭证（上传文件）",
                 "type": "file",
-                "file_types": ["json"],
+                "file_types": [
+                  "json"
+                ],
                 "hint": "上传 .json 密钥文件（走项目级端点）；与粘贴内容和 API Key 互斥，三选一",
                 "default": []
               },
@@ -733,8 +735,7 @@
                 "default": "1K",
                 "options": [
                   "1K",
-                  "2K",
-                  "4K"
+                  "2K"
                 ]
               },
               "aspect_ratio": {
@@ -756,6 +757,8 @@
                   "9:19.5",
                   "20:9",
                   "9:20",
+                  "21:9",
+                  "5:2",
                   "auto"
                 ]
               },
@@ -783,7 +786,8 @@
                 "options": [
                   "",
                   "low",
-                  "medium"
+                  "medium",
+                  "auto"
                 ]
               },
               "n": {
@@ -853,8 +857,7 @@
                 "default": "1K",
                 "options": [
                   "1K",
-                  "2K",
-                  "4K"
+                  "2K"
                 ]
               },
               "aspect_ratio": {
@@ -868,8 +871,6 @@
                   "4:3",
                   "3:2",
                   "9:16",
-                  "4:5",
-                  "5:4",
                   "21:9",
                   "3:4",
                   "2:3"
@@ -1007,8 +1008,8 @@
               "model": {
                 "description": "模型名称",
                 "type": "string",
-                "hint": "step-image-edit-2；step-2x-large",
-                "default": "step-image-edit-2"
+                "hint": "step-2x-large；step-image-edit-2（官方 2026-10-10 下线）",
+                "default": "step-2x-large"
               },
               "api_base": {
                 "description": "API 端点地址",
