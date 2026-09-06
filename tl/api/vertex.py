@@ -149,38 +149,69 @@ class VertexProvider(GoogleProvider):
             return []
         return [str(item).strip() for item in files if str(item).strip()]
 
-    def _load_service_account(self, path_value: str) -> tuple[dict[str, Any], str]:
-        """读取并缓存服务账号 JSON，返回 (info, project_id)。"""
-        path = self._resolve_credential_path(path_value)
+    def _load_service_account(self, credential: str) -> tuple[dict[str, Any], str]:
+        """读取服务账号凭证，返回 (info, project_id)。
+
+        凭证可以是内联 JSON 文本（``{`` 开头）或插件根相对/绝对文件路径；
+        内联按内容指纹缓存，路径按 mtime 缓存。
+        """
+        stripped = credential.strip()
+        if stripped.startswith("{"):
+            fingerprint = (
+                "inline:" + hashlib.sha256(stripped.encode("utf-8")).hexdigest()
+            )
+            cached = self._sa_info_cache.get(fingerprint)
+            if cached:
+                return cached[1], str(cached[1].get("project_id") or "")
+            try:
+                info = json.loads(stripped)
+            except ValueError as exc:
+                raise APIError(
+                    "Vertex 服务账号凭证不是有效的 JSON",
+                    None,
+                    "invalid_request",
+                    retryable=False,
+                ) from exc
+            if not isinstance(info, dict) or not info.get("private_key"):
+                raise APIError(
+                    "Vertex 服务账号凭证缺少 private_key 字段",
+                    None,
+                    "invalid_request",
+                    retryable=False,
+                )
+            self._sa_info_cache[fingerprint] = (None, info)
+            return info, str(info.get("project_id") or "")
+
+        path = self._resolve_credential_path(credential)
         try:
             mtime = path.stat().st_mtime
         except OSError as exc:
             raise APIError(
-                f"Vertex 服务账号凭证文件不可读: {path_value}",
+                f"Vertex 服务账号凭证文件不可读: {credential}",
                 None,
                 "invalid_request",
                 retryable=False,
             ) from exc
-        cached = self._sa_info_cache.get(path_value)
+        cached = self._sa_info_cache.get(credential)
         if cached and cached[0] == mtime:
             return cached[1], str(cached[1].get("project_id") or "")
         try:
             info = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             raise APIError(
-                f"Vertex 服务账号凭证不是有效的 JSON: {path_value}",
+                f"Vertex 服务账号凭证不是有效的 JSON: {credential}",
                 None,
                 "invalid_request",
                 retryable=False,
             ) from exc
         if not isinstance(info, dict) or not info.get("private_key"):
             raise APIError(
-                f"Vertex 服务账号凭证缺少 private_key 字段: {path_value}",
+                f"Vertex 服务账号凭证缺少 private_key 字段: {credential}",
                 None,
                 "invalid_request",
                 retryable=False,
             )
-        self._sa_info_cache[path_value] = (mtime, info)
+        self._sa_info_cache[credential] = (mtime, info)
         return info, str(info.get("project_id") or "")
 
     @staticmethod

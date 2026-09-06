@@ -254,6 +254,7 @@
         if (keyList) this.renderKeys(field, entry, schema, id);
         else if (common && name === 'vision_provider_id') this.renderVisionProvider(field, entry, schema, id);
         else if (secret) this.renderSecret(field, entry, name, schema, common, id);
+        else if (schema.type === 'file') this.renderCredentialField(field, entry, schema, name, common, id);
         else field.appendChild(this.control(entry.values[name] ?? schema.default, schema, name, common, id));
         if ((!common && (name === 'model' || name === 'endpoint_id')) || (common && name === 'vision_model')) {
           this.renderCatalogField(field, entry, name, common);
@@ -263,6 +264,32 @@
       }
       for (const group of Object.values(groups)) if (!group.children.length) group.parentNode.hidden = true;
       this.updateConditions(container, entry, fields);
+    }
+
+    renderCredentialField(field, entry, schema, name, common, id) {
+      // 凭证框：粘贴 JSON 内容或填写文件路径均可；「上传 .json」把文件内容填入框内。
+      const current = Array.isArray(entry.values[name]) ? (entry.values[name][0] ?? '') : String(entry.values[name] ?? '');
+      const textarea = this.el('textarea', {id, 'data-pc-field': name, 'data-pc-scope': common ? 'common' : 'edit',
+        'data-pc-secret': 'false', 'aria-label': schema.description || name, rows: 6,
+        autocomplete: 'off', spellcheck: 'false', className: 'comic-input'});
+      textarea.value = current;
+      field.appendChild(textarea);
+      field.appendChild(this.button('上传 .json', 'upload-credential',
+        {'data-pc-cred-target': name, 'aria-label': `上传 ${schema.description || name} JSON 文件`}));
+      const picker = this.el('input', {type: 'file', accept: '.json,application/json', hidden: true,
+        'data-pc-file-picker': name});
+      picker.addEventListener('change', () => {
+        const file = picker.files && picker.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          textarea.value = String(reader.result ?? '').trim();
+          textarea.dispatchEvent(new Event('change', {bubbles: true}));
+        };
+        reader.readAsText(file);
+        picker.value = '';
+      });
+      field.appendChild(picker);
     }
 
     control(value, schema, name, common, id, secret = false) {
@@ -687,8 +714,10 @@
       const name = node.dataset.pcField;
       if (!name || !own(fields, name)) return;
       const schema = fields[name];
-      const value = schema.type === 'bool' ? node.checked : schema.type === 'list' || schema.type === 'file'
-        ? node.value.split(/\r?\n/).map(line => line.trim()).filter(Boolean) : node.value;
+      const value = schema.type === 'bool' ? node.checked
+        : schema.type === 'list' ? node.value.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+        : schema.type === 'file' ? (String(node.value).trim() ? [String(node.value).trim()] : [])
+        : node.value;
       const current = node.dataset.pcSecret === 'true' ? entry.secret_actions[name]?.value : entry.values[name];
       const keyList = name === 'api_keys' && schema.type !== 'string';
       const next = keyList ? [...new Set(value)] : value;
@@ -749,6 +778,11 @@
       if (action === 'choose-model') { this.chooseModel(scope, Number(button.dataset.pcModel)); return; }
       const index = Number(button.dataset.pcIndex);
       if (action === 'save') { await this.save(); return; }
+      if (action === 'upload-credential') {
+        const target = button.dataset.pcCredTarget;
+        (this.editor?.body || this.fieldset || root).querySelector(`[data-pc-file-picker="${target}"]`)?.click();
+        return;
+      }
       if (action === 'add') {
         const type = this.root.querySelector('[data-pc-new-type]')?.value;
         if (!own(this.snapshot.templates, type) || this.draft.entries.length >= 100) return;

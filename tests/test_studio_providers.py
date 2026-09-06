@@ -848,3 +848,42 @@ async def test_string_typed_api_keys_round_trips_as_string():
         await google_svc.save_config(google_body)
     assert exc.value.status_code == 400
     assert FAKE_KEY not in exc.value.message
+
+
+@pytest.mark.asyncio
+async def test_credential_field_accepts_pasted_json_and_persists():
+    """vertex 凭证框粘贴的 JSON 以单元素列表原样持久化（内联凭证与路径并存语义）。"""
+    pasted = json.dumps(
+        {
+            "type": "service_account",
+            "private_key": "-----BEGIN PRIVATE KEY-----\nFAKE\n",
+            "client_email": "v@p.iam.gserviceaccount.com",
+            "project_id": "p1",
+        },
+        ensure_ascii=False,
+    )
+    settings = {
+        "provider_polling": [],
+        "provider_overrides": [
+            {
+                "__template_key": "vertex",
+                "service_account_files": [pasted],
+                "model": "gemini-3-pro-image",
+            }
+        ],
+    }
+    svc = service(settings)
+    snapshot = await svc.get_config()
+    entry = snapshot["entries"][0]
+    assert entry["values"]["service_account_files"] == [pasted]
+
+    body = await payload(svc)
+    replaced = json.dumps(
+        {"type": "service_account", "private_key": "K2", "project_id": "p2"}
+    )
+    body["entries"][0]["values"]["service_account_files"] = [replaced]
+    await svc.save_config(body)
+    saved = svc.raw_config.calls[-1]["provider_settings"]["provider_overrides"][0][
+        "service_account_files"
+    ]
+    assert saved == [replaced]

@@ -340,7 +340,7 @@
                 "description": "服务账号 JSON 凭证",
                 "type": "file",
                 "file_types": ["json"],
-                "hint": "上传一个服务账号密钥 JSON（需具备 Vertex AI User 权限），走项目级端点；与 API Key 互斥，二选一",
+                "hint": "上传 .json 或直接粘贴密钥 JSON 内容均可（工作台凭证框两者都支持，也可填文件路径）；需具备 Vertex AI User 权限；与 API Key 互斥，二选一",
                 "default": []
               },
               "project_id": {

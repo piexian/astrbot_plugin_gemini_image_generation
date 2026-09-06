@@ -663,7 +663,7 @@ Gemini 官方 Interactions 端点（2026-06 GA），承载 Nano Banana 系列模
 
 **认证二选一（互斥，一个条目只能配置一个凭证）**：
 
-- **服务账号 JSON 凭证**（`service_account_files`，type=file）：在 AstrBot 插件配置页上传一个服务账号密钥 JSON（需具备 Vertex AI User 权限）。插件以 RS256 JWT 换取 Bearer 访问令牌并缓存至过期前自动刷新；令牌请求与生成请求走同一代理。上传文件保存在插件目录 `files/` 下，配置中记录相对路径。
+- **服务账号 JSON 凭证**（`service_account_files`，type=file）：上传 `.json` 文件或直接粘贴密钥 JSON 内容均可（工作台凭证框两者都支持，也可填文件路径；配置页上传的文件保存在插件目录 `files/` 下，记录相对路径）。需具备 Vertex AI User 权限。插件以 RS256 JWT 换取 Bearer 访问令牌并缓存至过期前自动刷新；令牌请求与生成请求走同一代理。
 - **Express API Key**（`api_keys`）：Vertex AI Express 模式的 API Key，最多填一个，走 `https://aiplatform.googleapis.com/v1/publishers/google/models/{model}:generateContent`，支持每日限额。
 
 两种凭证互斥：同时配置、上传多个服务账号凭证或填写多个 API Key 的条目在加载时直接报错跳过（studio 保存同样会被校验拦截）。服务账号凭证走项目级端点（`https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/publishers/google/models/{model}:generateContent`）；`project_id` 留空时自动从凭证 JSON 的 `project_id` 读取。
@@ -673,7 +673,7 @@ Gemini 官方 Interactions 端点（2026-06 GA），承载 Nano Banana 系列模
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `model` | `gemini-3-pro-image` | 如 `gemini-3-pro-image`、`gemini-3.1-flash-image`、`gemini-2.5-flash-image` |
-| `service_account_files` | `[]` | 服务账号 JSON 凭证文件（file 字段，配置页上传），最多一个 |
+| `service_account_files` | `[]` | 服务账号 JSON 凭证：上传文件或直接粘贴 JSON 内容，最多一个 |
 | `api_keys` | 空 | Express 模式 API Key（单个，字符串填写）；与服务账号凭证互斥 |
 | `project_id` | 空 | GCP 项目 ID；服务账号凭证含 project_id 时可留空 |
 | `location` | `global` | 区域，如 `us-central1`、`europe-west4`、`global`（决定端点主机） |

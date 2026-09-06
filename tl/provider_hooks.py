@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -436,6 +437,16 @@ def validate_vertex_settings(settings: dict[str, Any]) -> None:
             if isinstance(item, str) and item.strip():
                 normalized_files.append(item.strip())
     settings["service_account_files"] = normalized_files
+
+    # 内联 JSON 凭证（区别于文件路径）在保存期即校验，避免运行时才发现格式错误
+    for item in normalized_files:
+        if item.startswith("{"):
+            try:
+                info = json.loads(item)
+            except ValueError as exc:
+                raise ValueError(f"服务账号凭证 JSON 无法解析: {exc}") from exc
+            if not isinstance(info, dict) or not info.get("private_key"):
+                raise ValueError("服务账号凭证 JSON 缺少 private_key 字段")
 
     raw_keys = settings.get("api_keys")
     if isinstance(raw_keys, str):

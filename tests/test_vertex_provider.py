@@ -388,3 +388,54 @@ def test_vertex_candidate_without_any_credential_is_rejected() -> None:
     assert any(
         "服务账号 JSON 凭证或一个 API Key" in e for e in config.provider_config_errors
     )
+
+
+def test_validate_vertex_settings_accepts_inline_json() -> None:
+    info = json.dumps(
+        {
+            "type": "service_account",
+            "private_key": "-----BEGIN PRIVATE KEY-----\nX\n",
+            "client_email": "a@b.iam.gserviceaccount.com",
+        },
+        ensure_ascii=False,
+    )
+    settings = {"service_account_files": [info], "api_keys": []}
+    validate_vertex_settings(settings)
+    assert settings["service_account_files"][0] == info
+
+
+def test_validate_vertex_settings_rejects_broken_inline_json() -> None:
+    with pytest.raises(ValueError, match="无法解析"):
+        validate_vertex_settings({"service_account_files": ["{not-json"]})
+    with pytest.raises(ValueError, match="private_key"):
+        validate_vertex_settings({"service_account_files": ['{"client_email": "x"}']})
+
+
+@pytest.mark.asyncio
+async def test_inline_json_credential_builds_full_endpoint(
+    tmp_path, monkeypatch
+) -> None:
+    provider = _make_provider()
+
+    async def fake_exchange_jwt(client, config, private_key, client_email):
+        assert "INLINE" in private_key
+        return "tok", 3600
+
+    monkeypatch.setattr(provider, "_exchange_jwt", fake_exchange_jwt)
+    info = {
+        "private_key": "-----BEGIN PRIVATE KEY-----\nINLINE\n",
+        "client_email": "v@p.iam.gserviceaccount.com",
+        "project_id": "inline-proj",
+    }
+    config = _make_config(
+        provider_settings={"service_account_files": [json.dumps(info)]}
+    )
+    request = await provider.build_request(client=_FakeClient(), config=config)
+
+    assert request.url.startswith(
+        "https://aiplatform.googleapis.com/v1/projects/inline-proj/locations/global/"
+    )
+    assert request.headers["Authorization"] == "Bearer tok"
+    # 第二次请求命中指纹缓存，无需重新换取
+    request2 = await provider.build_request(client=_FakeClient(), config=config)
+    assert request2.headers["Authorization"] == "Bearer tok"
