@@ -439,3 +439,36 @@ async def test_inline_json_credential_builds_full_endpoint(
     # 第二次请求命中指纹缓存，无需重新换取
     request2 = await provider.build_request(client=_FakeClient(), config=config)
     assert request2.headers["Authorization"] == "Bearer tok"
+
+
+def test_resolve_credential_path_prefers_existing_base(tmp_path, monkeypatch) -> None:
+    from tl.api import vertex as vertex_module
+
+    plugin_data = tmp_path / "plugin_data" / vertex_module.PLUGIN_NAME
+    (plugin_data / "files").mkdir(parents=True)
+    (plugin_data / "files" / "sa.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        vertex_module.VertexProvider,
+        "_candidate_credential_bases",
+        lambda: [plugin_data, tmp_path / "code"],
+    )
+
+    resolved = vertex_module.VertexProvider._resolve_credential_path("files/sa.json")
+    assert resolved == plugin_data / "files" / "sa.json"
+
+    # 插件数据目录没有时回退插件代码目录
+    resolved = vertex_module.VertexProvider._resolve_credential_path("missing.json")
+    assert resolved == plugin_data / "missing.json"
+    monkeypatch.setattr(
+        vertex_module.Path,
+        "is_file",
+        lambda self: self == tmp_path / "code" / "only-code.json",
+    )
+    resolved = vertex_module.VertexProvider._resolve_credential_path("only-code.json")
+    assert resolved == tmp_path / "code" / "only-code.json"
+
+    # 绝对路径原样返回
+    absolute = tmp_path / "abs.json"
+    assert (
+        vertex_module.VertexProvider._resolve_credential_path(str(absolute)) == absolute
+    )

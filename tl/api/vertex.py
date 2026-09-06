@@ -25,6 +25,7 @@ from .base import ProviderRequest
 from .google import GoogleProvider
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[2]
+PLUGIN_NAME = "astrbot_plugin_gemini_image_generation"
 _TOKEN_URL = "https://oauth2.googleapis.com/token"
 _TOKEN_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 _TOKEN_REFRESH_MARGIN_SECONDS = 120
@@ -186,8 +187,11 @@ class VertexProvider(GoogleProvider):
         try:
             mtime = path.stat().st_mtime
         except OSError as exc:
+            tried = "、".join(
+                str(base / credential) for base in self._candidate_credential_bases()
+            )
             raise APIError(
-                f"Vertex 服务账号凭证文件不可读: {credential}",
+                f"Vertex 服务账号凭证文件不可读: {credential}（已尝试 {tried}）",
                 None,
                 "invalid_request",
                 retryable=False,
@@ -215,11 +219,29 @@ class VertexProvider(GoogleProvider):
         return info, str(info.get("project_id") or "")
 
     @staticmethod
-    def _resolve_credential_path(path_value: str) -> Path:
+    def _candidate_credential_bases() -> list[Path]:
+        """相对路径凭证的解析基准：官方上传目录优先，其次插件代码目录。"""
+        bases: list[Path] = []
+        try:
+            from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
+
+            bases.append(Path(get_astrbot_plugin_data_path()) / PLUGIN_NAME)
+        except Exception:  # noqa: BLE001
+            pass
+        bases.append(PLUGIN_ROOT)
+        return bases
+
+    @classmethod
+    def _resolve_credential_path(cls, path_value: str) -> Path:
         path = Path(path_value)
-        if not path.is_absolute():
-            path = PLUGIN_ROOT / path
-        return path
+        if path.is_absolute():
+            return path
+        bases = cls._candidate_credential_bases()
+        for base in bases:
+            candidate = base / path
+            if candidate.is_file():
+                return candidate
+        return bases[0] / path
 
     @staticmethod
     def _build_url(
