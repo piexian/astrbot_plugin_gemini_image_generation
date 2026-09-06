@@ -691,6 +691,32 @@ def test_import_legacy_images_moves_records_and_dedupes(tmp_path) -> None:
     assert service.import_legacy_images() == 0
 
 
+def test_import_legacy_images_skips_entirely_when_history_disabled(tmp_path) -> None:
+    """关闭历史记录时迁移必须整体跳过：旧图原地保留，不产生孤儿文件。"""
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    legacy = _png(images_dir / "gemini_advanced_image_20260101_000000_000_abc123.png")
+    bad = images_dir / "gemini_advanced_image_bad.png"
+    bad.write_bytes(b"not-an-image")
+
+    tracker = GenerationTracker(tmp_path, 20, enabled=False)
+    service = WebStudioService(None, tracker, _config(), tmp_path)
+
+    assert service.import_legacy_images() == 0
+
+    # 旧图原地保留：未被移动、未被清理
+    assert legacy.exists()
+    assert bad.exists()
+    # gallery 未被创建，也未写入任何记录
+    assert not (tmp_path / "gallery").exists()
+    assert (
+        tracker.query_history(
+            page=1, size=10, keyword="", source="", group_id="", user_id=""
+        )["total"]
+        == 0
+    )
+
+
 @pytest.mark.asyncio
 async def test_source_urls_recorded_on_success_and_archive_failure(
     tmp_path, monkeypatch

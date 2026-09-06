@@ -999,7 +999,12 @@ class WebStudioService:
 
         同步方法，仅在插件初始化期调用；已归档内容按 尺寸+SHA256 去重，
         无法解码的文件按旧清理语义直接删除。
+
+        历史记录关闭（tracker 未启用）时整体跳过：旧图保留在 images/ 原位。
+        否则图片会被移走却不建档，成为画廊容量整理可删除的孤儿文件。
         """
+        if not getattr(self.tracker, "enabled", True):
+            return 0
         images_dir = self.data_dir / "images"
         if not images_dir.is_dir():
             return 0
