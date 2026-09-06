@@ -6,14 +6,12 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
-from astrbot.api import logger
-
 from ..api_types import APIError, ApiRequestConfig
-from .data_uri import format_data_uri, looks_like_base64, strip_data_uri_prefix
+from .data_uri import strip_data_uri_prefix
 from .reference_intake import announce_reference_intake
+from .reference_pipeline import reference_data_uri, transcode_to_supported_mime
 
 
 async def resolve_reference_api_values(
@@ -60,54 +58,14 @@ async def _resolve_single_value(
     error_label: str,
     log_prefix: str,
 ) -> str | None:
-    if not image_str:
-        return None
-
-    # URL 输入且不强制 base64 → 原样透传
-    if image_str.startswith(("http://", "https://")) and not force_b64:
-        return image_str
-
-    # 已是标准 data URI → 原样
-    if image_str.startswith("data:image/") and ";base64," in image_str:
-        return image_str
-
-    # 裸 base64 → 补 data URI 前缀
-    if looks_like_base64(image_str) and not image_str.startswith("data:"):
-        return format_data_uri(strip_data_uri_prefix(image_str))
-
-    # 其余（本地路径 / 强制 base64 的 URL）走客户端归一化；
-    # 共享归一化器不认裸路径，先转 file:// URI
-    normalize_input = image_str
-    if "://" not in image_str and Path(image_str).is_file():
-        normalize_input = Path(image_str).resolve().as_uri()
-    try:
-        mime_type, b64_data = await client._normalize_reference_image_input(
-            normalize_input,
-            image_input_mode=getattr(config, "image_input_mode", "force_base64"),
-            # 候选级代理优先于全局：仅在配置时透传，兼容未声明该参数的旧客户端替身
-            **(
-                {"request_proxy": config.proxy}
-                if getattr(config, "proxy", None)
-                else {}
-            ),
-        )
-    except Exception as e:
-        logger.debug("%s normalize_reference_image_input failed: %s", log_prefix, e)
-        mime_type, b64_data = None, None
-
-    if not b64_data:
-        if force_b64:
-            raise APIError(
-                f"参考图转换失败（{error_label}），请检查图片来源后重试。",
-                None,
-                "invalid_reference_image",
-                retryable=False,
-            )
-        if image_str.startswith(("http://", "https://")):
-            return image_str
-        return None
-
-    return format_data_uri(strip_data_uri_prefix(b64_data), mime_type)
+    return await reference_data_uri(
+        client,
+        config,
+        image_str,
+        log_prefix=log_prefix,
+        error_label=error_label,
+        force_b64=force_b64,
+    )
 
 
 # MiniMax 官方 image_file 仅支持 JPG/JPEG/PNG 且小于 10MB
@@ -121,15 +79,9 @@ def normalize_image_mime(
     *,
     error_label: str = "minimax",
 ) -> tuple[str, str]:
-    """将参考图 base64 归一化为受支持格式。
-
-    mime 在白名单内原样返回；其余格式（GIF/WebP/BMP 等）解码后转码为 PNG
-    （动图取首帧）；解码失败或超过 10MB 抛不可重试错误。
-    """
+    """将参考图 base64 归一化为受支持格式（委托共享管道）。"""
     import base64
-    import io
 
-    mime = (mime_type or "").strip().lower()
     try:
         raw = base64.b64decode(strip_data_uri_prefix(b64_data), validate=True)
     except Exception as e:
@@ -139,112 +91,10 @@ def normalize_image_mime(
             "invalid_reference_image",
             retryable=False,
         ) from e
-    if len(raw) > _MAX_REFERENCE_IMAGE_BYTES:
-        raise APIError(
-            f"参考图超过 10MB 大小限制（{error_label}）",
-            None,
-            "invalid_reference_image",
-            retryable=False,
-        )
-    if mime in SUPPORTED_MIMES_JPEG_PNG:
-        return b64_data, mime
-
-    from PIL import Image as PILImage
-
-    try:
-        with PILImage.open(io.BytesIO(raw)) as img:
-            img.seek(0)  # 动图（GIF/WebP）取首帧
-            if img.mode in ("RGBA", "LA", "P", "PA"):
-                img = img.convert("RGBA")
-            else:
-                img = img.convert("RGB")
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-    except Exception as e:
-        raise APIError(
-            f"参考图格式 {mime or '未知'} 无法转换为受支持的 PNG/JPEG（{error_label}）：{e}",
-            None,
-            "invalid_reference_image",
-            retryable=False,
-        ) from e
-    encoded = buf.getvalue()
-    if len(encoded) > _MAX_REFERENCE_IMAGE_BYTES:
-        raise APIError(
-            f"参考图转码后超过 10MB 大小限制（{error_label}）",
-            None,
-            "invalid_reference_image",
-            retryable=False,
-        )
-    logger.info(
-        "%s参考图 %s 不在 JPG/PNG 白名单，已转码为 PNG",
-        f"[{error_label}] ",
-        mime or "未知",
+    return transcode_to_supported_mime(
+        raw,
+        mime_type,
+        error_label=error_label,
+        supported=SUPPORTED_MIMES_JPEG_PNG,
+        max_bytes=_MAX_REFERENCE_IMAGE_BYTES,
     )
-    return base64.b64encode(encoded).decode("ascii"), "image/png"
-
-
-async def load_reference_bytes(
-    client: Any,  # noqa: ANN401
-    config: ApiRequestConfig,
-    image_input: Any,  # noqa: ANN401
-    *,
-    log_prefix: str,
-) -> bytes | None:
-    """把参考图输入解析为原始字节。
-
-    base64/data URI 直接解码；本地路径与远程 URL 交给客户端共享归一化
-    （与 :func:`_resolve_single_value` 相同的 file:// 转换与候选代理透传）。
-    解析失败返回 None，由调用方决定错误语义。
-    """
-    import base64
-
-    if isinstance(image_input, (bytes, bytearray)):
-        return bytes(image_input) or None
-    text = str(image_input or "").strip()
-    if not text:
-        return None
-
-    # 本地文件优先判定（短且无 scheme 的输入），避免纯 base64 字母表路径被误解码
-    is_local_file = (
-        "://" not in text
-        and not text.startswith("data:")
-        and len(text) <= 1024
-        and Path(text).is_file()
-    )
-    if not is_local_file:
-        payload = text
-        if payload.startswith("data:"):
-            parts = payload.split(",", 1)
-            if len(parts) == 2:
-                payload = parts[1]
-        try:
-            return base64.b64decode(payload, validate=True)
-        except Exception:
-            pass
-
-    normalize = getattr(client, "_normalize_reference_image_input", None)
-    if normalize is None:
-        logger.debug("%s 参考图非 base64 且客户端缺少共享归一化器", log_prefix)
-        return None
-    # 共享归一化器不认裸路径，先转 file:// URI
-    normalize_input = Path(text).resolve().as_uri() if is_local_file else text
-    try:
-        _mime, b64_data = await normalize(
-            normalize_input,
-            image_input_mode=getattr(config, "image_input_mode", "force_base64"),
-            **(
-                {"request_proxy": config.proxy}
-                if getattr(config, "proxy", None)
-                else {}
-            ),
-        )
-    except Exception as e:
-        logger.debug("%s 参考图归一化失败: %s", log_prefix, e)
-        return None
-    if not b64_data:
-        return None
-    try:
-        return base64.b64decode(strip_data_uri_prefix(b64_data), validate=True)
-    except Exception as e:
-        logger.debug("%s 参考图 base64 解码失败: %s", log_prefix, e)
-        return None

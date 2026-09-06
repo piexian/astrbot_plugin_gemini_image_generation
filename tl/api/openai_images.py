@@ -23,7 +23,7 @@ from ..openai_image_size import (
 )
 from ..tl_utils import save_base64_image
 from .base import ProviderRequest
-from .reference_values import load_reference_bytes
+from .reference_pipeline import load_reference_bytes
 
 # ---------- 按模型族分的合法尺寸映射 ----------
 

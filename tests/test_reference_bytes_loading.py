@@ -13,7 +13,7 @@ from urllib.parse import unquote, urlparse
 import pytest
 
 from tl.api.openai_images import OpenAIImagesProvider
-from tl.api.reference_values import load_reference_bytes
+from tl.api.reference_pipeline import load_reference_bytes
 from tl.api.stepfun import StepfunProvider
 from tl.api_types import APIError, ApiRequestConfig
 
@@ -193,3 +193,26 @@ async def test_bare_base64_alphabet_path_prefers_file_over_decode(
     assert data == PNG_BYTES
     assert client.calls[0][0].endswith("/abcd")
     assert client.calls[0][0].startswith("file://")
+
+
+def test_provider_modules_do_not_private_decode_reference_inputs() -> None:
+    """防回归：参考图输入解析只允许在共享管道中做 base64 解码。
+
+    输出侧落盘（google/gemini_interactions 兜底写临时文件）与 mime 嗅探
+    （minimax）不属输入解析，白名单放行。
+    """
+    from pathlib import Path
+
+    allowed = {
+        "reference_pipeline.py",
+        "reference_values.py",
+        "gemini_interactions.py",
+        "google.py",
+        "minimax.py",
+    }
+    violations = [
+        path.name
+        for path in Path("tl/api").glob("*.py")
+        if "b64decode" in path.read_text(encoding="utf-8") and path.name not in allowed
+    ]
+    assert violations == []

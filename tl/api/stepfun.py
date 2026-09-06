@@ -11,7 +11,7 @@ from ..api_types import APIError, ApiRequestConfig
 from ..tl_utils import save_base64_image
 from .base import ProviderRequest
 from .param_utils import coerce_float, coerce_int, ensure_prompt_length
-from .reference_values import load_reference_bytes
+from .reference_pipeline import load_reference_bytes
 
 # generations 接口不同模型支持的 size 预设（WxH 格式）。
 # step-image-edit-2 的 edits 接口：size 不生效，输出始终与输入同尺寸。

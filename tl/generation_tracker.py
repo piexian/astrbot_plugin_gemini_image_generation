@@ -19,7 +19,7 @@ from typing import Any
 
 from astrbot.api import logger
 
-from .api.compat_utils import is_temp_cache_url
+from .api.reference_pipeline import select_persistent_source_urls
 from .studio_parameters import clean_history_settings
 
 TERMINAL_STATUSES = {
@@ -409,27 +409,8 @@ class GenerationTracker:
 
     @staticmethod
     def _clean_source_urls(value: Any) -> list[str]:
-        """只保留可能长期有效的 http(s) 源链接，已知临时缓存 URL 不记录。"""
-        if not isinstance(value, (list, tuple)):
-            return []
-        result: list[str] = []
-        seen: set[str] = set()
-        for item in value:
-            if not isinstance(item, str):
-                continue
-            url = item.strip()
-            if (
-                not url.startswith(("http://", "https://"))
-                or len(url) > 2048
-                or url in seen
-                or is_temp_cache_url(url)
-            ):
-                continue
-            seen.add(url)
-            result.append(url)
-            if len(result) >= 20:
-                break
-        return result
+        """只保留可能长期有效的 http(s) 源链接，委托共享管道过滤。"""
+        return select_persistent_source_urls(value)
 
     async def begin(
         self,
