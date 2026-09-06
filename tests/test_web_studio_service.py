@@ -351,6 +351,41 @@ def test_capabilities_returns_flat_candidate_models(tmp_path) -> None:
         assert "api_keys" not in str(entry)
 
 
+def test_capabilities_lists_candidates_missing_from_polling(tmp_path) -> None:
+    """未入轮询表的启用条目仅在工作台可见可选，聊天候选不含它。"""
+    polling_candidate = ProviderCandidate(
+        id="google#1",
+        api_type="google",
+        settings={"api_keys": ["k1"], "model": "polling-model"},
+        supports_image_edit=True,
+    )
+    studio_only = ProviderCandidate(
+        id="openai#1",
+        api_type="openai",
+        settings={"api_keys": ["k2"], "model": "studio-model"},
+        supports_image_edit=True,
+    )
+    config = _config(
+        provider_candidates=[polling_candidate],
+        provider_candidates_all=[polling_candidate, studio_only],
+    )
+    service = WebStudioService(None, GenerationTracker(tmp_path, 20), config, tmp_path)
+
+    models = service.capabilities()["models"]
+    assert [entry["candidate_id"] for entry in models] == ["google#1", "openai#1"]
+
+    normalized, warning = service.validate_payload(
+        {
+            "prompt": "draw",
+            "provider": "openai",
+            "model": "studio-model",
+            "candidate_id": "openai#1",
+        }
+    )
+    assert warning is None
+    assert normalized["candidate_id"] == "openai#1"
+
+
 def test_capabilities_and_validation_expose_seed(tmp_path) -> None:
     candidate = ProviderCandidate(
         id="modelscope#1",

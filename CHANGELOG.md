@@ -2,6 +2,12 @@
 
 > **升级提示**：v1.9.0 以后的配置文件格式不兼容旧版本。升级后如遇配置模板显示错误，请查看 [配置迁移说明](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/troubleshooting.md#配置迁移说明)。
 
+## [Unreleased]
+
+### Changed
+
+- **工作台选取与聊天轮询解耦**：`provider_polling` 只约束聊天指令与 LLM 工具的自动轮询范围；未加入轮询表的启用配置条目不再被忽略报错（降级为警告），而是保留给 WebUI 工作台模型下拉手动选择生成，候选 id 与 Key 轮换/每日限额统计跨两层保持一致。轮询表 schema hint、供应商配置页说明与文档同步更新。
+
 ## [3.0.0] - 2026-09-05
 
 ### Added

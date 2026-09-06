@@ -155,6 +155,14 @@ class WebStudioService:
     def closed(self) -> bool:
         return self._closed
 
+    def _all_candidates(self) -> list[Any]:
+        """全部启用候选（含未入轮询表条目）：工作台可见即可选，与聊天轮询解耦。"""
+        return (
+            getattr(self.config, "provider_candidates_all", None)
+            or getattr(self.config, "provider_candidates", [])
+            or []
+        )
+
     def update_api_client(self, api_client: Any) -> None:
         self.api_client = api_client
 
@@ -383,7 +391,7 @@ class WebStudioService:
             "upload_names": self._name_list(source.get("upload_names"), "upload_names"),
         }
         route_candidates = select_candidates(
-            getattr(self.config, "provider_candidates", []) or [],
+            self._all_candidates(),
             provider=normalized["provider"],
             model=normalized["model"],
             candidate_id=normalized["candidate_id"],
@@ -461,7 +469,7 @@ class WebStudioService:
             merged.get("provider") or merged.get("model") or merged.get("candidate_id")
         ):
             candidates = select_candidates(
-                getattr(self.config, "provider_candidates", []) or [],
+                self._all_candidates(),
                 provider=merged.get("provider"),
                 model=merged.get("model"),
                 candidate_id=merged.get("candidate_id"),
@@ -471,7 +479,7 @@ class WebStudioService:
                 merged["model"] = None
                 merged["candidate_id"] = None
                 fallback_candidates = select_candidates(
-                    getattr(self.config, "provider_candidates", []) or [],
+                    self._all_candidates(),
                     required_parameters={
                         field
                         for field in ("seed", "negative_prompt", "quality")
@@ -511,7 +519,7 @@ class WebStudioService:
                 warning = "原记录的供应商或模型已不可用，已回退默认配置"
         if "generation_settings" not in payload and merged.get("generation_settings"):
             candidates = select_candidates(
-                getattr(self.config, "provider_candidates", []) or [],
+                self._all_candidates(),
                 provider=merged.get("provider"),
                 model=merged.get("model"),
                 candidate_id=merged.get("candidate_id"),
@@ -654,7 +662,7 @@ class WebStudioService:
     def _validate_capabilities(
         self, payload: dict[str, Any], configured: list[Any]
     ) -> None:
-        if not getattr(self.config, "provider_candidates", []):
+        if not self._all_candidates():
             raise StudioServiceError("没有可用的供应商配置", status_code=503)
         required = set()
         if payload.get("negative_prompt"):
@@ -855,6 +863,7 @@ class WebStudioService:
                     requested_provider=payload.get("provider"),
                     requested_model=payload.get("model"),
                     requested_candidate_id=payload.get("candidate_id"),
+                    route_all_candidates=True,
                     negative_prompt=payload.get("negative_prompt"),
                     quality=payload.get("quality"),
                     seed=payload.get("seed"),
@@ -1135,7 +1144,7 @@ class WebStudioService:
         candidate = next(
             (
                 candidate
-                for candidate in getattr(self.config, "provider_candidates", []) or []
+                for candidate in self._all_candidates()
                 if candidate.id == candidate_id
             ),
             None,
@@ -1652,12 +1661,10 @@ class WebStudioService:
         return data
 
     def capabilities(self) -> dict[str, Any]:
-        # 扁平候选列表：一条 provider_candidates 配置 = 一个可选项，
+        # 扁平候选列表：一条启用配置 = 一个可选项（含未入轮询表的条目），
         # 前端一个下拉直接选「供应商+模型」，不做供应商级联去重。
         models = []
-        for index, candidate in enumerate(
-            getattr(self.config, "provider_candidates", []) or []
-        ):
+        for index, candidate in enumerate(self._all_candidates()):
             name = str(getattr(candidate, "api_type", "") or "")
             if not name:
                 continue

@@ -106,3 +106,74 @@ def test_disabled_string_value_is_recognized() -> None:
     config = ConfigLoader(raw).load()
 
     assert config.provider_candidates == []
+
+
+def _make_raw_config_with_polling(
+    overrides: list[dict[str, Any]], polling: list[str]
+) -> dict[str, Any]:
+    raw = _make_raw_config(overrides)
+    raw["provider_settings"]["provider_polling"] = polling
+    return raw
+
+
+def _openai_entry(**kwargs: Any) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "__template_key": "openai",
+        "priority": 0,
+        "api_keys": ["openai-key"],
+        "model": "gpt-image-1",
+    }
+    entry.update(kwargs)
+    return entry
+
+
+def test_enabled_entry_missing_from_polling_stays_selectable_in_studio() -> None:
+    """未入轮询的启用条目不参与聊天轮询，但保留给工作台选择。"""
+    raw = _make_raw_config_with_polling(
+        [_google_entry(model="polling-model"), _openai_entry(model="studio-model")],
+        polling=["google"],
+    )
+    config = ConfigLoader(raw).load()
+
+    assert [c.api_type for c in config.provider_candidates] == ["google"]
+    assert [c.api_type for c in config.provider_candidates_all] == [
+        "google",
+        "openai",
+    ]
+    assert config.provider_candidates_all[1].model == "studio-model"
+    # KeyManager 依赖 provider_overrides，必须覆盖全部启用候选
+    assert "openai#1" in config.provider_overrides
+    # 未入轮询不再是配置错误
+    assert not any("轮询" in e for e in config.provider_config_errors)
+
+
+def test_polling_candidates_precede_extras_in_all_candidates() -> None:
+    """全量候选按「轮询顺序在前，其余按配置表顺序」排列。"""
+    raw = _make_raw_config_with_polling(
+        [
+            _openai_entry(model="studio-model"),
+            _google_entry(model="polling-model"),
+        ],
+        polling=["google"],
+    )
+    config = ConfigLoader(raw).load()
+
+    assert [c.api_type for c in config.provider_candidates] == ["google"]
+    assert [c.api_type for c in config.provider_candidates_all] == [
+        "google",
+        "openai",
+    ]
+
+
+def test_empty_polling_keeps_all_candidates_identical() -> None:
+    """轮询表留空时自动跟随全部启用类型，两层候选一致。"""
+    raw = _make_raw_config(
+        [
+            _google_entry(model="model-a"),
+            _openai_entry(model="model-b"),
+        ]
+    )
+    config = ConfigLoader(raw).load()
+
+    assert config.provider_candidates_all == config.provider_candidates
+    assert len(config.provider_candidates) == 2

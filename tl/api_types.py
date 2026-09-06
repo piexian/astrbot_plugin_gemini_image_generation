@@ -36,6 +36,7 @@ class ApiRequestConfig:
     requested_provider: str | None = None  # 显式供应商选择
     requested_model: str | None = None  # 显式原始模型或别名选择
     requested_candidate_id: str | None = None
+    route_all_candidates: bool = False  # 工作台请求：路由范围含未入轮询的启用候选
     negative_prompt: str | None = None  # 请求级负面提示词覆盖
     watermark: bool | None = None  # 请求级水印覆盖
     quality: str | None = None  # 请求级质量覆盖

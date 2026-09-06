@@ -19,6 +19,7 @@ _PROVIDER_FIELDS = (
     "vision_model",
     "proxy",
     "provider_candidates",
+    "provider_candidates_all",
     "provider_polling",
     "provider_overrides",
     "provider_settings_by_type",
@@ -28,6 +29,7 @@ _CLIENT_FIELDS = (
     "api_keys",
     "current_key_index",
     "provider_candidates",
+    "provider_candidates_all",
     "_key_manager",
     "_candidate_key_pools",
     "_candidate_key_indices",
@@ -80,7 +82,7 @@ class ProviderApplication:
                 raise StudioServiceError(
                     "启用的供应商配置缺少有效模型或 API Key，请检查配置表"
                 )
-            for candidate in validation.provider_candidates:
+            for candidate in validation.provider_candidates_all:
                 candidate_capability(candidate)
             config = copy.deepcopy(plugin.cfg)
             config.provider_config_errors = []
@@ -173,7 +175,10 @@ class ProviderApplication:
         client.current_key_index = 0
         client._candidate_key_indices = {}
         client._candidate_semaphores = {}
-        client.set_provider_candidates(plugin.cfg.provider_candidates)
+        client.set_provider_candidates(
+            plugin.cfg.provider_candidates,
+            getattr(plugin.cfg, "provider_candidates_all", None),
+        )
         client.set_key_manager(plugin.key_manager)
         client.proxy = (
             plugin.cfg.proxy

@@ -498,7 +498,15 @@ class GeminiImageGenerationPlugin(Star):
             self.api_client = get_api_client(all_api_keys)
             self.api_client.provider_runtime = self.provider_runtime
             self.api_client.api_keys = all_api_keys
-            self.api_client.set_provider_candidates(usable_candidates)
+            self.api_client.set_provider_candidates(
+                usable_candidates,
+                [
+                    candidate
+                    for candidate in getattr(self.cfg, "provider_candidates_all", [])
+                    or []
+                    if getattr(candidate, "api_keys", None)
+                ],
+            )
             # 绑定 KeyManager 到 API client（支持多 Key 轮换和每日限额）
             if hasattr(self, "key_manager") and self.key_manager:
                 self.api_client.set_key_manager(self.key_manager)

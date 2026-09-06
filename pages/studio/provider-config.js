@@ -207,7 +207,7 @@
       container.appendChild(this.el('h3', {}, [automatic ? '自动跟随有效配置' : '手动轮询顺序']));
       container.appendChild(this.el('p', {className: 'pc-note'}, [automatic
         ? '当前自动跟随后端有效配置。下方仅预览已启用的配置类型，不代表有效候选；拖动、上移或下移后切换为手动轮询。'
-        : '按下方顺序尝试供应商；未参与的供应商不会被尝试，但其配置不会删除。']));
+        : '按下方顺序尝试供应商；未参与的供应商不参与聊天自动生成，但仍可在工作台选择，其配置不会删除。']));
       container.appendChild(this.button('恢复自动轮询', 'auto', {disabled: automatic}));
       const order = this.pollingOrder();
       const list = this.el('ol', {className: 'pc-poll-list', 'aria-label': automatic ? '自动轮询配置类型预览' : '参与轮询的供应商'});

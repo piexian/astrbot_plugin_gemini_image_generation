@@ -407,7 +407,12 @@ class WebStudioAPI:
         )
         if request._request.url.scheme == "https":
             cookie += "; Secure"
-        candidates = list(getattr(self.service.config, "provider_candidates", []) or [])
+        # 记忆的选中候选按全部启用候选校验，未入轮询的条目在工作台仍合法。
+        candidates = list(
+            getattr(self.service.config, "provider_candidates_all", None)
+            or getattr(self.service.config, "provider_candidates", [])
+            or []
+        )
         if request.method == "POST":
             try:
                 payload = await self._json_body()

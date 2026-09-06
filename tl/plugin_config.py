@@ -148,6 +148,8 @@ class PluginConfig:
     )
     provider_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
     provider_candidates: list[ProviderCandidate] = field(default_factory=list)
+    # 全部启用候选（含未加入轮询表的条目）：仅工作台可选，聊天链路仍用 provider_candidates
+    provider_candidates_all: list[ProviderCandidate] = field(default_factory=list)
     provider_polling: list[str] = field(default_factory=list)
     provider_config_errors: list[str] = field(default_factory=list)
 
@@ -594,16 +596,26 @@ class ConfigLoader:
                 for api_type in candidates_by_type
                 if api_type in candidates_by_type
             ]
+            extra_candidates = []
         else:
             missing_from_polling = [
                 api_type for api_type in candidates_by_type if api_type not in seen
             ]
             if missing_from_polling:
-                message = "供应商配置未加入轮询表，已忽略: " + ", ".join(
-                    missing_from_polling
+                # 未入轮询的启用条目仍保留给工作台手动选择，只是不参与聊天自动生成。
+                message = (
+                    "已启用但未加入轮询表（聊天生成不参与，工作台仍可选择）: "
+                    + ", ".join(missing_from_polling)
                 )
-                config.provider_config_errors.append(message)
-                logger.error(f"[配置加载] {message}")
+                logger.warning(f"[配置加载] {message}")
+
+            polling_set = set(polling)
+            extra_candidates = [
+                candidate
+                for api_type, candidates in candidates_by_type.items()
+                if api_type not in polling_set
+                for candidate in candidates
+            ]
 
         ordered_candidates: list[ProviderCandidate] = []
         for api_type in polling:
@@ -616,8 +628,10 @@ class ConfigLoader:
 
         config.provider_polling = polling
         config.provider_candidates = ordered_candidates
+        config.provider_candidates_all = ordered_candidates + extra_candidates
         config.provider_overrides = {
-            candidate.id: candidate.settings for candidate in ordered_candidates
+            candidate.id: candidate.settings
+            for candidate in config.provider_candidates_all
         }
         config.provider_settings_by_type = {}
         for candidate in ordered_candidates:
