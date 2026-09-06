@@ -4,7 +4,7 @@
   const copy = value => JSON.parse(JSON.stringify(value));
   const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
   const SECRET_FIELDS = new Set(['api_keys', 'api_base', 'proxy']);
-  const GENERAL = new Set(['enabled', 'priority', 'model', 'model_alias', 'endpoint_id', 'endpoint_mode', 'api_keys', 'api_base', 'proxy']);
+  const GENERAL = new Set(['enabled', 'priority', 'model', 'model_alias', 'endpoint_id', 'endpoint_mode', 'api_keys', 'api_base', 'proxy', 'service_account_files', 'project_id', 'location']);
   const GENERATION = new Set(['resolution', 'aspect_ratio', 'size', 'size_mode', 'custom_size', 'default_size', 'width', 'height', 'quality', 'n', 'negative_prompt', 'seed', 'output_format', 'style', 'style_type', 'style_weight']);
   let sequence = 0;
 
@@ -180,6 +180,14 @@
         const known = this.supported(entry);
         const meta = this.metadata(entry);
         const count = Array.isArray(entry.values.api_keys) ? entry.values.api_keys.length : meta?.secrets?.api_keys?.count || 0;
+        // 无 API Key 但配置了文件/内联凭证的条目（如 vertex 服务账号）显示凭证状态而非「0 个」
+        const credentialFiles = Array.isArray(entry.values.service_account_files)
+          ? entry.values.service_account_files.filter((item) => String(item).trim()).length
+          : 0;
+        const keyText = !known ? '保留原值'
+          : count ? `${count} 个`
+          : credentialFiles ? 'JSON 凭证'
+          : '0 个';
         const enabled = this.el('input', {type: 'checkbox', role: 'switch', 'aria-label': `启用条目 ${index + 1}`,
           'data-pc-enabled': index, disabled: !known || !this.writable});
         enabled.checked = known && entry.values.enabled !== false;
@@ -188,7 +196,7 @@
         rowActions.appendChild(this.button('删除', 'delete', {'aria-label': `删除条目 ${index + 1}`, 'data-pc-index': index}));
         const values = [ `${index + 1} · ${this.label(entry.api_type)}`, known ? entry.values.model || entry.values.endpoint_id || '未填写' : '旧条目（只可保留或删除）',
           this.el('label', {className: 'pc-enabled'}, [enabled, !known ? '不支持' : entry.values.enabled === false ? '已禁用' : '已启用']),
-          known ? entry.values.priority ?? 0 : '—', known ? `${count} 个` : '保留原值'];
+          known ? entry.values.priority ?? 0 : '—', known ? keyText : '保留原值'];
         const row = this.el('tr', {'data-pc-entry': index}, values.map(value => this.el('td', {}, [value])));
         row.appendChild(this.el('td', {}, [rowActions])); body.appendChild(row);
       });
