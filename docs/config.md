@@ -20,6 +20,26 @@
 | `provider_polling` | `[]` | 供应商轮询表，按列表从上到下尝试；重复项自动去重 |
 | `provider_overrides` | `[]` | 生图供应商配置表，可添加多个相同类型模板 |
 
+### Studio 配置保存
+
+「供应商配置」按配置条目、轮询排序、公共设置分区，读取全部原始条目而非仅有效候选。表单来自当前 schema；工作台的临时参数弹窗不修改这些持久配置。
+
+- 新增条目在 Studio 默认停用，填写模型与 Key 后再启用；禁用或未知的旧条目保留，未知条目只能保留或删除。
+- 拖动只改变跨供应商轮询顺序；空列表保持自动模式，同类型仍按 `priority` 和表内顺序排序。打开页面或仅排序不会补写缺省字段、清除旧字段。
+- 已有 Key 在已鉴权页面可查看完整明文：单个用单行输入，多个以标签摘要展示；管理子视图支持逐项编辑、移除和批量追加去重，统一保存后生效。不写入浏览器持久存储或日志；带认证信息的地址仍需显式替换或清空，其他接口不返回 Key。
+- 生成空闲时通过宿主配置接口热保存，与限流页共用事务锁；保存期间暂不接受新生成，不取消已有任务，不重载插件。忙碌时可保留草稿稍后重试；版本冲突须先重新加载。
+- 切换候选、客户端、代理、视觉参数及工具能力时保留同供应商、同 Key 的每日用量，包括调整条目顺序后的重启恢复。KV 读取或用量检查点保存失败时拒绝应用；有每日限额的候选在用量无法读取时暂不发起请求，恢复后重试。
+- 持久化失败保持原运行时，应用失败回滚；回滚失败暂停生成并提示重载，避免磁盘与运行时配置不一致。不会另行导出含密钥的配置备份。
+
+### 模型目录与视觉提供商
+
+- 视觉下拉对齐本体 `provider` / `provider_sources` 配置，筛选已启用的 `chat_completion`；启用但未加载的条目仍可见并标注状态。刷新失败保留名单和选择，手填作为回退。
+- 生图目录当前接入 Google、Gemini Interactions、OpenAI 兼容、OpenAI Images、Agnes AI、MiniMax、阶跃星辰、ModelScope、xAI、SiliconFlow；其余渠道仍可手填。保留当前自定义路径及 StepPlan 前缀，不偷偷回退普通端点；列表来自上游，不保证每个模型都支持生图。
+- 仅点击时使用当前连接草稿和第一个有效 Key 查询，代理优先级不变，不保存配置、不扣生成额度；使用已有 Key 请求变更后的地址或代理时先确认目标。视觉模型由选中的已加载本体实例提供，查询不会改变其配置。
+- 查询上限为 2 并发、2 排队、20 秒总时限、2 MiB 响应及 2000 个模型；Google 最多 5 页。禁止自动重定向，失败、空列表或迟到响应不会清空当前模型。
+- 官方目录协议：[Google](https://ai.google.dev/api/models)、[OpenAI](https://developers.openai.com/api/reference/resources/models/methods/list)、[xAI](https://docs.x.ai/developers/rest-api-reference/inference/models)、[SiliconFlow](https://docs.siliconflow.com/en/api-reference/models/get-model-list)。
+- 新增目录依据：[Agnes 客户端指南](https://wiki.agnes-ai.com/en/docs/cid6.md)、[MiniMax](https://platform.minimaxi.com/docs/api-reference/models/openai/list-models)、[阶跃星辰](https://platform.stepfun.com/docs/zh/api-reference/models/list)、[ModelScope 推理目录](https://api-inference.modelscope.cn/v1/models)。
+
 ## provider_settings.provider_overrides
 
 `provider_overrides` 是 `template_list` 配置项。每条模板自带供应商类型，插件会从表中读取生图 API 配置，不再使用全局 `api_type`：

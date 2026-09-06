@@ -26,12 +26,24 @@ from .web_studio_service import StudioServiceError
 
 
 class StudioLimitsService:
-    def __init__(self, raw_config, config, limiter, context, data_dir):
+    def __init__(
+        self,
+        raw_config,
+        config,
+        limiter,
+        context,
+        data_dir,
+        *,
+        config_lock=None,
+        is_closed=None,
+    ):
         self.raw_config = raw_config
         self.config = config
         self.limiter = limiter
         self.context = context
         self.data_dir = Path(data_dir)
+        self._config_lock = config_lock if config_lock is not None else asyncio.Lock()
+        self._is_closed = is_closed or (lambda: False)
         self._session_lock = asyncio.Lock()
         self._session_cache: list[dict[str, str]] | None = None
         self._session_cache_time = 0.0
@@ -136,8 +148,8 @@ class StudioLimitsService:
     async def _save_transaction(
         self, revision: str, limits: dict[str, Any]
     ) -> dict[str, Any]:
-        async with self.limiter._rate_limit_lock:
-            if self.limiter._closed:
+        async with self._config_lock, self.limiter._rate_limit_lock:
+            if self.limiter._closed or self._is_closed():
                 raise StudioServiceError("插件正在关闭", status_code=503)
             if revision != self._revision():
                 raise StudioServiceError(

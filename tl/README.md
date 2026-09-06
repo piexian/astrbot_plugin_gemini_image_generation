@@ -171,22 +171,8 @@ generate_image()
 | `provider_metadata.get_provider_spec(api_type)` | 返回 canonical provider spec |
 | `api/registry.get_api_provider(api_type)` | 按 `ProviderSpec.provider_path` 懒加载 provider 单例，未知值回退 `OpenAICompatProvider` |
 
-当前 spec 顺序与 `_conf_schema.json` 中 `provider_settings.provider_overrides.templates` 严格一致，不再提供别名：
-
-| `api_type` | Provider |
-|------------|----------|
-| `google` | `GoogleProvider` |
-| `openai` | `OpenAICompatProvider`（默认兜底） |
-| `agnes_ai` | `AgnesAIProvider` |
-| `xai` | `XAIProvider` |
-| `minimax` | `MiniMaxProvider` |
-| `stepfun` | `StepfunProvider` |
-| `openai_images` | `OpenAIImagesProvider` |
-| `doubao` | `DoubaoProvider` |
-| `sensenova` | `SenseNovaProvider` |
-| `dashscope` | `DashScopeProvider` |
-| `modelscope` | `ModelScopeProvider`（异步任务制：提交 + 轮询） |
-| `siliconflow` | `SiliconFlowProvider`（同步单端点：文生图 + 编辑共用 generations，URL 1h 有效即刻落盘） |
+当前 spec 顺序与 `_conf_schema.json` 中 `provider_settings.provider_overrides.templates` 严格一致，不再提供别名。
+供应商实现与接入说明统一见 [适配器开发指南](../docs/新增API供应商.md)。
 
 ### Provider 公共辅助模块
 
@@ -395,6 +381,17 @@ prompt + provider + model + negative_prompt + watermark + quality
 - `WebStudioAPI`：薄 HTTP 适配层，路由前缀 `/astrbot_plugin_gemini_image_generation/webui/`，标准 `{status/data}` 信封；图片经 `image_b64` 端点走 bridge 传输（插件页 iframe 为不透明源沙箱，`<img>` 直连不带 Cookie 必 401）。
 - JSON 请求体超限由端点经 `_service_error()` 保留 413（生成、偏好保存、历史删除）；JSON 解析或结构校验失败仍为 400。
 - 工作台参数弹窗使用独立 `GenerationSettingsEditor` 草稿，确认后才替换已应用参数并记忆；关闭、取消、模型切换或销毁均丢弃草稿。确认态编辑器离屏保存，不随长表单撑开侧栏；旧 `expanded` 偏好不再控制界面。
+- `ProviderConfigService`（`studio_providers.py`）：`GET/POST webui/providers` 只读写供应商配置，schema 驱动表单与按条目身份保留密钥，和限流页共用保存锁；不把缺省值补写到原始条目。
+- 配置响应使用 `Cache-Control: no-store`，仅该已鉴权接口的 `values.api_keys` 回显 Key；兼容旧密钥操作，新增 `append` 与直接数组编辑，合并后检查上限并稳定去重。
+- `VisionProviderDirectory`（`studio_vision_providers.py`）只投影本体 LLM 配置的 ID/模型/来源/加载状态，`GET webui/vision-providers` 支持独立刷新，不返回本体凭据。
+- `ModelCatalogService`（`model_catalog.py`）由 `ProviderSpec.model_catalog_kind` 声明协议，独立会话与任务负责限时、限流、分页、响应边界及卸载取消；`POST webui/providers/models` 使用连接草稿，视觉查询只借用本体实例。
+- 本体 bridge 错误只传字符串；模型查询的目标确认以成功信封中的 `confirmation_required`/`target` 传递，未确认不发请求。输入的重复 blur/change 不重建目录按钮，避免首次点击失效。
+- `ProviderRuntime`（`provider_runtime.py`）：命令、LLM、Studio 与 API 生成的同步准入门，兼顾已挂入但尚未执行的后台任务；卸载先封门并等待配置事务。
+- `ProviderApplication`（`provider_application.py`）：空闲窗口预构建配置和工具能力，关闭闲置会话后保存、应用或回滚客户端及模块引用，保留共享 `cfg` 身份。
+- `KeyManager.clone_for_config()`：先严格恢复并持久化用量检查点，再重建候选索引；`api_key_usage.__shared_keys_v1` 按供应商类型、Key 保存计数，兼容原候选桶，排序和重启不会重置用量。
+- `pages/studio/provider-config.js/css`：独立、懒加载的二级 Tab 配置视图；表格与弹窗分离，密钥草稿只留内存，Pointer Events 手柄提供鼠标／触摸排序及键盘替代。
+- `editor.keys` 独立维护密钥管理草稿，替换当前弹窗主体而不叠加 Modal；批量导入、行编辑、取消与完成分层处理。返回条目时仅确认的 Key 变更写入 `editor.entry`，并丢弃过期模型目录结果。
+- 模型目录的 OpenAI 协议同时用于 Agnes AI、MiniMax、阶跃星辰、ModelScope；识别 MiniMax `/image_generation` 完整路径并保留套餐/网关前缀，不改变生成端点或构造静态模型列表。
 
 ### `thought_signature.py`
 
@@ -627,7 +624,9 @@ _prepare_foreground()
 
 - 新增 API 供应商时，优先在 `tl/api/` 新增 provider，并在 `tl/provider_metadata.py` 增加 `ProviderSpec`；`api/registry.py` 只负责懒加载。
 - 只调整请求参数结构时，优先继承 `OpenAICompatProvider` 并覆盖 `_prepare_payload()`。
-- 新增配置项时，同步修改 `_conf_schema.json`、`ProviderSpec`/hook、配置加载测试和文档。
+- 新增配置项时，保持 `_conf_schema.json`、加载/消费路径及受影响文档一致；供应商特有行为才修改 `ProviderSpec`/hook，按实际行为补充或复用配置测试。
 - 修改 OpenAI Images 尺寸逻辑时，优先集中在 `openai_image_size.py`，避免 provider、LLM Tool、快速模式各自实现一套校验。
 - 修改发送结果格式时，同时检查 `MessageSender.dispatch_send_results()` 和 `llm_tools._build_call_tool_result()`。
 - 修改切图逻辑时，优先保持 `split_image()` 的优先级顺序稳定，避免影响 `/快速 表情包` 和 `/切图` 两条路径。
+
+开发环境、验证范围和提交整理规则见 [开发与验证](../docs/development.md)。

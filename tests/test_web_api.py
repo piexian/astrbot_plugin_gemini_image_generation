@@ -96,7 +96,7 @@ def _match(entries, subpath: str, method: str):
     return None
 
 
-@pytest.fixture(params=["generate", "preferences", "delete_history"])
+@pytest.fixture(params=["generate", "preferences", "delete_history", "providers"])
 def json_endpoint(request, tmp_path, monkeypatch):
     api = _api(tmp_path, monkeypatch)
     operation = AsyncMock()
@@ -104,6 +104,7 @@ def json_endpoint(request, tmp_path, monkeypatch):
     api.service.generate = operation
     api.service.preferences = SimpleNamespace(save=operation)
     api.tracker.delete = operation
+    api.providers_service = SimpleNamespace(save_config=operation)
     return getattr(api, request.param), operation
 
 

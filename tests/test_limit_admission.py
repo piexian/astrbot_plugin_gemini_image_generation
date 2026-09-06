@@ -601,6 +601,9 @@ async def test_plugin_closes_limiter_after_request_producers(command_plugin):
 
     plugin._web_routes = []
     plugin._web_api = None
+    plugin.studio_providers = None
+    plugin.provider_runtime = SimpleNamespace(closed=False)
+    plugin.configuration_lock = asyncio.Lock()
     plugin.web_studio_service = module("studio")
     plugin.generation_tracker = module("tracker")
     plugin.background_task_manager = module("background")

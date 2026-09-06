@@ -36,6 +36,7 @@ from .provider_capabilities import (
     select_candidates,
 )
 from .provider_loader import load_callable
+from .provider_runtime import provider_operation
 from .provider_settings import candidate_with_overrides
 
 _DOWNLOAD_PROXY_DEFAULT = object()
@@ -711,6 +712,7 @@ class GeminiAPIClient:
         req = await provider.build_request(client=self, config=config)
         return req.url, req.headers, req.payload
 
+    @provider_operation("api")
     async def generate_image(
         self,
         config: ApiRequestConfig,

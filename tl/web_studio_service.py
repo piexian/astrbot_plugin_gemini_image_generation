@@ -35,6 +35,7 @@ from .provider_capabilities import (
     candidate_reference_limit,
     select_candidates,
 )
+from .provider_runtime import provider_operation
 from .provider_settings import candidate_with_overrides
 from .studio_parameters import (
     generation_fields,
@@ -207,6 +208,7 @@ class WebStudioService:
         task.add_done_callback(done)
         self._attachment_count += 1
 
+    @provider_operation("studio")
     async def generate(
         self,
         payload: dict[str, Any],

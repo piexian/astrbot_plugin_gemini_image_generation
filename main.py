@@ -59,6 +59,7 @@ from .tl.llm_query_tools import BackgroundTaskStatusTool, ProviderModelQueryTool
 from .tl.llm_tools import GeminiImageGenerationTool
 from .tl.plugin_config import max_configured_reference_images
 from .tl.provider_capabilities import select_candidates
+from .tl.provider_runtime import ProviderRuntime, provider_operation
 from .tl.tl_api import APIClient, ApiRequestConfig, get_api_client
 from .tl.tl_utils import (
     AvatarManager,
@@ -84,6 +85,8 @@ class GeminiImageGenerationPlugin(Star):
     def __init__(self, context: Context, config: dict[str, Any]):
         super().__init__(context)
         self.raw_config = config
+        self.configuration_lock = asyncio.Lock()
+        self.provider_runtime = ProviderRuntime(self._provider_jobs_busy)
 
         # 读取版本号
         self.version = self._load_version()
@@ -127,12 +130,14 @@ class GeminiImageGenerationPlugin(Star):
         except Exception as e:
             logger.warning(f"[WebUI] 历史生成图纳入画廊失败（不影响启动）: {e}")
         self._web_api = None
+        self.studio_providers = None
         self._web_routes: list[tuple[Any, ...]] = []
         self._web_closed = False
 
         # 初始化各功能模块
         self._init_modules()
         self.web_studio_service.rate_limiter = self.rate_limiter
+        self.web_studio_service.provider_runtime = self.provider_runtime
 
         # 尝试加载 API 客户端（支持插件重载场景）
         self._load_api_client_from_config(quiet=True)
@@ -341,6 +346,15 @@ class GeminiImageGenerationPlugin(Star):
         except Exception as e:
             logger.warning(f"注册 LLM 工具失败: {e}，将使用装饰器方式")
 
+    def _provider_jobs_busy(self) -> bool:
+        for service in (self.web_studio_service, self.background_task_manager):
+            if any(not task.done() for task in service._runtime_tasks.values()):
+                return True
+        return any(
+            record.get("status") == "running"
+            for record in self.generation_tracker.active_and_recent()
+        )
+
     def _register_web_studio_routes(self) -> None:
         try:
             from .tl.web_api import WEB_API_AVAILABLE, WebStudioAPI
@@ -350,7 +364,9 @@ class GeminiImageGenerationPlugin(Star):
                     "[WebUI] 当前 AstrBot 版本不支持插件 Web API，已跳过工作台路由"
                 )
                 return
+            from .tl.provider_application import ProviderApplication
             from .tl.studio_limits import StudioLimitsService
+            from .tl.studio_providers import ProviderConfigService
 
             self.studio_limits = StudioLimitsService(
                 self.raw_config,
@@ -358,11 +374,24 @@ class GeminiImageGenerationPlugin(Star):
                 self.rate_limiter,
                 self.context,
                 self._plugin_data_dir,
+                config_lock=self.configuration_lock,
+                is_closed=lambda: self._web_closed,
+            )
+            application = ProviderApplication(self)
+            self.studio_providers = ProviderConfigService(
+                self.raw_config,
+                self.context,
+                config_lock=self.configuration_lock,
+                runtime=self.provider_runtime,
+                prepare=application.prepare,
+                apply=application.apply,
+                restore=application.restore,
             )
             self._web_api = WebStudioAPI(
                 self.generation_tracker,
                 self.web_studio_service,
                 limits_service=self.studio_limits,
+                providers_service=self.studio_providers,
                 is_closed=lambda: self._web_closed,
             )
             self._web_routes = self._web_api.register(self.context)
@@ -373,6 +402,12 @@ class GeminiImageGenerationPlugin(Star):
     async def terminate(self):
         """插件卸载/重载时调用"""
         self._web_closed = True
+        self.provider_runtime.closed = True
+        if self.studio_providers is not None:
+            await self.studio_providers.close()
+        # 已开始的配置事务先完成，避免关闭资源时仍在切换客户端。
+        async with self.configuration_lock:
+            pass
         try:
             await self.web_studio_service.close()
         except Exception as e:
@@ -461,6 +496,7 @@ class GeminiImageGenerationPlugin(Star):
 
         if all_api_keys:
             self.api_client = get_api_client(all_api_keys)
+            self.api_client.provider_runtime = self.provider_runtime
             self.api_client.api_keys = all_api_keys
             self.api_client.set_provider_candidates(usable_candidates)
             # 绑定 KeyManager 到 API client（支持多 Key 轮换和每日限额）
@@ -878,6 +914,7 @@ class GeminiImageGenerationPlugin(Star):
             return text, None, None
         return " ".join(tokens[1:]).strip(), provider, model
 
+    @provider_operation("command")
     async def _handle_quick_mode(
         self,
         event: AstrMessageEvent,
@@ -934,6 +971,7 @@ class GeminiImageGenerationPlugin(Star):
     # ===== 命令处理 =====
 
     @filter.command("生图")
+    @provider_operation("command")
     async def generate_image(self, event: AstrMessageEvent, prompt: str):
         """生图指令"""
         if not self.rate_limiter.allows_group(event):
@@ -1053,6 +1091,7 @@ class GeminiImageGenerationPlugin(Star):
             yield result
 
     @quick_mode_group.command("表情包")
+    @provider_operation("command")
     async def quick_sticker(self, event: AstrMessageEvent, prompt: str = ""):
         """表情包快速模式 - 4K分辨率，16:9比例，Q版LINE风格
 
@@ -1353,6 +1392,7 @@ class GeminiImageGenerationPlugin(Star):
             yield event.plain_result(format_error_message(e))
 
     @filter.command("切图")
+    @provider_operation("command")
     async def split_image_command(
         self, event: AstrMessageEvent, grid: str | None = None
     ):
@@ -1630,6 +1670,7 @@ class GeminiImageGenerationPlugin(Star):
             yield event.plain_result(render_text(template_data))
 
     @filter.command("改图")
+    @provider_operation("command")
     async def modify_image(self, event: AstrMessageEvent, prompt: str):
         """根据提示词修改或重做图像"""
         if not self.rate_limiter.allows_group(event):
@@ -1660,6 +1701,7 @@ class GeminiImageGenerationPlugin(Star):
             yield result
 
     @filter.command("换风格")
+    @provider_operation("command")
     async def change_style(self, event: AstrMessageEvent, style: str, prompt: str = ""):
         """改变图像风格"""
         if not self.rate_limiter.allows_group(event):

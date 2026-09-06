@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import time
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
@@ -71,6 +72,7 @@ class KeyManager:
         self._providers: dict[str, ProviderKeyManager] = {}
         self._shared_key_records: dict[tuple[str, str], KeyUsageRecord] = {}
         self._lock = asyncio.Lock()
+        self._load_lock = asyncio.Lock()
         self._get_kv = get_kv
         self._put_kv = put_kv
         self._loaded = False
@@ -116,23 +118,28 @@ class KeyManager:
         provider = self._providers.get(key_scope)
         return len(provider.api_keys) if provider else 0
 
-    async def _load_from_kv(self) -> None:
-        """从 KV 存储加载使用记录"""
-        if self._loaded or not self._get_kv:
-            return
-        try:
-            import json
+    async def _load_from_kv(self, *, strict: bool = False) -> None:
+        """从 KV 加载使用记录；配置更新时读取失败必须中止。"""
+        async with self._load_lock:
+            if self._loaded or not self._get_kv:
+                return
+            try:
+                import json
 
-            data = await self._get_kv(self.KV_KEY, None)
-            if data:
+                data = await self._get_kv(self.KV_KEY, None)
                 if isinstance(data, str):
                     data = json.loads(data)
-                if isinstance(data, dict):
+                if data is not None:
+                    if not isinstance(data, dict):
+                        raise ValueError("Invalid key usage state")
                     self._restore_usage_records(data)
-                    logger.debug("[KeyManager] 从 KV 加载使用记录")
-        except Exception as e:
-            logger.warning(f"[KeyManager] 加载使用记录失败: {e}")
-        finally:
+            except Exception:
+                if strict:
+                    raise
+                logger.warning(
+                    "[KeyManager] 无法读取使用记录，有每日限额的候选暂不可用"
+                )
+                return
             self._loaded = True
 
     async def _save_to_kv(self) -> None:
@@ -159,10 +166,24 @@ class KeyManager:
                     for key, record in provider.key_records.items()
                 },
             }
+        shared: dict[str, dict[str, Any]] = {}
+        for (api_type, key), record in self._shared_key_records.items():
+            shared.setdefault(api_type, {})[key] = {
+                "usage_count": record.usage_count,
+                "last_reset_date": record.last_reset_date,
+            }
+        result["__shared_keys_v1"] = shared
         return result
 
     def _restore_usage_records(self, data: dict[str, Any]) -> None:
         """从导出格式恢复使用记录"""
+        # 供应商条目调整会重排 candidate_id，用类型+Key 的记录避免重启后重置额度。
+        for api_type, keys in data.get("__shared_keys_v1", {}).items():
+            for key, saved in keys.items():
+                record = self._shared_key_records.setdefault(
+                    (api_type, key), KeyUsageRecord(key=key)
+                )
+                self._merge_usage_record(record, saved)
         for api_type, provider_data in data.items():
             if api_type not in self._providers:
                 continue
@@ -175,21 +196,39 @@ class KeyManager:
             keys_data = provider_data.get("keys", {})
             for key, key_data in keys_data.items():
                 if key in provider.key_records:
-                    record = provider.key_records[key]
-                    saved_date = str(key_data.get("last_reset_date", ""))
-                    saved_raw = key_data.get("usage_count", 0)
-                    try:
-                        saved_usage = int(saved_raw or 0)
-                    except (TypeError, ValueError):
-                        logger.warning(
-                            f"[KeyManager] 无法解析 usage_count={saved_raw!r}，已重置为 0"
-                        )
-                        saved_usage = 0
-                    if saved_date > record.last_reset_date:
-                        record.last_reset_date = saved_date
-                        record.usage_count = saved_usage
-                    elif saved_date == record.last_reset_date:
-                        record.usage_count = max(record.usage_count, saved_usage)
+                    self._merge_usage_record(provider.key_records[key], key_data)
+
+    @staticmethod
+    def _merge_usage_record(record: KeyUsageRecord, saved: dict[str, Any]) -> None:
+        saved_date = str(saved.get("last_reset_date", ""))
+        try:
+            saved_usage = max(int(saved.get("usage_count", 0) or 0), 0)
+        except (TypeError, ValueError):
+            logger.warning("[KeyManager] 无效的使用次数记录，按 0 处理")
+            saved_usage = 0
+        if saved_date > record.last_reset_date:
+            record.last_reset_date = saved_date
+            record.usage_count = saved_usage
+        elif saved_date == record.last_reset_date:
+            record.usage_count = max(record.usage_count, saved_usage)
+
+    async def clone_for_config(self, config: PluginConfig) -> KeyManager:
+        """检查点保留共享额度，再为新候选创建独立轮换状态。"""
+        async with self._lock:
+            await self._load_from_kv(strict=True)
+            # 先写兼容的旧作用域+共享记录；后续配置保存失败也不会改变原额度。
+            if self._put_kv:
+                await self._put_kv(self.KV_KEY, self._export_usage_records())
+            cloned = KeyManager(config, get_kv=self._get_kv, put_kv=self._put_kv)
+            cloned._shared_key_records = copy.deepcopy(self._shared_key_records)
+            cloned._providers.clear()
+            cloned._init_providers()
+            cloned._loaded = True
+            for scope, provider in cloned._providers.items():
+                old = self._providers.get(scope)
+                if old and old.api_keys == provider.api_keys:
+                    provider.current_index = old.current_index
+            return cloned
 
     def _get_today_date(self) -> str:
         """获取今天的日期字符串 (YYYY-MM-DD)"""
@@ -230,6 +269,9 @@ class KeyManager:
             if provider.daily_limit_per_key <= 0:
                 key = provider.api_keys[provider.current_index % len(provider.api_keys)]
                 return key
+
+            if self._get_kv and not self._loaded:
+                return None
 
             # 有每日限额，需要检查并找到可用 Key
             start_index = provider.current_index

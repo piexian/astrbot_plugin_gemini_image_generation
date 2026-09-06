@@ -113,6 +113,9 @@ class WebStudioAPI:
         ("/generate", "generate", ["POST"], "WebUI 发起生成"),
         ("/upload", "upload", ["POST"], "WebUI 上传参考图"),
         ("/limits", "limits", ["GET", "POST"], "WebUI 限流配置"),
+        ("/providers", "providers", ["GET", "POST"], "WebUI 供应商配置"),
+        ("/vision-providers", "vision_providers", ["GET"], "本体视觉检测提供商配置"),
+        ("/providers/models", "provider_models", ["POST"], "拉取供应商模型目录"),
         ("/sessions", "sessions", ["GET"], "WebUI 已有 UMO 会话"),
     )
 
@@ -122,11 +125,13 @@ class WebStudioAPI:
         service: WebStudioService,
         *,
         limits_service: Any = None,
+        providers_service: Any = None,
         is_closed: Callable[[], bool] | None = None,
     ) -> None:
         self.tracker = tracker
         self.service = service
         self.limits_service = limits_service
+        self.providers_service = providers_service
         self._web_closed = False
         self._is_closed = is_closed or (lambda: self._web_closed)
         self._registered_entries: list[tuple[Any, ...]] = []
@@ -431,6 +436,45 @@ class WebStudioAPI:
         return json_response(
             {"status": "ok", "data": value}, headers={"Set-Cookie": cookie}
         )
+
+    async def _provider_call(self, method: str, *, post: bool = False):
+        if closed := self._closed_response():
+            return closed
+        if self.providers_service is None:
+            return error_response("供应商配置服务不可用", status_code=503)
+        try:
+            action = getattr(self.providers_service, method)
+            if post:
+                payload = await self._json_body()
+                if payload is None:
+                    return error_response(
+                        "请求体必须是有效的 JSON 对象", status_code=400
+                    )
+                result = await action(payload)
+            else:
+                result = await action()
+            return json_response(
+                {"status": "ok", "data": result}, headers={"Cache-Control": "no-store"}
+            )
+        except StudioServiceError as exc:
+            return self._service_error(exc)
+        except Exception as exc:
+            logger.error("[WebUI] 供应商管理请求失败: %s", type(exc).__name__)
+            return error_response("供应商管理请求失败", status_code=500)
+
+    async def providers(self):
+        if closed := self._closed_response():
+            return closed
+        post = request.method == "POST"
+        return await self._provider_call(
+            "save_config" if post else "get_config", post=post
+        )
+
+    async def vision_providers(self):
+        return await self._provider_call("get_vision_providers")
+
+    async def provider_models(self):
+        return await self._provider_call("fetch_models", post=True)
 
     async def capabilities(self):
         if closed := self._closed_response():

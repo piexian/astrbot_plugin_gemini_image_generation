@@ -3881,7 +3881,11 @@ class StudioApp {
     this.refillRequestId = 0;
     this.handleUnload = (event) => {
       // 取消离开页面时仍须保留可用的编辑器；真正离开由 pagehide 清理。
-      if (event?.type === 'beforeunload' && this.limits?.dirty) return;
+      if (event?.type === 'beforeunload' && (this.limits?.dirty || this.providers?.dirty || this.providers?.editor)) {
+        event.preventDefault();
+        event.returnValue = '';
+        return;
+      }
       void this.destroy();
     };
 
@@ -3889,14 +3893,16 @@ class StudioApp {
       workbench: document.getElementById('tab-btn-workbench'),
       progress: document.getElementById('tab-btn-progress'),
       gallery: document.getElementById('tab-btn-gallery'),
-      limits: document.getElementById('tab-btn-limits')
+      limits: document.getElementById('tab-btn-limits'),
+      providers: document.getElementById('tab-btn-providers')
     };
 
     this.panels = {
       workbench: document.getElementById('panel-workbench'),
       progress: document.getElementById('panel-progress'),
       gallery: document.getElementById('panel-gallery'),
-      limits: document.getElementById('panel-limits')
+      limits: document.getElementById('panel-limits'),
+      providers: document.getElementById('panel-providers')
     };
   }
 
@@ -3941,6 +3947,17 @@ class StudioApp {
     );
 
     this.limits = new LimitsView();
+    const providerRoot = document.getElementById('provider-config-root');
+    if (providerRoot && window.StudioProviderConfigView) {
+      this.providers = new window.StudioProviderConfigView({
+        root: providerRoot, bridge: BridgeClient, dom: SafeDOM, modal: Modal,
+        onSaved: async () => {
+          if (!this.destroyed) await this.workbench.loadCapabilities();
+        }
+      });
+    } else if (providerRoot) {
+      providerRoot.textContent = '供应商配置组件未能加载，请刷新 Studio。';
+    }
 
     // 5. 绑定 Tab 切换事件
     this.initNavTabs();
@@ -4058,6 +4075,8 @@ class StudioApp {
       this.gallery.fetchGallery();
     } else if (tabKey === 'limits') {
       void this.limits.open();
+    } else if (tabKey === 'providers') {
+      void this.providers?.open();
     }
   }
 
@@ -4071,6 +4090,7 @@ class StudioApp {
     this.navCleanups.forEach((cleanup) => cleanup());
     this.navCleanups = [];
     this.limits?.destroy();
+    this.providers?.destroy();
     this.progress?.destroy();
     this.gallery?.destroy();
     this.workbench?.destroy();

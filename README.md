@@ -22,6 +22,7 @@
 - **表情包切分**：内置 SmartMemeSplitter v4，默认优先走自适应黑描边贴纸切分，并保留手动网格、视觉识别等兜底路径。
 - **限流与缓存**：支持群白名单/黑名单、全插件共享额度与 UMO 会话限流叠加、KV 持久化；Studio 统一管理群限制模式、群号名单与限流规则，可搜索本体已有会话并即时保存。生成图保留在插件数据目录并按容量自动清理，临时文件统一写入 AstrBot 临时目录。
 - **内置 WebUI 创作台**：Dashboard 插件页「studio」——在线工作台（模型扁平直选、临时生成参数弹窗确认、单图多张与批量生成、参考图上传/画廊拾取）、全来源生成任务实时进度（SSE）、历史画廊（筛选/灯箱/下载/删除/再次生成/用作参考图）；生成历史持久化归档，存量图片自动迁入，运行任务使用的上传参考图受租约保护。详见 [使用指南](docs/usage.md#webui-创作台)。
+- **供应商配置页**：配置表、轮询排序、公共设置以二级 Tab 切换；外层直接启停、拖动排序，密钥紧凑展示、逐项管理与批量导入，支持模型拉取选择及本体现有视觉提供商下拉。空闲时统一热保存，不打断生成、不重置 Key 用量。
 
 ## 快速安装
 
@@ -108,7 +109,7 @@ astrbot_plugin_gemini_image_generation/
 
 欢迎提交 [Issue](https://github.com/piexian/astrbot_plugin_gemini_image_generation/issues) 和 [Pull Request](https://github.com/piexian/astrbot_plugin_gemini_image_generation/pulls)。
 
-新增 API 供应商请参考：[适配器开发指南](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/新增API供应商.md)。
+开发环境、验证与提交约定见 [开发指南](docs/development.md)；新增 API 供应商见 [适配器开发指南](docs/新增API供应商.md)。
 
 ### 致谢
 

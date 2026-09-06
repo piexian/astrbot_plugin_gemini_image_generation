@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Gemini 图像生成 Studio</title>
   <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="provider-config.css">
 </head>
 <body class="studio-body">
   <div class="studio-shell">
@@ -47,6 +48,11 @@
               role="tab" aria-selected="false" aria-controls="panel-limits" tabindex="-1">
         <span class="tab-icon" data-icon="sliders"></span>
         <span class="tab-label">限流控制</span>
+      </button>
+      <button type="button" class="tab-btn" id="tab-btn-providers"
+              role="tab" aria-selected="false" aria-controls="panel-providers" tabindex="-1">
+        <span class="tab-icon" data-icon="sliders"></span>
+        <span class="tab-label">供应商配置</span>
       </button>
     </nav>
 
@@ -312,6 +318,10 @@
         <p id="limits-migration" class="limits-notice limits-notice--warning" role="status" hidden></p>
         <fieldset id="limits-editor" class="limits-editor" disabled aria-label="限流配置草稿"></fieldset>
       </section>
+      <section id="panel-providers" class="studio-panel"
+               role="tabpanel" aria-labelledby="tab-btn-providers" aria-hidden="true" hidden>
+        <div id="provider-config-root"></div>
+      </section>
     </main>
 
     <!-- 全局自绘模态层 (Modal) -->
@@ -352,6 +362,7 @@
   </div>
 
   <script src="/api/plugin/page/bridge-sdk.js"></script>
+  <script src="provider-config.js"></script>
   <script type="module" src="app.js"></script>
 </body>
 </html>

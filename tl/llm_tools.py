@@ -37,6 +37,7 @@ from .provider_capabilities import (
     routing_mode,
     select_candidates,
 )
+from .provider_runtime import provider_operation
 from .provider_settings import (
     candidate_tool_profile,
     first_provider_tool_profile,
@@ -1122,6 +1123,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         self.description = _build_tool_description(self.plugin)
         self.parameters = _build_tool_parameters(self.plugin)
 
+    @provider_operation("tool")
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
     ) -> ToolExecResult:
@@ -1542,6 +1544,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
 
 
 # 保留旧的辅助函数以保持向后兼容（已弃用）
+@provider_operation("legacy_tool")
 async def execute_image_generation_tool(
     plugin: GeminiImageGenerationPlugin,
     event: Any,

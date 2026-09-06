@@ -28,32 +28,41 @@ class ProviderSpec:
     parse_errors_with_provider: bool = False
     # 候选级最大并发（0=不限制；免费单并发渠道设 1，批量任务按候选串行）
     max_concurrency: int = 0
+    model_catalog_kind: str | None = None
 
 
 _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
-    ProviderSpec("google", "tl.api.google.GoogleProvider"),
+    ProviderSpec("google", "tl.api.google.GoogleProvider", model_catalog_kind="google"),
     ProviderSpec(
         "gemini_interactions",
         "tl.api.gemini_interactions.GeminiInteractionsProvider",
+        model_catalog_kind="google",
     ),
-    ProviderSpec("openai", "tl.api.openai_compat.OpenAICompatProvider"),
+    ProviderSpec(
+        "openai",
+        "tl.api.openai_compat.OpenAICompatProvider",
+        model_catalog_kind="openai",
+    ),
     ProviderSpec(
         "agnes_ai",
         "tl.api.agnes_ai.AgnesAIProvider",
         settings_attr="agnes_ai_settings",
         capability_profile_path="tl.provider_capabilities.agnes_ai_capability",
+        model_catalog_kind="openai",
     ),
     ProviderSpec(
         "xai",
         "tl.api.xai.XAIProvider",
         settings_attr="xai_settings",
         capability_profile_path="tl.provider_capabilities.xai_capability",
+        model_catalog_kind="xai",
     ),
     ProviderSpec(
         "minimax",
         "tl.api.minimax.MiniMaxProvider",
         settings_attr="minimax_settings",
         capability_profile_path="tl.provider_capabilities.minimax_capability",
+        model_catalog_kind="openai",
         rebuild_on_retry=True,
         retry_error_arg=True,
     ),
@@ -63,6 +72,7 @@ _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
         settings_attr="stepfun_settings",
         edit_capability_path="tl.provider_hooks.stepfun_edit_capability",
         capability_profile_path="tl.provider_capabilities.stepfun_capability",
+        model_catalog_kind="openai",
     ),
     ProviderSpec(
         "openai_images",
@@ -73,6 +83,7 @@ _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
         candidate_config_hook_path="tl.provider_hooks.openai_images_candidate_config",
         tool_profile_path="tl.provider_hooks.openai_images_tool_profile",
         capability_profile_path="tl.provider_capabilities.openai_images_capability",
+        model_catalog_kind="openai",
     ),
     ProviderSpec(
         "doubao",
@@ -107,6 +118,7 @@ _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
         settings_attr="modelscope_settings",
         edit_capability_path="tl.provider_hooks.modelscope_edit_capability",
         capability_profile_path="tl.provider_capabilities.modelscope_capability",
+        model_catalog_kind="openai",
         parse_errors_with_provider=True,
         # 轮询须与提交用同一把 Key：轮换后需重建以同步 config.api_key
         rebuild_on_retry=True,
@@ -119,6 +131,7 @@ _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
         settings_attr="siliconflow_settings",
         edit_capability_path="tl.provider_hooks.siliconflow_edit_capability",
         capability_profile_path="tl.provider_capabilities.siliconflow_capability",
+        model_catalog_kind="siliconflow",
         parse_errors_with_provider=True,
     ),
 )
