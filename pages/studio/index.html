@@ -93,18 +93,12 @@
             <div id="advanced-params-disclosure" class="advanced-params-disclosure" hidden>
               <button type="button" id="btn-toggle-more-params"
                       class="comic-btn comic-btn--outline advanced-params-toggle"
-                      aria-expanded="false" aria-controls="more-params-panel" hidden>
+                      aria-haspopup="dialog" aria-expanded="false" aria-controls="app-modal-backdrop" hidden>
                 <span>供应商生成参数</span>
                 <span id="provider-override-count" class="optional-label"></span>
-                <span id="more-params-toggle-icon" class="btn-icon" data-icon="chevronDown"></span>
+                <span class="btn-icon" data-icon="sliders" aria-hidden="true"></span>
               </button>
-              <div id="more-params-panel" class="advanced-params-panel" hidden>
-                <div class="provider-parameters-toolbar">
-                  <p class="field-hint">勾选需要临时覆盖的参数，仅影响本次任务。按浏览器记忆每个模型的选择。<span id="preferences-save-status" role="status"></span></p>
-                  <button type="button" id="btn-reset-provider-parameters" class="comic-btn comic-btn--sm comic-btn--outline">恢复供应商默认值</button>
-                </div>
-                <div id="provider-parameters-grid" class="provider-parameters-grid"></div>
-              </div>
+              <p class="field-hint">在弹窗中调整，保存后应用。<span id="preferences-save-status" role="status"></span></p>
             </div>
           </div>
 

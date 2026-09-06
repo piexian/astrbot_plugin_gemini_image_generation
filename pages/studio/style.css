@@ -618,22 +618,15 @@ code, kbd, samp, pre, .mono {
   justify-content: space-between;
 }
 
-.advanced-params-panel {
-  margin-top: 20px;
-}
+.advanced-params-disclosure > .field-hint { margin-top: 8px; }
 
-.provider-parameters-toolbar {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin-bottom: 16px;
-}
-
-.provider-parameters-toolbar .field-hint {
-  flex: 1;
-  min-width: 200px;
-  margin: 0;
+.parameter-dialog-description { margin-bottom: 12px; }
+.parameter-dialog-feedback:empty { display: none; }
+.parameter-dialog-feedback { margin: 0 0 12px; }
+.parameter-dialog-feedback--error {
+  color: var(--ink);
+  border-left: 3px solid var(--accent);
+  padding-left: 10px;
 }
 
 .provider-parameters-grid {
@@ -687,7 +680,7 @@ code, kbd, samp, pre, .mono {
   white-space: pre-line;
 }
 
-.advanced-params-panel :is(.comic-input, .comic-select) {
+.comic-modal-backdrop--parameters :is(.comic-input, .comic-select) {
   background-color: var(--surface);
 }
 
@@ -1544,6 +1537,36 @@ code, kbd, samp, pre, .mono {
   flex-direction: column;
   border-radius: 0;
   overflow: hidden;
+}
+
+.comic-modal-backdrop--parameters .comic-modal-window {
+  max-width: 960px;
+  max-height: 90dvh;
+}
+.comic-modal-backdrop--parameters :is(.modal-header, .modal-footer) {
+  flex-shrink: 0;
+}
+.comic-modal-backdrop--parameters .modal-body {
+  flex: 1;
+  min-height: 0;
+  overscroll-behavior: contain;
+}
+.comic-modal-backdrop--parameters .modal-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.parameter-dialog-reset { margin-right: auto; }
+.comic-modal-backdrop--parameters .modal-footer .comic-btn { min-height: 48px; }
+.comic-modal-backdrop--parameters .modal-footer .comic-btn--cta {
+  width: auto;
+  min-width: 132px;
+}
+@media (max-width: 600px) {
+  .comic-modal-backdrop--parameters .modal-footer {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .parameter-dialog-reset { grid-column: 1 / -1; }
 }
 
 .modal-header {

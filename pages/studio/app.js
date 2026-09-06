@@ -452,6 +452,7 @@ const Modal = {
   footerEl: null,
   closeBtn: null,
   currentResolve: null,
+  currentClose: null,
   onKeydown: null,
   previousFocus: null,
 
@@ -503,10 +504,12 @@ const Modal = {
     });
   },
 
-  openCustom({ title = '对话框', renderBody, renderFooter }) {
+  openCustom({ title = '对话框', renderBody, renderFooter, onClose, variant = '' }) {
     if (this.backdrop.style.display !== 'none') {
       this.close(false);
     }
+    this.currentClose = typeof onClose === 'function' ? onClose : null;
+    this.backdrop.classList.toggle('comic-modal-backdrop--parameters', variant === 'parameters');
     SafeDOM.setText(this.titleEl, title);
     this.bodyEl.replaceChildren();
     this.footerEl.replaceChildren();
@@ -551,7 +554,7 @@ const Modal = {
     document.addEventListener('keydown', this.onKeydown);
     requestAnimationFrame(() => {
       if (this.backdrop.style.display === 'none') return;
-      const preferred = this.footerEl.querySelector('button:not(:disabled)') || this.closeBtn;
+      const preferred = this.footerEl.querySelector('[data-dialog-initial-focus]') || this.footerEl.querySelector('button:not(:disabled)') || this.closeBtn;
       preferred?.focus();
     });
   },
@@ -575,6 +578,10 @@ const Modal = {
       this.previousFocus.focus();
     }
     this.previousFocus = null;
+    this.backdrop.classList.remove('comic-modal-backdrop--parameters');
+    const onClose = this.currentClose;
+    this.currentClose = null;
+    onClose?.(result);
   }
 };
 
@@ -1376,7 +1383,8 @@ class WorkbenchView {
     this.isUploading = false;
     this.batchBudgetValid = true;
     this.referencesValid = true;
-    this.moreParamsExpanded = false;
+    this.parameterDialog = null;
+    this.destroyed = false;
 
     // DOM 缓存
     this.promptInput = document.getElementById('input-prompt');
@@ -1397,18 +1405,12 @@ class WorkbenchView {
     this.preferences = new StudioPreferences();
     this.preferences.onStatus = (status) => SafeDOM.setText(document.getElementById('preferences-save-status'), status);
     this.activeCandidate = null;
-    this.settingsEditor = new GenerationSettingsEditor(document.getElementById('provider-parameters-grid'), () => {
-      this.updateGenerationConditions();
-      this.updateReferenceCounter();
-      this.rememberParameters();
-    });
+    // 已确认参数保存在离屏编辑器，弹窗使用独立草稿，避免取消前已影响请求。
+    this.settingsEditor = new GenerationSettingsEditor(SafeDOM.el('div'));
     this.overrideCount = document.getElementById('provider-override-count');
-    this.resetParametersBtn = document.getElementById('btn-reset-provider-parameters');
     this.inputImageCount = document.getElementById('input-image-count');
     this.moreParamsDisclosure = document.getElementById('advanced-params-disclosure');
     this.btnToggleMoreParams = document.getElementById('btn-toggle-more-params');
-    this.moreParamsPanel = document.getElementById('more-params-panel');
-    this.moreParamsToggleIcon = document.getElementById('more-params-toggle-icon');
 
     this.btnSubmit = document.getElementById('btn-submit-generate');
     this.submitBtnText = document.getElementById('submit-btn-text');
@@ -1442,13 +1444,6 @@ class WorkbenchView {
     for (const input of [this.selectResolution, this.selectAspectRatio, this.inputImageCount]) {
       input.addEventListener('input', () => this.rememberParameters());
     }
-    this.resetParametersBtn.addEventListener('click', () => {
-      const candidate = this.selectedModel();
-      if (!candidate) return;
-      this.preferences.reset(candidate);
-      this.handleModelChange({ remember: false, restore: false });
-      Toast.info('已恢复此供应商的默认参数');
-    });
 
     // 模式切换
     this.modeBtnSingle.addEventListener('click', () => this.switchMode('single'));
@@ -1469,11 +1464,8 @@ class WorkbenchView {
     // 模型（供应商·模型扁平选项）联动
     this.selectModel.addEventListener('change', () => this.handleModelChange());
 
-    this.btnToggleMoreParams.addEventListener('click', () => {
-      this.moreParamsExpanded = !this.moreParamsExpanded;
-      this.syncMoreParamsPanel(!this.btnToggleMoreParams.hidden);
-      this.rememberParameters();
-    });
+    this.onOpenParameters = () => this.openParameterDialog();
+    this.btnToggleMoreParams.addEventListener('click', this.onOpenParameters);
 
     // 上传与画廊拾取
     this.btnTriggerUpload.addEventListener('click', () => this.fileUploadInput.click());
@@ -1533,12 +1525,13 @@ class WorkbenchView {
 
   setFormDisabled(disabled) {
     this.formAvailable = !disabled;
+    if (disabled) this.closeParameterDialog();
     [
       this.promptInput,
       this.selectModel,
       this.selectResolution,
       this.selectAspectRatio,
-      this.resetParametersBtn,
+      this.btnToggleMoreParams,
       this.inputImageCount,
       this.modeBtnSingle,
       this.modeBtnBatch,
@@ -1591,6 +1584,7 @@ class WorkbenchView {
   }
 
   handleModelChange({ remember = true, restore = true, persistSelection = true } = {}) {
+    this.closeParameterDialog();
     if (remember) this.rememberParameters();
     const entry = this.selectedModel();
     if (!entry) return;
@@ -1613,8 +1607,7 @@ class WorkbenchView {
     this.inputImageCount.max = String(entry.parameters?.image_count?.maximum || 10);
     const maximum = Number(this.inputImageCount.max);
     this.inputImageCount.value = String(Math.min(Math.max(Number(saved?.image_count) || 1, 1), maximum));
-    if (saved && typeof saved.expanded === 'boolean') this.moreParamsExpanded = saved.expanded;
-    this.syncMoreParamsPanel(this.settingsEditor.controls.size > 0);
+    this.syncParameterDialogButton(this.settingsEditor.controls.size > 0);
     this.updateGenerationConditions();
     this.updateReferenceCounter();
     if (persistSelection) this.preferences.select(entry);
@@ -1626,8 +1619,7 @@ class WorkbenchView {
       resolution: this.selectResolution.value,
       aspect_ratio: this.selectAspectRatio.value,
       image_count: Number(this.inputImageCount.value) || 1,
-      generation_settings: this.settingsEditor.overrides({ validate: false, includeHidden: true }),
-      expanded: this.moreParamsExpanded
+      generation_settings: this.settingsEditor.overrides({ validate: false, includeHidden: true })
     });
   }
 
@@ -1642,16 +1634,87 @@ class WorkbenchView {
     SafeDOM.setText(this.overrideCount, count ? `${count} 项临时覆盖` : '使用供应商配置');
   }
 
-  syncMoreParamsPanel(hasAdvancedParameters) {
+  syncParameterDialogButton(hasAdvancedParameters) {
     this.moreParamsDisclosure.hidden = !hasAdvancedParameters;
     this.btnToggleMoreParams.hidden = !hasAdvancedParameters;
-    const isExpanded = hasAdvancedParameters && this.moreParamsExpanded;
-    this.btnToggleMoreParams.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
-    this.moreParamsPanel.hidden = !isExpanded;
-    SafeDOM.setSvgIcon(
-      this.moreParamsToggleIcon,
-      isExpanded ? 'chevronUp' : 'chevronDown'
-    );
+    this.btnToggleMoreParams.setAttribute('aria-expanded', this.parameterDialog ? 'true' : 'false');
+  }
+
+  openParameterDialog() {
+    const candidate = this.selectedModel();
+    if (this.destroyed || !this.formAvailable || this.parameterDialog || !candidate || !this.settingsEditor.controls.size) return;
+    const fields = candidate.generation_fields || {};
+    const committed = this.settingsEditor.overrides({ validate: false, includeHidden: true });
+    const dialog = { candidate, fields, editor: null, feedback: null };
+    this.parameterDialog = dialog;
+    Modal.openCustom({
+      title: `供应商生成参数 · ${candidate.model || candidate.provider}`,
+      variant: 'parameters',
+      onClose: () => {
+        if (this.parameterDialog !== dialog) return;
+        this.parameterDialog = null;
+        this.syncParameterDialogButton(this.settingsEditor.controls.size > 0);
+      },
+      renderBody: (body) => {
+        body.appendChild(SafeDOM.el('p', {className: 'field-hint parameter-dialog-description'}, [
+          '勾选要临时覆盖的参数，保存并应用后生效。按浏览器记忆当前模型，不修改供应商配置。'
+        ]));
+        dialog.feedback = SafeDOM.el('p', {className: 'field-hint parameter-dialog-feedback', role: 'status', 'aria-live': 'polite'});
+        const grid = SafeDOM.el('div', {id: 'provider-parameters-grid', className: 'provider-parameters-grid'});
+        body.appendChild(dialog.feedback);
+        body.appendChild(grid);
+        dialog.editor = new GenerationSettingsEditor(grid, () => {
+          SafeDOM.setText(dialog.feedback, '修改尚未应用，请点击保存并应用。');
+          dialog.feedback.classList.remove('parameter-dialog-feedback--error');
+        });
+        dialog.editor.render(fields, committed);
+      },
+      renderFooter: (footer, confirm, cancel) => {
+        footer.appendChild(SafeDOM.el('button', {
+          type: 'button', id: 'btn-reset-provider-parameters', className: 'comic-btn comic-btn--outline parameter-dialog-reset',
+          onClick: () => {
+            dialog.editor.render(fields, {});
+            SafeDOM.setText(dialog.feedback, '已在草稿中恢复默认参数，保存后才会应用。');
+            dialog.feedback.classList.remove('parameter-dialog-feedback--error');
+          }
+        }, ['恢复默认参数']));
+        footer.appendChild(SafeDOM.el('button', {
+          type: 'button', className: 'comic-btn comic-btn--outline', dataset: {dialogInitialFocus: ''}, onClick: cancel
+        }, ['取消']));
+        footer.appendChild(SafeDOM.el('button', {
+          type: 'button', id: 'btn-apply-provider-parameters', className: 'comic-btn comic-btn--cta',
+          onClick: () => this.applyParameterDialog(dialog, confirm)
+        }, ['保存并应用']));
+      }
+    });
+    this.syncParameterDialogButton(true);
+  }
+
+  applyParameterDialog(dialog, confirm) {
+    if (this.destroyed || this.parameterDialog !== dialog) return;
+    if (!this.formAvailable || this.activeCandidate !== dialog.candidate || this.selectedModel() !== dialog.candidate) {
+      this.closeParameterDialog();
+      Toast.warning('模型已变化，请重新打开参数弹窗。');
+      return;
+    }
+    try {
+      dialog.editor.overrides();
+    } catch (error) {
+      SafeDOM.setText(dialog.feedback, error.message);
+      dialog.feedback.classList.add('parameter-dialog-feedback--error');
+      return;
+    }
+    const overrides = dialog.editor.overrides({validate: false, includeHidden: true});
+    this.settingsEditor.render(dialog.fields, overrides);
+    this.updateGenerationConditions();
+    this.updateReferenceCounter();
+    this.rememberParameters();
+    confirm();
+    Toast.success('已应用临时生成参数。');
+  }
+
+  closeParameterDialog() {
+    if (this.parameterDialog) Modal.close(false);
   }
 
   switchMode(mode) {
@@ -2168,8 +2231,7 @@ class WorkbenchView {
       this.inputImageCount.value = String(count);
       if (count !== Number(params.image_count)) fellBack = true;
     }
-    if (Object.keys(overrides).length) this.moreParamsExpanded = true;
-    this.syncMoreParamsPanel(this.settingsEditor.controls.size > 0);
+    this.syncParameterDialogButton(this.settingsEditor.controls.size > 0);
     this.updateGenerationConditions();
     this.updateReferenceCounter();
     this.rememberParameters();
@@ -2179,7 +2241,7 @@ class WorkbenchView {
   }
 
   async submit() {
-    if (this.isSubmitting || !this.formAvailable) return;
+    if (this.parameterDialog || this.isSubmitting || !this.formAvailable) return;
     this.calculateBatchBudget();
     this.updateReferenceCounter();
     if (!this.batchBudgetValid || !this.referencesValid || this.isUploading) return;
@@ -2233,8 +2295,7 @@ class WorkbenchView {
     try {
       generationSettings = this.settingsEditor.overrides();
     } catch (error) {
-      this.moreParamsExpanded = true;
-      this.syncMoreParamsPanel(true);
+      this.openParameterDialog();
       Toast.warning(error.message);
       return;
     }
@@ -2287,6 +2348,9 @@ class WorkbenchView {
   }
 
   destroy() {
+    this.destroyed = true;
+    this.closeParameterDialog();
+    this.btnToggleMoreParams.removeEventListener('click', this.onOpenParameters);
     for (const item of this.store.referenceTray) {
       if (item.type === 'upload' && typeof item.previewUrl === 'string' && item.previewUrl.startsWith('blob:')) {
         URL.revokeObjectURL(item.previewUrl);

@@ -394,6 +394,7 @@ prompt + provider + model + negative_prompt + watermark + quality
 - `WebStudioService`：工作台生成编排（全局并发准入、循环补足目标张数、partial_success）、gallery 归档（本地复制/远程流式下载、容量整组淘汰）、上传校验与运行租约（流式截断+魔数+像素+配额，父子任务引用计数保护过期清理和容量淘汰）、`capabilities()` 扁平候选列表（白名单字段）。
 - `WebStudioAPI`：薄 HTTP 适配层，路由前缀 `/astrbot_plugin_gemini_image_generation/webui/`，标准 `{status/data}` 信封；图片经 `image_b64` 端点走 bridge 传输（插件页 iframe 为不透明源沙箱，`<img>` 直连不带 Cookie 必 401）。
 - JSON 请求体超限由端点经 `_service_error()` 保留 413（生成、偏好保存、历史删除）；JSON 解析或结构校验失败仍为 400。
+- 工作台参数弹窗使用独立 `GenerationSettingsEditor` 草稿，确认后才替换已应用参数并记忆；关闭、取消、模型切换或销毁均丢弃草稿。确认态编辑器离屏保存，不随长表单撑开侧栏；旧 `expanded` 偏好不再控制界面。
 
 ### `thought_signature.py`
 
