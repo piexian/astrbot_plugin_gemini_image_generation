@@ -638,3 +638,47 @@ def test_import_legacy_images_moves_records_and_dedupes(tmp_path) -> None:
     assert record["status"] == "succeeded"
     # 重复导入幂等
     assert service.import_legacy_images() == 0
+
+
+@pytest.mark.asyncio
+async def test_source_urls_recorded_on_success_and_archive_failure(
+    tmp_path, monkeypatch
+) -> None:
+    """工作台任务记录供应商源 URL；归档失败时任务失败但链接仍可追溯。"""
+    png_bytes = _png(tmp_path / "src.png", 7).read_bytes()
+
+    class UrlClient:
+        async def generate_image(self, config, **kwargs):
+            return ["https://cdn.example/a.png"], [], None, None
+
+    tracker = GenerationTracker(tmp_path, 20)
+    service = WebStudioService(UrlClient(), tracker, _config(), tmp_path)
+
+    async def fake_download(url, *, candidate_id=None):
+        return png_bytes
+
+    monkeypatch.setattr(service, "_download_remote_image", fake_download)
+    accepted = await service.generate({"prompt": "draw"})
+    await service._runtime_tasks[accepted["job_id"]]
+    record = tracker.get(accepted["job_id"])
+    assert record["status"] == "succeeded"
+    assert record["source_urls"] == ["https://cdn.example/a.png"]
+    await service.close()
+    await tracker.close()
+
+    second_dir = tmp_path / "second"
+    second_dir.mkdir()
+    tracker2 = GenerationTracker(second_dir, 20)
+    service2 = WebStudioService(UrlClient(), tracker2, _config(), second_dir)
+
+    async def broken_download(url, *, candidate_id=None):
+        raise TimeoutError()
+
+    monkeypatch.setattr(service2, "_download_remote_image", broken_download)
+    accepted2 = await service2.generate({"prompt": "draw"})
+    await service2._runtime_tasks[accepted2["job_id"]]
+    record2 = tracker2.get(accepted2["job_id"])
+    assert record2["status"] == "failed"
+    assert record2["source_urls"] == ["https://cdn.example/a.png"]
+    await service2.close()
+    await tracker2.close()

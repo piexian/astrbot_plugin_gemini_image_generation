@@ -2567,6 +2567,27 @@ class ProgressView {
     metaRow.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [`张数: ${record.generated_images || 0} / ${record.requested_images || 1}`]));
     card.appendChild(metaRow);
 
+    // 源图片链接：供应商返回的持久 URL 随任务记录，便于画廊清理或归档失败后取回原图
+    const sourceUrls = Array.isArray(record.source_urls)
+      ? record.source_urls.filter((url) => typeof url === 'string' && /^https?:\/\//i.test(url))
+      : [];
+    if (sourceUrls.length > 0) {
+      const urlBox = SafeDOM.el('div', { className: 'job-source-urls' });
+      urlBox.appendChild(SafeDOM.el('div', { className: 'job-source-urls-title' }, ['源图片链接']));
+      sourceUrls.forEach((url, idx) => {
+        const row = SafeDOM.el('div', { className: 'job-source-url-row' });
+        row.appendChild(SafeDOM.el('code', { className: 'job-source-url', title: url }, [url]));
+        row.appendChild(SafeDOM.el('button', {
+          type: 'button',
+          className: 'comic-btn comic-btn--sm comic-btn--outline',
+          'aria-label': `复制源链接 ${idx + 1}`,
+          onClick: () => Clipboard.copy(url, '源链接已复制')
+        }, ['复制']));
+        urlBox.appendChild(row);
+      });
+      card.appendChild(urlBox);
+    }
+
     // 生成图片网格
     const safeImages = Array.isArray(record.images)
       ? record.images.filter((name) => SafeDOM.isSafeImageName(name))

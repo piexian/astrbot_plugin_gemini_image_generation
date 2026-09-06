@@ -19,6 +19,7 @@ from typing import Any
 
 from astrbot.api import logger
 
+from .api.compat_utils import is_temp_cache_url
 from .studio_parameters import clean_history_settings
 
 TERMINAL_STATUSES = {
@@ -406,6 +407,30 @@ class GenerationTracker:
             "retry_count": retry_count,
         }
 
+    @staticmethod
+    def _clean_source_urls(value: Any) -> list[str]:
+        """只保留可能长期有效的 http(s) 源链接，已知临时缓存 URL 不记录。"""
+        if not isinstance(value, (list, tuple)):
+            return []
+        result: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            if not isinstance(item, str):
+                continue
+            url = item.strip()
+            if (
+                not url.startswith(("http://", "https://"))
+                or len(url) > 2048
+                or url in seen
+                or is_temp_cache_url(url)
+            ):
+                continue
+            seen.add(url)
+            result.append(url)
+            if len(result) >= 20:
+                break
+        return result
+
     async def begin(
         self,
         *,
@@ -440,6 +465,7 @@ class GenerationTracker:
                 "requested_images": _positive_int(requested_images, 1),
                 "generated_images": 0,
                 "images": [],
+                "source_urls": [],
                 "text_content": "",
                 "error": None,
                 "stats": self._clean_stats({}),
@@ -484,6 +510,7 @@ class GenerationTracker:
                 "text_content",
                 "error",
                 "stats",
+                "source_urls",
             }
             for key, value in changes.items():
                 if key not in allowed:
@@ -501,6 +528,8 @@ class GenerationTracker:
                     record[key] = self._clean_stats(value)
                 elif key == "images":
                     record[key] = self._clean_images(value)
+                elif key == "source_urls":
+                    record[key] = self._clean_source_urls(value)
                 elif key == "status" and value in TERMINAL_STATUSES | {"running"}:
                     record[key] = value
             if record.get("status") in TERMINAL_STATUSES:
@@ -520,6 +549,7 @@ class GenerationTracker:
         text_content: str | None,
         stats: dict[str, Any],
         status: str = "succeeded",
+        source_urls: list[str] | None = None,
     ) -> None:
         if status not in {"succeeded", "partial_success"}:
             status = "succeeded"
@@ -537,6 +567,7 @@ class GenerationTracker:
                     "duration_ms": self._duration_ms(record, finished_at),
                     "generated_images": len(images),
                     "images": images,
+                    "source_urls": self._clean_source_urls(source_urls),
                     "text_content": _bounded_text(text_content, 500),
                     "error": None,
                     "stats": self._clean_stats(stats),

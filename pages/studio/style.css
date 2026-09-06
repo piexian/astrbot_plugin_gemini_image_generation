@@ -1225,6 +1225,42 @@ code, kbd, samp, pre, .mono {
   margin-bottom: 4px;
 }
 
+.job-source-urls {
+  border: var(--border-comic);
+  background-color: var(--surface);
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.job-source-urls-title {
+  font-weight: 800;
+  color: var(--ink-muted);
+  margin-bottom: 4px;
+}
+
+.job-source-url-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.job-source-url {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  background: var(--surface-alt, transparent);
+  padding: 4px 6px;
+  border: 1px solid var(--control-border, rgba(0, 0, 0, 0.15));
+  font-size: 12px;
+  user-select: all;
+}
+
+.job-source-url-row .comic-btn {
+  flex-shrink: 0;
+}
+
 .job-actions-row {
   display: flex;
   justify-content: flex-end;

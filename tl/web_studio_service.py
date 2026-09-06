@@ -788,12 +788,19 @@ class WebStudioService:
             if status == "failed":
                 await self.tracker.fail(parent_job_id, error="所有批量任务均生成失败")
             else:
+                parent_urls = [
+                    str(url)
+                    for record in records
+                    if record
+                    for url in (record.get("source_urls") or [])
+                ]
                 await self.tracker.complete(
                     parent_job_id,
                     image_files=[],
                     text_content="批量生成完成",
                     stats={},
                     status=status,
+                    source_urls=parent_urls,
                 )
                 await self.tracker.update(
                     parent_job_id,
@@ -915,8 +922,16 @@ class WebStudioService:
         except StudioServiceError as exc:
             archived = []
             error = exc.message
+        source_urls = [
+            item
+            for item in collected
+            if isinstance(item, str) and item.startswith(("http://", "https://"))
+        ]
         if not archived:
             await self.tracker.fail(job_id, error=error or "生成结果归档失败")
+            if source_urls:
+                # 投递失败也保留源链接，便于从任务详情手动取回图片。
+                await self.tracker.update(job_id, source_urls=source_urls)
             self._log_job_outcome(job_id)
             return
         status = "succeeded" if len(archived) >= target else "partial_success"
@@ -926,6 +941,7 @@ class WebStudioService:
             text_content="\n".join(text_parts) or None,
             stats=last_stats,
             status=status,
+            source_urls=source_urls,
         )
         if error:
             await self.tracker.update(job_id, error=error)

@@ -769,6 +769,7 @@ async def test_quick_mode_archive_timeout_records_partial_success(command_plugin
     kwargs = tracker.complete.await_args.kwargs
     assert kwargs["status"] == "partial_success"
     assert kwargs["image_files"] == []
+    assert kwargs["source_urls"] == ["https://cdn.example/img.png"]
     assert kwargs["stats"]["provider"] == "openai_images"
     assert kwargs["stats"]["model"] == "gpt-image-2"
     assert len(updates) == 1
@@ -793,6 +794,7 @@ async def test_quick_mode_full_archive_records_succeeded(command_plugin):
     kwargs = tracker.complete.await_args.kwargs
     assert kwargs["status"] == "succeeded"
     assert kwargs["image_files"] == ["gallery-a.png"]
+    assert kwargs["source_urls"] == ["https://cdn.example/img.png"]
     assert updates == []
 
 

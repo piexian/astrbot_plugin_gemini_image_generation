@@ -563,3 +563,127 @@ def test_import_legacy_disabled_tracker_noop(tmp_path) -> None:
     record = {"job_id": "legacy-x", "images": ["x.png"]}
     assert tracker.import_legacy([record]) == 0
     assert not (tmp_path / "generation_history.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_source_urls_sanitized_on_begin_complete_and_update(tmp_path) -> None:
+    """持久源链接随任务记录；临时缓存/非 http/超长/重复项被过滤，上限 20 条。"""
+    tracker = GenerationTracker(tmp_path, 20)
+    record = await tracker.begin(
+        source="command", prompt="draw", params={}, requester={}, requested_images=1
+    )
+    job_id = record["job_id"]
+    assert record["source_urls"] == []
+
+    urls = [
+        "https://cdn.example/a.png",
+        "https://cdn.example/a.png",
+        "https://gw.example/images/users-1/cache.png",
+        "https://gw.example/temp/image/x.png",
+        "file:///tmp/a.png",
+        "ftp://cdn.example/a.png",
+        123,
+        None,
+        "https://cdn.example/" + "q" * 2100,
+        *[f"https://cdn.example/{index}.png" for index in range(30)],
+    ]
+    await tracker.complete(
+        job_id, image_files=[], text_content=None, stats={}, source_urls=urls
+    )
+    saved = tracker.get(job_id)["source_urls"]
+    assert saved[0] == "https://cdn.example/a.png"
+    assert len(saved) == 20
+    assert all(
+        isinstance(url, str)
+        and url.startswith(("http://", "https://"))
+        and len(url) <= 2048
+        for url in saved
+    )
+    assert not any("/images/users-" in url or "/temp/image/" in url for url in saved)
+
+    await tracker.update(
+        job_id, source_urls=["https://keep.example/b.png", "not-a-url"]
+    )
+    assert tracker.get(job_id)["source_urls"] == ["https://keep.example/b.png"]
+    await tracker.update(job_id, source_urls="https://wrong.example/type.png")
+    assert tracker.get(job_id)["source_urls"] == []
+    await tracker.close()
+
+
+def test_legacy_records_without_source_urls_still_load(tmp_path) -> None:
+    """旧历史文件没有 source_urls 字段，加载与更新不受影响。"""
+    history = tmp_path / "generation_history.json"
+    history.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "jobs": [
+                    {
+                        "job_id": "legacy-no-urls",
+                        "status": "succeeded",
+                        "images": [],
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    tracker = GenerationTracker(tmp_path, 20)
+    record = tracker.get("legacy-no-urls")
+    assert record is not None
+    assert "source_urls" not in record
+
+
+@pytest.mark.asyncio
+async def test_image_generator_records_persistent_source_urls(monkeypatch) -> None:
+    """归档失败时源 URL 仍写入记录，便于事后取回图片。"""
+
+    class Tracker:
+        def __init__(self) -> None:
+            self.completed = None
+            self.updates: list[dict] = []
+
+        async def begin(self, **kwargs):
+            return {"job_id": "job-one"}
+
+        async def complete(self, job_id, **kwargs):
+            self.completed = (job_id, kwargs)
+
+        async def update(self, job_id, **changes):
+            self.updates.append(changes)
+
+        async def fail(self, job_id, **kwargs):
+            raise AssertionError(kwargs)
+
+    class Client:
+        async def generate_image(self, config, **kwargs):
+            config.successful_provider = "openai_images"
+            config.successful_model = "gpt-image-2"
+            return ["https://cdn.example/a.png", "/tmp/local.png"], [], None, None
+
+    async def broken_archive(urls, paths, **kwargs):
+        raise TimeoutError()
+
+    tracker = Tracker()
+    generator = ImageGenerator(
+        context=None,
+        api_client=Client(),
+        filter_valid_fn=lambda images, source: images or [],
+        tracker=tracker,
+        archive_images_fn=broken_archive,
+    )
+    monkeypatch.setattr("tl.image_generator.Path.exists", lambda self: True)
+
+    success, _ = await generator.generate_image_core(
+        event=None,
+        prompt="draw",
+        reference_images=[],
+        avatar_reference=[],
+        is_tool_call=True,
+    )
+
+    assert success is True
+    kwargs = tracker.completed[1]
+    assert kwargs["status"] == "partial_success"
+    assert kwargs["source_urls"] == ["https://cdn.example/a.png"]

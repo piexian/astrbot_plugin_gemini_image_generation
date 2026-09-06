@@ -206,12 +206,16 @@ class ImageGenerator:
                 if not archive_attempted or len(image_files) >= len(delivered)
                 else "partial_success"
             )
+            source_urls = [
+                item for item in delivered if item.startswith(("http://", "https://"))
+            ]
             await self.tracker.complete(
                 job_id,
                 image_files=image_files,
                 text_content=text_content,
                 stats=stats,
                 status=status,
+                source_urls=source_urls,
             )
             if archive_note:
                 update = getattr(self.tracker, "update", None)

@@ -754,6 +754,11 @@ class GeminiImageGenerationPlugin(Star):
                             if delivered and len(archived) >= len(delivered)
                             else "partial_success"
                         )
+                        source_urls = [
+                            item
+                            for item in delivered
+                            if item.startswith(("http://", "https://"))
+                        ]
                         await self.generation_tracker.complete(
                             tracking_job_id,
                             image_files=archived,
@@ -765,6 +770,7 @@ class GeminiImageGenerationPlugin(Star):
                                 "retry_count": config.retry_count,
                             },
                             status=status,
+                            source_urls=source_urls,
                         )
                         if archive_note:
                             update = getattr(self.generation_tracker, "update", None)
