@@ -46,6 +46,7 @@ from .provider_settings import (
     first_provider_candidate as _first_candidate_from_config,
 )
 from .thought_signature import log_thought_signature_debug
+from .file_uri import file_uri_to_path
 from .tl_utils import encode_file_to_base64, format_error_message
 from .tool_path_guard import filter_reference_paths
 
@@ -444,9 +445,7 @@ def _image_to_base64_content(image_ref: str) -> mcp.types.ImageContent | None:
             return None
 
     # 本地文件路径
-    fs_candidate = image_ref
-    if image_ref.startswith("file:///"):
-        fs_candidate = image_ref[8:]
+    fs_candidate = file_uri_to_path(image_ref) or image_ref
 
     if os.path.exists(fs_candidate):
         try:

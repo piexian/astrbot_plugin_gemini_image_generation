@@ -240,6 +240,22 @@ async def test_archive_supports_local_and_remote_sources(tmp_path, monkeypatch) 
 
 
 @pytest.mark.asyncio
+async def test_archive_accepts_file_uri_sources(tmp_path) -> None:
+    """POSIX 供应商返回 file:/// 绝对 URI 时必须能读盘归档，
+    不得被历史 source[8:] 切片截掉根目录。"""
+    local = _png(tmp_path / "generated.png", 3)
+    tracker = GenerationTracker(tmp_path, 20)
+    service = WebStudioService(None, tracker, _config(), tmp_path)
+
+    names = await service.archive_sources([Path(local).as_uri()])
+
+    assert len(names) == 1
+    archived = tmp_path / "gallery" / names[0]
+    assert archived.is_file()
+    assert archived.read_bytes() == local.read_bytes()
+
+
+@pytest.mark.asyncio
 async def test_terminate_cancels_runtime_jobs(tmp_path) -> None:
     started = asyncio.Event()
 

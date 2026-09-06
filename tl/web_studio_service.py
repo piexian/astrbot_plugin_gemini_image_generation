@@ -37,6 +37,7 @@ from .provider_capabilities import (
 )
 from .provider_runtime import provider_operation
 from .provider_settings import candidate_with_overrides
+from .file_uri import file_uri_to_path
 from .studio_parameters import (
     generation_fields,
     native_reference_limit,
@@ -1112,7 +1113,7 @@ class WebStudioService:
                         source, candidate_id=candidate_ids.get(source)
                     )
                 else:
-                    path = Path(source[8:] if source.startswith("file:///") else source)
+                    path = file_uri_to_path(source) or Path(source)
                     data = await asyncio.to_thread(path.read_bytes)
                 extension = await asyncio.to_thread(self._validate_image_bytes, data)
                 name = self._gallery_name(extension)

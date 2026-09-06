@@ -15,7 +15,7 @@ from astrbot.api.message_components import Node, Plain
 
 from .napcat_stream import upload_file_stream
 from .thought_signature import log_thought_signature_debug
-from .tl_utils import encode_file_to_base64
+from .tl_utils import encode_file_to_base64, file_uri_to_path
 from .tl_utils import is_valid_base64_image_str as util_is_valid_base64_image_str
 
 if TYPE_CHECKING:
@@ -147,7 +147,7 @@ class MessageSender:
         if util_is_valid_base64_image_str(image):
             return None
 
-        candidate = image[8:] if image.startswith("file:///") else image
+        candidate = file_uri_to_path(image) or image
         if not os.path.isfile(candidate):
             return None
 
@@ -427,8 +427,7 @@ class MessageSender:
         if not ref_str:
             return ""
 
-        if ref_str.startswith("file:///"):
-            ref_str = ref_str[8:]
+        ref_str = file_uri_to_path(ref_str) or ref_str
 
         if os.path.exists(ref_str):
             return os.path.realpath(ref_str)
@@ -506,9 +505,7 @@ class MessageSender:
             if util_is_valid_base64_image_str(image):
                 return AstrImage(file=f"base64://{image}")
 
-            fs_candidate = image
-            if image.startswith("file:///"):
-                fs_candidate = image[8:]
+            fs_candidate = file_uri_to_path(image) or image
 
             if os.path.exists(fs_candidate):
                 # force_base64 时始终编码，支持无法访问本地文件系统的平台
