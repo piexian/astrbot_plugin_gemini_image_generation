@@ -125,6 +125,7 @@ def test_all_existing_provider_metadata_remains():
     assert [spec.api_type for spec in specs] == [
         "google",
         "gemini_interactions",
+        "vertex",
         "openai",
         "agnes_ai",
         "xai",
@@ -138,7 +139,7 @@ def test_all_existing_provider_metadata_remains():
         "siliconflow",
     ]
     capabilities = catalog_capabilities()
-    assert len(capabilities) == 13
+    assert len(capabilities) == 14
     assert sum(item["supported"] for item in capabilities.values()) == 10
     for api_type in ("agnes_ai", "minimax", "stepfun", "modelscope"):
         assert capabilities[api_type]["supported"] is True

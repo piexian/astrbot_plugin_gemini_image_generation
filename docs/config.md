@@ -79,7 +79,7 @@ google / openai_images / minimax
 支持的模板：
 
 ```text
-google / gemini_interactions / openai / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova / dashscope / modelscope / siliconflow
+google / gemini_interactions / vertex / openai / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova / dashscope / modelscope / siliconflow
 ```
 
 下方 `doubao_settings`、`openai_images_settings`、`agnes_ai_settings`、`xai_settings`、`minimax_settings`、`stepfun_settings`、`sensenova_settings`、`dashscope_settings`、`modelscope_settings`、`siliconflow_settings` 章节对应这些模板的专用字段；`gemini_interactions` 无历史投影字段，全部配置都在模板内。代码中的同名 `*_settings` 字段仅作为兼容旧调用的首个候选投影；多候选场景以 `provider_settings.provider_overrides` 和运行时派生的 `provider_settings_by_type` 为准。
@@ -656,3 +656,42 @@ Gemini 官方 Interactions 端点（2026-06 GA），承载 Nano Banana 系列模
 - 请求固定 `store: false`，请求内容不在 Google 侧留存；Interactions API 暂不支持自定义 safety settings，配置了也会忽略并记录日志。
 - 自定义 `api_base` 缺版本前缀时自动补 `/v1beta`。
 - 官方文档：<https://ai.google.dev/gemini-api/docs/image-generation>；Imagen 系列已于 2026-08-17 停服，请勿再配置 Imagen 模型。
+
+## vertex_settings（Vertex AI 专用配置）
+
+配置路径：`provider_settings.provider_overrides` 中选择 `vertex` 模板。接入 Google Cloud Vertex AI（Agent Platform）的 Gemini 图像生成端点（`generateContent` 协议，与 `google` 模板同构，但端点与认证方式不同）。
+
+**认证二选一（互斥，一个条目只能配置一个凭证）**：
+
+- **服务账号 JSON 凭证**（`service_account_files`，type=file）：在 AstrBot 插件配置页上传一个服务账号密钥 JSON（需具备 Vertex AI User 权限）。插件以 RS256 JWT 换取 Bearer 访问令牌并缓存至过期前自动刷新；令牌请求与生成请求走同一代理。上传文件保存在插件目录 `files/` 下，配置中记录相对路径。
+- **Express API Key**（`api_keys`）：Vertex AI Express 模式的 API Key，最多填一个，走 `https://aiplatform.googleapis.com/v1/publishers/google/models/{model}:generateContent`，支持每日限额。
+
+两种凭证互斥：同时配置、上传多个服务账号凭证或填写多个 API Key 的条目在加载时直接报错跳过（studio 保存同样会被校验拦截）。服务账号凭证走项目级端点（`https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/publishers/google/models/{model}:generateContent`）；`project_id` 留空时自动从凭证 JSON 的 `project_id` 读取。
+
+模板字段：
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `model` | `gemini-3-pro-image` | 如 `gemini-3-pro-image`、`gemini-3.1-flash-image`、`gemini-2.5-flash-image` |
+| `service_account_files` | `[]` | 服务账号 JSON 凭证文件（file 字段，配置页上传），最多一个 |
+| `api_keys` | 空 | Express 模式 API Key（单个，字符串填写）；与服务账号凭证互斥 |
+| `project_id` | 空 | GCP 项目 ID；服务账号凭证含 project_id 时可留空 |
+| `location` | `global` | 区域，如 `us-central1`、`europe-west4`、`global`（决定端点主机） |
+| `api_base` | 空 | 留空自动推导；填写后以其为根（代理网关场景），缺版本前缀自动补 `/v1` |
+| `resolution` | `1K` | `1K`/`2K`/`4K`（imageConfig.imageSize） |
+| `aspect_ratio` | `1:1` | 标准 14 种长宽比 |
+| `max_reference_images` | `14` | 参考图上限，超出截取 |
+| `person_generation` | 空 | `imageConfig.personGeneration`：`allow_all`/`allow_adult`/`allow_none`；被人物/人脸安全过滤拦截时可尝试 `allow_all` |
+| `enable_text_response` | `false` | 同时返回文本与图片 |
+| `enable_grounding` | `false` | Google 搜索接地 |
+
+安全过滤与错误处理：
+
+- 提示词被拦截（响应含 `promptFeedback.blockReason`）或生成结果被拦截（`finishReason` 为 `IMAGE_SAFETY` / `IMAGE_PROHIBITED_CONTENT` / `PROHIBITED_CONTENT` / `SAFETY` / `BLOCKLIST` / `SPII`）时，报「内容安全过滤未通过」且不可重试，会继续尝试下一候选。
+- `raiFilteredReason` 中的官方支持代码会翻译为类别名（如 `56562880` → 暴力内容、`39322892` → 人物/人脸、`90789179` → 性相关内容），便于定位拦截原因。
+- 429/`RESOURCE_EXHAUSTED` 按配额错误可重试并触发 Key 轮换；401/403 不可重试，直接换下一候选。
+- 模型目录未接入 Vertex 协议，模型名需手动填写（studio 拉取按钮会提示暂不支持）。
+
+依赖：使用服务账号凭证需 `cryptography`（已加入 requirements.txt）；仅用 Express API Key 无额外依赖。
+
+官方文档：<https://docs.cloud.google.com/vertex-ai/generative-ai/docs/multimodal/image-generation>

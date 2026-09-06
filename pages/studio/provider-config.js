@@ -248,8 +248,10 @@
         // Sibling labels plus an exact aria-label prevent option text entering the accessible name.
         const id = `${this.prefix}-${common ? 'common' : 'edit'}-${name}`;
         field.appendChild(this.el('label', {for: id}, [label]));
-        const secret = name === 'api_keys' || !!this.secrets(entry, common)[name]?.present;
-        if (name === 'api_keys') this.renderKeys(field, entry, schema, id);
+        // string 型 api_keys（单凭证渠道）走普通文本输入，不进列表 Key 管理器
+        const keyList = name === 'api_keys' && schema.type !== 'string';
+        const secret = keyList || (name !== 'api_keys' && !!this.secrets(entry, common)[name]?.present);
+        if (keyList) this.renderKeys(field, entry, schema, id);
         else if (common && name === 'vision_provider_id') this.renderVisionProvider(field, entry, schema, id);
         else if (secret) this.renderSecret(field, entry, name, schema, common, id);
         else field.appendChild(this.control(entry.values[name] ?? schema.default, schema, name, common, id));
@@ -270,7 +272,7 @@
       let control;
       if (Array.isArray(schema.options) && schema.type !== 'list') {
         control = this.el('select', attrs, schema.options.map(option => this.el('option', {value: String(option)}, [String(option) || '（留空）'])));
-      } else if (schema.type === 'list') {
+      } else if (schema.type === 'list' || schema.type === 'file') {
         control = this.el('textarea', {...attrs, rows: 4, autocomplete: 'off', spellcheck: 'false', 'aria-label': schema.description || name});
       } else {
         const numeric = schema.type === 'int' || schema.type === 'float';
@@ -279,7 +281,7 @@
           autocomplete: 'off', spellcheck: 'false'});
       }
       if (schema.type === 'bool') control.checked = !!value;
-      else control.value = schema.type === 'list' ? (Array.isArray(value) ? value.join('\n') : value || '') : String(value ?? '');
+      else control.value = (schema.type === 'list' || schema.type === 'file') ? (Array.isArray(value) ? value.join('\n') : value || '') : String(value ?? '');
       return control;
     }
 
@@ -685,13 +687,14 @@
       const name = node.dataset.pcField;
       if (!name || !own(fields, name)) return;
       const schema = fields[name];
-      const value = schema.type === 'bool' ? node.checked : schema.type === 'list'
+      const value = schema.type === 'bool' ? node.checked : schema.type === 'list' || schema.type === 'file'
         ? node.value.split(/\r?\n/).map(line => line.trim()).filter(Boolean) : node.value;
       const current = node.dataset.pcSecret === 'true' ? entry.secret_actions[name]?.value : entry.values[name];
-      const next = name === 'api_keys' ? [...new Set(value)] : value;
+      const keyList = name === 'api_keys' && schema.type !== 'string';
+      const next = keyList ? [...new Set(value)] : value;
       // Text inputs also emit change on blur; do not replace a button mid-click.
       if (JSON.stringify(current) === JSON.stringify(next)) return;
-      if (name === 'api_keys') {
+      if (keyList) {
         // 省略显示的占位值不是真实 Key，忽略对其的程序化编辑。
         if (!this.keysVisible(entry) || (this.keysHidden && (entry.values.api_keys || []).length > 0 && value === '••••••••')) return;
         entry.values.api_keys = [...new Set(value)];

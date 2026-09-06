@@ -18,6 +18,7 @@ tl/
     ├── openai_images.py    # OpenAI Images 原生端点
     ├── google.py           # Google/Gemini 官方接口
     ├── gemini_interactions.py  # Gemini Interactions API（Nano Banana 系列）
+    ├── vertex.py              # Vertex AI（服务账号 / Express 双认证）
     ├── agnes_ai.py         # Agnes AI 图片生成接口
     ├── xai.py              # xAI Images 官方接口
     ├── minimax.py          # MiniMax 图片生成接口
@@ -40,6 +41,7 @@ tl/
 |------------|----------|------|
 | `google` | `GoogleProvider` | Google/Gemini 官方接口 |
 | `gemini_interactions` | `GeminiInteractionsProvider` | Gemini Interactions API（Nano Banana 系列） |
+| `vertex` | `VertexProvider` | Vertex AI（服务账号 JSON / Express API Key 双认证，generateContent 同构） |
 | `openai` | `OpenAICompatProvider` | OpenAI Chat Completions 兼容格式（默认兜底） |
 | `agnes_ai` | `AgnesAIProvider` | Agnes AI `/v1/images/generations` |
 | `xai` | `XAIProvider` | xAI 官方图像接口 |

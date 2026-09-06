@@ -2,12 +2,6 @@
 
 > **升级提示**：v1.9.0 以后的配置文件格式不兼容旧版本。升级后如遇配置模板显示错误，请查看 [配置迁移说明](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/troubleshooting.md#配置迁移说明)。
 
-## [Unreleased]
-
-### Changed
-
-- **工作台选取与聊天轮询解耦**：`provider_polling` 只约束聊天指令与 LLM 工具的自动轮询范围；未加入轮询表的启用配置条目不再被忽略报错（降级为警告），而是保留给 WebUI 工作台模型下拉手动选择生成，候选 id 与 Key 轮换/每日限额统计跨两层保持一致。轮询表 schema hint、供应商配置页说明与文档同步更新。
-
 ## [3.0.0] - 2026-09-05
 
 ### Added
@@ -20,9 +14,12 @@
   - 新增 `webui` 配置段：`history_enabled`（隐私总开关）/ `history_max_records` / `gallery_max_size_mb` / `upload_max_mb` / `max_concurrent_jobs` / `batch_total_budget`。
 - **新增 `modelscope` 供应商（魔搭社区 API-Inference）**：插件首个异步任务制 provider——提交 `POST /v1/images/generations`（`X-ModelScope-Async-Mode: true`）拿到 `task_id` 后自动轮询 `GET /v1/tasks/{task_id}`（间隔/超时可配，默认 5s/100s），`SUCCEED` 返回 `output_images`（配代理时下载落盘，失败回退直链），`FAILED` 报错含服务端 message。尺寸按档位（1K/2K）×长宽比换算并按模型族钳制（Qwen-Image 1664 / FLUX 1024 / Z-Image 512-2048 / SD 系 64-2048 / 未知保守 512-1024）；仅名称含 `edit` 的模型支持参考图（默认 1 张，非 edit 模型带图直接报错）；支持 `negative_prompt` / `steps` / `guidance` / `seed` / `loras`。免费单并发兜底定位；批量生成对该渠道固定按 1 并发串行执行（不同候选互不阻塞）；轮询 deadline 硬约束（sleep/GET 超时按剩余预算封顶），轮询 404/其余 4xx 快速失败不可重试、429/5xx 视为瞬时故障继续等待，轮询超时重试会重新提交任务并再次消耗魔粒。
 - **新增 `siliconflow` 供应商（硅基流动）**：插件首个同步单端点 provider——文生图与图像编辑共用 `POST /v1/images/generations`，直接返回 `images[].url` 无任务轮询；官方图片 URL 仅 1 小时有效，解析阶段无条件立即下载落盘（显式走候选级代理），失败回退直链并告警。按模型族分层：`Kwai-Kolors/Kolors` 支持预设尺寸 + `batch_size`（1-4，LLM 工具批量映射）+ `guidance_scale`；`Qwen/Qwen-Image` 走官方预设尺寸表；`Qwen/Qwen-Image-Edit(-2509)` 不传尺寸、参考图按 `image`/`image2`/`image3` 键位发送（2509 最多 3 张、经典 Edit 截断 1 张），仅名称含 `edit` 的模型支持参考图，非 edit 带图直接报错。未命中预设的比例按档位预算本地计算（8 对齐，Kolors 长边钳 1440 / Qwen-Image 1664 / 未知保守 [512, 1440]）。错误体形态混杂（JSON 对象/字符串/空 body）由 provider 解析，官方过载码 `50505` 显式可重试，其余交框架按状态码通用判断。
+- **新增 `vertex` 供应商（Google Cloud Vertex AI）**：接入 Gemini 图像生成 `generateContent` 端点，认证二选一且一个条目仅允许一个凭证（互斥，违反者在加载/保存时记为该条配置错误并跳过）——`service_account_files` file 字段在 AstrBot 插件配置页直接上传一个服务账号 JSON 凭证（RS256 JWT 换取 Bearer token 并缓存刷新，`project_id` 可从凭证自动读取），或 `api_keys` 填一个 Express 模式 API Key（走 Express 端点）。按 `location` 推导区域端点（`global`/`us-central1` 等），支持 1K/2K/4K、标准长宽比、参考图（上限 14）、`person_generation` 透传与搜索接地。安全过滤全量映射：`promptFeedback.blockReason` 与 `IMAGE_SAFETY`/`IMAGE_PROHIBITED_CONTENT` 等 finishReason 统一报「内容安全过滤未通过」（不可重试，继续轮询下一候选），`raiFilteredReason` 官方支持代码翻译为类别名（暴力/性相关/人物人脸等）；429 配额可重试轮换，401/403 快速失败。使用服务账号凭证需 `cryptography` 依赖。
 
 ### Changed
 
+- **工作台选取与聊天轮询解耦**：`provider_polling` 只约束聊天指令与 LLM 工具的自动轮询范围；未加入轮询表的启用配置条目不再被忽略报错（降级为警告），而是保留给 WebUI 工作台模型下拉手动选择生成，候选 id 与 Key 轮换/每日限额统计跨两层保持一致。轮询表 schema hint、供应商配置页说明与文档同步更新。
+- 供应商框架支持 `requires_api_keys=False` 的非 API Key 凭证候选（当前为 `vertex` 服务账号模式）：配置加载、轮询跳过、客户端初始化等原以 `api_keys` 为硬性门槛的链路改为按候选实际凭证判定；studio 供应商配置页支持渲染 `file` 类型字段（路径列表，与 AstrBot 配置页上传联动）。
 - `provider_polling` 预制供应商列表与相关文档同步加入 `modelscope`；`tests/test_provider_registry.py` 纳入 `tl.api.modelscope` 并将 `capability_profile_path` 加入 spec 路径可加载性校验。
 - 插件数据目录 `images/` 下的生成图不再随启动清理删除（改为升级后迁入 gallery 统一管理）；下载/头像缓存与帮助页渲染缓存的启动清理不变。
 

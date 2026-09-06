@@ -46,6 +46,10 @@ def test_schema_covers_all_generation_fields_without_exposing_connection_values(
         "endpoint_mode",
         "poll_interval",
         "poll_timeout",
+        "service_account_files",
+        "project_id",
+        "location",
+        "person_generation",
     }
     for api_type, template in templates.items():
         assert set(template["items"]) - GENERATION_SETTING_KEYS <= excluded

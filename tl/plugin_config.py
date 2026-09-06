@@ -18,6 +18,7 @@ from .provider_metadata import (
     normalize_api_type,
     supports_image_edit,
 )
+from .provider_settings import candidate_is_keyless
 
 DOUBAO_SEQUENTIAL_IMAGES_MAX = _provider_hooks.DOUBAO_SEQUENTIAL_IMAGES_MAX
 DOUBAO_SEQUENTIAL_IMAGES_MIN = _provider_hooks.DOUBAO_SEQUENTIAL_IMAGES_MIN
@@ -29,6 +30,8 @@ def _clean_string(value: Any) -> str:
 
 
 def _clean_api_keys(value: Any) -> list[str]:
+    if isinstance(value, str):
+        value = [value]
     if not isinstance(value, list):
         return []
     return [item.strip() for item in value if isinstance(item, str) and item.strip()]
@@ -524,6 +527,9 @@ class ConfigLoader:
                     "custom_size",
                     "negative_prompt",
                     "model_alias",
+                    "project_id",
+                    "location",
+                    "person_generation",
                 ):
                     if isinstance(settings.get(key), str):
                         settings[key] = settings[key].strip()
@@ -533,7 +539,14 @@ class ConfigLoader:
                     proxy_val.strip() if isinstance(proxy_val, str) else None
                 )
                 if spec.settings_validator_path:
-                    load_callable(spec.settings_validator_path)(settings)
+                    # 校验 hook 抛错表示该条配置不合法：记录错误并跳过该条，不阻断插件加载
+                    try:
+                        load_callable(spec.settings_validator_path)(settings)
+                    except Exception as exc:
+                        message = f"{template_key} 第 {len(candidates_by_type.get(template_key, [])) + 1} 条配置无效: {exc}"
+                        config.provider_config_errors.append(message)
+                        logger.error(f"[配置加载] {message}")
+                        continue
                 if spec.settings_normalizer_path:
                     load_callable(spec.settings_normalizer_path)(settings)
 
@@ -544,7 +557,10 @@ class ConfigLoader:
                     logger.error(f"[配置加载] {message}")
                     continue
 
-                if not settings["api_keys"]:
+                # requires_api_keys=False 的供应商允许以其他凭证（如服务账号文件）代替 api_keys
+                if not settings["api_keys"] and not candidate_is_keyless(
+                    template_key, settings
+                ):
                     message = f"{template_key} 第 {len(candidates_by_type.get(template_key, [])) + 1} 条配置缺少 api_keys"
                     config.provider_config_errors.append(message)
                     logger.error(f"[配置加载] {message}")

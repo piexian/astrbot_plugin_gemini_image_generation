@@ -212,7 +212,7 @@ async def test_sensitive_urls_are_masked_for_entries_and_common(url):
 async def test_schema_is_complete_and_unconstrained_models_remain_free_text():
     svc = service()
     result = await svc.get_config()
-    assert len(result["templates"]) == 13
+    assert len(result["templates"]) == 14
     assert set(result["common_fields"]) == {
         "proxy",
         "vision_model",
@@ -779,3 +779,72 @@ async def test_secret_limits_allow_exact_maxima_and_logging_never_receives_secre
         and "k" * 8192 not in encoded
     )
     assert all(not kwargs.get("exc_info") for _, _, kwargs in logged)
+
+
+@pytest.mark.asyncio
+async def test_string_typed_api_keys_round_trips_as_string():
+    """vertex 单凭证 api_keys（string 型）在工作台快照与保存中保持字符串形态。"""
+    settings = {
+        "provider_polling": [],
+        "provider_overrides": [
+            {
+                "__template_key": "vertex",
+                "api_keys": FAKE_KEY,
+                "model": "gemini-3-pro-image",
+            },
+            {
+                "__template_key": "vertex",
+                "service_account_files": ["files/vertex/sa.json"],
+                "model": "gemini-3-pro-image",
+            },
+        ],
+    }
+    svc = service(settings)
+    snapshot = await svc.get_config()
+    vertex_entries = [e for e in snapshot["entries"] if e["api_type"] == "vertex"]
+    assert vertex_entries[0]["values"]["api_keys"] == FAKE_KEY
+    assert isinstance(vertex_entries[0]["values"]["api_keys"], str)
+    assert "api_keys" not in vertex_entries[1]["values"]
+
+    body = await payload(svc)
+    body["entries"][0]["values"]["api_keys"] = "fake-replaced-key"
+    result = await svc.save_config(body)
+    saved = result["entries"][0]["values"]["api_keys"]
+    assert saved == "fake-replaced-key" and isinstance(saved, str)
+    assert (
+        svc.raw_config.calls[-1]["provider_settings"]["provider_overrides"][0][
+            "api_keys"
+        ]
+        == "fake-replaced-key"
+    )
+
+    # 列表型 api_keys 传字符串仍然拒绝（类型不匹配不回显）
+    google_settings = {
+        "provider_polling": [],
+        "provider_overrides": [
+            {
+                "__template_key": "google",
+                "api_keys": [FAKE_KEY],
+                "model": "fake-model",
+            }
+        ],
+    }
+    google_svc = service(google_settings)
+    google_snapshot = await google_svc.get_config()
+    google_body = {
+        "revision": google_snapshot["revision"],
+        "provider_polling": google_snapshot["provider_polling"],
+        "entries": [
+            {
+                "id": google_snapshot["entries"][0]["id"],
+                "api_type": "google",
+                "values": {"api_keys": FAKE_KEY},
+                "secret_actions": {},
+            }
+        ],
+        "common": {"values": {}, "secret_actions": {}},
+    }
+    with pytest.raises(StudioServiceError) as exc:
+        await google_svc.save_config(google_body)
+    assert exc.value.status_code == 400
+    assert FAKE_KEY not in exc.value.message

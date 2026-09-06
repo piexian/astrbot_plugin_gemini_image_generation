@@ -37,7 +37,7 @@ from .provider_capabilities import (
 )
 from .provider_loader import load_callable
 from .provider_runtime import provider_operation
-from .provider_settings import candidate_with_overrides
+from .provider_settings import candidate_is_keyless, candidate_with_overrides
 
 _DOWNLOAD_PROXY_DEFAULT = object()
 
@@ -867,7 +867,9 @@ class GeminiAPIClient:
                 logger.info(f"[provider_polling] 跳过候选：{reason}")
                 continue
 
-            if not getattr(candidate, "api_keys", None):
+            if not getattr(candidate, "api_keys", None) and not candidate_is_keyless(
+                api_type, getattr(candidate, "settings", None)
+            ):
                 reason = f"{candidate_id} 未配置 API Key"
                 skipped_reasons.append(reason)
                 logger.error(f"[provider_polling] 跳过候选：{reason}")
@@ -975,11 +977,14 @@ class GeminiAPIClient:
         per_retry_timeout: int = None,
         max_total_time: int = None,
     ) -> tuple[list[str], list[str], str | None, str | None]:
-        if not self.api_keys:
+        keyless_candidate = candidate_is_keyless(
+            config.api_type, config.provider_settings
+        )
+        if not self.api_keys and not keyless_candidate:
             raise ValueError("未配置 API 密钥")
 
         # 使用 KeyManager 获取 Key（支持多 Key 轮换和每日限额）
-        if not config.api_key:
+        if not config.api_key and not keyless_candidate:
             key_scope = config.candidate_id or config.api_type
             key = await self.get_key_for_api_type(key_scope)
             if key is None:

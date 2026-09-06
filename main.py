@@ -60,6 +60,7 @@ from .tl.llm_tools import GeminiImageGenerationTool
 from .tl.plugin_config import max_configured_reference_images
 from .tl.provider_capabilities import select_candidates
 from .tl.provider_runtime import ProviderRuntime, provider_operation
+from .tl.provider_settings import candidate_is_keyless
 from .tl.tl_api import APIClient, ApiRequestConfig, get_api_client
 from .tl.tl_utils import (
     AvatarManager,
@@ -479,6 +480,10 @@ class GeminiImageGenerationPlugin(Star):
             candidate
             for candidate in candidates
             if getattr(candidate, "api_keys", None)
+            or candidate_is_keyless(
+                getattr(candidate, "api_type", ""),
+                getattr(candidate, "settings", None),
+            )
         ]
 
         if not usable_candidates:
@@ -494,7 +499,13 @@ class GeminiImageGenerationPlugin(Star):
         for candidate in usable_candidates:
             all_api_keys.extend(list(getattr(candidate, "api_keys", []) or []))
 
-        if all_api_keys:
+        if all_api_keys or any(
+            candidate_is_keyless(
+                getattr(candidate, "api_type", ""),
+                getattr(candidate, "settings", None),
+            )
+            for candidate in usable_candidates
+        ):
             self.api_client = get_api_client(all_api_keys)
             self.api_client.provider_runtime = self.provider_runtime
             self.api_client.api_keys = all_api_keys

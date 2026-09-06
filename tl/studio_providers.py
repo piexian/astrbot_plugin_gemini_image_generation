@@ -30,7 +30,16 @@ from .web_studio_service import StudioServiceError
 _COMMON_FIELDS = ("proxy", "vision_provider_id", "vision_model")
 _SECRET_FIELDS = frozenset({"api_keys", "api_base", "proxy"})
 _SCHEMA_KEYS = frozenset(
-    {"type", "description", "hint", "default", "options", "slider", "condition"}
+    {
+        "type",
+        "description",
+        "hint",
+        "default",
+        "options",
+        "slider",
+        "condition",
+        "file_types",
+    }
 )
 _MAX_STRING = 16384
 
@@ -81,6 +90,11 @@ def _valid_type(value: Any, kind: str) -> bool:
     if kind == "string":
         return isinstance(value, str) and len(value) <= _MAX_STRING
     if kind == "list":
+        return isinstance(value, list) and all(
+            isinstance(item, str) and len(item) <= _MAX_STRING for item in value
+        )
+    # file 类型（如 vertex 服务账号凭证）值为路径列表，仅透传展示，不允许在 WebUI 改写
+    if kind == "file":
         return isinstance(value, list) and all(
             isinstance(item, str) and len(item) <= _MAX_STRING for item in value
         )
@@ -188,8 +202,12 @@ class ProviderConfigService:
             if key == "api_keys":
                 keys = _clean_api_keys(value)
                 secrets[key] = {"present": bool(keys), "count": len(keys)}
-                if key in raw and isinstance(value, list):
-                    values[key] = keys
+                if key in raw:
+                    if isinstance(value, list):
+                        values[key] = keys
+                    elif isinstance(value, str):
+                        # string 型 api_keys（如 vertex 单凭证）按原文透传
+                        values[key] = value.strip()
             elif key in {"api_base", "proxy"} and _protected_url(value):
                 secrets[key] = {"present": True, "preview": "已配置"}
             elif _valid_type(value, field["type"]):
@@ -438,6 +456,24 @@ class ProviderConfigService:
             raise _invalid(location)
         return list(dict.fromkeys(_clean_api_keys(value)))
 
+    @staticmethod
+    def _string_key_field(fields: dict, key: str) -> bool:
+        return fields.get(key, {}).get("type") == "string"
+
+    def _coerce_api_keys(
+        self, value: Any, fields: dict, key: str, location: str
+    ) -> Any:
+        allow_str = self._string_key_field(fields, key)
+        if isinstance(value, str):
+            # 仅 string 型 api_keys（如 vertex 单凭证）接受字符串，且持久化为字符串
+            if not allow_str:
+                raise _invalid(location)
+            value = [value]
+        keys = self._checked_keys(value, location)
+        if allow_str:
+            return keys[0] if keys else ""
+        return keys
+
     def _merge_fields(
         self,
         old: dict,
@@ -461,7 +497,9 @@ class ProviderConfigService:
             if key in old and type(value) is type(old[key]) and value == old[key]:
                 continue
             if key == "api_keys":
-                merged[key] = self._checked_keys(value, f"{location}.api_keys")
+                merged[key] = self._coerce_api_keys(
+                    value, fields, key, f"{location}.api_keys"
+                )
                 continue
             self._validate_value(value, fields[key], f"{location}.{key}")
             merged[key] = copy.deepcopy(value)
@@ -485,16 +523,22 @@ class ProviderConfigService:
                 combined = list(
                     dict.fromkeys(_clean_api_keys(old.get(key)) + additions)
                 )
-                merged[key] = self._checked_keys(combined, f"{location}.api_keys")
+                merged[key] = self._coerce_api_keys(
+                    combined, fields, key, f"{location}.api_keys"
+                )
                 continue
             value = (
                 action["value"]
                 if mode == "replace"
-                else ([] if key == "api_keys" else "")
+                else (
+                    ""
+                    if self._string_key_field(fields, key)
+                    else ([] if key == "api_keys" else "")
+                )
             )
             self._validate_value(value, fields[key], f"{location}.{key}")
             merged[key] = (
-                self._checked_keys(value, f"{location}.api_keys")
+                self._coerce_api_keys(value, fields, key, f"{location}.api_keys")
                 if key == "api_keys"
                 else copy.deepcopy(value)
             )

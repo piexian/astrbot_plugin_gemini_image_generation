@@ -407,3 +407,54 @@ def siliconflow_edit_capability(settings: dict[str, Any]) -> bool:
 
     family = _model_family(str(settings.get("model") or ""))
     return family in _EDIT_FAMILIES or family == "kolors"
+
+
+VERTEX_PERSON_GENERATIONS = frozenset({"", "allow_all", "allow_adult", "allow_none"})
+
+
+def validate_vertex_settings(settings: dict[str, Any]) -> None:
+    """Normalize vertex override settings.
+
+    一个条目只允许一个凭证：服务账号 JSON 与 Express API Key 互斥，且各最多一个。
+    违反时抛 ``ValueError``，由配置加载阶段记为该条目的配置错误并跳过。
+    """
+    settings["location"] = str(settings.get("location") or "").strip() or "global"
+    settings["project_id"] = str(settings.get("project_id") or "").strip()
+
+    person_generation = str(settings.get("person_generation") or "").strip().lower()
+    if person_generation not in VERTEX_PERSON_GENERATIONS:
+        _logger().warning(
+            f"[配置加载] vertex person_generation 取值无效: {person_generation}，已忽略"
+        )
+        person_generation = ""
+    settings["person_generation"] = person_generation
+
+    files = settings.get("service_account_files")
+    normalized_files: list[str] = []
+    if isinstance(files, list):
+        for item in files:
+            if isinstance(item, str) and item.strip():
+                normalized_files.append(item.strip())
+    settings["service_account_files"] = normalized_files
+
+    raw_keys = settings.get("api_keys")
+    if isinstance(raw_keys, str):
+        raw_keys = [raw_keys]
+    keys = (
+        [k for k in raw_keys if isinstance(k, str) and k.strip()]
+        if isinstance(raw_keys, list)
+        else []
+    )
+    settings["api_keys"] = keys
+
+    if normalized_files and keys:
+        raise ValueError(
+            "服务账号凭证与 API Key 互斥，请删除其一（服务账号走项目级端点，"
+            "API Key 走 Express 模式）"
+        )
+    if len(normalized_files) > 1:
+        raise ValueError("一个条目最多上传一个服务账号 JSON 凭证")
+    if len(keys) > 1:
+        raise ValueError("一个条目最多填写一个 API Key")
+    if not normalized_files and not keys:
+        raise ValueError("请配置一个服务账号 JSON 凭证或一个 API Key")

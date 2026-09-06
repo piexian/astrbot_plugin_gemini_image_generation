@@ -29,6 +29,8 @@ class ProviderSpec:
     # 候选级最大并发（0=不限制；免费单并发渠道设 1，批量任务按候选串行）
     max_concurrency: int = 0
     model_catalog_kind: str | None = None
+    # False 表示候选可用非 API Key 凭证（如 service account 文件）代替 api_keys
+    requires_api_keys: bool = True
 
 
 _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
@@ -37,6 +39,15 @@ _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
         "gemini_interactions",
         "tl.api.gemini_interactions.GeminiInteractionsProvider",
         model_catalog_kind="google",
+    ),
+    ProviderSpec(
+        "vertex",
+        "tl.api.vertex.VertexProvider",
+        settings_attr="vertex_settings",
+        settings_validator_path="tl.provider_hooks.validate_vertex_settings",
+        requires_api_keys=False,
+        parse_errors_with_provider=True,
+        rebuild_on_retry=True,
     ),
     ProviderSpec(
         "openai",

@@ -24,6 +24,15 @@ def candidate_with_overrides(candidate: Any, overrides: dict[str, Any]) -> Any:
     return replace(candidate, **changes)
 
 
+def candidate_is_keyless(api_type: Any, settings: dict[str, Any] | None) -> bool:
+    """候选是否以非 API Key 凭证（如 service account 文件）运行，无需轮换 Key。"""
+    spec = get_provider_spec(api_type)
+    if spec is None or spec.requires_api_keys:
+        return False
+    files = (settings or {}).get("service_account_files")
+    return isinstance(files, list) and any(str(item).strip() for item in files)
+
+
 def _cfg(obj: Any) -> Any:
     return getattr(obj, "cfg", obj)
 
