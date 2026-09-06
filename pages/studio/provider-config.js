@@ -33,6 +33,7 @@
       this.visionRefreshToken = 0;
       this.visionRefreshing = false;
       this.visionManual = false;
+      this.keysHidden = true;
       this.bind(root, this.cleanups);
       this.render();
     }
@@ -289,14 +290,18 @@
     renderKeys(container, entry, schema, id) {
       const visible = this.keysVisible(entry), keys = entry.values.api_keys || [];
       const row = this.el('div', {className: 'pc-key-summary', 'data-pc-key-summary': ''});
+      const toggle = this.button(this.keysHidden ? '显示' : '隐藏', 'toggle-keys', {
+        className: 'comic-btn comic-btn--outline pc-key-toggle', 'aria-label': this.keysHidden ? '显示完整 API Key' : '隐藏 API Key', 'aria-pressed': String(!this.keysHidden)});
       if (keys.length <= 1) {
-        const control = this.control(keys[0] || '', {...schema, type: 'string'}, 'api_keys', false, id);
-        control.disabled = !visible; control.placeholder = '输入 API Key';
+        const control = this.control(this.keysHidden && keys[0] ? '••••••••' : keys[0] || '', {...schema, type: 'string'}, 'api_keys', false, id);
+        control.disabled = !visible || (this.keysHidden && !!keys[0]); control.placeholder = '输入 API Key';
+        control.readOnly = this.keysHidden && !!keys[0];
         row.appendChild(control);
       } else {
-        row.appendChild(this.el('span', {className: 'pc-key-chip'}, [keys[0].length > 20 ? `${keys[0].slice(0, 20)}…` : keys[0]]));
+        row.appendChild(this.el('span', {className: 'pc-key-chip'}, [this.keysHidden ? '••••••••' : keys[0].length > 20 ? `${keys[0].slice(0, 20)}…` : keys[0]]));
         row.appendChild(this.el('span', {className: 'pc-key-count'}, [`+${keys.length - 1}`]));
       }
+      if (visible) row.appendChild(toggle);
       row.appendChild(this.button(keys.length <= 1 ? '添加更多' : '管理 Key', 'manage-keys', {
         id: keys.length > 1 ? id : undefined, disabled: !visible, 'aria-label': '管理 API Key'}));
       container.appendChild(row);
@@ -347,7 +352,8 @@
       const pane = this.el('div', {className: 'provider-config pc-editor pc-keys', 'data-pc-key-manager': ''});
       pane.appendChild(this.el('div', {className: 'pc-key-heading'}, [
         this.el('h3', {}, [keys.batch ? '批量导入 Key' : 'API Key 管理']),
-        this.el('span', {className: 'pc-key-count'}, [`${keys.items.length} 个 Key`])]));
+        keys.batch ? this.el('span', {className: 'pc-key-count'}, [`${keys.items.length} 个 Key`])
+          : this.button(this.keysHidden ? '显示' : '隐藏', 'toggle-keys', {'aria-label': this.keysHidden ? '显示完整 API Key' : '隐藏 API Key', 'aria-pressed': String(!this.keysHidden)})]));
       pane.appendChild(this.el('p', {className: 'pc-note'}, [keys.batch
         ? '每行一个，追加到当前列表并去重；不会覆盖已有 Key。'
         : '点击一行编辑，右侧移除；完成管理后返回条目，主保存后才生效。']));
@@ -366,8 +372,8 @@
           const line = this.el('li', {className: 'pc-key-row', 'data-pc-key-row': index});
           line.appendChild(this.el('span', {className: 'pc-key-number', 'aria-hidden': 'true'}, [String(index + 1).padStart(2, '0')]));
           line.appendChild(editing ? this.keyInput('editValue', keys.editValue, {'aria-label': `编辑 Key ${index + 1}`})
-            : this.button(value, 'edit-key', {className: 'pc-key-value', 'data-pc-index': index,
-              'aria-label': `编辑 Key ${index + 1}`, title: value, disabled: keys.editIndex >= 0}));
+            : this.button(this.keysHidden ? '••••••••' : value, 'edit-key', {className: 'pc-key-value', 'data-pc-index': index,
+              'aria-label': `编辑 Key ${index + 1}`, title: this.keysHidden ? undefined : value, disabled: keys.editIndex >= 0}));
           const actions = this.el('div', {className: 'pc-key-row-actions'});
           if (editing) actions.appendChild(this.keyAction('确认此 Key', 'save-key', 'check', index));
           actions.appendChild(this.keyAction(editing ? '取消此 Key 编辑' : `移除 Key ${index + 1}`,
@@ -686,7 +692,8 @@
       // Text inputs also emit change on blur; do not replace a button mid-click.
       if (JSON.stringify(current) === JSON.stringify(next)) return;
       if (name === 'api_keys') {
-        if (!this.keysVisible(entry)) return;
+        // 省略显示的占位值不是真实 Key，忽略对其的程序化编辑。
+        if (!this.keysVisible(entry) || (this.keysHidden && (entry.values.api_keys || []).length > 0 && value === '••••••••')) return;
         entry.values.api_keys = [...new Set(value)];
         delete entry.secret_actions.api_keys;
       } else if (node.dataset.pcSecret === 'true') entry.secret_actions[name] = {mode: 'replace', value};
@@ -717,6 +724,12 @@
       if (action === 'cancel-edit') { this.editor?.cancel(); return; }
       if (action === 'cancel-keys') { this.finishKeys(false); return; }
       if (action === 'cancel-key-edit' || action === 'cancel-key-batch') { this.mutateKeys(action); return; }
+      if (action === 'toggle-keys') {
+        this.keysHidden = !this.keysHidden;
+        if (this.editor?.keys) { this.renderKeyManager(); return; }
+        this.renderEditorBody();
+        return;
+      }
       if (!this.writable) return;
       const scope = button.dataset.pcScope || 'edit';
       if (action === 'manage-keys') { this.openKeys(); return; }

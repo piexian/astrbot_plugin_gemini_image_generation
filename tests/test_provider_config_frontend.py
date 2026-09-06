@@ -114,7 +114,10 @@ const keyAction = (name, index) => {
   assert.ok(button, `missing key action ${name}`); return button;
 };
 const manageKeys = () => keyAction('manage-keys').click();
-const listedKeys = () => body.querySelectorAll('[data-pc-action="edit-key"]').map(node => node.textContent);
+const listedKeys = () => {
+  if (keyAction('toggle-keys')?.textContent === '显示') keyAction('toggle-keys').click();
+  return body.querySelectorAll('[data-pc-action="edit-key"]').map(node => node.textContent);
+};
 // Replace via the actual row controls, never via a synthetic multiline field.
 const setKeys = values => {
   manageKeys();
@@ -166,7 +169,7 @@ assert.equal(field('model').getAttribute('aria-label'), fields.model.description
 assert.equal(field('aspect_ratio').getAttribute('aria-label'), fields.aspect_ratio.description);
 assert.equal(field('aspect_ratio').closest('label'), undefined);
 assert.equal(mode('api_keys'), null); assert.equal(field('api_keys'), null);
-assert.match(body.querySelector('[data-pc-key-summary]').textContent, /fake-old-one\+1/);
+assert.match(body.querySelector('[data-pc-key-summary]').textContent, /••••••••\+1/);
 manageKeys(); assert.deepEqual(listedKeys(), ['fake-old-one', 'fake-old-two']);
 keyAction('cancel-keys').click();
 input(field('model'), '<img src=x onerror=alert(1)>'); apply();
@@ -283,7 +286,7 @@ pending.reject(saveError); await tick();
 assert.equal(saved, 0); assert.equal(view.dirty, true); assert.equal(view.conflict, false);
 assert.equal(view.saveButton.disabled, false); assert.match(view.status.textContent, /草稿完整保留/);
 assert.doesNotMatch(view.status.textContent, /must-not-echo/);
-edit(0); assert.equal(field('api_keys').value, 'retry-key'); assert.equal(field('model').value, 'retry-model');
+edit(0); keyAction('toggle-keys').click(); assert.equal(field('api_keys').value, 'retry-key'); assert.equal(field('model').value, 'retry-model');
 action('cancel-edit', null, footer).click();
 post = async () => ({...server, revision: 'r3'});
 action('save').click(); await tick(); assert.equal(posts().length, 2);

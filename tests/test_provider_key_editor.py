@@ -22,12 +22,19 @@ const summary = body.querySelector('[data-pc-key-summary]'); assert.ok(summary);
 if (initial.length <= 1) {
   assert.equal(field('api_keys').tagName, 'input');
   assert.equal(field('api_keys').getAttribute('type'), 'text');
+  assert.equal(field('api_keys').value, initial[0] ? '••••••••' : '');
+  assert.equal(field('api_keys').disabled, !!initial[0]);
+  if (initial[0]) keyAction('toggle-keys').click();
   assert.equal(field('api_keys').value, initial[0] || '');
   assert.equal(field('api_keys').disabled, false);
   assert.equal(keyAction('manage-keys').textContent, '添加更多');
 } else {
   assert.equal(field('api_keys'), null);
-  assert.match(summary.textContent, /fake-first\+1/);
+  assert.match(summary.textContent, /••••••••\+1/);
+  keyAction('toggle-keys').click();
+  // renderEditorBody 重建了摘要节点，断言必须重新查询。
+  assert.match(body.querySelector('[data-pc-key-summary]').textContent, /fake-first\+1/);
+  assert.equal(keyAction('toggle-keys').textContent, '隐藏');
   assert.equal(keyAction('manage-keys').textContent, '管理 Key');
 }
 manageKeys();
@@ -46,7 +53,7 @@ assert.equal(view.dirty, false); assert.equal(posts().length, 0); view.destroy()
 def test_single_key_input_updates_only_editor_and_enforces_length_at_apply():
     _run(r"""
 server.entries[0].values.api_keys = ['fake-single'];
-const view = create(); await view.open(); edit(0);
+const view = create(); await view.open(); edit(0); keyAction('toggle-keys').click();
 input(field('api_keys'), ' fake-edited ');
 assert.deepEqual(plain(view.editor.entry.values.api_keys), ['fake-edited']);
 assert.deepEqual(plain(view.draft.entries[0].values.api_keys), ['fake-single']);
@@ -231,9 +238,19 @@ for (const newline of ['\n', '\r\n', '\r']) {
 const pasted = `fake-first${newline}fake-second`;
 server.entries[0].values.api_keys = ['fake-single'];
 const view = create(); await view.open(); edit(0);
-let event = field('api_keys').dispatch('paste', {clipboardData: {getData: () => 'fake-plain'}});
-assert.equal(event.defaultPrevented, false); assert.equal(view.editor.keys, undefined);
-event = field('api_keys').dispatch('paste', {clipboardData: {getData: () => pasted}});
+// 每轮循环新建视图但 keysHidden 是视图级状态；默认即省略，先显式回到省略态。
+if (keyAction('toggle-keys').textContent === '隐藏') keyAction('toggle-keys').click();
+assert.equal(field('api_keys').value, '••••••••'); assert.equal(field('api_keys').readOnly, true);
+assert.equal(keyAction('toggle-keys').textContent, '显示');
+keyAction('toggle-keys').click();
+assert.equal(field('api_keys').value, 'fake-single'); assert.equal(field('api_keys').readOnly, false);
+const plainEvent = field('api_keys').dispatch('paste', {clipboardData: {getData: () => 'fake-plain'}});
+assert.equal(plainEvent.defaultPrevented, false); assert.equal(view.editor.keys, undefined);
+keyAction('toggle-keys').click();
+assert.equal(keyAction('toggle-keys').textContent, '显示');
+assert.equal(field('api_keys').readOnly, true); assert.equal(field('api_keys').value, '••••••••');
+keyAction('toggle-keys').click();
+const event = field('api_keys').dispatch('paste', {clipboardData: {getData: () => pasted}});
 assert.equal(event.defaultPrevented, true); assert.equal(keyInput('batchValue').value, pasted);
 assert.deepEqual(plain(view.editor.entry.values.api_keys), ['fake-single']);
 keyAction('import-keys').click(); assert.deepEqual(listedKeys(), ['fake-single', 'fake-first', 'fake-second']);
@@ -247,8 +264,10 @@ def test_long_key_exact_limit_roundtrips_and_invalid_add_or_edit_preserves_list(
 server.entries[0].values.api_keys = ['fake-' + 'x'.repeat(8187), 'fake-second'];
 const original = [...server.entries[0].values.api_keys];
 const view = create(); await view.open(); edit(0);
+if (keyAction('toggle-keys').textContent === '隐藏') keyAction('toggle-keys').click();
 const summary = body.querySelector('[data-pc-key-summary]');
-assert.ok(summary.textContent.length < 100); assert.match(summary.textContent, /…\+1/);
+assert.ok(summary.textContent.length < 100); assert.match(summary.textContent, /••••••••\+1/);
+keyAction('toggle-keys').click(); assert.match(body.querySelector('[data-pc-key-summary]').textContent, /…\+1/);
 manageKeys(); assert.deepEqual(listedKeys(), original);
 assert.equal(keyAction('edit-key', 0).getAttribute('title'), original[0]);
 input(keyInput('newValue'), 'x'.repeat(8193)); keyAction('add-key').click();
