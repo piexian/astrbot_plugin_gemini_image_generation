@@ -487,3 +487,44 @@ def test_resolve_credential_path_prefers_existing_base(tmp_path, monkeypatch) ->
     assert (
         vertex_module.VertexProvider._resolve_credential_path(str(absolute)) == absolute
     )
+
+
+def test_error_payload_project_number_not_reported_as_safety() -> None:
+    """404 报错里的项目号等长数字不得被误报为安全过滤代码。"""
+    provider = _make_provider()
+    error = provider._error_from_http(
+        {
+            "error": {
+                "code": 404,
+                "message": (
+                    "Publisher model `projects/1016466193312/locations/"
+                    "europe-west1/publishers/google/models/gemini-3.1-flash-"
+                    "image-lite` was not found or your project does not have "
+                    "access to it."
+                ),
+                "status": "NOT_FOUND",
+            }
+        },
+        404,
+    )
+
+    assert error.error_type == "not_found"
+    assert error.retryable is False
+    assert "安全" not in error.message
+    assert "not found" in error.message
+
+
+def test_quota_error_with_numbers_not_reported_as_safety() -> None:
+    provider = _make_provider()
+    error = provider._error_from_http(
+        {
+            "error": {
+                "code": 429,
+                "message": "Quota exceeded for requests 12345678 per minute",
+                "status": "RESOURCE_EXHAUSTED",
+            }
+        },
+        429,
+    )
+    assert error.error_type == "quota"
+    assert "安全" not in error.message

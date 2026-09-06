@@ -485,6 +485,22 @@ class VertexProvider(GoogleProvider):
             retryable=False,
         )
 
+    @staticmethod
+    def _collect_rai_reasons(data: Any, found: list[str] | None = None) -> list[str]:
+        """只收集 raiFilteredReason 字段：响应体里的项目号/配额号等
+        长数字绝不能被当成安全代码。"""
+        found = [] if found is None else found
+        if isinstance(data, dict):
+            rai = data.get("raiFilteredReason")
+            if isinstance(rai, str) and rai:
+                found.append(rai)
+            for value in data.values():
+                VertexProvider._collect_rai_reasons(value, found)
+        elif isinstance(data, list):
+            for item in data:
+                VertexProvider._collect_rai_reasons(item, found)
+        return found
+
     def _error_from_http(
         self, response_data: dict[str, Any], http_status: int
     ) -> APIError:
@@ -494,12 +510,12 @@ class VertexProvider(GoogleProvider):
             if isinstance(error, dict) and error.get("message")
             else f"HTTP {http_status}"
         )
-        detail = _describe_rai_codes(json.dumps(response_data, ensure_ascii=False))
-        if detail:
-            message = f"{message}（{detail}）"
+        status_name = str(error.get("status")) if isinstance(error, dict) else ""
         logger.warning(f"[vertex] API 错误: HTTP {http_status} {message[:300]}")
 
-        status_name = str(error.get("status")) if isinstance(error, dict) else ""
+        rai_detail = _describe_rai_codes(
+            " ".join(self._collect_rai_reasons(response_data))
+        )
         if http_status == 429 or status_name == "RESOURCE_EXHAUSTED":
             return APIError(
                 f"Vertex 配额或频率受限: {message}",
@@ -517,6 +533,14 @@ class VertexProvider(GoogleProvider):
                 "auth",
                 retryable=False,
             )
-        if detail:
-            return self._safety_error(f"请求被安全过滤拦截（{detail}）")
+        if http_status == 404 or status_name == "NOT_FOUND":
+            # 模型名/区域错误不会自愈，重试无意义
+            return APIError(
+                f"Vertex 模型或端点不存在: {message}",
+                http_status,
+                "not_found",
+                retryable=False,
+            )
+        if rai_detail:
+            return self._safety_error(f"请求被安全过滤拦截（{rai_detail}）")
         return APIError(f"Vertex API 错误: {message}", http_status)
