@@ -872,9 +872,16 @@
       for (const [name, schema] of Object.entries(fields || {})) {
         if (name === 'api_keys') {
           if (own(entry.values, name)) {
-            const keys = [...new Set(entry.values[name].map(value => value.trim()).filter(Boolean))];
-            this.validate(keys, schema, name);
-            values[name] = keys;
+            if (schema.type === 'string') {
+              // 单凭证渠道（如 vertex）：api_keys 为字符串
+              const key = String(entry.values[name] ?? '').trim();
+              this.validate(key, schema, name);
+              values[name] = key;
+            } else {
+              const keys = [...new Set(entry.values[name].map(value => value.trim()).filter(Boolean))];
+              this.validate(keys, schema, name);
+              values[name] = keys;
+            }
           }
           continue;
         }
@@ -909,6 +916,10 @@
         if (!Array.isArray(value) || value.some(item => typeof item !== 'string')) fail('请每行输入一项。');
         if (name === 'api_keys' && (value.length > 200 || value.some(item => item.length > 8192))) fail('最多 200 个 Key，每项最多 8192 字符。');
         if (value.some(item => item.length > 16384)) fail('列表项过长。');
+      }
+      if (schema.type === 'file') {
+        if (!Array.isArray(value) || value.some(item => typeof item !== 'string')) fail('凭证内容无效。');
+        if (value.some(item => item.length > 16384)) fail('凭证内容过长。');
       }
       if (Array.isArray(schema.options) && (Array.isArray(value) ? value.some(item => !schema.options.includes(item)) : !schema.options.includes(value))) fail('请选择允许的选项。');
     }
