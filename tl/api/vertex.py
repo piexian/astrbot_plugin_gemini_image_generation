@@ -113,13 +113,15 @@ class VertexProvider(GoogleProvider):
     ) -> ProviderRequest:  # noqa: ANN401
         settings = config.provider_settings or {}
         sa_files = self._service_account_files(settings)
+        pasted_json = str(settings.get("service_account_json") or "").strip()
         configured_project = str(settings.get("project_id") or "").strip()
         location = str(settings.get("location") or "").strip() or "global"
         headers: dict[str, str] = {"Content-Type": "application/json"}
 
+        credential = pasted_json or (sa_files[0] if sa_files else "")
         project = configured_project
-        if sa_files:
-            info, info_project = self._load_service_account(sa_files[0])
+        if credential:
+            info, info_project = self._load_service_account(credential)
             token = await self._get_access_token(client, config, info)
             headers["Authorization"] = f"Bearer {token}"
             project = project or info_project
@@ -137,9 +139,9 @@ class VertexProvider(GoogleProvider):
             model=config.model,
             project=project,
             location=location,
-            full_mode=bool(sa_files),
+            full_mode=bool(credential),
         )
-        if not sa_files:
+        if not credential:
             headers["x-goog-api-key"] = config.api_key or ""
         return ProviderRequest(url=url, headers=headers, payload=payload)
 

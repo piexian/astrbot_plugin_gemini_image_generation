@@ -337,11 +337,17 @@
                 "default": "gemini-3-pro-image"
               },
               "service_account_files": {
-                "description": "服务账号 JSON 凭证",
+                "description": "服务账号 JSON 凭证（上传文件）",
                 "type": "file",
                 "file_types": ["json"],
-                "hint": "上传 .json 或直接粘贴密钥 JSON 内容均可（工作台凭证框两者都支持，也可填文件路径）；需具备 Vertex AI User 权限；与 API Key 互斥，二选一",
+                "hint": "上传 .json 密钥文件（走项目级端点）；与粘贴内容和 API Key 互斥，三选一",
                 "default": []
+              },
+              "service_account_json": {
+                "description": "服务账号 JSON 凭证（粘贴内容）",
+                "type": "text",
+                "hint": "直接粘贴服务账号密钥 JSON 内容（走项目级端点）；与上传文件和 API Key 互斥，三选一",
+                "default": ""
               },
               "project_id": {
                 "description": "GCP 项目 ID",

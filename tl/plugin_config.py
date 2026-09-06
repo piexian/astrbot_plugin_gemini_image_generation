@@ -530,6 +530,7 @@ class ConfigLoader:
                     "project_id",
                     "location",
                     "person_generation",
+                    "service_account_json",
                 ):
                     if isinstance(settings.get(key), str):
                         settings[key] = settings[key].strip()

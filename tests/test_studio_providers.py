@@ -851,8 +851,14 @@ async def test_string_typed_api_keys_round_trips_as_string():
 
 
 @pytest.mark.asyncio
-async def test_credential_field_accepts_pasted_json_and_persists():
-    """vertex 凭证框粘贴的 JSON 以单元素列表原样持久化（内联凭证与路径并存语义）。"""
+async def test_credential_field_accepts_pasted_json_and_persists(tmp_path, monkeypatch):
+    """vertex 凭证框粘贴的 JSON 落盘为文件，配置仅保留文件引用。"""
+    from tl import provider_hooks
+
+    base = tmp_path / "files" / "vertex"
+    monkeypatch.setattr(
+        provider_hooks, "_service_account_materialize_base", lambda: base
+    )
     pasted = json.dumps(
         {
             "type": "service_account",
@@ -875,6 +881,7 @@ async def test_credential_field_accepts_pasted_json_and_persists():
     svc = service(settings)
     snapshot = await svc.get_config()
     entry = snapshot["entries"][0]
+    # 快照如实展示存储的原始内容（粘贴的 JSON 尚未落盘）
     assert entry["values"]["service_account_files"] == [pasted]
 
     body = await payload(svc)
@@ -886,4 +893,5 @@ async def test_credential_field_accepts_pasted_json_and_persists():
     saved = svc.raw_config.calls[-1]["provider_settings"]["provider_overrides"][0][
         "service_account_files"
     ]
-    assert saved == [replaced]
+    assert len(saved) == 1 and saved[0].startswith("files/vertex/service_account_")
+    assert (tmp_path / saved[0]).read_text(encoding="utf-8") == replaced

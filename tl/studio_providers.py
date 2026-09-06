@@ -23,6 +23,7 @@ from .model_catalog import (
     safe_target,
 )
 from .plugin_config import _clean_api_keys
+from .provider_hooks import materialize_service_account_json
 from .provider_runtime import ProviderRuntimeBusy
 from .studio_vision_providers import VisionProviderDirectory
 from .web_studio_service import StudioServiceError
@@ -87,7 +88,7 @@ def _valid_type(value: Any, kind: str) -> bool:
             )
         except OverflowError:
             return False
-    if kind == "string":
+    if kind in ("string", "text"):
         return isinstance(value, str) and len(value) <= _MAX_STRING
     if kind == "list":
         return isinstance(value, list) and all(
@@ -490,6 +491,27 @@ class ProviderConfigService:
             raise _invalid(location)
         merged = copy.deepcopy(old)
         for key, value in values.items():
+            if fields.get(key, {}).get("type") == "file" and isinstance(value, list):
+                # file 字段里的内联服务账号 JSON 落盘为文件引用，配置只存路径
+                value = [
+                    (
+                        materialize_service_account_json(item)
+                        if item.startswith("{")
+                        else item
+                    )
+                    for item in value
+                ]
+            if (
+                key == "service_account_json"
+                and isinstance(value, str)
+                and value.strip().startswith("{")
+            ):
+                # 粘贴内容落盘为文件引用，配置不保留 JSON 原文
+                merged["service_account_json"] = ""
+                merged["service_account_files"] = [
+                    materialize_service_account_json(value.strip())
+                ]
+                continue
             if key in actions or (
                 key in {"api_base", "proxy"} and _protected_url(old.get(key, ""))
             ):

@@ -47,6 +47,7 @@ def test_schema_covers_all_generation_fields_without_exposing_connection_values(
         "poll_interval",
         "poll_timeout",
         "service_account_files",
+        "service_account_json",
         "project_id",
         "location",
         "person_generation",

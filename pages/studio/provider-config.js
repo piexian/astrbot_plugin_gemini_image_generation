@@ -262,7 +262,7 @@
         if (keyList) this.renderKeys(field, entry, schema, id);
         else if (common && name === 'vision_provider_id') this.renderVisionProvider(field, entry, schema, id);
         else if (secret) this.renderSecret(field, entry, name, schema, common, id);
-        else if (schema.type === 'file') this.renderCredentialField(field, entry, schema, name, common, id);
+        else if (schema.type === 'file' || name === 'service_account_json') this.renderCredentialField(field, entry, schema, name, common, id);
         else field.appendChild(this.control(entry.values[name] ?? schema.default, schema, name, common, id));
         if ((!common && (name === 'model' || name === 'endpoint_id')) || (common && name === 'vision_model')) {
           this.renderCatalogField(field, entry, name, common);

@@ -311,7 +311,7 @@ def test_validate_vertex_settings_rejects_mixed_credentials() -> None:
 
 
 def test_validate_vertex_settings_rejects_multiple_credentials() -> None:
-    with pytest.raises(ValueError, match="最多上传一个服务账号"):
+    with pytest.raises(ValueError, match="最多引用一个服务账号"):
         validate_vertex_settings(
             {"service_account_files": ["files/a.json", "files/b.json"]}
         )
@@ -320,7 +320,9 @@ def test_validate_vertex_settings_rejects_multiple_credentials() -> None:
 
 
 def test_validate_vertex_settings_rejects_missing_credential() -> None:
-    with pytest.raises(ValueError, match="服务账号 JSON 凭证或一个 API Key"):
+    with pytest.raises(
+        ValueError, match="服务账号 JSON 凭证（上传/粘贴）或一个 API Key"
+    ):
         validate_vertex_settings({})
 
 
@@ -369,6 +371,7 @@ def test_keyless_candidate_loads_with_service_account_only() -> None:
     assert candidate_is_keyless("vertex", candidate.settings) is True
     # 有 api_keys 的候选不是 keyless；非 keyless 供应商不因该字段豁免
     assert candidate_is_keyless("vertex", {"api_keys": ["k"]}) is False
+    assert candidate_is_keyless("vertex", {"service_account_json": "{}"}) is True
     assert candidate_is_keyless("google", {"service_account_files": ["x"]}) is False
 
 
@@ -386,11 +389,18 @@ def test_vertex_candidate_without_any_credential_is_rejected() -> None:
 
     assert config.provider_candidates == []
     assert any(
-        "服务账号 JSON 凭证或一个 API Key" in e for e in config.provider_config_errors
+        "服务账号 JSON 凭证（上传/粘贴）或一个 API Key" in e
+        for e in config.provider_config_errors
     )
 
 
-def test_validate_vertex_settings_accepts_inline_json() -> None:
+def test_validate_vertex_settings_accepts_inline_json(tmp_path, monkeypatch) -> None:
+    from tl import provider_hooks
+
+    base = tmp_path / "files" / "vertex"
+    monkeypatch.setattr(
+        provider_hooks, "_service_account_materialize_base", lambda: base
+    )
     info = json.dumps(
         {
             "type": "service_account",
@@ -401,7 +411,12 @@ def test_validate_vertex_settings_accepts_inline_json() -> None:
     )
     settings = {"service_account_files": [info], "api_keys": []}
     validate_vertex_settings(settings)
-    assert settings["service_account_files"][0] == info
+
+    ref = settings["service_account_files"][0]
+    assert ref.startswith("files/vertex/service_account_") and ref.endswith(".json")
+    # 落盘文件内容为原始 JSON，粘贴框已清空
+    assert (tmp_path / ref).read_text(encoding="utf-8") == info
+    assert settings["service_account_json"] == ""
 
 
 def test_validate_vertex_settings_rejects_broken_inline_json() -> None:
