@@ -63,7 +63,7 @@ assert.match(root.textContent, /刷新失败/); view.destroy();
 
 @pytest.mark.asyncio
 async def test_catalog_queue_is_bounded_and_rejection_does_not_open_another_session(
-    http,
+    http,  # noqa: F811 -- 显式导入以在本模块注册 fixture
 ):
     release = asyncio.Event()
     responses = [FakeResponse({"data": []}, block=release) for _ in range(2)]

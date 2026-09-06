@@ -24,6 +24,7 @@ from astrbot.api import logger
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from .api_types import ApiRequestConfig
+from .file_uri import file_uri_to_path
 from .generation_tracker import (
     TERMINAL_STATUSES,
     GenerationTracker,
@@ -37,7 +38,6 @@ from .provider_capabilities import (
 )
 from .provider_runtime import provider_operation
 from .provider_settings import candidate_with_overrides
-from .file_uri import file_uri_to_path
 from .studio_parameters import (
     generation_fields,
     native_reference_limit,

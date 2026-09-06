@@ -280,7 +280,7 @@ class VertexProvider(GoogleProvider):
         private_key = str(info.get("private_key") or "")
         client_email = str(info.get("client_email") or "")
         fingerprint = hashlib.sha256(
-            f"{client_email}:{private_key}".encode("utf-8")
+            f"{client_email}:{private_key}".encode()
         ).hexdigest()
 
         async with self._token_lock:

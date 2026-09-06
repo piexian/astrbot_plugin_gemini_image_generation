@@ -24,6 +24,7 @@ from pydantic.dataclasses import dataclass
 
 from .background_notify import report_background_failure
 from .batch_generation import run_batch_job
+from .file_uri import file_uri_to_path
 from .generation_call import invoke_generation_core
 from .generation_tracker import requester_from_event
 from .openai_image_size import (
@@ -46,7 +47,6 @@ from .provider_settings import (
     first_provider_candidate as _first_candidate_from_config,
 )
 from .thought_signature import log_thought_signature_debug
-from .file_uri import file_uri_to_path
 from .tl_utils import encode_file_to_base64, format_error_message
 from .tool_path_guard import filter_reference_paths
 
