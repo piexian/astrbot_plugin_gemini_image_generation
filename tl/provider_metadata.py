@@ -112,6 +112,7 @@ _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
         capability_profile_path="tl.provider_capabilities.doubao_capability",
         rebuild_on_retry=True,
         parse_errors_with_provider=True,
+        model_catalog_kind="ark",
     ),
     ProviderSpec(
         "sensenova",

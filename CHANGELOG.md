@@ -2,6 +2,12 @@
 
 > **升级提示**：v1.9.0 以后的配置文件格式不兼容旧版本。升级后如遇配置模板显示错误，请查看 [配置迁移说明](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/troubleshooting.md#配置迁移说明)。
 
+## [3.0.1] - 2026-09-07
+
+### Added
+
+- **`doubao` 供应商接入模型目录（拉取模型）**：走方舟 OpenAI 兼容层 `GET {基址}/api/v3/models`（官方 key 实测 200，标准 `data[].id` 格式复用现有 openai 解析分支），目录仅认基址——API 地址带任何路径（如已填 `/api/v3` 或完整生成端点）直接报错提示只填基址；返回为账号全量模型（含 LLM 与已下线/退役条目），沿用「目录可能包含非生图模型」警示；Agent Plan 专属端点无模型列表接口（`/api/plan/v3/models` 404、plan key 打标准端点 401），plan 模式仍手动填写模型。
+
 ## [3.0.0] - 2026-09-05
 
 ### Added
