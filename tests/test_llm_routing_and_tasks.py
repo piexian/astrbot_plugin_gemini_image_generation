@@ -222,7 +222,18 @@ async def test_task_status_tool_enforces_session_ownership(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_single_tool_returns_task_id_only_after_backgrounding(tmp_path) -> None:
+async def test_single_tool_returns_task_id_only_after_backgrounding(
+    tmp_path, monkeypatch
+) -> None:
+    from tl import llm_tools
+
+    notices = []
+
+    async def notify(plugin, event, result, **kwargs):
+        notices.append(result)
+        return True
+
+    monkeypatch.setattr(llm_tools, "notify_llm_background_result", notify)
     manager = BackgroundTaskManager(tmp_path)
     event = _Event()
 
@@ -280,10 +291,22 @@ async def test_single_tool_returns_task_id_only_after_backgrounding(tmp_path) ->
     assert record is not None
     assert record["status"] == "succeeded"
     assert record["items"][0]["provider"] == "xai"
+    assert notices[0]["image_paths"] == ["generated.png"]
+    assert plugin.message_sender.deliveries == []
 
 
 @pytest.mark.asyncio
-async def test_batch_job_refills_native_under_return(tmp_path) -> None:
+@pytest.mark.parametrize("delivered", [True, False])
+async def test_batch_job_refills_native_under_return(
+    tmp_path, monkeypatch, delivered
+) -> None:
+    notices = []
+
+    async def notify(plugin, event, result, **kwargs):
+        notices.append(result)
+        return delivered
+
+    monkeypatch.setattr(batch_generation, "notify_llm_background_result", notify)
     manager = BackgroundTaskManager(tmp_path)
     event = _Event()
 
@@ -336,15 +359,30 @@ async def test_batch_job_refills_native_under_return(tmp_path) -> None:
 
     assert plugin.calls == [5, 3, 1]
     assert result is not None
-    assert result["status"] == "succeeded"
+    assert result["status"] == ("succeeded" if delivered else "partial_success")
     assert result["items"][0]["generated_images"] == 5
-    assert len(plugin.message_sender.deliveries) == 1
+    assert plugin.message_sender.deliveries == []
+    assert event.sent == []
+    assert len(notices) == 1
+    assert notices[0]["items"][0]["image_paths"] == [
+        f"image-{i}.png" for i in range(1, 6)
+    ]
+    assert result["items"][0]["image_paths"] == notices[0]["items"][0]["image_paths"]
 
 
 @pytest.mark.asyncio
 async def test_batch_job_waits_for_siblings_and_attributes_item_exceptions(
     tmp_path,
+    monkeypatch,
 ) -> None:
+    notices = []
+
+    async def notify(plugin, event, result, **kwargs):
+        notices.append(result)
+        return True
+
+    monkeypatch.setattr(batch_generation, "notify_llm_background_result", notify)
+
     class _FailOnceManager(BackgroundTaskManager):
         progress_failure_raised = False
 
@@ -427,7 +465,13 @@ async def test_batch_job_waits_for_siblings_and_attributes_item_exceptions(
     assert by_name["partial-item"]["generated_images"] == 1
     assert "provider exploded" in by_name["partial-item"]["error"]
     assert by_name["slow-item"]["success"] is True
-    assert len(plugin.message_sender.deliveries) == 2
+    assert plugin.message_sender.deliveries == []
+    assert event.sent == []
+    assert len(notices) == 1
+    assert [item["image_paths"] for item in notices[0]["items"]] == [
+        ["partial.png"],
+        ["slow.png"],
+    ]
     assert manager.progress_failure_raised is True
 
 
@@ -650,6 +694,53 @@ def _notify_plugin(manager, event):
         ),
         cfg=SimpleNamespace(background_failure_notify_llm=True),
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wake_fails", [False, True])
+async def test_background_success_hands_images_to_agent(
+    tmp_path, monkeypatch, wake_fails
+) -> None:
+    manager = BackgroundTaskManager(tmp_path)
+    event = _Event()
+    plugin = _notify_plugin(manager, event)
+    calls = _install_official_wake_fakes(
+        monkeypatch, build_error=RuntimeError("wake failed") if wake_fails else None
+    )
+    record = await manager.create(
+        session_id=event.unified_msg_origin,
+        kind="single",
+        routing_mode="full_polling",
+        message="running",
+    )
+
+    async def completed_generation():
+        return (
+            True,
+            (["https://example.com/image.png"], ["/tmp/image.png"], None, None),
+            {},
+        )
+
+    await _await_generation_task_and_send(
+        plugin,
+        event,
+        asyncio.create_task(completed_generation()),
+        scene="test",
+        task_id=record["task_id"],
+        notify_llm=True,
+    )
+    result = await manager.get(record["task_id"], event.unified_msg_origin)
+    assert result["status"] == ("partial_success" if wake_fails else "succeeded")
+    assert result["items"][0]["image_urls"] == ["https://example.com/image.png"]
+    assert result["items"][0]["image_paths"] == ["/tmp/image.png"]
+    assert plugin.message_sender.deliveries == []
+    assert event.sent == []
+    if not wake_fails:
+        req = calls["agent_reqs"][0]
+        assert "https://example.com/image.png" in req.system_prompt
+        assert "/tmp/image.png" in req.system_prompt
+        assert "MUST call send_message_to_user" in req.prompt
+        assert "type: 'image'" in req.prompt
 
 
 @pytest.mark.asyncio

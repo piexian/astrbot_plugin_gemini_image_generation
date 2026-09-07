@@ -97,7 +97,8 @@ LLM 工具会根据当前 `tool_call_timeout` 和 `llm_tool_timeout_reserve_perc
 超时取自当前会话绑定的 AstrBot 配置，优先读取 `agent_runner.config.misc.tool_call_timeout`，兼容旧版的 `provider_settings.tool_call_timeout`。例如工具超时为 300 秒、预留比例为 75% 时，前台等待 75 秒。后台生成的总超时仍由插件的 `total_timeout` 控制。
 
 - 图片在窗口内生成完成时，以 `CallToolResult` 结构化返回图片。
-- 超过等待窗口时，自动切到后台继续生成，完成后通过 `event.send()` 直接发送给用户。
+- 超过等待窗口时，自动切到后台继续生成；完成后反向激活主 Agent，提供图片 URL/路径，要求调用 `send_message_to_user` 的 `image` 组件发送图片。批量任务同样聚合结果后反向激活。
+- 后台图片不再由插件直接发送；反向激活不可用或 Agent 未调用发送工具时，任务会记录发送未成功，图片 URL/路径可通过任务查询获取。
 - 转入后台时返回 JSON，其中包含 `task_id`、`status`、`routing_mode` 和当前轮询/重试说明。
 
 代理模式下，前台和后台都会通过代理下载远程图片，保证链路一致。

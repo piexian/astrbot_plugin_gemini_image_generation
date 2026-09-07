@@ -1,4 +1,4 @@
-"""后台生图失败时，重新激活 AstrBot 主 Agent 处理结果。"""
+"""后台生图完成后，重新激活 AstrBot 主 Agent 处理结果。"""
 
 from __future__ import annotations
 
@@ -6,6 +6,8 @@ import json
 from typing import Any
 
 from astrbot.api import logger
+
+from .plugin_config import get_session_tool_timeout
 
 try:  # 官方内部 API（_get_session_conv 为私有函数），版本漂移风险防御
     from astrbot.core.agent.tool import ToolSet
@@ -25,7 +27,9 @@ try:  # 官方内部 API（_get_session_conv 为私有函数），版本漂移�
 
     _OFFICIAL_API_READY = True
 except ImportError as e:  # pragma: no cover - 仅低版本框架触发
-    logger.warning(f"[后台失败回灌] AstrBot 官方回灌 API 导入失败，通知将静默降级: {e}")
+    logger.warning(
+        f"[后台结果回灌] AstrBot 官方回灌 API 导入失败，无法激活主 Agent: {e}"
+    )
     _OFFICIAL_API_READY = False
     # except 分支显式绑 None：保证模块符号恒存在，便于调用方/测试安全引用
     ToolSet = MainAgentBuildConfig = _get_session_conv = build_main_agent = None
@@ -72,8 +76,24 @@ async def notify_llm_background_failure(
     scene: str,
     task_id: str | None = None,
 ) -> bool:
+    return await notify_llm_background_result(
+        plugin,
+        event,
+        {"task_id": task_id or "", "result": failure_summary},
+        notice=_build_notice_prompt(task_id, failure_summary),
+        scene=scene,
+    )
+
+
+async def notify_llm_background_result(
+    plugin: Any,
+    event: Any,
+    task_result: dict[str, Any],
+    *,
+    notice: str,
+    scene: str,
+) -> bool:
     """按官方后台结果回灌路径唤醒主 Agent；返回是否实际送达。"""
-    notice = _build_notice_prompt(task_id, failure_summary)
     try:
         if not _OFFICIAL_API_READY:
             raise RuntimeError("AstrBot 官方回灌 API 不可用")
@@ -82,7 +102,6 @@ async def notify_llm_background_failure(
         if context is None or not umo:
             raise RuntimeError("缺少插件 context 或会话标识")
 
-        task_result = {"task_id": task_id or "", "result": failure_summary}
         extras = {"background_task_result": task_result}
 
         session = MessageSession.from_str(umo)
@@ -98,7 +117,7 @@ async def notify_llm_background_failure(
         cfg = context.get_config(umo=umo) or {}
         provider_settings = cfg.get("provider_settings") or {}
         config = MainAgentBuildConfig(
-            tool_call_timeout=60,
+            tool_call_timeout=get_session_tool_timeout(context, umo),
             streaming_response=provider_settings.get("stream", False),
             provider_settings=provider_settings,
         )
@@ -118,6 +137,12 @@ async def notify_llm_background_failure(
             "If you need to deliver the result to the user immediately, "
             "you MUST use `send_message_to_user` tool to send the message directly to the user, "
             "otherwise the user will not see the result. "
+            "For generated images in image_urls/image_paths (including batch items), "
+            "you MUST call send_message_to_user with messages containing "
+            "{type: 'image', url: '<image URL>'} or {type: 'image', path: '<local path>'}. "
+            "Send the generated images to the current session, leaving session empty. "
+            "Do not merely describe completion or output Markdown image links. "
+            "Use the supplied locations exactly; do not regenerate completed images. "
             "After completing your task, summarize and output your actions and results. "
         )
         if not req.func_tool:
@@ -143,16 +168,14 @@ async def notify_llm_background_failure(
             context.conversation_manager,
             event=cron_event,
             req=req,
-            summary_note=(
-                f"[BackgroundTask] 图像生成任务 {task_id or '-'} 失败：{failure_summary}"
-            ),
+            summary_note=f"[BackgroundTask] {notice}",
         )
         if not getattr(cron_event, "_has_send_oper", False):
             logger.warning(f"[{scene}] 后台通知 agent 未成功调用发送工具")
             return False
         return True
     except Exception as e:
-        logger.warning(f"[{scene}] 后台失败回灌未送达，已静默降级: {e}")
+        logger.warning(f"[{scene}] 后台结果回灌未送达: {e}")
         return False
 
 
