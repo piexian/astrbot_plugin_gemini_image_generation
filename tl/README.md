@@ -171,22 +171,8 @@ generate_image()
 | `provider_metadata.get_provider_spec(api_type)` | 返回 canonical provider spec |
 | `api/registry.get_api_provider(api_type)` | 按 `ProviderSpec.provider_path` 懒加载 provider 单例，未知值回退 `OpenAICompatProvider` |
 
-当前 spec 顺序与 `_conf_schema.json` 中 `provider_settings.provider_overrides.templates` 严格一致，不再提供别名：
-
-| `api_type` | Provider |
-|------------|----------|
-| `google` | `GoogleProvider` |
-| `openai` | `OpenAICompatProvider`（默认兜底） |
-| `agnes_ai` | `AgnesAIProvider` |
-| `xai` | `XAIProvider` |
-| `minimax` | `MiniMaxProvider` |
-| `stepfun` | `StepfunProvider` |
-| `openai_images` | `OpenAIImagesProvider` |
-| `doubao` | `DoubaoProvider` |
-| `sensenova` | `SenseNovaProvider` |
-| `dashscope` | `DashScopeProvider` |
-| `modelscope` | `ModelScopeProvider`（异步任务制：提交 + 轮询） |
-| `siliconflow` | `SiliconFlowProvider`（同步单端点：文生图 + 编辑共用 generations，URL 1h 有效即刻落盘） |
+当前 spec 顺序与 `_conf_schema.json` 中 `provider_settings.provider_overrides.templates` 严格一致，不再提供别名。
+供应商实现与接入说明统一见 [适配器开发指南](../docs/新增API供应商.md)。
 
 ### Provider 公共辅助模块
 
@@ -203,7 +189,8 @@ generate_image()
 | `api/reference_intake.py` | `announce_reference_intake(references, max_count, *, log_prefix="")` | 参考图接收阶段统一日志，返回 `(收到数量, 采用数量)` |
 | `api/data_uri.py` | `format_data_uri(b64_data, mime_type=None)` / `strip_data_uri_prefix(s)` / `looks_like_base64(s)` | data URI 与 base64 字符串的格式化/识别助手 |
 | `api/param_utils.py` | `coerce_int()` / `coerce_float()` / `ensure_prompt_length()` | 共享参数钳制与 prompt 硬上限校验 |
-| `api/reference_values.py` | `resolve_reference_api_values(client, config, refs, *, max_count, ...)` | 参考图 → API URL / data URI 共享归一化 |
+| `api/reference_pipeline.py` | `load_reference_bytes()` / `reference_data_uri()` / `transcode_to_supported_mime()` / `select_persistent_source_urls()` | 参考图输入解析唯一共享层：data URI/裸 base64/本地路径（file:// 转换）/URL（候选代理透传、临时缓存过滤），供 edits 原始字节、data URI 形态、白名单转码与任务源链接记录复用；tl/api 内禁止私写参考图 b64decode（测试断言守门） |
+| `api/reference_values.py` | `resolve_reference_api_values(...)` / `normalize_image_mime(...)` | URL / data URI 列表归一化与 JPG/PNG 白名单转码，均委托 reference_pipeline |
 | `api/compat_utils.py` | `origin_from_api_base()` / `is_temp_cache_url()` / `find_markdown_relative_image_urls()` / `build_generation_config()` / `resolve_relative_url()` | 已下线 zai / grok2api 沉淀的网关兼容辅助（相对路径图片、临时缓存 URL、generation_config 约定） |
 
 详见 [docs/新增API供应商.md](../docs/新增API供应商.md)。
@@ -388,6 +375,26 @@ prompt + provider + model + negative_prompt + watermark + quality
 - 批量任务以命名条目为并发单位；条目内部遵循供应商原生单次上限并在返回不足时继续补齐。
 - 最终发送保持输入顺序，任务状态区分 `succeeded`、`partial_success`、`failed` 和 `interrupted`。
 
+### WebUI 创作台（`generation_tracker.py` / `web_studio_service.py` / `web_api.py`）
+
+- `GenerationTracker`：全来源（指令/LLM 工具/LLM 批量/工作台）生成记录，创建即落盘 `generation_history.json`，SSE 有界队列扇出（快照+增量+resync）；`begin/update/complete/fail` + `import_legacy`（启动迁入存量图）+ `tracking_context`（ContextVar 传播批量父子关系）。记录含 `source_urls`：持久 http(s) 源链接经 `is_temp_cache_url` 过滤、去重、上限 20 条/2048 字符，由 `complete(source_urls=…)`/`update` 写入，旧记录缺字段仍可加载。
+- `WebStudioService`：工作台生成编排（全局并发准入、循环补足目标张数、partial_success）、gallery 归档（本地复制/远程流式下载、容量整组淘汰）、上传校验与运行租约（流式截断+魔数+像素+配额，父子任务引用计数保护过期清理和容量淘汰）、`capabilities()` 扁平候选列表（白名单字段）。工作台任务归档成功或失败都记录源 URL（失败时经 `update` 补录，便于手动取回）；批量父任务聚合子任务 `source_urls`。
+- 指令/LLM 路径的归档只是历史副本（图片按原始来源发送）：`ImageGenerator._complete_tracking` 与 `_quick_generate_image` 在归档异常或不完整时记 `partial_success` 并用 `update(error=…)` 注明原因，不再 fail，同时把交付源里的 http(s) URL 写入 `source_urls`；仅工作台路径（投递依赖画廊）归档失败才 fail。归档远程下载超时 30s（与发送侧网络条件一致）。
+- `WebStudioAPI`：薄 HTTP 适配层，路由前缀 `/astrbot_plugin_gemini_image_generation/webui/`，标准 `{status/data}` 信封；图片经 `image_b64` 端点走 bridge 传输（插件页 iframe 为不透明源沙箱，`<img>` 直连不带 Cookie 必 401）。
+- JSON 请求体超限由端点经 `_service_error()` 保留 413（生成、偏好保存、历史删除）；JSON 解析或结构校验失败仍为 400。
+- 工作台参数弹窗使用独立 `GenerationSettingsEditor` 草稿，确认后才替换已应用参数并记忆；关闭、取消、模型切换或销毁均丢弃草稿。确认态编辑器离屏保存，不随长表单撑开侧栏；旧 `expanded` 偏好不再控制界面。
+- `ProviderConfigService`（`studio_providers.py`）：`GET/POST webui/providers` 只读写供应商配置，schema 驱动表单与按条目身份保留密钥，和限流页共用保存锁；不把缺省值补写到原始条目。
+- 配置响应使用 `Cache-Control: no-store`，仅该已鉴权接口的 `values.api_keys` 回显 Key；兼容旧密钥操作，新增 `append` 与直接数组编辑，合并后检查上限并稳定去重。
+- `VisionProviderDirectory`（`studio_vision_providers.py`）只投影本体 LLM 配置的 ID/模型/来源/加载状态，`GET webui/vision-providers` 支持独立刷新，不返回本体凭据。
+- `ModelCatalogService`（`model_catalog.py`）由 `ProviderSpec.model_catalog_kind` 声明协议，独立会话与任务负责限时、限流、分页、响应边界及卸载取消；`POST webui/providers/models` 使用连接草稿，视觉查询只借用本体实例。
+- 本体 bridge 错误只传字符串；模型查询的目标确认以成功信封中的 `confirmation_required`/`target` 传递，未确认不发请求。输入的重复 blur/change 不重建目录按钮，避免首次点击失效。
+- `ProviderRuntime`（`provider_runtime.py`）：命令、LLM、Studio 与 API 生成的同步准入门，兼顾已挂入但尚未执行的后台任务；卸载先封门并等待配置事务。
+- `ProviderApplication`（`provider_application.py`）：空闲窗口预构建配置和工具能力，关闭闲置会话后保存、应用或回滚客户端及模块引用，保留共享 `cfg` 身份。
+- `KeyManager.clone_for_config()`：先严格恢复并持久化用量检查点，再重建候选索引；`api_key_usage.__shared_keys_v1` 按供应商类型、Key 保存计数，兼容原候选桶，排序和重启不会重置用量。
+- `pages/studio/provider-config.js/css`：独立、懒加载的二级 Tab 配置视图；表格与弹窗分离，密钥草稿只留内存，Pointer Events 手柄提供鼠标／触摸排序及键盘替代。
+- `editor.keys` 独立维护密钥管理草稿，替换当前弹窗主体而不叠加 Modal；批量导入、行编辑、取消与完成分层处理。返回条目时仅确认的 Key 变更写入 `editor.entry`，并丢弃过期模型目录结果。
+- 模型目录的 OpenAI 协议同时用于 Agnes AI、MiniMax、阶跃星辰、ModelScope；识别 MiniMax `/image_generation` 完整路径并保留套餐/网关前缀，不改变生成端点或构造静态模型列表。
+
 ### `thought_signature.py`
 
 | 接口 | 说明 |
@@ -534,10 +541,15 @@ _prepare_foreground()
 
 | 接口 | 说明 |
 |------|------|
-| `RateLimiter(config, get_kv=None, put_kv=None)` | 群限制与限流管理器 |
-| `get_group_id_from_event(event)` | 从事件中解析群号 |
-| `check_and_consume(event)` | 检查黑白名单和限流，并消费一次额度 |
-| `reset()` | 清空限流桶 |
+| `RateLimiter(config, get_kv=None, put_kv=None)` | 全局与 UMO 滑动窗口，首次恢复与双额度扣减共用准入锁 |
+| `get_group_id_from_event(event)` / `allows_group(event)` | 群访问名单检查，不使用裸群号计数 |
+| `check_and_consume(event, cost=1)` | 保留聊天入口二元返回值，批量按逻辑子任务数消费 |
+| `acquire(umo, cost=1)` / `refund(token)` | 原子预留及启动失败回滚；Studio 传 `umo=None` 仅检查全局 |
+| `reset()` / `close()` | 清空状态／关闭准入并等待延迟计数落盘 |
+
+`limit_config.py` 统一 schema 加载与 WebUI 校验；`studio_limits.py` 负责窄范围配置保存、版本冲突、迁移备份和本体 UMO 查询（`ConversationV2.user_id` 与别名集合，仅投影身份，不读聊天正文）。Web API 的 `limits`（GET/POST）与 `sessions`（GET）沿用宿主鉴权及标准信封，保存不重载插件。新计数 KV 为 `rate_limit_buckets_v2`，旧群桶保留；旧规则与旧未过期计数采取显式迁移／窗口等待保护，详见 [配置说明](../docs/config.md#limit_settings)。
+
+群限制模式与名单通过同一个 `limits` 接口成对更新，旧客户端省略二者时不重置。保存后将名单转换为运行时 `set`；聊天准入在限流锁内复核访问权限，避免等待热保存期间仍按旧名单扣减放行。首次提交群访问字段另存 `group_access_config_backup.json`。
 
 `check_and_consume()` 返回：
 
@@ -614,7 +626,9 @@ _prepare_foreground()
 
 - 新增 API 供应商时，优先在 `tl/api/` 新增 provider，并在 `tl/provider_metadata.py` 增加 `ProviderSpec`；`api/registry.py` 只负责懒加载。
 - 只调整请求参数结构时，优先继承 `OpenAICompatProvider` 并覆盖 `_prepare_payload()`。
-- 新增配置项时，同步修改 `_conf_schema.json`、`ProviderSpec`/hook、配置加载测试和文档。
+- 新增配置项时，保持 `_conf_schema.json`、加载/消费路径及受影响文档一致；供应商特有行为才修改 `ProviderSpec`/hook，按实际行为补充或复用配置测试。
 - 修改 OpenAI Images 尺寸逻辑时，优先集中在 `openai_image_size.py`，避免 provider、LLM Tool、快速模式各自实现一套校验。
 - 修改发送结果格式时，同时检查 `MessageSender.dispatch_send_results()` 和 `llm_tools._build_call_tool_result()`。
 - 修改切图逻辑时，优先保持 `split_image()` 的优先级顺序稳定，避免影响 `/快速 表情包` 和 `/切图` 两条路径。
+
+开发环境、验证范围和提交整理规则见 [开发与验证](../docs/development.md)。

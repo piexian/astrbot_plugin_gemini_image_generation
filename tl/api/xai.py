@@ -23,9 +23,9 @@ from .base import ProviderRequest
 _SUPPORTED_RESOLUTIONS: frozenset[str] = frozenset({"1k", "2k"})
 _SUPPORTED_RESPONSE_FORMATS: frozenset[str] = frozenset({"url", "b64_json"})
 # 官方编辑接口最多 3 张参考图
-_MAX_EDIT_IMAGES = 3
+_MAX_EDIT_IMAGES = 5
 _MAX_BATCH_IMAGES = 10
-# 官方 aspect_ratio 枚举（2026-08 文档）：不支持 4:5/5:4/21:9
+# 官方 aspect_ratio 枚举（现行文档）：不含 4:5/5:4；21:9 与 5:2 已列入
 SUPPORTED_ASPECT_RATIOS: frozenset[str] = frozenset(
     {
         "1:1",
@@ -41,11 +41,13 @@ SUPPORTED_ASPECT_RATIOS: frozenset[str] = frozenset(
         "9:19.5",
         "20:9",
         "9:20",
+        "21:9",
+        "5:2",
         "auto",
     }
 )
-# quality 仅 low/medium（默认 medium，仅 grok-imagine-image-2.0 支持）
-_SUPPORTED_QUALITIES: frozenset[str] = frozenset({"low", "medium"})
+# quality low/medium/auto（默认 auto，仅 grok-imagine-image-2.0 支持）
+_SUPPORTED_QUALITIES: frozenset[str] = frozenset({"low", "medium", "auto"})
 
 
 class XAIProvider:

@@ -18,6 +18,7 @@ import aiohttp
 import cv2
 from astrbot.api import logger
 
+from .file_uri import file_uri_to_path
 from .reference_image import (
     REFERENCE_IMAGE_CACHE_DIR,
     build_reference_image_headers,
@@ -706,10 +707,9 @@ async def resolve_image_source_to_path(
         return None
 
     # 本地文件或 file://
-    if src.startswith("file:///"):
-        fs_path = src[8:]
-        if os.path.exists(fs_path):
-            return fs_path
+    fs_path = file_uri_to_path(src)
+    if fs_path is not None and fs_path.exists():
+        return str(fs_path)
     if os.path.exists(src):
         return src
 

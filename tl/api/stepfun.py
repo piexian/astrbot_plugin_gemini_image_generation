@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 from typing import Any
 
 import aiohttp
@@ -12,6 +11,7 @@ from ..api_types import APIError, ApiRequestConfig
 from ..tl_utils import save_base64_image
 from .base import ProviderRequest
 from .param_utils import coerce_float, coerce_int, ensure_prompt_length
+from .reference_pipeline import load_reference_bytes
 
 # generations 接口不同模型支持的 size 预设（WxH 格式）。
 # step-image-edit-2 的 edits 接口：size 不生效，输出始终与输入同尺寸。
@@ -172,8 +172,8 @@ class StepfunProvider:
         )
 
         if has_ref:
-            payload = self._prepare_edits_payload(
-                config=config, settings=settings, model=model
+            payload = await self._prepare_edits_payload(
+                client=client, config=config, settings=settings, model=model
             )
             headers = {
                 "Authorization": f"Bearer {config.api_key}",
@@ -314,9 +314,10 @@ class StepfunProvider:
     # _prepare_edits_payload (图像编辑 multipart/form-data)
     # ------------------------------------------------------------------
 
-    def _prepare_edits_payload(
+    async def _prepare_edits_payload(
         self,
         *,
+        client: Any,  # noqa: ANN401
         config: ApiRequestConfig,
         settings: dict[str, Any],
         model: str,
@@ -336,7 +337,9 @@ class StepfunProvider:
                 f"[stepfun] edits 仅支持单张参考图，已提供 {len(ref_images)} 张，取首张"
             )
 
-        image_data = self._decode_image_input(ref_images[0])
+        image_data = await load_reference_bytes(
+            client, config, ref_images[0], log_prefix="[stepfun]"
+        )
         if image_data is None:
             raise APIError(
                 "无法解码参考图为二进制数据",
@@ -501,21 +504,3 @@ class StepfunProvider:
 
         if bool(settings.get("text_mode", False)):
             payload["text_mode"] = True
-
-    @staticmethod
-    def _decode_image_input(image_input: str) -> bytes | None:
-        """将 base64 字符串或 data URI 解码为二进制数据"""
-        s = (image_input or "").strip()
-        if not s:
-            return None
-
-        if s.startswith("data:"):
-            parts = s.split(",", 1)
-            if len(parts) == 2:
-                s = parts[1]
-
-        try:
-            return base64.b64decode(s, validate=True)
-        except Exception:
-            logger.debug(f"[stepfun] 无法 base64 解码图片输入 (len={len(s)})")
-            return None

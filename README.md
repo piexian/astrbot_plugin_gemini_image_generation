@@ -16,11 +16,13 @@
 - **多模式图像生成**：纯文本生图、参考图改图、风格转换、手办化、表情包生成。
 - **快速预设**：头像、海报、壁纸、卡片、手机壁纸、手办化、表情包一键生成。
 - **智能参考图**：自动读取消息图片、引用图片、合并转发、群文件，以及用户头像和 @ 对象头像。
-- **多供应商支持**：Google Gemini、Gemini Interactions（Nano Banana 系列）、OpenAI 兼容、OpenAI Images、Agnes AI、xAI Images、MiniMax、阶跃星辰、豆包、SenseNova、DashScope（通义万相/千问图像/z-image）。
+- **多供应商支持**：Google Gemini、Gemini Interactions（Nano Banana 系列）、Vertex AI（服务账号 JSON / Express API Key 双认证）、OpenAI 兼容、OpenAI Images、Agnes AI、xAI Images、MiniMax、阶跃星辰、豆包、SenseNova、DashScope（通义万相/千问图像/z-image）。
 - **供应商与模型路由**：支持供应商、原始模型或别名选择；未指定时按配置轮询，显式指定时只在匹配候选内重试。
 - **LLM 工具集成**：支持自然语言生图、参数能力查询、后台任务查询和命名批量生成；前台超时后返回任务号并继续生成。
 - **表情包切分**：内置 SmartMemeSplitter v4，默认优先走自适应黑描边贴纸切分，并保留手动网格、视觉识别等兜底路径。
-- **限流与缓存**：支持群白名单/黑名单、周期限流、KV 持久化；生成图保留在插件数据目录并按容量自动清理，临时文件统一写入 AstrBot 临时目录。
+- **限流与缓存**：支持群白名单/黑名单、全插件共享额度与 UMO 会话限流叠加、KV 持久化；Studio 统一管理群限制模式、群号名单与限流规则，可搜索本体已有会话并即时保存。生成图保留在插件数据目录并按容量自动清理，临时文件统一写入 AstrBot 临时目录。
+- **内置 WebUI 创作台**：Dashboard 插件页「studio」——在线工作台（模型扁平直选、临时生成参数弹窗确认、单图多张与批量生成、参考图上传/画廊拾取）、全来源生成任务实时进度（SSE）、历史画廊（筛选/灯箱/下载/删除/再次生成/用作参考图）；生成历史持久化归档，存量图片自动迁入，运行任务使用的上传参考图受租约保护。详见 [使用指南](docs/usage.md#webui-创作台)。
+- **供应商配置页**：配置表、轮询排序、公共设置以二级 Tab 切换；外层直接启停、拖动排序，密钥紧凑展示、逐项管理与批量导入，支持模型拉取选择及本体现有视觉提供商下拉。空闲时统一热保存，不打断生成、不重置 Key 用量。
 
 ## 快速安装
 
@@ -86,7 +88,7 @@ https://github.com/piexian/astrbot_plugin_gemini_image_generation
 各供应商的端点、参数、尺寸适配规则等完整说明见 [完整配置参考](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/config.md)：
 
 ```text
-google / gemini_interactions / openai / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova / dashscope / modelscope / siliconflow
+google / gemini_interactions / vertex / openai / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova / dashscope / modelscope / siliconflow
 ```
 
 ## 项目结构
@@ -96,6 +98,7 @@ astrbot_plugin_gemini_image_generation/
 ├── main.py                 # 插件主入口
 ├── _conf_schema.json       # 配置 Schema
 ├── docs/                   # 配置、使用、故障排除和适配器文档
+├── pages/                  # Dashboard 插件页（studio 创作台，纯静态）
 ├── templates/              # 帮助页面模板
 └── tl/                     # 核心模块和供应商适配器
 ```
@@ -106,7 +109,7 @@ astrbot_plugin_gemini_image_generation/
 
 欢迎提交 [Issue](https://github.com/piexian/astrbot_plugin_gemini_image_generation/issues) 和 [Pull Request](https://github.com/piexian/astrbot_plugin_gemini_image_generation/pulls)。
 
-新增 API 供应商请参考：[适配器开发指南](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/新增API供应商.md)。
+开发环境、验证与提交约定见 [开发指南](docs/development.md)；新增 API 供应商见 [适配器开发指南](docs/新增API供应商.md)。
 
 ### 致谢
 

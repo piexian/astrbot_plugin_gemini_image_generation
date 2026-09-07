@@ -160,6 +160,55 @@ async def test_normalize_reference_image_input_decodes_file_url(
 
 
 @pytest.mark.asyncio
+async def test_normalize_reference_image_input_decodes_bare_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_reference_image(monkeypatch)
+    raw_png = b"\x89PNG\r\n\x1a\n" + b"bare-path-bytes"
+    image_path = tmp_path / "bare image.png"
+    image_path.write_bytes(raw_png)
+
+    mime_type, encoded = await module.normalize_reference_image_input(
+        str(image_path),
+        image_cache_dir=tmp_path,
+    )
+
+    assert mime_type == "image/png"
+    assert base64.b64decode(encoded) == raw_png
+
+
+@pytest.mark.asyncio
+async def test_normalize_reference_image_input_missing_bare_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_reference_image(monkeypatch)
+
+    result = await module.normalize_reference_image_input(
+        str(tmp_path / "missing.png"),
+        image_cache_dir=tmp_path,
+    )
+
+    assert result == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_normalize_reference_image_input_overlong_path_does_not_raise(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_reference_image(monkeypatch)
+
+    result = await module.normalize_reference_image_input(
+        "/" + "x" * 5000,
+        image_cache_dir=tmp_path,
+    )
+
+    assert result == (None, None)
+
+
+@pytest.mark.asyncio
 async def test_normalize_reference_image_input_uses_supplied_session(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

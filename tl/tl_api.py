@@ -36,6 +36,8 @@ from .provider_capabilities import (
     select_candidates,
 )
 from .provider_loader import load_callable
+from .provider_runtime import provider_operation
+from .provider_settings import candidate_is_keyless, candidate_with_overrides
 
 _DOWNLOAD_PROXY_DEFAULT = object()
 
@@ -151,6 +153,8 @@ class GeminiAPIClient:
         # KeyManager 实例（由主插件注入，用于多 Key 轮换和每日限额）
         self._key_manager = None
         self.provider_candidates: list[Any] = []
+        # 全部启用候选（含未入轮询表条目），仅供 route_all_candidates 的工作台请求路由
+        self.provider_candidates_all: list[Any] = []
         self._candidate_key_pools: dict[str, list[str]] = {}
         self._candidate_key_indices: dict[str, int] = {}
         # 候选级并发闸门（按 spec.max_concurrency 声明；免费单并发渠道串行）
@@ -232,11 +236,23 @@ class GeminiAPIClient:
         """设置 KeyManager 实例（用于多 Key 轮换和每日限额）"""
         self._key_manager = key_manager
 
-    def set_provider_candidates(self, candidates: list[Any]) -> None:
-        """设置当前可用的供应商候选列表。"""
+    def set_provider_candidates(
+        self, candidates: list[Any], all_candidates: list[Any] | None = None
+    ) -> None:
+        """设置当前可用的供应商候选列表。
+
+        all_candidates 为全部启用候选（含未入轮询表条目）；缺省时与 candidates 一致。
+        Key 池按全集构建，保证工作台直选未入轮询候选时仍能轮换 Key。
+        """
         self.provider_candidates = list(candidates or [])
+        self.provider_candidates_all = (
+            list(all_candidates)
+            if all_candidates is not None
+            else list(self.provider_candidates)
+        )
         self._candidate_key_pools = {}
-        for candidate in self.provider_candidates:
+        pool_source = self.provider_candidates_all or self.provider_candidates
+        for candidate in pool_source:
             candidate_id = str(
                 getattr(candidate, "id", None)
                 or normalize_api_type(getattr(candidate, "api_type", ""))
@@ -710,6 +726,7 @@ class GeminiAPIClient:
         req = await provider.build_request(client=self, config=config)
         return req.url, req.headers, req.payload
 
+    @provider_operation("api")
     async def generate_image(
         self,
         config: ApiRequestConfig,
@@ -770,10 +787,30 @@ class GeminiAPIClient:
         started_at = loop.time()
         required_parameters = explicit_runtime_parameters(config)
         request_values = {name: getattr(config, name) for name in required_parameters}
+        configured = self.provider_candidates
+        if config.route_all_candidates and self.provider_candidates_all:
+            # 只有工作台请求会置位：路由范围扩至全部启用候选（含未入轮询条目），
+            # 聊天链路（指令/LLM 工具）仍严格限定在轮询表范围内。
+            configured = self.provider_candidates_all
+        if config.generation_settings:
+            if not config.requested_candidate_id:
+                raise APIError(
+                    "临时生成参数必须指定供应商候选",
+                    None,
+                    "invalid_request",
+                    retryable=False,
+                )
+            configured = [
+                candidate_with_overrides(candidate, config.generation_settings)
+                if candidate.id == config.requested_candidate_id
+                else candidate
+                for candidate in configured
+            ]
         candidates = select_candidates(
-            self.provider_candidates,
+            configured,
             provider=config.requested_provider,
             model=config.requested_model,
+            candidate_id=config.requested_candidate_id,
             has_reference_images=has_reference_images,
             required_parameters=required_parameters,
             request_values=request_values,
@@ -830,7 +867,9 @@ class GeminiAPIClient:
                 logger.info(f"[provider_polling] 跳过候选：{reason}")
                 continue
 
-            if not getattr(candidate, "api_keys", None):
+            if not getattr(candidate, "api_keys", None) and not candidate_is_keyless(
+                api_type, getattr(candidate, "settings", None)
+            ):
                 reason = f"{candidate_id} 未配置 API Key"
                 skipped_reasons.append(reason)
                 logger.error(f"[provider_polling] 跳过候选：{reason}")
@@ -938,11 +977,14 @@ class GeminiAPIClient:
         per_retry_timeout: int = None,
         max_total_time: int = None,
     ) -> tuple[list[str], list[str], str | None, str | None]:
-        if not self.api_keys:
+        keyless_candidate = candidate_is_keyless(
+            config.api_type, config.provider_settings
+        )
+        if not self.api_keys and not keyless_candidate:
             raise ValueError("未配置 API 密钥")
 
         # 使用 KeyManager 获取 Key（支持多 Key 轮换和每日限额）
-        if not config.api_key:
+        if not config.api_key and not keyless_candidate:
             key_scope = config.candidate_id or config.api_type
             key = await self.get_key_for_api_type(key_scope)
             if key is None:

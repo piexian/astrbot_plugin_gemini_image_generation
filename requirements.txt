@@ -4,3 +4,4 @@ numpy
 aiohttp-socks
 scipy
 scikit-image
+cryptography

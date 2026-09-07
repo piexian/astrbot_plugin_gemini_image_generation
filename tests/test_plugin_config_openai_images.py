@@ -192,9 +192,15 @@ def test_provider_settings_reports_valid_provider_missing_from_polling() -> None
         }
     ).load()
 
+    # 未入轮询的启用条目不再视为错误：聊天候选仅 google，工作台候选保留 openai。
     assert [candidate.api_type for candidate in cfg.provider_candidates] == ["google"]
-    assert any("供应商配置未加入轮询表" in msg for msg in cfg.provider_config_errors)
-    assert any("openai" in msg for msg in cfg.provider_config_errors)
+    assert [candidate.api_type for candidate in cfg.provider_candidates_all] == [
+        "google",
+        "openai",
+    ]
+    assert cfg.provider_config_errors == []
+    assert any("未加入轮询表" in msg for msg in logger.warnings)
+    assert any("openai" in msg for msg in logger.warnings)
 
 
 def test_same_provider_candidates_sort_by_priority() -> None:

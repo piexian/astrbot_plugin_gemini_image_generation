@@ -291,6 +291,75 @@ async def test_explicit_model_alias_never_retries_outside_matching_candidates() 
 
 
 @pytest.mark.asyncio
+async def test_studio_request_routes_over_all_enabled_candidates() -> None:
+    """工作台请求（route_all_candidates）可路由到未入轮询的启用候选；聊天请求仍限轮询表。"""
+    client = GeminiAPIClient(["fallback"])
+    polling = _Candidate(
+        id="google#1",
+        api_type="google",
+        model="polling-model",
+        settings={"api_keys": ["polling-key"]},
+    )
+    studio_only = _Candidate(
+        id="openai#1",
+        api_type="openai",
+        model="studio-model",
+        settings={"api_keys": ["studio-key"]},
+    )
+    client.set_provider_candidates([polling], [polling, studio_only])
+    assert client._candidate_key_pools["openai#1"] == ["studio-key"]
+    attempted: list[str] = []
+
+    async def fake_generate_image_single(**kwargs):
+        candidate_config = kwargs["config"]
+        attempted.append(candidate_config.candidate_id)
+        return ["url"], ["path"], None, None
+
+    client._generate_image_single = fake_generate_image_single  # type: ignore[method-assign]
+
+    studio_config = ApiRequestConfig(
+        model="",
+        prompt="test",
+        api_type="",
+        requested_provider="openai",
+        requested_model="studio-model",
+        requested_candidate_id="openai#1",
+        route_all_candidates=True,
+    )
+    result = await client._generate_image_with_candidates(studio_config)
+
+    assert result == (["url"], ["path"], None, None)
+    assert attempted == ["openai#1"]
+
+    # 即使显式指定供应商/模型，聊天链路也命中不了未入轮询的候选
+    chat_config = ApiRequestConfig(
+        model="",
+        prompt="test",
+        api_type="",
+        requested_provider="openai",
+        requested_model="studio-model",
+    )
+    with pytest.raises(APIError):
+        await client._generate_image_with_candidates(chat_config)
+    assert attempted == ["openai#1"]
+
+
+@pytest.mark.asyncio
+async def test_set_provider_candidates_defaults_all_to_polling_list() -> None:
+    """不传全集时向后兼容：两层候选一致。"""
+    client = GeminiAPIClient(["fallback"])
+    candidate = _Candidate(
+        id="google#1",
+        api_type="google",
+        model="m",
+        settings={"api_keys": ["k"]},
+    )
+    client.set_provider_candidates([candidate])
+
+    assert client.provider_candidates_all == client.provider_candidates
+
+
+@pytest.mark.asyncio
 async def test_candidate_proxy_is_used_for_response_image_downloads() -> None:
     client = GeminiAPIClient(["fallback"])
     captured: dict[str, str | None] = {}

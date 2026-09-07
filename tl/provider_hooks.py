@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
+from pathlib import Path
 from typing import Any
 
 from .openai_image_size import (
@@ -407,3 +410,102 @@ def siliconflow_edit_capability(settings: dict[str, Any]) -> bool:
 
     family = _model_family(str(settings.get("model") or ""))
     return family in _EDIT_FAMILIES or family == "kolors"
+
+
+VERTEX_PERSON_GENERATIONS = frozenset({"", "allow_all", "allow_adult", "allow_none"})
+
+_PLUGIN_NAME = "astrbot_plugin_gemini_image_generation"
+
+
+def _service_account_materialize_base() -> Path:
+    """粘贴凭证的落盘目录：官方插件数据目录，非 AstrBot 环境回退插件根。"""
+    try:
+        from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
+
+        return Path(get_astrbot_plugin_data_path()) / _PLUGIN_NAME / "files" / "vertex"
+    except Exception:  # noqa: BLE001
+        return Path(__file__).resolve().parents[1] / "files" / "vertex"
+
+
+def materialize_service_account_json(json_text: str) -> str:
+    """把粘贴的服务账号 JSON 落盘为文件，返回相对引用路径（内容寻址，幂等）。"""
+    json_text = json_text.strip()
+    base = _service_account_materialize_base()
+    digest = hashlib.sha256(json_text.encode("utf-8")).hexdigest()[:12]
+    base.mkdir(parents=True, exist_ok=True)
+    filename = f"service_account_{digest}.json"
+    path = base / filename
+    if not path.exists():
+        path.write_text(json_text, encoding="utf-8")
+    return f"files/vertex/{filename}"
+
+
+def validate_vertex_settings(settings: dict[str, Any]) -> None:
+    """Normalize vertex override settings.
+
+    一个条目只允许一个凭证：服务账号 JSON 与 Express API Key 互斥，且各最多一个。
+    违反时抛 ``ValueError``，由配置加载阶段记为该条目的配置错误并跳过。
+    """
+    settings["location"] = str(settings.get("location") or "").strip() or "global"
+    settings["project_id"] = str(settings.get("project_id") or "").strip()
+
+    person_generation = str(settings.get("person_generation") or "").strip().lower()
+    if person_generation not in VERTEX_PERSON_GENERATIONS:
+        _logger().warning(
+            f"[配置加载] vertex person_generation 取值无效: {person_generation}，已忽略"
+        )
+        person_generation = ""
+    settings["person_generation"] = person_generation
+
+    files = settings.get("service_account_files")
+    normalized_files: list[str] = []
+    if isinstance(files, list):
+        for item in files:
+            if isinstance(item, str) and item.strip():
+                normalized_files.append(item.strip())
+
+    json_text = str(settings.get("service_account_json") or "").strip()
+    # 旧写法把内联 JSON 放进 file 字段：挪到粘贴内容统一处理
+    remaining_files: list[str] = []
+    for item in normalized_files:
+        if item.startswith("{"):
+            if not json_text:
+                json_text = item
+        else:
+            remaining_files.append(item)
+    normalized_files = remaining_files
+
+    if json_text:
+        # 粘贴的 JSON 落盘为文件，配置只保留文件引用
+        try:
+            info = json.loads(json_text)
+        except ValueError as exc:
+            raise ValueError(f"服务账号凭证 JSON 无法解析: {exc}") from exc
+        if not isinstance(info, dict) or not info.get("private_key"):
+            raise ValueError("服务账号凭证 JSON 缺少 private_key 字段")
+        normalized_files = [materialize_service_account_json(json_text)]
+        json_text = ""
+    settings["service_account_files"] = normalized_files
+    settings["service_account_json"] = json_text
+
+    raw_keys = settings.get("api_keys")
+    if isinstance(raw_keys, str):
+        raw_keys = [raw_keys]
+    keys = (
+        [k for k in raw_keys if isinstance(k, str) and k.strip()]
+        if isinstance(raw_keys, list)
+        else []
+    )
+    settings["api_keys"] = keys
+
+    if normalized_files and keys:
+        raise ValueError(
+            "服务账号凭证与 API Key 互斥，请删除其一（服务账号走项目级端点，"
+            "API Key 走 Express 模式）"
+        )
+    if len(normalized_files) > 1:
+        raise ValueError("一个条目最多引用一个服务账号 JSON 凭证文件")
+    if len(keys) > 1:
+        raise ValueError("一个条目最多填写一个 API Key")
+    if not normalized_files and not keys:
+        raise ValueError("请配置一个服务账号 JSON 凭证（上传/粘贴）或一个 API Key")

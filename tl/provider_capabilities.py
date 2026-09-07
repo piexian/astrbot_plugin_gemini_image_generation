@@ -39,6 +39,95 @@ SUPPORTED_ASPECT_RATIOS: tuple[str, ...] = (
 )
 _ASPECT_RATIOS = list(SUPPORTED_ASPECT_RATIOS)
 
+# Gemini 图像模型分层：10 档标准比例全系通用；
+# 极端 4 档（1:4/1:8/4:1/8:1）仅 3.1 系（flash 与 flash-lite）支持。
+_GEMINI_STANDARD_RATIOS: tuple[str, ...] = (
+    "1:1",
+    "2:3",
+    "3:2",
+    "3:4",
+    "4:3",
+    "4:5",
+    "5:4",
+    "9:16",
+    "16:9",
+    "21:9",
+)
+_GEMINI_EXTREME_RATIOS: tuple[str, ...] = ("1:4", "1:8", "4:1", "8:1")
+
+
+def gemini_image_family(model: str) -> str:
+    """按模型名子串分层（对 -preview 等后缀天然兼容）。"""
+    m = str(model or "").lower()
+    if "flash-lite-image" in m:
+        return "lite"
+    if "3.1-flash-image" in m:
+        return "flash31"
+    if "3-pro-image" in m:
+        return "pro"
+    if "2.5-flash-image" in m:
+        return "legacy2_5"
+    return "unknown"
+
+
+def gemini_image_capability(candidate: Any) -> dict[str, Any]:
+    """Google 系图像模型按家族声明分辨率/比例；不支持的参数不进工作台。
+
+    官方限制：lite 仅 1K 且无接地；2.5 系无 image_size 档位（固定 ~1K）
+    且无接地；pro 10 档比例；3.1 flash 14 档（含极端）+ image_search。
+    """
+    family = gemini_image_family(_model(candidate))
+    ratio_standard = {
+        "type": "string",
+        "enum": list(_GEMINI_STANDARD_RATIOS),
+        "default_source": "provider_config",
+    }
+    ratio_full = {
+        "type": "string",
+        "enum": list(_GEMINI_STANDARD_RATIOS) + list(_GEMINI_EXTREME_RATIOS),
+        "default_source": "provider_config",
+    }
+    tiers = {
+        "type": "string",
+        "enum": ["1K", "2K", "4K"],
+        "default_source": "provider_config",
+    }
+    if family == "lite":
+        profile = _profile(
+            candidate,
+            parameters={
+                "resolution": {
+                    "type": "string",
+                    "enum": ["1K"],
+                    "default_source": "provider_config",
+                },
+                "aspect_ratio": ratio_full,
+            },
+        )
+        # lite 不支持接地；image_search 仅 3.1 flash 支持
+        profile["unsupported_settings"] = {"enable_grounding", "image_search"}
+        return profile
+    if family == "legacy2_5":
+        # 2.5 系固定 ~1K 输出：不声明 resolution（运行时跳过 image_size 注入）
+        profile = _profile(candidate, parameters={"aspect_ratio": ratio_standard})
+        profile["unsupported_settings"] = {
+            "resolution",
+            "enable_grounding",
+            "image_search",
+        }
+        return profile
+    if family == "pro":
+        return _profile(
+            candidate,
+            parameters={"resolution": tiers, "aspect_ratio": ratio_standard},
+        )
+    if family == "flash31":
+        return _profile(
+            candidate,
+            parameters={"resolution": tiers, "aspect_ratio": ratio_full},
+        )
+    return _profile(candidate)
+
 
 def _model(candidate: Any) -> str:
     return str(getattr(candidate, "model", "") or "").strip()
@@ -132,9 +221,14 @@ def xai_capability(candidate: Any) -> dict[str, Any]:
         candidate,
         native_batch_limit=10,
         parameters={
+            "resolution": {
+                "type": "string",
+                "enum": ["1K", "2K"],
+                "default_source": "provider_config",
+            },
             "quality": {
                 "type": "string",
-                "enum": ["low", "medium"],
+                "enum": ["low", "medium", "auto"],
                 "default_source": "provider_config",
             },
             "aspect_ratio": {
@@ -148,14 +242,29 @@ def xai_capability(candidate: Any) -> dict[str, Any]:
 
 
 def minimax_capability(candidate: Any) -> dict[str, Any]:
+    # 官方：21:9 仅 image-01；显式宽高（2K 级）也仅 image-01，live 固定 ~1K 档
+    is_live = _model(candidate).lower() == "image-01-live"
+    ratios = ["1:1", "16:9", "4:3", "3:2", "2:3", "3:4", "9:16"] + (
+        [] if is_live else ["21:9"]
+    )
     return _profile(
         candidate,
         native_batch_limit=9,
         parameters={
+            "resolution": {
+                "type": "string",
+                "enum": ["1K", "2K"] if not is_live else ["1K"],
+                "default_source": "provider_config",
+            },
+            "aspect_ratio": {
+                "type": "string",
+                "enum": ratios,
+                "default_source": "provider_config",
+            },
             "watermark": {
                 "type": "boolean",
                 "default_source": "provider_config",
-            }
+            },
         },
         request_setting_map={"watermark": "aigc_watermark", "image_count": "n"},
     )
@@ -265,6 +374,15 @@ def dashscope_capability(candidate: Any) -> dict[str, Any]:
         native_limit = 1
     parameters: dict[str, Any] = {}
     setting_map = {"image_count": "n"}
+    # 官方 4K 档仅 wan2.7-image-pro 支持（且仅文生图）；其余为 W*H 像素约束
+    if is_wan27 or model.startswith("qwen-image"):
+        parameters["resolution"] = {
+            "type": "string",
+            "enum": (
+                ["1K", "2K", "4K"] if model == "wan2.7-image-pro" else ["1K", "2K"]
+            ),
+            "default_source": "provider_config",
+        }
     if not is_zimage:
         # z-image 为纯文生图最小参数集，不支持 watermark/negative_prompt
         parameters["watermark"] = {
@@ -349,6 +467,64 @@ def candidate_capability(candidate: Any) -> dict[str, Any]:
     return _profile(candidate)
 
 
+def candidate_reference_limit(candidate: Any) -> int:
+    """结合候选预截断与 provider 实际消费数量计算参考图上限。"""
+    if not getattr(candidate, "supports_image_edit", False):
+        return 0
+    from .api import provider_limits as limits
+
+    settings = _settings(candidate)
+    try:
+        configured = max(int(settings.get("max_reference_images", 6)), 0)
+    except (TypeError, ValueError):
+        configured = 6
+    api_type = normalize_api_type(getattr(candidate, "api_type", ""))
+    model = _model(candidate).lower()
+    native = {
+        "google": limits.MAX_REFERENCE_IMAGES_GOOGLE,
+        "gemini_interactions": limits.MAX_REFERENCE_IMAGES_GEMINI_INTERACTIONS,
+        "openai": limits.MAX_REFERENCE_IMAGES_OPENAI_COMPAT,
+        "minimax": limits.MAX_REFERENCE_IMAGES_MINIMAX,
+        "sensenova": limits.MAX_REFERENCE_IMAGES_SENSENOVA_U15,
+        "stepfun": 1,
+    }.get(api_type, configured)
+    if api_type == "xai":
+        from .api.xai import _MAX_EDIT_IMAGES
+
+        native = _MAX_EDIT_IMAGES
+    elif api_type == "doubao":
+        native = (
+            limits.MAX_REFERENCE_IMAGES_DOUBAO_SEEDREAM_5_PRO
+            if is_doubao_seedream_5_pro(model, settings)
+            else limits.MAX_REFERENCE_IMAGES_DOUBAO
+        )
+    elif api_type == "dashscope":
+        native = (
+            limits.MAX_REFERENCE_IMAGES_DASHSCOPE_QWEN3
+            if model.startswith("qwen-image-3.0")
+            else limits.MAX_REFERENCE_IMAGES_DASHSCOPE
+        )
+    elif api_type == "modelscope":
+        native = (
+            min(configured, 99)
+            if settings.get("max_reference_images")
+            else limits.MAX_REFERENCE_IMAGES_MODELSCOPE
+        )
+    elif api_type == "siliconflow":
+        from .api.siliconflow import _model_family
+
+        native = (
+            1
+            if _model_family(model) in {"kolors", "qwen-image-edit"}
+            else limits.MAX_REFERENCE_IMAGES_SILICONFLOW
+        )
+    elif api_type == "openai_images":
+        from .api.openai_images import _is_gpt_image_model
+
+        native = configured if _is_gpt_image_model(model) else 1
+    return min(configured, native)
+
+
 def routing_mode(provider: Any = None, model: Any = None) -> str:
     has_provider = bool(str(provider or "").strip())
     has_model = bool(str(model or "").strip())
@@ -387,6 +563,7 @@ def select_candidates(
     *,
     provider: Any = None,
     model: Any = None,
+    candidate_id: str | None = None,
     has_reference_images: bool = False,
     required_parameters: set[str] | None = None,
     request_values: dict[str, Any] | None = None,
@@ -398,6 +575,11 @@ def select_candidates(
     values = request_values or {}
     selected: list[Any] = []
     for candidate in candidates or []:
+        if (
+            candidate_id is not None
+            and str(getattr(candidate, "id", "")) != candidate_id
+        ):
+            continue
         if (
             provider_name
             and normalize_api_type(getattr(candidate, "api_type", "")) != provider_name
@@ -454,8 +636,13 @@ def apply_request_overrides(
         requested_count = max(int(getattr(config, "image_count", 1) or 1), 1)
     except (TypeError, ValueError):
         requested_count = 1
-    effective_count = min(requested_count, native_limit)
     count_setting = setting_map.get("image_count")
+    generation_settings = getattr(config, "generation_settings", None) or {}
+    if count_setting in generation_settings:
+        requested_count = min(
+            requested_count, max(int(generation_settings[count_setting]), 1)
+        )
+    effective_count = min(requested_count, native_limit)
     if count_setting and result.get(count_setting) != effective_count:
         set_request_value(count_setting, effective_count)
     return result, effective_count

@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-import base64
-import binascii
 import re
 import time
 import urllib.parse
@@ -19,9 +17,9 @@ from astrbot.api import logger
 from ..api_types import APIError, ApiRequestConfig
 from ..tl_utils import save_base64_image
 from .base import ProviderRequest
-from .data_uri import format_data_uri
 from .provider_limits import MAX_REFERENCE_IMAGES_OPENAI_COMPAT
 from .reference_intake import announce_reference_intake
+from .reference_pipeline import reference_data_uri
 
 
 class OpenAICompatProvider:
@@ -181,24 +179,15 @@ class OpenAICompatProvider:
                     elif (
                         image_str.startswith("data:image/") and ";base64," in image_str
                     ):
-                        header, _, data_part = image_str.partition(";base64,")
-                        mime_type = header.replace("data:", "").lower()
-                        try:
-                            base64.b64decode(data_part, validate=True)
-                        except (binascii.Error, ValueError) as e:
-                            logger.warning(
-                                "跳过无效的 data URL 参考图: idx=%s 错误=%s", idx, e
-                            )
-                            mime_type = None
-
-                        if mime_type:
-                            ext = mime_type.split("/")[-1]
-                            if ext and ext not in supported_exts:
-                                logger.debug(
-                                    "data URL 图片格式不常见: idx=%s mime=%s",
-                                    idx,
-                                    mime_type,
-                                )
+                        # 校验性解码收口到共享管道：无效 data URI 跳过并警告
+                        if await reference_data_uri(
+                            client,
+                            config,
+                            image_str,
+                            log_prefix="OpenAI兼容",
+                            error_label="openai_compat",
+                            validate_data_uri=True,
+                        ):
                             image_payload = {
                                 "type": "image_url",
                                 "image_url": {"url": image_str},
@@ -207,22 +196,23 @@ class OpenAICompatProvider:
                                 f"📎 图片 {idx + 1}/{processed_ref_count} 已加入发送请求 (data URL)"
                             )
                             logger.debug(
-                                "OpenAI兼容API使用data URL参考图: idx=%s mime=%s",
+                                "OpenAI兼容API使用data URL参考图: idx=%s",
                                 idx,
-                                mime_type,
                             )
+                        else:
+                            logger.warning("跳过无效的 data URL 参考图: idx=%s", idx)
 
                     else:
-                        mime_type, data = await client._normalize_reference_image_input(
-                            image_input, image_input_mode=config.image_input_mode
+                        # 本地路径/file:// 及 force 模式的 URL 统一走共享管道
+                        payload_url = await reference_data_uri(
+                            client,
+                            config,
+                            image_input,
+                            log_prefix="OpenAI兼容",
+                            error_label="openai_compat",
+                            force_b64=force_b64,
                         )
-                        if not data:
-                            if force_b64:
-                                raise APIError(
-                                    f"参考图转 base64 失败（force_base64），idx={idx}, type={type(image_input)}",
-                                    None,
-                                    "invalid_reference_image",
-                                )
+                        if not payload_url:
                             logger.warning(
                                 f"📎 图片 {idx + 1}/{processed_ref_count} 未能加入发送请求 - 无法转换"
                             )
@@ -233,38 +223,10 @@ class OpenAICompatProvider:
                             )
                             continue
 
-                        if not mime_type or not mime_type.startswith("image/"):
-                            logger.debug(
-                                "未检测到明确的图片 MIME，默认使用 image/png: idx=%s",
-                                idx,
-                            )
-                            mime_type = "image/png"
-
-                        ext = mime_type.split("/")[-1]
-                        if ext and ext not in supported_exts:
-                            logger.debug(
-                                "规范化后图片格式不常见: idx=%s mime=%s",
-                                idx,
-                                mime_type,
-                            )
-
-                        if force_b64:
-                            cleaned = data.strip().replace("\n", "")
-                            try:
-                                base64.b64decode(cleaned, validate=True)
-                                b64_kb = len(cleaned) * 3 // 4 // 1024
-                                logger.info(
-                                    f"📎 图片 {idx + 1}/{processed_ref_count} 已加入发送请求 (base64, {b64_kb}KB)"
-                                )
-                            except Exception:
-                                raise APIError(
-                                    f"参考图 base64 校验失败（force_base64），来源: idx={idx}",
-                                    None,
-                                    "invalid_reference_image",
-                                )
-                            payload_url = format_data_uri(cleaned, mime_type)
-                        else:
-                            payload_url = format_data_uri(data, mime_type)
+                        image_payload = {
+                            "type": "image_url",
+                            "image_url": {"url": payload_url},
+                        }
 
                         image_payload = {
                             "type": "image_url",

@@ -316,6 +316,34 @@ async def test_lite_model_never_gets_grounding() -> None:
 
 
 @pytest.mark.asyncio
+async def test_lite_model_supports_extreme_ratios_and_thinking() -> None:
+    """Vertex 官方 lite 比例表含极端档；lite 模型页标注支持 minimal/high thinking。"""
+    provider = _make_provider()
+    config = _make_config(
+        aspect_ratio="1:4",
+        provider_settings={
+            "model": "gemini-3.1-flash-lite-image",
+            "thinking_level": "high",
+        },
+    )
+    request = await provider.build_request(client=_FakeClient(), config=config)
+    assert request.payload["response_format"]["aspect_ratio"] == "1:4"
+    assert request.payload["generation_config"]["thinking_level"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_legacy_2_5_skips_image_size() -> None:
+    """2.5 系固定 ~1K 输出，官方无 image_size 档位：不注入。"""
+    provider = _make_provider()
+    config = _make_config(
+        resolution="2K",
+        provider_settings={"model": "gemini-2.5-flash-image"},
+    )
+    request = await provider.build_request(client=_FakeClient(), config=config)
+    assert "image_size" not in request.payload["response_format"]
+
+
+@pytest.mark.asyncio
 async def test_flash_extras_gated_on_pro() -> None:
     provider = _make_provider()
     config = _make_config(

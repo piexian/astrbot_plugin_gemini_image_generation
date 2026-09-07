@@ -20,6 +20,26 @@
 | `provider_polling` | `[]` | 供应商轮询表，按列表从上到下尝试；重复项自动去重 |
 | `provider_overrides` | `[]` | 生图供应商配置表，可添加多个相同类型模板 |
 
+### Studio 配置保存
+
+「供应商配置」按配置条目、轮询排序、公共设置分区，读取全部原始条目而非仅有效候选。表单来自当前 schema；工作台的临时参数弹窗不修改这些持久配置。
+
+- 新增条目在 Studio 默认停用，填写模型与 Key 后再启用；禁用或未知的旧条目保留，未知条目只能保留或删除。
+- 拖动只改变跨供应商轮询顺序；空列表保持自动模式，同类型仍按 `priority` 和表内顺序排序。打开页面或仅排序不会补写缺省字段、清除旧字段。
+- 已有 Key 默认以「••••••••」省略显示，点击「显示」后才在已鉴权页面查看完整明文：单个用单行输入，多个以标签摘要展示；管理子视图支持逐项编辑、移除和批量追加去重，统一保存后生效。不写入浏览器持久存储或日志；带认证信息的地址仍需显式替换或清空，其他接口不返回 Key。
+- 生成空闲时通过宿主配置接口热保存，与限流页共用事务锁；保存期间暂不接受新生成，不取消已有任务，不重载插件。忙碌时可保留草稿稍后重试；版本冲突须先重新加载。
+- 切换候选、客户端、代理、视觉参数及工具能力时保留同供应商、同 Key 的每日用量，包括调整条目顺序后的重启恢复。KV 读取或用量检查点保存失败时拒绝应用；有每日限额的候选在用量无法读取时暂不发起请求，恢复后重试。
+- 持久化失败保持原运行时，应用失败回滚；回滚失败暂停生成并提示重载，避免磁盘与运行时配置不一致。不会另行导出含密钥的配置备份。
+
+### 模型目录与视觉提供商
+
+- 视觉下拉对齐本体 `provider` / `provider_sources` 配置，筛选已启用的 `chat_completion`；启用但未加载的条目仍可见并标注状态。刷新失败保留名单和选择，手填作为回退。
+- 生图目录当前接入 Google、Gemini Interactions、OpenAI 兼容、OpenAI Images、Agnes AI、MiniMax、阶跃星辰、ModelScope、xAI、SiliconFlow；其余渠道仍可手填。保留当前自定义路径及 StepPlan 前缀，不偷偷回退普通端点；列表来自上游，不保证每个模型都支持生图。
+- 仅点击时使用当前连接草稿和第一个有效 Key 查询，代理优先级不变，不保存配置、不扣生成额度；使用已有 Key 请求变更后的地址或代理时先确认目标。视觉模型由选中的已加载本体实例提供，查询不会改变其配置。
+- 查询上限为 2 并发、2 排队、20 秒总时限、2 MiB 响应及 2000 个模型；Google 最多 5 页。禁止自动重定向，失败、空列表或迟到响应不会清空当前模型。
+- 官方目录协议：[Google](https://ai.google.dev/api/models)、[OpenAI](https://developers.openai.com/api/reference/resources/models/methods/list)、[xAI](https://docs.x.ai/developers/rest-api-reference/inference/models)、[SiliconFlow](https://docs.siliconflow.com/en/api-reference/models/get-model-list)。
+- 新增目录依据：[Agnes 客户端指南](https://wiki.agnes-ai.com/en/docs/cid6.md)、[MiniMax](https://platform.minimaxi.com/docs/api-reference/models/openai/list-models)、[阶跃星辰](https://platform.stepfun.com/docs/zh/api-reference/models/list)、[ModelScope 推理目录](https://api-inference.modelscope.cn/v1/models)。
+
 ## provider_settings.provider_overrides
 
 `provider_overrides` 是 `template_list` 配置项。每条模板自带供应商类型，插件会从表中读取生图 API 配置，不再使用全局 `api_type`：
@@ -54,12 +74,12 @@ LLM 工具的 `aspect_ratio` 全局枚举为各渠道官方支持比例的并集
 google / openai_images / minimax
 ```
 
-列表按从上到下尝试生成，重复名称会自动去重；未知名称会记录配置错误并跳过。留空时按配置表中有效供应商首次出现顺序自动生成轮询列表。
+列表按从上到下尝试生成，重复名称会自动去重；未知名称会记录配置错误并跳过。留空时按配置表中有效供应商首次出现顺序自动生成轮询列表。未加入轮询的启用条目不参与聊天自动生成（仅记录警告），但仍会在工作台模型下拉中出现、可手动选择。
 
 支持的模板：
 
 ```text
-google / gemini_interactions / openai / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova / dashscope / modelscope / siliconflow
+google / gemini_interactions / vertex / openai / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova / dashscope / modelscope / siliconflow
 ```
 
 下方 `doubao_settings`、`openai_images_settings`、`agnes_ai_settings`、`xai_settings`、`minimax_settings`、`stepfun_settings`、`sensenova_settings`、`dashscope_settings`、`modelscope_settings`、`siliconflow_settings` 章节对应这些模板的专用字段；`gemini_interactions` 无历史投影字段，全部配置都在模板内。代码中的同名 `*_settings` 字段仅作为兼容旧调用的首个候选投影；多候选场景以 `provider_settings.provider_overrides` 和运行时派生的 `provider_settings_by_type` 为准。
@@ -127,6 +147,18 @@ avatar / poster / wallpaper / card / mobile / figure / sticker
 
 NapCat v4.8.115+ 支持 Stream API。插件默认仍先按 `max_inline_image_size_mb` 规则发送本地图片；只有原始发送失败且文件大小达到 `napcat_stream_threshold_mb` 时，才会复用当前 NapCat/OneBot 连接调用 `upload_file_stream` 并重试一次。Docker / docker compose 部署仍建议共享 `AstrBot/data` 目录，以兼容普通本地文件发送路径。
 
+
+## webui（内置 WebUI 创作台）
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `history_enabled` | `true` | 生成历史记录总开关；关闭后不将新生成记录写入历史（不影响生成本身） |
+| `history_max_records` | `500` | 历史记录上限（50-5000），按父子任务整组淘汰，运行中的任务不会被清理 |
+| `gallery_max_size_mb` | `512` | 画廊目录容量上限（MB），超限后从最旧任务整组清理图片（记录保留）；`0` 表示不清理 |
+| `upload_max_mb` | `20` | 工作台参考图单文件上传上限（MB），仅允许可解码的 PNG/JPEG/WebP/GIF/BMP |
+| `max_concurrent_jobs` | `2` | 工作台全局并发任务数（1-8），达到上限拒绝新任务 |
+| `batch_total_budget` | `40` | 单次批量图片总预算（4-200），批量条目的 image_count 之和不得超过此值 |
+
 ## help_render_mode
 
 | 值 | 说明 |
@@ -140,11 +172,26 @@ NapCat v4.8.115+ 支持 Stream API。插件默认仍先按 `max_inline_image_siz
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `group_limit_mode` | `none` | 群限制模式：`none` / `whitelist` / `blacklist` |
-| `group_limit_list` | `[]` | 群号列表 |
-| `rate_limit_rules` | `[]` | 限流规则列表，`template_list` 格式 |
-| `default_rate_limit.enabled` | `false` | 默认限流开关，未匹配规则时使用 |
-| `default_rate_limit.period_seconds` | `60` | 默认限流周期，单位秒 |
-| `default_rate_limit.max_requests` | `5` | 默认单群周期内最大请求数 |
+| `group_limit_list` | `[]` | 黑/白名单共用的群号列表，最多 1000 项，每项最多 1024 字符 |
+| `global_rate_limit.enabled` | `false` | 共享全局限流开关，命令、LLM 与 Studio 累计计数 |
+| `global_rate_limit.period_seconds` | `60` | 全局滑动窗口，1-604800 秒 |
+| `global_rate_limit.max_requests` | `5` | 全局窗口内额度，1-10000 次 |
+| `rate_limit_rules` | `[]` | 按顺序匹配第一条启用规则，最多 100 条 |
+| `rate_limit_rules[].umos` | `[]` | 完整 UMO 列表，每条最多 500 项；空列表匹配所有会话并分别计数 |
+| `rate_limit_rules[].group_ids` | `[]` | 仅为旧群号迁移保留，不再作为限流计数键 |
+| `default_rate_limit.enabled` | `false` | 未匹配规则时启用默认会话额度，包含私聊 |
+| `default_rate_limit.period_seconds` | `60` | 会话滑动窗口，1-604800 秒 |
+| `default_rate_limit.max_requests` | `5` | 每个 UMO 窗口内额度，1-10000 次 |
+
+Studio「限流控制」页顶部统一配置群限制模式与名单，切换模式保留同一份群号列表。群名单仅控制群聊访问，不影响私聊和 Studio；**空白名单沿用原有行为，表示不限制群**，填写后才仅允许所列群。该名单与规则中的旧 `group_ids` 迁移字段不同，不需要改成 UMO。保存时模式与名单成对提交；旧版页面省略两项时保留原值。首次提交群访问字段会单独备份至插件数据目录 `group_access_config_backup.json`，不覆盖旧的限流迁移备份。
+
+UMO 格式为 `平台实例ID:消息类型:会话ID`，例如 `qq-bot:GroupMessage:123456`；直接沿用 AstrBot 的会话身份，包括群内独立会话，不按群号重新拼接。规则的 `rule_name`、`enabled`、`period_seconds`、`max_requests` 保持原字段，规则名称最多 100 字符，UMO 最多 1024 字符。全局额度与会话额度同时检查，任一不足均不扣减；会话规则不能绕过全局限制。
+
+单任务计 1 次，批量按子任务数量一次性预留；单任务多张、供应商重试和转后台不额外计数。明显无效输入、API 未就绪、准入拒绝不扣额度；Studio 挂入任务前失败会退还预留，任务受理后供应商失败不退。Studio 没有聊天 UMO，只占全局额度，仍受 `webui.max_concurrent_jobs` 和批量图片预算约束。
+
+Studio 保存仅更新群访问与限流字段，不修改供应商、不重载插件或清空已有计数。缩短窗口/修改次数即时生效；已清理的旧时间戳不能因延长窗口恢复，新增限制也不追溯未计数的请求。KV 加载失败暂拒请求；计数写入采用 1 秒合并保存，写失败保留内存计数并记录日志，正常卸载等待落盘，进程异常退出仍可能丢失尚未写入的短窗口。
+
+**旧配置迁移**：启用规则中仍有非空 `group_ids` 时，暂停聊天生图（不影响 Studio 的全局限流）。在 Studio 选择实际 UMO、点击「确认迁移」并保存；停用或删除旧规则也需显式保存。旧空群号规则仍是每会话规则，不会变成共享全局限流。首次保存将原限流字段备份到插件数据目录 `rate_limit_config_backup.json`，不包含供应商密钥；旧 `rate_limit_buckets` KV 不覆盖，新计数写入 `rate_limit_buckets_v2`。旧群桶无法精确拆分，未过期时保守等待原配置最大窗口结束后再放行聊天请求。回退旧版本前可从该备份恢复限流字段，保留当前其它配置，并重载插件；旧版不识别新增的全局/UMO 策略。
 
 ## doubao_settings（豆包生图专用配置）
 
@@ -340,13 +387,13 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 
 ## stepfun_settings（StepFun 图片生成 API 专用配置）
 
-配置路径：`provider_settings.provider_overrides` 中选择 `stepfun` 模板。适配 `step-image-edit-2`（文生图 + 编辑）与 `step-2x-large`（纯文生图）。
+配置路径：`provider_settings.provider_overrides` 中选择 `stepfun` 模板。适配 `step-image-edit-2`（文生图 + 编辑；官方 2026-10-10 下线）与 `step-2x-large`（纯文生图）。
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `api_keys` | `[]` | StepFun API Key 列表，支持多 Key 轮换 |
 | `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
-| `model` | `step-image-edit-2` | 图片模型名称；`step-2x-large` 为纯文生图模型，不支持编辑/负向提示词/text_mode |
+| `model` | `step-image-edit-2` | 图片模型名称；`step-2x-large` 为纯文生图模型，不支持编辑/负向提示词/text_mode。编辑模型官方 2026-10-10 下线，请尽快切换 |
 | `api_base` | `https://api.stepfun.com` | API 端点；同时兼容 `https://api.stepfun.com/step_plan/v1` 写法，自动识别 `/v1` 后缀 |
 | `response_format` | `url` | `url` 返回临时签名链接（`res.stepfun.com`），`b64_json` 返回 base64 并由插件落盘 |
 | `steps` | `0` | 采样步数，`0` 表示不传（服务端默认 edit-2 `8` / 2x-large `50`）；非零值钳位到 [1, 50] |
@@ -597,7 +644,7 @@ Gemini 官方 Interactions 端点（2026-06 GA），承载 Nano Banana 系列模
 |--------|--------|------|
 | `model` | `gemini-3.1-flash-image` | 推荐 `gemini-3.1-flash-image` / `gemini-3-pro-image` / `gemini-3.1-flash-lite-image` |
 | `resolution` | `1K` | `1K`/`2K`/`4K`；lite 仅支持 `1K`，超出自动降级 |
-| `aspect_ratio` | `1:1` | 含 `1:4`/`1:8`/`4:1`/`8:1`，极端比例仅 3.1 Flash Image 支持，其他模型自动忽略 |
+| `aspect_ratio` | `1:1` | 含 `1:4`/`1:8`/`4:1`/`8:1`，极端比例仅 3.1 系（Flash/Flash-Lite）支持 |
 | `max_reference_images` | `14` | 官方上限 14 张，超出截取 |
 | `enable_text_response` | `false` | 开启后 `response_format` 传数组，同时返回文本与图片 |
 | `enable_grounding` | `false` | 启用 Google 搜索接地（lite 不支持） |
@@ -609,3 +656,42 @@ Gemini 官方 Interactions 端点（2026-06 GA），承载 Nano Banana 系列模
 - 请求固定 `store: false`，请求内容不在 Google 侧留存；Interactions API 暂不支持自定义 safety settings，配置了也会忽略并记录日志。
 - 自定义 `api_base` 缺版本前缀时自动补 `/v1beta`。
 - 官方文档：<https://ai.google.dev/gemini-api/docs/image-generation>；Imagen 系列已于 2026-08-17 停服，请勿再配置 Imagen 模型。
+
+## vertex_settings（Vertex AI 专用配置）
+
+配置路径：`provider_settings.provider_overrides` 中选择 `vertex` 模板。接入 Google Cloud Vertex AI（Agent Platform）的 Gemini 图像生成端点（`generateContent` 协议，与 `google` 模板同构，但端点与认证方式不同）。
+
+**认证二选一（互斥，一个条目只能配置一个凭证）**：
+
+- **服务账号 JSON 凭证**（`service_account_files`，type=file）：上传 `.json` 文件或直接粘贴密钥 JSON 内容均可（工作台凭证框两者都支持，也可填文件路径；配置页上传的文件保存在插件目录 `files/` 下，记录相对路径）。需具备 Vertex AI User 权限。插件以 RS256 JWT 换取 Bearer 访问令牌并缓存至过期前自动刷新；令牌请求与生成请求走同一代理。
+- **Express API Key**（`api_keys`）：Vertex AI Express 模式的 API Key，最多填一个，走 `https://aiplatform.googleapis.com/v1/publishers/google/models/{model}:generateContent`，支持每日限额。
+
+两种凭证互斥：同时配置、上传多个服务账号凭证或填写多个 API Key 的条目在加载时直接报错跳过（studio 保存同样会被校验拦截）。服务账号凭证走项目级端点（`https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/publishers/google/models/{model}:generateContent`）；`project_id` 留空时自动从凭证 JSON 的 `project_id` 读取。
+
+模板字段：
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `model` | `gemini-3-pro-image` | 如 `gemini-3-pro-image`、`gemini-3.1-flash-image`、`gemini-2.5-flash-image` |
+| `service_account_files` | `[]` | 服务账号 JSON 凭证：上传文件或直接粘贴 JSON 内容，最多一个 |
+| `api_keys` | 空 | Express 模式 API Key（单个，字符串填写）；与服务账号凭证互斥 |
+| `project_id` | 空 | GCP 项目 ID；服务账号凭证含 project_id 时可留空 |
+| `location` | `global` | 区域，如 `us-central1`、`europe-west4`、`global`（决定端点主机） |
+| `api_base` | 空 | 留空自动推导；填写后以其为根（代理网关场景），缺版本前缀自动补 `/v1` |
+| `resolution` | `1K` | `1K`/`2K`/`4K`（imageConfig.imageSize） |
+| `aspect_ratio` | `1:1` | 标准 14 种长宽比 |
+| `max_reference_images` | `14` | 参考图上限，超出截取 |
+| `person_generation` | 空 | `imageConfig.personGeneration`：`allow_all`/`allow_adult`/`allow_none`；被人物/人脸安全过滤拦截时可尝试 `allow_all` |
+| `enable_text_response` | `false` | 同时返回文本与图片 |
+| `enable_grounding` | `false` | Google 搜索接地 |
+
+安全过滤与错误处理：
+
+- 提示词被拦截（响应含 `promptFeedback.blockReason`）或生成结果被拦截（`finishReason` 为 `IMAGE_SAFETY` / `IMAGE_PROHIBITED_CONTENT` / `PROHIBITED_CONTENT` / `SAFETY` / `BLOCKLIST` / `SPII`）时，报「内容安全过滤未通过」且不可重试，会继续尝试下一候选。
+- `raiFilteredReason` 中的官方支持代码会翻译为类别名（如 `56562880` → 暴力内容、`39322892` → 人物/人脸、`90789179` → 性相关内容），便于定位拦截原因。
+- 429/`RESOURCE_EXHAUSTED` 按配额错误可重试并触发 Key 轮换；401/403 不可重试，直接换下一候选。
+- 模型目录未接入 Vertex 协议，模型名需手动填写（studio 拉取按钮会提示暂不支持）。
+
+依赖：使用服务账号凭证需 `cryptography`（已加入 requirements.txt）；仅用 Express API Key 无额外依赖。
+
+官方文档：<https://docs.cloud.google.com/vertex-ai/generative-ai/docs/multimodal/image-generation>

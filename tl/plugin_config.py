@@ -9,6 +9,7 @@ from typing import Any
 from astrbot.api import logger
 
 from . import provider_hooks as _provider_hooks
+from .limit_config import apply_limits, normalize_limits
 from .provider_loader import load_callable
 from .provider_metadata import (
     get_provider_spec,
@@ -17,6 +18,7 @@ from .provider_metadata import (
     normalize_api_type,
     supports_image_edit,
 )
+from .provider_settings import candidate_is_keyless
 
 DOUBAO_SEQUENTIAL_IMAGES_MAX = _provider_hooks.DOUBAO_SEQUENTIAL_IMAGES_MAX
 DOUBAO_SEQUENTIAL_IMAGES_MIN = _provider_hooks.DOUBAO_SEQUENTIAL_IMAGES_MIN
@@ -28,6 +30,8 @@ def _clean_string(value: Any) -> str:
 
 
 def _clean_api_keys(value: Any) -> list[str]:
+    if isinstance(value, str):
+        value = [value]
     if not isinstance(value, list):
         return []
     return [item.strip() for item in value if isinstance(item, str) and item.strip()]
@@ -49,6 +53,31 @@ def _clean_positive_int(value: Any, default: int) -> int:
         return max(int(value), 1)
     except (TypeError, ValueError):
         return default
+
+
+def _clamp_int(
+    value: Any,
+    default: int,
+    minimum: int,
+    maximum: int,
+    *,
+    allow_zero: bool = False,
+) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    if allow_zero and parsed == 0:
+        return 0
+    return min(max(parsed, minimum), maximum)
+
+
+def _clean_bool(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() not in {"false", "0", "no", "off"}
+    return bool(value)
 
 
 def _clean_priority(value: Any) -> int:
@@ -122,6 +151,8 @@ class PluginConfig:
     )
     provider_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
     provider_candidates: list[ProviderCandidate] = field(default_factory=list)
+    # 全部启用候选（含未加入轮询表的条目）：仅工作台可选，聊天链路仍用 provider_candidates
+    provider_candidates_all: list[ProviderCandidate] = field(default_factory=list)
     provider_polling: list[str] = field(default_factory=list)
     provider_config_errors: list[str] = field(default_factory=list)
 
@@ -140,6 +171,14 @@ class PluginConfig:
     batch_concurrency: int = 3
     background_task_retention_hours: int = 24
     background_failure_notify_llm: bool = True
+
+    # WebUI 工作台
+    webui_history_enabled: bool = True
+    webui_history_max_records: int = 500
+    webui_gallery_max_size_mb: int = 512
+    webui_upload_max_mb: int = 20
+    webui_max_concurrent_jobs: int = 2
+    webui_batch_total_budget: int = 40
 
     # 表情包设置
     sticker_grid_rows: int = 4
@@ -172,6 +211,14 @@ class PluginConfig:
     # 限制设置
     group_limit_mode: str = "none"
     group_limit_list: set[str] = field(default_factory=set)
+    limit_config_error: str = ""
+    global_rate_limit: dict[str, Any] = field(
+        default_factory=lambda: {
+            "enabled": False,
+            "period_seconds": 60,
+            "max_requests": 5,
+        }
+    )
     # 限流规则列表
     rate_limit_rules: list[dict[str, Any]] = field(default_factory=list)
     # 默认限流设置（未匹配规则时使用）
@@ -480,6 +527,10 @@ class ConfigLoader:
                     "custom_size",
                     "negative_prompt",
                     "model_alias",
+                    "project_id",
+                    "location",
+                    "person_generation",
+                    "service_account_json",
                 ):
                     if isinstance(settings.get(key), str):
                         settings[key] = settings[key].strip()
@@ -489,7 +540,14 @@ class ConfigLoader:
                     proxy_val.strip() if isinstance(proxy_val, str) else None
                 )
                 if spec.settings_validator_path:
-                    load_callable(spec.settings_validator_path)(settings)
+                    # 校验 hook 抛错表示该条配置不合法：记录错误并跳过该条，不阻断插件加载
+                    try:
+                        load_callable(spec.settings_validator_path)(settings)
+                    except Exception as exc:
+                        message = f"{template_key} 第 {len(candidates_by_type.get(template_key, [])) + 1} 条配置无效: {exc}"
+                        config.provider_config_errors.append(message)
+                        logger.error(f"[配置加载] {message}")
+                        continue
                 if spec.settings_normalizer_path:
                     load_callable(spec.settings_normalizer_path)(settings)
 
@@ -500,7 +558,10 @@ class ConfigLoader:
                     logger.error(f"[配置加载] {message}")
                     continue
 
-                if not settings["api_keys"]:
+                # requires_api_keys=False 的供应商允许以其他凭证（如服务账号文件）代替 api_keys
+                if not settings["api_keys"] and not candidate_is_keyless(
+                    template_key, settings
+                ):
                     message = f"{template_key} 第 {len(candidates_by_type.get(template_key, [])) + 1} 条配置缺少 api_keys"
                     config.provider_config_errors.append(message)
                     logger.error(f"[配置加载] {message}")
@@ -552,16 +613,26 @@ class ConfigLoader:
                 for api_type in candidates_by_type
                 if api_type in candidates_by_type
             ]
+            extra_candidates = []
         else:
             missing_from_polling = [
                 api_type for api_type in candidates_by_type if api_type not in seen
             ]
             if missing_from_polling:
-                message = "供应商配置未加入轮询表，已忽略: " + ", ".join(
-                    missing_from_polling
+                # 未入轮询的启用条目仍保留给工作台手动选择，只是不参与聊天自动生成。
+                message = (
+                    "已启用但未加入轮询表（聊天生成不参与，工作台仍可选择）: "
+                    + ", ".join(missing_from_polling)
                 )
-                config.provider_config_errors.append(message)
-                logger.error(f"[配置加载] {message}")
+                logger.warning(f"[配置加载] {message}")
+
+            polling_set = set(polling)
+            extra_candidates = [
+                candidate
+                for api_type, candidates in candidates_by_type.items()
+                if api_type not in polling_set
+                for candidate in candidates
+            ]
 
         ordered_candidates: list[ProviderCandidate] = []
         for api_type in polling:
@@ -574,8 +645,10 @@ class ConfigLoader:
 
         config.provider_polling = polling
         config.provider_candidates = ordered_candidates
+        config.provider_candidates_all = ordered_candidates + extra_candidates
         config.provider_overrides = {
-            candidate.id: candidate.settings for candidate in ordered_candidates
+            candidate.id: candidate.settings
+            for candidate in config.provider_candidates_all
         }
         config.provider_settings_by_type = {}
         for candidate in ordered_candidates:
@@ -671,6 +744,32 @@ class ConfigLoader:
         )
         config.background_failure_notify_llm = bool(
             image_settings.get("background_failure_notify_llm", True)
+        )
+
+        webui_settings = self.raw_config.get("webui") or {}
+        if not isinstance(webui_settings, dict):
+            webui_settings = {}
+        config.webui_history_enabled = _clean_bool(
+            webui_settings.get("history_enabled"), True
+        )
+        config.webui_history_max_records = _clamp_int(
+            webui_settings.get("history_max_records"), 500, 50, 5000
+        )
+        config.webui_gallery_max_size_mb = _clamp_int(
+            webui_settings.get("gallery_max_size_mb"),
+            512,
+            64,
+            10240,
+            allow_zero=True,
+        )
+        config.webui_upload_max_mb = _clamp_int(
+            webui_settings.get("upload_max_mb"), 20, 1, 64
+        )
+        config.webui_max_concurrent_jobs = _clamp_int(
+            webui_settings.get("max_concurrent_jobs"), 2, 1, 8
+        )
+        config.webui_batch_total_budget = _clamp_int(
+            webui_settings.get("batch_total_budget"), 40, 4, 200
         )
 
         # 表情包网格设置
@@ -785,68 +884,13 @@ class ConfigLoader:
     def _load_limit_settings(self, config: PluginConfig):
         """加载限制设置"""
         limit_settings = self.raw_config.get("limit_settings") or {}
+        if not isinstance(limit_settings, dict):
+            config.limit_config_error = "限制设置必须是对象"
+            logger.warning("[限流] 限制设置格式无效，暂停生成准入")
+            return
 
-        raw_mode = str(limit_settings.get("group_limit_mode") or "none").lower()
-        if raw_mode not in {"none", "whitelist", "blacklist"}:
-            raw_mode = "none"
-        config.group_limit_mode = raw_mode
-
-        raw_group_list = limit_settings.get("group_limit_list") or []
-        config.group_limit_list = {
-            str(group_id).strip()
-            for group_id in raw_group_list
-            if str(group_id).strip()
-        }
-
-        # 新版限流规则列表
-        rate_limit_rules_raw = limit_settings.get("rate_limit_rules") or []
-        config.rate_limit_rules = []
-        if isinstance(rate_limit_rules_raw, list):
-            for rule in rate_limit_rules_raw:
-                if isinstance(rule, dict):
-                    rule_copy = rule.copy()
-                    rule_copy.pop("__template_key", None)
-                    # 处理 group_ids 列表
-                    group_ids = rule_copy.get("group_ids") or []
-                    if isinstance(group_ids, list):
-                        rule_copy["group_ids"] = [
-                            str(gid).strip() for gid in group_ids if str(gid).strip()
-                        ]
-                    else:
-                        rule_copy["group_ids"] = []
-                    # 确保数值类型正确
-                    try:
-                        rule_copy["period_seconds"] = max(
-                            int(rule_copy.get("period_seconds", 60)), 1
-                        )
-                    except (TypeError, ValueError):
-                        rule_copy["period_seconds"] = 60
-                    try:
-                        rule_copy["max_requests"] = max(
-                            int(rule_copy.get("max_requests", 5)), 1
-                        )
-                    except (TypeError, ValueError):
-                        rule_copy["max_requests"] = 5
-                    rule_copy["enabled"] = bool(rule_copy.get("enabled", True))
-                    config.rate_limit_rules.append(rule_copy)
-
-        # 默认限流设置
-        default_rate_limit = limit_settings.get("default_rate_limit") or {}
-        if isinstance(default_rate_limit, dict):
-            config.default_rate_limit = {
-                "enabled": bool(default_rate_limit.get("enabled", False)),
-                "period_seconds": 60,
-                "max_requests": 5,
-            }
-            try:
-                config.default_rate_limit["period_seconds"] = max(
-                    int(default_rate_limit.get("period_seconds", 60)), 1
-                )
-            except (TypeError, ValueError):
-                pass
-            try:
-                config.default_rate_limit["max_requests"] = max(
-                    int(default_rate_limit.get("max_requests", 5)), 1
-                )
-            except (TypeError, ValueError):
-                pass
+        try:
+            apply_limits(config, normalize_limits(limit_settings, strict=False))
+        except ValueError as exc:
+            config.limit_config_error = str(exc)
+            logger.warning(f"[限流] 配置无效，暂停生成准入: {exc}")

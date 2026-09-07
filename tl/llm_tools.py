@@ -24,7 +24,9 @@ from pydantic.dataclasses import dataclass
 
 from .background_notify import report_background_failure
 from .batch_generation import run_batch_job
+from .file_uri import file_uri_to_path
 from .generation_call import invoke_generation_core
+from .generation_tracker import requester_from_event
 from .openai_image_size import (
     CUSTOM_SIZE_DEFAULT,
     validate_custom_size,
@@ -36,6 +38,7 @@ from .provider_capabilities import (
     routing_mode,
     select_candidates,
 )
+from .provider_runtime import provider_operation
 from .provider_settings import (
     candidate_tool_profile,
     first_provider_tool_profile,
@@ -442,9 +445,7 @@ def _image_to_base64_content(image_ref: str) -> mcp.types.ImageContent | None:
             return None
 
     # 本地文件路径
-    fs_candidate = image_ref
-    if image_ref.startswith("file:///"):
-        fs_candidate = image_ref[8:]
+    fs_candidate = file_uri_to_path(image_ref) or image_ref
 
     if os.path.exists(fs_candidate):
         try:
@@ -1121,6 +1122,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         self.description = _build_tool_description(self.plugin)
         self.parameters = _build_tool_parameters(self.plugin)
 
+    @provider_operation("tool")
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
     ) -> ToolExecResult:
@@ -1137,17 +1139,12 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
             return "❌ 工具未正确初始化，缺少插件实例引用"
 
         raw_batch_tasks = kwargs.get("batch_tasks")
-        is_batch = isinstance(raw_batch_tasks, list) and bool(raw_batch_tasks)
+        is_batch = raw_batch_tasks is not None
         prompt = str(kwargs.get("prompt") or "").strip()
         if not is_batch and not prompt:
             return "❌ 缺少必填参数：单图模式的图像描述不能为空"
         if is_batch and kwargs.get("for_forum"):
             return "❌ batch_tasks 固定进入后台，不能与 for_forum=true 同时使用"
-
-        # 检查限流
-        allowed, limit_message = await plugin._check_and_consume_limit(event)
-        if not allowed:
-            return limit_message or "请求过于频繁，请稍后再试"
 
         if not plugin.api_client:
             return (
@@ -1164,6 +1161,11 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
             )
             if error or not prepared_items:
                 return f"❌ 批量任务参数错误：{error or '没有有效任务'}"
+            allowed, limit_message = await plugin._check_and_consume_limit(
+                event, cost=len(prepared_items)
+            )
+            if not allowed:
+                return limit_message or "请求过于频繁，请稍后再试"
             modes = {item["routing_mode"] for item in prepared_items}
             batch_mode = next(iter(modes)) if len(modes) == 1 else "mixed"
             message = routing_description(batch_mode)
@@ -1175,9 +1177,27 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                 total_items=len(prepared_items),
             )
             task_id = record["task_id"]
+            tracker = getattr(plugin, "generation_tracker", None)
+            parent_job_id = None
+            if tracker is not None:
+                try:
+                    parent = await tracker.begin(
+                        source="llm_batch",
+                        prompt="",
+                        params={},
+                        requester=requester_from_event(event),
+                        requested_images=sum(
+                            item["image_count"] for item in prepared_items
+                        ),
+                    )
+                    parent_job_id = parent["job_id"]
+                except Exception as exc:
+                    logger.warning(f"[生成追踪] 创建批量父记录失败: {exc}")
             plugin.background_task_manager.attach(
                 task_id,
-                run_batch_job(plugin, event, task_id, prepared_items),
+                run_batch_job(
+                    plugin, event, task_id, prepared_items, parent_job_id=parent_job_id
+                ),
             )
             return _background_json(task_id, batch_mode, message)
 
@@ -1259,6 +1279,9 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         )
         if not candidates:
             return "❌ 没有匹配所选供应商、模型、生成模式和参数能力的候选模型"
+        allowed, limit_message = await plugin._check_and_consume_limit(event)
+        if not allowed:
+            return limit_message or "请求过于频繁，请稍后再试"
         request_routing_mode = routing_mode(provider, model)
 
         # 日志记录（仅记录长度和参数摘要，避免记录用户原始内容）
@@ -1520,6 +1543,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
 
 
 # 保留旧的辅助函数以保持向后兼容（已弃用）
+@provider_operation("legacy_tool")
 async def execute_image_generation_tool(
     plugin: GeminiImageGenerationPlugin,
     event: Any,
@@ -1537,10 +1561,9 @@ async def execute_image_generation_tool(
 
     from astrbot.api.message_components import Image as AstrImage
 
-    # 检查限流
-    allowed, limit_message = await plugin._check_and_consume_limit(event)
-    if not allowed:
-        return [limit_message or "请求过于频繁，请稍后再试。"]
+    prompt = str(prompt or "").strip()
+    if not prompt:
+        return ["❌ 图像描述不能为空"]
 
     if not plugin.api_client:
         return [
@@ -1575,6 +1598,20 @@ async def execute_image_generation_tool(
         f"[工具调用] 收集到参考图：消息 {len(reference_images)} 张，"
         f"头像 {len(avatar_reference)} 张"
     )
+
+    if not _matching_candidates(
+        plugin,
+        provider=None,
+        model=None,
+        has_reference_images=bool(reference_images or avatar_reference),
+        negative_prompt=None,
+        watermark=None,
+        quality=None,
+    ):
+        return ["❌ 没有匹配本次请求能力的供应商或模型"]
+    allowed, limit_message = await plugin._check_and_consume_limit(event)
+    if not allowed:
+        return [limit_message or "请求过于频繁，请稍后再试。"]
 
     # 调用核心生成逻辑
     success, result_data = await plugin._generate_image_core_internal(

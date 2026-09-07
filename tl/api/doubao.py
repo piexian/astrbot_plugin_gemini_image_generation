@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import re
 from typing import Any
 
@@ -19,12 +18,12 @@ from ..provider_hooks import (
 )
 from ..tl_utils import save_base64_image
 from .base import ProviderRequest
-from .data_uri import format_data_uri, looks_like_base64, strip_data_uri_prefix
 from .provider_limits import (
     MAX_REFERENCE_IMAGES_DOUBAO,
     MAX_REFERENCE_IMAGES_DOUBAO_SEEDREAM_5_PRO,
 )
 from .reference_intake import announce_reference_intake
+from .reference_pipeline import reference_data_uri
 
 # 豆包 API 错误码分类
 # 参考文档: https://www.volcengine.com/docs/82379/1299023
@@ -458,64 +457,29 @@ class DoubaoProvider:
         if not image_str:
             return None
 
-        # URL input (not forcing base64)
-        if image_str.startswith(("http://", "https://")) and not force_b64:
-            return image_str
-
-        # Already has proper data URI prefix
-        if image_str.startswith("data:image/") and ";base64," in image_str:
-            return image_str
-
-        # Raw base64 - add data URI prefix
-        if looks_like_base64(image_str) and not image_str.startswith("data:"):
-            cleaned = strip_data_uri_prefix(image_str)
-            return format_data_uri(cleaned)
-
-        # Need to normalize through client
-        try:
-            mime_type, b64_data = await client._normalize_reference_image_input(
-                image_str,
-                image_input_mode=getattr(config, "image_input_mode", "force_base64"),
-            )
-        except Exception as e:
-            logger.debug("[doubao] normalize_reference_image_input failed: %s", e)
-            mime_type, b64_data = None, None
-
-        if not b64_data:
-            if force_b64:
-                raise APIError(
-                    "参考图转换失败（doubao/i2i），请检查图片来源后重试。",
-                    None,
-                    "invalid_reference_image",
-                )
-            # Fallback: if user supplied a URL and we are not forcing base64, pass through.
-            if image_str.startswith(("http://", "https://")):
-                return image_str
-            return None
-
-        cleaned = strip_data_uri_prefix(b64_data)
-        # Best-effort validation
-        try:
-            base64.b64decode(cleaned, validate=True)
-        except Exception:
-            try:
-                base64.b64decode(cleaned, validate=False)
-            except Exception:
-                if force_b64:
-                    raise APIError(
-                        "参考图 base64 校验失败（doubao/i2i），请更换图片后重试。",
-                        None,
-                        "invalid_reference_image",
-                    ) from None
-
-        # Format with proper data URI prefix for Doubao API
-        formatted = format_data_uri(cleaned, mime_type)
-        logger.debug(
-            "[doubao] prepared i2i image: mime=%s b64_len=%s",
-            mime_type,
-            len(cleaned),
+        # 共享管道：URL 透传（跳过临时缓存）、data URI/裸 base64、本地路径与 force URL 解码
+        data_uri = await reference_data_uri(
+            client,
+            config,
+            image_str,
+            log_prefix="[doubao]",
+            error_label="doubao/i2i",
+            force_b64=force_b64,
         )
-        return formatted
+        if (
+            data_uri is None
+            and force_b64
+            and image_str.startswith(("http://", "https://"))
+        ):
+            # 保持既有语义：非透传 URL 在 force 模式下转换失败时报错由管道抛出；
+            # 此处仅在管道返回 None 且为 URL 时回退为原 URL，避免行为收紧。
+            return image_str
+        if data_uri:
+            logger.debug(
+                "[doubao] prepared i2i image: b64_len=%s",
+                max(len(data_uri) - data_uri.find(",") - 1, 0),
+            )
+        return data_uri
 
     async def parse_response(
         self,

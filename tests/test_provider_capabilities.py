@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from tl.api_types import ApiRequestConfig
@@ -230,3 +232,84 @@ def test_dashscope_zimage_omits_watermark_capability() -> None:
 def test_agnes_ai_capability_declares_3k_resolution() -> None:
     cap = candidate_capability(_candidate("agnes_ai", "agnes-image-2.5-flash"))
     assert cap["parameters"]["resolution"]["enum"] == ["1K", "2K", "3K", "4K"]
+
+
+def test_gemini_image_capability_family_layering() -> None:
+    """Google 系图像模型按家族声明分辨率/比例，不支持的参数进 unsupported_settings。"""
+    from tl.provider_capabilities import gemini_image_capability
+
+    def _cap(model):
+        candidate = SimpleNamespace(
+            id="google#1",
+            api_type="google",
+            model=model,
+            supports_image_edit=True,
+            settings={"model": model, "api_keys": ["k"]},
+        )
+        return gemini_image_capability(candidate)
+
+    lite = _cap("gemini-3.1-flash-lite-image")
+    assert lite["parameters"]["resolution"]["enum"] == ["1K"]
+    assert "1:4" in lite["parameters"]["aspect_ratio"]["enum"]
+    assert lite["unsupported_settings"] == {"enable_grounding", "image_search"}
+
+    flash31 = _cap("gemini-3.1-flash-image")
+    assert flash31["parameters"]["resolution"]["enum"] == ["1K", "2K", "4K"]
+    assert "1:8" in flash31["parameters"]["aspect_ratio"]["enum"]
+    assert "unsupported_settings" not in flash31
+
+    pro = _cap("gemini-3-pro-image")
+    assert pro["parameters"]["resolution"]["enum"] == ["1K", "2K", "4K"]
+    assert "1:4" not in pro["parameters"]["aspect_ratio"]["enum"]
+    assert "21:9" in pro["parameters"]["aspect_ratio"]["enum"]
+
+    legacy = _cap("gemini-2.5-flash-image")
+    # base 合并会保留 resolution 键：隐藏由 generation_fields 按 unsupported_settings 实现
+    assert "resolution" in legacy["unsupported_settings"]
+    assert "1:4" not in legacy["parameters"]["aspect_ratio"]["enum"]
+
+
+def test_generation_fields_hides_unsupported_settings(tmp_path) -> None:
+    """lite 候选的工作台字段不含 enable_grounding/image_search，分辨率仅 1K。"""
+    from tl.plugin_config import ProviderCandidate
+    from tl.studio_parameters import (
+        generation_fields,
+        validate_generation_settings,
+    )
+
+    candidate = ProviderCandidate(
+        id="vertex#1",
+        api_type="vertex",
+        settings={
+            "api_keys": ["k"],
+            "model": "gemini-3.1-flash-lite-image",
+            "resolution": "1K",
+            "enable_grounding": False,
+        },
+    )
+    fields = generation_fields(candidate)
+
+    assert "enable_grounding" not in fields
+    assert "image_search" not in fields
+    assert fields["resolution"]["enum"] == ["1K"]
+
+    with pytest.raises(ValueError, match="不允许临时覆盖参数"):
+        validate_generation_settings(candidate, {"enable_grounding": True})
+
+
+def test_minimax_capability_model_aware() -> None:
+    from tl.provider_capabilities import minimax_capability
+
+    def _cap(model):
+        candidate = SimpleNamespace(
+            id="minimax#1",
+            api_type="minimax",
+            model=model,
+            supports_image_edit=False,
+            settings={"model": model, "api_keys": ["k"]},
+        )
+        return minimax_capability(candidate)
+
+    assert "21:9" in _cap("image-01")["parameters"]["aspect_ratio"]["enum"]
+    assert "21:9" not in _cap("image-01-live")["parameters"]["aspect_ratio"]["enum"]
+    assert _cap("image-01-live")["parameters"]["resolution"]["enum"] == ["1K"]
