@@ -54,8 +54,49 @@ from tl.llm_query_tools import (  # noqa: E402
 from tl.llm_tools import (  # noqa: E402
     GeminiImageGenerationTool,
     _await_generation_task_and_send,
+    _resolve_foreground_wait_seconds,
 )
-from tl.plugin_config import ProviderCandidate  # noqa: E402
+from tl.plugin_config import ProviderCandidate, get_session_tool_timeout  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    ("config", "expected"),
+    [
+        ({"agent_runner": {"config": {"misc": {"tool_call_timeout": 300}}}}, 300),
+        (
+            {
+                "agent_runner": {"config": {"misc": {"tool_call_timeout": 300}}},
+                "provider_settings": {"tool_call_timeout": 60},
+            },
+            300,
+        ),
+        ({"provider_settings": {"tool_call_timeout": 240}}, 240),
+        ({}, 120),
+    ],
+)
+def test_session_tool_timeout_config_layouts(config, expected):
+    context = SimpleNamespace(get_config=lambda: config)
+    assert get_session_tool_timeout(context) == expected
+
+
+def test_foreground_wait_uses_session_runner_timeout():
+    event = SimpleNamespace(unified_msg_origin="qq:GroupMessage:test")
+    calls = []
+
+    def get_config(umo=None):
+        calls.append(umo)
+        timeout = 300 if umo == event.unified_msg_origin else 120
+        return {"agent_runner": {"config": {"misc": {"tool_call_timeout": timeout}}}}
+
+    context = SimpleNamespace(get_config=get_config)
+    plugin = SimpleNamespace(
+        cfg=SimpleNamespace(llm_tool_timeout_reserve_percent=75),
+        get_tool_timeout=lambda event: get_session_tool_timeout(
+            context, event.unified_msg_origin
+        ),
+    )
+    assert _resolve_foreground_wait_seconds(plugin, event) == 75
+    assert calls == [event.unified_msg_origin]
 
 
 def test_tool_schemas_are_valid_draft_2020_12() -> None:

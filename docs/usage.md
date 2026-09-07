@@ -94,6 +94,8 @@ v2.0.0 起，插件只使用 `供应商配置` 中配置的生图供应商。
 
 LLM 工具会根据当前 `tool_call_timeout` 和 `llm_tool_timeout_reserve_percent` 计算前台等待窗口：
 
+超时取自当前会话绑定的 AstrBot 配置，优先读取 `agent_runner.config.misc.tool_call_timeout`，兼容旧版的 `provider_settings.tool_call_timeout`。例如工具超时为 300 秒、预留比例为 75% 时，前台等待 75 秒。后台生成的总超时仍由插件的 `total_timeout` 控制。
+
 - 图片在窗口内生成完成时，以 `CallToolResult` 结构化返回图片。
 - 超过等待窗口时，自动切到后台继续生成，完成后通过 `event.send()` 直接发送给用户。
 - 转入后台时返回 JSON，其中包含 `task_id`、`status`、`routing_mode` 和当前轮询/重试说明。
