@@ -8,3 +8,7 @@ astrbot_version: ">=4.10.4"
 support_platforms:
   - aiocqhttp
   - qq_official
+  - qq_official_webhook
+  - discord
+  - telegram
+  - weixin_oc
