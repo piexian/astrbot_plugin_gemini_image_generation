@@ -134,12 +134,13 @@ def test_all_existing_provider_metadata_remains():
         "openai_images",
         "doubao",
         "sensenova",
+        "senseaudio",
         "dashscope",
         "modelscope",
         "siliconflow",
     ]
     capabilities = catalog_capabilities()
-    assert len(capabilities) == 14
+    assert len(capabilities) == 15
     assert sum(item["supported"] for item in capabilities.values()) == 11
     for api_type in ("agnes_ai", "minimax", "stepfun", "modelscope", "doubao"):
         assert capabilities[api_type]["supported"] is True
@@ -148,7 +149,7 @@ def test_all_existing_provider_metadata_remains():
         next(spec for spec in specs if spec.api_type == "modelscope").max_concurrency
         == 1
     )
-    for api_type in ("sensenova", "dashscope"):
+    for api_type in ("sensenova", "senseaudio", "dashscope"):
         assert capabilities[api_type]["supported"] is False
         assert "暂未接入" in capabilities[api_type]["message"]
         with pytest.raises(ModelCatalogError, match="暂未接入") as error:

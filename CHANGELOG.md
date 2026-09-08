@@ -2,6 +2,12 @@
 
 > **升级提示**：v1.9.0 以后的配置文件格式不兼容旧版本。升级后如遇配置模板显示错误，请查看 [配置迁移说明](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/troubleshooting.md#配置迁移说明)。
 
+## [Unreleased]
+
+### Added
+
+- 新增 `senseaudio` 供应商：接入 SenseAudio 同步图片生成与异步提交/查询协议，支持官方列出的 4 个模型、单张参考图、随机种子和模型尺寸白名单；Studio 能力与参考图上限由后端提供。异步查询受剩余总预算约束，轮询失败不在当前候选内重新提交任务。
+
 ## [3.0.1] - 2026-09-07
 
 ### Added

@@ -123,6 +123,14 @@ _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
         capability_profile_path="tl.provider_capabilities.sensenova_capability",
     ),
     ProviderSpec(
+        "senseaudio",
+        "tl.api.senseaudio.SenseAudioProvider",
+        capability_profile_path="tl.provider_capabilities.senseaudio_capability",
+        parse_errors_with_provider=True,
+        # 异步轮询使用提交时的 Key，轮换后需要同步 request config。
+        rebuild_on_retry=True,
+    ),
+    ProviderSpec(
         "dashscope",
         "tl.api.dashscope.DashScopeProvider",
         settings_attr="dashscope_settings",

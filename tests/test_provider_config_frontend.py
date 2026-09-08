@@ -194,8 +194,8 @@ await view.open(); assert.equal(calls.filter(call => call.method === 'get').leng
 
 
 def test_all_real_schema_templates_types_enums_conditions_and_new_key_actions():
-    assert len(TEMPLATES) == 14
-    assert sum(len(template["fields"]) for template in TEMPLATES.values()) == 240
+    assert len(TEMPLATES) == 15
+    assert sum(len(template["fields"]) for template in TEMPLATES.values()) == 256
     _run(r"""
 const view = create(); await view.open();
 for (const [type, template] of Object.entries(TEMPLATES)) {
