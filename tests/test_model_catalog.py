@@ -140,20 +140,42 @@ def test_all_existing_provider_metadata_remains():
     ]
     capabilities = catalog_capabilities()
     assert len(capabilities) == 14
-    assert sum(item["supported"] for item in capabilities.values()) == 10
-    for api_type in ("agnes_ai", "minimax", "stepfun", "modelscope"):
+    assert sum(item["supported"] for item in capabilities.values()) == 11
+    for api_type in ("agnes_ai", "minimax", "stepfun", "modelscope", "doubao"):
         assert capabilities[api_type]["supported"] is True
         assert "不消耗生成额度" in capabilities[api_type]["message"]
     assert (
         next(spec for spec in specs if spec.api_type == "modelscope").max_concurrency
         == 1
     )
-    for api_type in ("doubao", "sensenova", "dashscope"):
+    for api_type in ("sensenova", "dashscope"):
         assert capabilities[api_type]["supported"] is False
         assert "暂未接入" in capabilities[api_type]["message"]
         with pytest.raises(ModelCatalogError, match="暂未接入") as error:
             request(api_type)
         assert error.value.status_code == 400
+
+
+def test_doubao_catalog_appends_ark_models_path():
+    req = request("doubao", "https://ark.cn-beijing.volces.com")
+    assert req.protocol == "ark"
+    assert req.url == "https://ark.cn-beijing.volces.com/api/v3/models"
+    assert req.headers == {"Authorization": f"Bearer {FAKE_KEY}"}
+    assert req.params == {}
+
+
+@pytest.mark.parametrize(
+    "base",
+    [
+        "https://ark.cn-beijing.volces.com/api/v3",
+        "https://ark.cn-beijing.volces.com/api/v3/images/generations",
+        "https://proxy.invalid/ark",
+    ],
+)
+def test_doubao_catalog_rejects_paths(base):
+    with pytest.raises(ModelCatalogError, match="只支持填写基址") as error:
+        request("doubao", base)
+    assert error.value.status_code == 400
 
 
 @pytest.mark.parametrize(

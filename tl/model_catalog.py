@@ -100,24 +100,34 @@ def make_catalog_request(
     parsed = _parse_url(api_base.strip() if isinstance(api_base, str) else api_base)
     if proxy:
         _parse_url(proxy, proxy=True)
-    path = parsed.path.rstrip("/")
-    # Accept documented complete generation endpoints without losing gateway prefixes.
-    path = re.sub(r"/models/[^/]+:(?:generateContent|streamGenerateContent)$", "", path)
-    for suffix in (
-        "/chat/completions",
-        "/images/generations",
-        "/images/edits",
-        "/image_generation",
-        "/interactions",
-        "/image-generation-models",
-        "/models",
-    ):
-        if path.endswith(suffix):
-            path = path[: -len(suffix)]
-            break
-    if not path.endswith(("/v1", "/v1beta")):
-        path += "/v1beta" if protocol == "google" else "/v1"
-    path += "/image-generation-models" if protocol == "xai" else "/models"
+    if protocol == "ark":
+        # 方舟 OpenAI 兼容层挂在 /api/v3 下而非 /v1；目录只认基址，避免猜路径。
+        if parsed.path.strip("/"):
+            raise _invalid(
+                "火山方舟模型目录只支持填写基址，请移除 API 地址中的路径后重试。"
+            )
+        path = "/api/v3/models"
+    else:
+        path = parsed.path.rstrip("/")
+        # Accept documented complete generation endpoints without losing gateway prefixes.
+        path = re.sub(
+            r"/models/[^/]+:(?:generateContent|streamGenerateContent)$", "", path
+        )
+        for suffix in (
+            "/chat/completions",
+            "/images/generations",
+            "/images/edits",
+            "/image_generation",
+            "/interactions",
+            "/image-generation-models",
+            "/models",
+        ):
+            if path.endswith(suffix):
+                path = path[: -len(suffix)]
+                break
+        if not path.endswith(("/v1", "/v1beta")):
+            path += "/v1beta" if protocol == "google" else "/v1"
+        path += "/image-generation-models" if protocol == "xai" else "/models"
     params: dict[str, str] = {}
     query_items = parse_qsl(parsed.query, keep_blank_values=True)
     reserved = (
@@ -352,7 +362,7 @@ class ModelCatalogService:
         )
 
     async def _fetch(self, request: CatalogRequest) -> dict[str, Any]:
-        if request.protocol not in {"google", "openai", "xai", "siliconflow"}:
+        if request.protocol not in {"google", "openai", "xai", "siliconflow", "ark"}:
             raise _invalid("不支持的模型目录协议。")
         _parse_url(request.url)
         connector = None
@@ -503,7 +513,9 @@ class ModelCatalogService:
             )
             params["pageToken"] = token
         warning = (
-            _UNFILTERED_WARNING if request.protocol == "openai" or fallback else ""
+            _UNFILTERED_WARNING
+            if request.protocol in {"openai", "ark"} or fallback
+            else ""
         )
         if fallback:
             warning = "专用生图目录不可用，已回退到通用模型目录。 " + warning

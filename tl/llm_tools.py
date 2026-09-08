@@ -22,7 +22,7 @@ from astrbot.core.astr_agent_context import AstrAgentContext
 from pydantic import Field
 from pydantic.dataclasses import dataclass
 
-from .background_notify import report_background_failure
+from .background_notify import notify_llm_background_result, report_background_failure
 from .batch_generation import run_batch_job
 from .file_uri import file_uri_to_path
 from .generation_call import invoke_generation_core
@@ -210,7 +210,7 @@ def _build_tool_description(plugin: Any) -> str:
         "negative_prompt、watermark、quality 只会路由到明确支持该参数的候选；"
         "可先调用 gemini_image_provider_models 查询可用模型和参数。"
         "此工具会先在前台短时间等待结果，若快速完成则直接返回图片；"
-        "若超出等待时间则返回后台任务号并继续生成，完成后自动发送给用户；"
+        "若超出等待时间则返回后台任务号并继续生成，完成后会重新激活你并提供图片 URL/路径，你必须调用 send_message_to_user 发送图片；"
         "可调用 gemini_image_task_status 查询任务状态。"
         "需要批量生成时传 batch_tasks；每项必须包含唯一 name、完整 prompt、image_count，"
         "并至少指定 provider 或 model。批量任务固定进入后台。"
@@ -589,8 +589,8 @@ def _build_background_start_notice(
     param_info = _build_param_info(resolution, aspect_ratio)
     message = (
         f"[图像生成任务已启动]{ref_info}{param_info}\n"
-        "图片正在后台生成中，通常需要 10-30 秒，高质量生成可能长达几百秒，生成完成后会自动发送给用户。\n"
-        "请用你维持原有的人设告诉用户：图片正在生成，请稍等片刻，完成后会自动发送。"
+        "图片正在后台生成中，通常需要 10-30 秒，高质量生成可能长达几百秒，生成完成后会重新激活你并提供图片 URL/路径，请调用 send_message_to_user 的 image 组件发送图片。\n"
+        "请维持原有人设告诉用户图片正在生成，请稍等片刻；收到后台结果后使用主动发送工具交付图片。"
     )
     if llm_notice:
         message += f"\n{llm_notice}"
@@ -610,8 +610,8 @@ def _build_background_fallback_notice(
     message = (
         f"[图像生成任务已转入后台]{ref_info}{param_info}\n"
         f"前台等待 {waited_seconds} 秒后仍未完成，已切换为后台继续生成。\n"
-        "图片生成完成后会自动发送给用户。\n"
-        "请用你维持原有的人设告诉用户：图片正在生成，请稍等片刻，完成后会自动发送。"
+        "生成完成后会重新激活你并提供图片 URL/路径，请调用 send_message_to_user 的 image 组件发送图片。\n"
+        "请维持原有人设告诉用户图片正在生成，请稍等片刻；收到后台结果后使用主动发送工具交付图片。"
     )
     if llm_notice:
         message += f"\n{llm_notice}"
@@ -740,6 +740,20 @@ async def _dispatch_generation_result(
             available_images,
         )
         content_text = prepared_text or fallback_text
+        if notify_llm:
+            return await notify_llm_background_result(
+                plugin,
+                event,
+                {
+                    "task_id": task_id or "",
+                    "status": "succeeded",
+                    "image_urls": list(image_urls or []),
+                    "image_paths": list(image_paths or []),
+                    "text_content": content_text,
+                },
+                notice=f"后台图片生成任务 {task_id or '-'} 已完成，请调用主动发送工具发送图片。",
+                scene=scene,
+            )
         if text_content and not prepared_text and fallback_text:
             logger.info(
                 f"[{scene}] Text content only contained image references; using fallback text."
@@ -807,12 +821,17 @@ async def _await_generation_task_and_send(
                 "candidate_id": stats.get("successful_candidate_id"),
                 "delivery_success": delivered,
             }
+            if success and isinstance(result_data, tuple):
+                item["image_urls"] = list(result_data[0] or [])
+                item["image_paths"] = list(result_data[1] or [])
             if success and delivered:
                 final_status = "succeeded"
                 final_message = "图片生成已完成并发送"
             elif success:
                 final_status = "partial_success"
-                final_message = "图片生成已完成，但自动发送失败"
+                final_message = (
+                    "图片生成已完成，但结果发送未成功；可查询任务获取图片 URL/路径"
+                )
             else:
                 final_status = "failed"
                 final_message = str(result_data)
@@ -1107,7 +1126,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
     Gemini 图像生成工具（触发器模式）
 
     当当前请求需要图像生成、绘画、改图、换风格或手办化时调用此函数。
-    工具会优先在前台短时间等待，快速完成则直接返回结果，超时则转后台继续发送。
+    工具会优先在前台短时间等待，快速完成则直接返回结果，后台反向激活主 Agent 发送图片。
     """
 
     name: str = "gemini_image_generation"
@@ -1472,16 +1491,17 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                     return result
                 except asyncio.TimeoutError:
                     logger.warning(
-                        "[前台等待] 构建 CallToolResult 超时（代理下载慢），转后台直发"
+                        "[前台等待] 构建 CallToolResult 超时（代理下载慢），转后台反向激活主 Agent 发送图片"
                     )
 
-                    # 生成已完成，创建一个立即完成的 task 包装结果，走后台直发
+                    # 生成已完成，创建一个立即完成的 task 包装结果，走后台反向激活主 Agent 发送图片
                     async def _already_done():
                         return (True, result_data, request_stats)
 
                     done_task = asyncio.create_task(_already_done())
                     result_message = (
-                        "图片已生成，发送阶段超过前台等待时间，正在后台发送"
+                        "图片已生成，前台结果处理超时，转入后台反向激活；"
+                        "收到图片 URL/路径后请调用 send_message_to_user 发送图片。"
                     )
                     record = await plugin.background_task_manager.create(
                         session_id=_event_session_id(event),

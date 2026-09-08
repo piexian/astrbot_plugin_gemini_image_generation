@@ -7,7 +7,7 @@ from typing import Any
 
 from astrbot.api import logger
 
-from .background_notify import report_background_failure
+from .background_notify import notify_llm_background_result, report_background_failure
 from .generation_call import invoke_generation_core
 from .generation_tracker import tracking_context
 
@@ -127,6 +127,8 @@ def _public_item(result: dict[str, Any]) -> dict[str, Any]:
         "model": result.get("model"),
         "alias": result.get("alias"),
         "candidate_id": result.get("candidate_id"),
+        "image_urls": result["image_urls"],
+        "image_paths": result["image_paths"],
     }
 
 
@@ -135,7 +137,7 @@ async def _send_batch_results(
     event: Any,
     task_id: str,
     results: list[dict[str, Any]],
-) -> None:
+) -> bool:
     summary_lines = [f"批量生图任务 {task_id} 已完成："]
     for result in results:
         if result["success"]:
@@ -149,41 +151,17 @@ async def _send_batch_results(
                 f"{result.get('error') or '未知错误'}"
             )
     summary = "\n".join(summary_lines)
-    if any(not result["success"] for result in results):
-        # 有失败项：聚合走失败通知出口（回灌 LLM 或按配置直发）
-        await report_background_failure(
-            plugin,
-            event,
-            summary,
-            scene=f"批量任务/{task_id}",
-            task_id=task_id,
+    if not any(result["image_urls"] or result["image_paths"] for result in results):
+        return await report_background_failure(
+            plugin, event, summary, scene=f"批量任务/{task_id}", task_id=task_id
         )
-    else:
-        await event.send(event.plain_result(summary))
-
-    for result in results:
-        if not result["image_urls"] and not result["image_paths"]:
-            continue
-        candidate_text = "/".join(
-            part
-            for part in (
-                result.get("provider"),
-                result.get("alias") or result.get("model"),
-            )
-            if part
-        )
-        label = f"批量任务：{result['name']}"
-        if candidate_text:
-            label += f"（{candidate_text}）"
-        await plugin.message_sender.send_results_with_stream_retry(
-            event=event,
-            image_urls=result["image_urls"],
-            image_paths=result["image_paths"],
-            text_content=label,
-            thought_signature=None,
-            scene=f"批量任务/{result['name']}",
-            force_text_response=True,
-        )
+    return await notify_llm_background_result(
+        plugin,
+        event,
+        {"task_id": task_id, "result": summary, "items": results},
+        notice=summary,
+        scene=f"批量任务/{task_id}",
+    )
 
 
 async def run_batch_job(
@@ -279,11 +257,17 @@ async def run_batch_job(
         await update_parent(
             status, "所有批量任务均生成失败" if status == "failed" else None
         )
-        await _send_batch_results(plugin, event, task_id, final_results)
+        delivered = await _send_batch_results(plugin, event, task_id, final_results)
+        if not delivered and status == "succeeded":
+            status = "partial_success"
         await manager.update(
             task_id,
             status=status,
-            message="批量生成已完成并发送",
+            message=(
+                "批量生成已完成，Agent 已调用发送工具"
+                if delivered
+                else "批量生成已完成，但结果发送未成功；可查询任务获取图片 URL/路径"
+            ),
             current_item=None,
             completed_items=len(final_results),
             succeeded_items=succeeded,

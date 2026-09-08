@@ -353,7 +353,7 @@ StepFun provider。
 | `GeminiImageGenerationTool.call()` | LLM Tool 调用入口 |
 | `execute_image_generation_tool()` | 兼容旧路径的执行入口 |
 | `_build_call_tool_result()` | 将图片结果封装为 `CallToolResult`，包含 `ImageContent` / `TextContent` |
-| `_background_generate_and_send()` | 后台生成完成后发送结果 |
+| `_await_generation_task_and_send()` | LLM 后台生成完成后反向激活主 Agent，提供图片 URL/路径并要求调用主动发送工具 |
 
 核心工具参数包括：
 

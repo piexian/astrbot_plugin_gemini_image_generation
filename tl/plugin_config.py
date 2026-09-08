@@ -25,6 +25,19 @@ DOUBAO_SEQUENTIAL_IMAGES_MIN = _provider_hooks.DOUBAO_SEQUENTIAL_IMAGES_MIN
 _validate_openai_images_settings = _provider_hooks.validate_openai_images_settings
 
 
+def get_session_tool_timeout(context: Any, umo: str | None = None) -> int:
+    """读取会话的框架工具超时，兼容 agent_runner 配置迁移前的版本。"""
+    try:
+        config = context.get_config(umo=umo) if umo else context.get_config()
+        misc = config.get("agent_runner", {}).get("config", {}).get("misc", {})
+        if "tool_call_timeout" in misc:
+            return misc["tool_call_timeout"]
+        return config.get("provider_settings", {}).get("tool_call_timeout", 120)
+    except Exception as e:
+        logger.warning(f"获取 tool_call_timeout 配置失败: {e}，使用默认值 120 秒")
+        return 120
+
+
 def _clean_string(value: Any) -> str:
     return str(value or "").strip()
 
