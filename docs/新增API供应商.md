@@ -24,6 +24,7 @@ tl/
     ├── minimax.py          # MiniMax 图片生成接口
     ├── doubao.py           # 火山引擎 Ark / 豆包 Seedream
     ├── sensenova.py        # SenseNova(商汤日日新)
+    ├── senseaudio.py       # SenseAudio 同步/异步图片生成
     ├── stepfun.py          # StepFun
     ├── modelscope.py       # ModelScope 魔搭社区（异步任务制：提交+轮询）
     ├── siliconflow.py      # SiliconFlow 硅基流动（同步单端点：文生图 + 编辑共用）
@@ -50,6 +51,7 @@ tl/
 | `openai_images` | `OpenAIImagesProvider` | OpenAI `/v1/images/generations` 与 `/v1/images/edits` |
 | `doubao` | `DoubaoProvider` | 火山引擎 Ark / 豆包图片接口（支持 official / Agent Plan 端点） |
 | `sensenova` | `SenseNovaProvider` | SenseNova（商汤日日新）`/v1/images/generations`（仅文生图，11 种固定尺寸） |
+| `senseaudio` | `SenseAudioProvider` | SenseAudio `/v1/image/sync` 或 `/v1/image/async` + `/v1/image/pending`，单参考图、模型专属固定尺寸 |
 | `dashscope` | `DashScopeProvider` | DashScope 原生 multimodal-generation 同步端点（wan2.7 / qwen-image-2.0） |
 | `modelscope` | `ModelScopeProvider` | 魔搭社区 API-Inference 异步任务制（提交 `/v1/images/generations` + 轮询 `/v1/tasks/{id}`，免费单并发兜底渠道） |
 | `siliconflow` | `SiliconFlowProvider` | 硅基流动同步单端点（`/v1/images/generations` 文生图 + 编辑共用，URL 1h 有效即刻下载落盘，Kolors 批量/Qwen-Image 预设/Edit 系列不传尺寸） |

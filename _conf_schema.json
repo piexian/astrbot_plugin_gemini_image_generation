@@ -20,6 +20,7 @@
           "openai_images",
           "doubao",
           "sensenova",
+          "senseaudio",
           "dashscope",
           "modelscope",
           "siliconflow"
@@ -1586,6 +1587,135 @@
                   "b64_json",
                   "url"
                 ]
+              }
+            }
+          },
+          "senseaudio": {
+            "description": "SenseAudio 图片生成",
+            "hint": "同步 / 异步图像接口，支持单张参考图和模型专属固定尺寸。",
+            "items": {
+              "enabled": {
+                "description": "启用此条配置",
+                "type": "bool",
+                "default": true
+              },
+              "priority": {
+                "description": "优先级",
+                "type": "int",
+                "hint": "同类型多条配置按优先级从高到低尝试。",
+                "default": 0
+              },
+              "api_keys": {
+                "description": "API Key 列表",
+                "type": "list",
+                "hint": "填写 SenseAudio 开放平台密钥，支持多 Key 轮换。",
+                "default": []
+              },
+              "daily_limit_per_key": {
+                "description": "每个 Key 每日限额",
+                "type": "int",
+                "hint": "0 表示不限制。",
+                "default": 0
+              },
+              "model_alias": {
+                "description": "模型别名（可选）",
+                "type": "string",
+                "default": ""
+              },
+              "model": {
+                "description": "模型名称",
+                "type": "string",
+                "hint": "SenseAudio 图像接口支持的模型；同名模型使用本平台协议和尺寸表。",
+                "default": "senseaudio-image-2.0-260319",
+                "options": [
+                  "senseaudio-image-2.0-260319",
+                  "senseaudio-image-1.0-260319",
+                  "doubao-seedream-5-0-260128",
+                  "sensenova-u1-fast"
+                ]
+              },
+              "api_base": {
+                "description": "API 端点地址",
+                "type": "string",
+                "hint": "填写基址，可带 /v1；不要填写完整生成端点。",
+                "default": "https://api.senseaudio.cn"
+              },
+              "proxy": {
+                "description": "代理地址",
+                "type": "string",
+                "hint": "留空使用全局代理或环境变量。",
+                "default": ""
+              },
+              "request_mode": {
+                "description": "生成模式",
+                "type": "string",
+                "hint": "sync 直接返回图片；async 创建任务后自动查询结果。",
+                "default": "sync",
+                "options": [
+                  "sync",
+                  "async"
+                ]
+              },
+              "resolution": {
+                "description": "图像分辨率档位",
+                "type": "string",
+                "hint": "从官方尺寸白名单选择：先匹配比例，再匹配长边档位。Image 1.0 / U1 Fast 只有固定尺寸；Image 2.0 方图仅 1024。",
+                "default": "1K",
+                "options": [
+                  "1K",
+                  "2K",
+                  "4K"
+                ]
+              },
+              "aspect_ratio": {
+                "description": "长宽比",
+                "type": "string",
+                "hint": "自动匹配当前模型最接近的官方比例。",
+                "default": "1:1",
+                "options": [
+                  "1:1",
+                  "16:9",
+                  "9:16",
+                  "4:3",
+                  "3:4",
+                  "3:2",
+                  "2:3",
+                  "4:5",
+                  "5:4",
+                  "21:9",
+                  "2:1",
+                  "1:2"
+                ]
+              },
+              "size": {
+                "description": "固定像素尺寸（可选）",
+                "type": "string",
+                "hint": "如 1536x864；必须在当前模型官方白名单内，填写后覆盖比例和档位。参考图保留原尺寸时不发送。",
+                "default": ""
+              },
+              "max_reference_images": {
+                "description": "最大参考图片数量",
+                "type": "int",
+                "hint": "接口最多接受 1 张参考图，多张按顺序截断。",
+                "default": 1
+              },
+              "seed": {
+                "description": "随机种子",
+                "type": "string",
+                "hint": "留空由服务端随机生成；填写整数固定种子，0 也是有效种子。",
+                "default": ""
+              },
+              "poll_interval": {
+                "description": "轮询间隔（秒）",
+                "type": "float",
+                "hint": "仅 async 生效，范围 0.1–30 秒。",
+                "default": 3
+              },
+              "poll_timeout": {
+                "description": "轮询超时（秒）",
+                "type": "int",
+                "hint": "仅 async 生效，受插件总超时约束；超时不重新提交当前候选任务。",
+                "default": 100
               }
             }
           },

@@ -359,6 +359,34 @@ def sensenova_capability(candidate: Any) -> dict[str, Any]:
     )
 
 
+def senseaudio_capability(candidate: Any) -> dict[str, Any]:
+    from .api.senseaudio import DEFAULT_MODEL, MODEL_RATIOS, MODEL_RESOLUTIONS
+
+    model = _model(candidate) or DEFAULT_MODEL
+    profile = _profile(
+        candidate,
+        parameters={
+            "resolution": {
+                "type": "string",
+                "enum": list(MODEL_RESOLUTIONS.get(model, ("1K",))),
+                "default_source": "provider_config",
+            },
+            "aspect_ratio": {
+                "type": "string",
+                "enum": list(MODEL_RATIOS.get(model, ("1:1",))),
+                "default_source": "provider_config",
+            },
+            "seed": {"type": "integer", "default_source": "provider_config"},
+        },
+    )
+    if _settings(candidate).get("size"):
+        # 固定尺寸覆盖自动映射，避免工作台继续提供无效的比例/档位覆盖。
+        for name in ("resolution", "aspect_ratio"):
+            profile["parameters"].pop(name)
+        profile["unsupported_settings"] = {"resolution", "aspect_ratio"}
+    return profile
+
+
 def dashscope_capability(candidate: Any) -> dict[str, Any]:
     settings = _settings(candidate)
     model = _model(candidate).lower()
@@ -486,6 +514,7 @@ def candidate_reference_limit(candidate: Any) -> int:
         "openai": limits.MAX_REFERENCE_IMAGES_OPENAI_COMPAT,
         "minimax": limits.MAX_REFERENCE_IMAGES_MINIMAX,
         "sensenova": limits.MAX_REFERENCE_IMAGES_SENSENOVA_U15,
+        "senseaudio": limits.MAX_REFERENCE_IMAGES_SENSEAUDIO,
         "stepfun": 1,
     }.get(api_type, configured)
     if api_type == "xai":

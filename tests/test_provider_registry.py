@@ -18,6 +18,7 @@ _PROVIDER_MODULES = (
     "tl.api.openai_images",
     "tl.api.doubao",
     "tl.api.sensenova",
+    "tl.api.senseaudio",
     "tl.api.dashscope",
     "tl.api.modelscope",
     "tl.api.siliconflow",

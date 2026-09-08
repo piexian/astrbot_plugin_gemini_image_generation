@@ -44,6 +44,7 @@ def test_schema_covers_all_generation_fields_without_exposing_connection_values(
         "endpoint_id",
         "model_capability",
         "endpoint_mode",
+        "request_mode",
         "poll_interval",
         "poll_timeout",
         "service_account_files",

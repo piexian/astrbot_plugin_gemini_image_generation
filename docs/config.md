@@ -79,7 +79,7 @@ google / openai_images / minimax
 支持的模板：
 
 ```text
-google / gemini_interactions / vertex / openai / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova / dashscope / modelscope / siliconflow
+google / gemini_interactions / vertex / openai / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova / senseaudio / dashscope / modelscope / siliconflow
 ```
 
 下方 `doubao_settings`、`openai_images_settings`、`agnes_ai_settings`、`xai_settings`、`minimax_settings`、`stepfun_settings`、`sensenova_settings`、`dashscope_settings`、`modelscope_settings`、`siliconflow_settings` 章节对应这些模板的专用字段；`gemini_interactions` 无历史投影字段，全部配置都在模板内。代码中的同名 `*_settings` 字段仅作为兼容旧调用的首个候选投影；多候选场景以 `provider_settings.provider_overrides` 和运行时派生的 `provider_settings_by_type` 为准。
@@ -501,6 +501,66 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 官方文档：
 
 - <https://platform.sensenova.cn/docs>
+
+## senseaudio（图片生成专用配置）
+
+在 `provider_settings.provider_overrides` 中添加 `senseaudio` 模板并填写 API Key。此模板接入 SenseAudio 开放平台的独立图片协议，与 `sensenova` 模板分别配置密钥和端点。
+
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `api_keys` | `[]` | SenseAudio API Key，支持多 Key 轮换 |
+| `model` | `senseaudio-image-2.0-260319` | 可选模型见下表 |
+| `api_base` | `https://api.senseaudio.cn` | 基址，可带 `/v1`，不填完整生成路径 |
+| `request_mode` | `sync` | `sync` 同步返回图片；`async` 提交后自动轮询 |
+| `resolution` | `1K` | 自动尺寸的长边目标档位；按模型白名单取最接近值，不保证精确达到档位 |
+| `aspect_ratio` | `1:1` | 自动尺寸优先匹配最接近比例，再比较长边档位 |
+| `size` | 空 | 固定 `宽x高`，必须在当前模型的官方白名单内；覆盖自动比例与档位 |
+| `max_reference_images` | `1` | 最多 1 张参考图，超出按顺序截断；支持 URL / Data URI，本地文件沿用共享转换管道 |
+| `seed` | 空 | 留空由服务端随机生成；填写整数固定种子，`0` 也会发送 |
+| `poll_interval` | `3` | 异步查询间隔，0.1–30 秒 |
+| `poll_timeout` | `100` | 异步查询预算，1–3600 秒，同时受插件剩余总超时约束 |
+
+`enabled`、`priority`、`daily_limit_per_key`、`model_alias`、`proxy` 沿用公共候选配置。
+
+| 模型 | 提示词上限（Unicode 码位） | 自动档位 | 固定尺寸特点 |
+|------|---------------------------|----------|--------------|
+| `senseaudio-image-2.0-260319` | 6000 | 1K / 2K / 4K | 方图仅 `1024x1024`；横竖图最大长边 3840 |
+| `senseaudio-image-1.0-260319` | 2000 | 1K | 7 种尺寸，方图 `1328x1328` |
+| `doubao-seedream-5-0-260128` | 2000 | 2K / 4K | 16 种尺寸；方图 `2048x2048` / `3072x3072` |
+| `sensenova-u1-fast` | 2000 | 2K | 11 种尺寸，方图 `2048x2048` |
+
+尺寸表完整来源为 [同步图片生成文档](https://docs.senseaudio.cn/api-reference/endpoint/image/sync)。例如 Image 2.0 的 `2K + 16:9` 发送 `2048x1152`，`4K + 1:1` 仍发送 `1024x1024`。自动映射不能精确表达的尺寸可填写 `size`。改图启用“保留参考图尺寸”时省略 `size`，由服务端适配，不保证原始像素尺寸（Image 2.0 实测 1024 方图输入返回 2048 方图）；文生图始终发送尺寸。单个上游任务返回一张图，多张生成沿用插件调度。
+
+协议与错误处理：
+
+- 同步：`POST /v1/image/sync`，读取顶层 `url`。
+- 异步：`POST /v1/image/async` 返回 `task_id`；携带同一 Key 查询 `GET /v1/image/pending?task_id=...`，直到 `completed` 或 `failed`。
+- 查询网络故障、HTTP 429/5xx 只继续查询原任务；查询失败或超时不在当前候选内重新提交。插件仍可能按原有路由尝试下一候选，服务端原任务不会被取消。
+- 配置代理时通过候选代理下载生成图；响应缺少图片或下载失败均不重试生成。
+
+最小配置示例：
+
+```json
+{
+  "provider_settings": {
+    "provider_polling": ["senseaudio"],
+    "provider_overrides": [
+      {
+        "__template_key": "senseaudio",
+        "api_keys": ["你的 SenseAudio API Key"],
+        "model": "senseaudio-image-2.0-260319",
+        "api_base": "https://api.senseaudio.cn",
+        "request_mode": "sync",
+        "resolution": "1K",
+        "aspect_ratio": "1:1",
+        "max_reference_images": 1
+      }
+    ]
+  }
+}
+```
+
+文档核对日期：2026-09-08。已读取 [完整目录](https://docs.senseaudio.cn/llms.txt)、[接口概览](https://docs.senseaudio.cn/api-reference/introduction)、[图片能力介绍](https://docs.senseaudio.cn/guides/image/overview)、[模型列表](https://docs.senseaudio.cn/guides/account/model-list)、同步/异步/查询三个图片端点及 [图片 OpenAPI](https://docs.senseaudio.cn/api-reference/endpoint/image/image.openapi.json)。参考图字段按该平台协议处理，不复用其他供应商同名模型的能力限制。平台的语音、音乐、视频和文本接口不属于本插件接入范围。
 
 ## dashscope_settings（DashScope 阿里云百炼专用配置）
 
