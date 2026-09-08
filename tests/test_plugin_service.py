@@ -13,6 +13,66 @@ from tl.provider_runtime import ProviderRuntime
 from tl.rate_limiter import RateLimiter
 
 
+@pytest.mark.asyncio
+async def test_wait_uses_configured_timeout_and_explicit_override(tmp_path):
+    service, gate = make_service(tmp_path)
+    gate.clear()
+    service.plugin.cfg.total_timeout = 0.01
+    accepted = await service.submit(plugin_id="a", prompt="draw")
+    task_id = accepted["task_id"]
+    with pytest.raises(TimeoutError):
+        await service.wait_task(task_id, plugin_id="a")
+    assert (await service.get_task(task_id, plugin_id="a"))["status"] == "running"
+    waiting = asyncio.create_task(service.wait_task(task_id, plugin_id="a", timeout=2))
+    await asyncio.sleep(0.03)
+    assert not waiting.done()
+    gate.set()
+    assert (await waiting)["status"] == "succeeded"
+    await service.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["history", "task", "both"])
+async def test_finish_storage_failure_releases_waiters_and_runs_callback(
+    tmp_path, failure
+):
+    service, gate = make_service(tmp_path)
+    gate.clear()
+    callbacks = []
+
+    async def callback(result):
+        callbacks.append(result)
+
+    accepted = await service.submit(plugin_id="a", prompt="draw", on_complete=callback)
+    task_id = accepted["task_id"]
+    task = service._tasks[task_id]
+    await service.plugin.api_client.entered.wait()
+    waiting = asyncio.create_task(service.wait_task(task_id, plugin_id="a", timeout=2))
+    await asyncio.sleep(0)
+
+    async def broken_save():
+        raise OSError("disk full")
+
+    manager = service.plugin.background_task_manager
+    tracker = service.plugin.generation_tracker
+    if failure in {"task", "both"}:
+        manager._save = broken_save
+    if failure in {"history", "both"}:
+        tracker._save = broken_save
+    gate.set()
+    result = await waiting
+    await task
+    assert result["status"] == "succeeded"
+    assert result["image_urls"] == ["https://example.org/1.png"]
+    assert len(callbacks) == 1
+    assert callbacks[0]["image_urls"] == result["image_urls"]
+    assert (await service.get_task(task_id, plugin_id="a"))[
+        "callback_status"
+    ] == "succeeded"
+    assert task_id not in service._events
+    await service.close()
+
+
 def make_service(tmp_path, *, history=True):
     cfg = PluginConfig(
         provider_candidates=[
@@ -30,9 +90,11 @@ def make_service(tmp_path, *, history=True):
     class Client:
         generation_scheduler = scheduler
         calls = 0
+        entered = asyncio.Event()
 
         @scheduled_generation
         async def generate_image(self, config, **kwargs):
+            self.entered.set()
             await gate.wait()
             self.calls += 1
             config.successful_provider = "xai"

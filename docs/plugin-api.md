@@ -54,7 +54,9 @@ async def generate_cover(context, prompt):
     return result["image_urls"], result["image_paths"]
 ```
 
-`wait_task()` 超时或调用方取消等待，不会取消后台生成。之后可再次等待，或使用 `await service.get_task(task_id, plugin_id=...)` 查询。
+`wait_task()` 未传 `timeout` 或传入 `None` 时，使用插件的 `total_timeout`（秒）；显式传入则使用调用方指定的等待时长。超时或调用方取消等待，不会取消后台生成。之后可再次等待，或使用 `await service.get_task(task_id, plugin_id=...)` 查询。
+
+结果收尾时若任务或历史持久化失败，仍保留当前进程内可查询的终态和图片结果，释放等待者并尝试完成回调，同时记录诊断日志。磁盘写入失败时不能保证这些结果在重启后恢复。
 
 ## 提交参数
 

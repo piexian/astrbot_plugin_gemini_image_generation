@@ -350,6 +350,8 @@ class ImageGenerationService:
     async def wait_task(
         self, task_id: str, *, plugin_id: str, timeout: float | None = None
     ):
+        if timeout is None:
+            timeout = self.plugin.cfg.total_timeout
         record = await self.get_task(task_id, plugin_id=plugin_id)
         if record["status"] not in TERMINAL_STATUSES:
             event = self._events.setdefault(task_id, asyncio.Event())
@@ -495,8 +497,22 @@ class ImageGenerationService:
         if len(archived) == len(images) and archived:
             paths = [str(tracker.gallery_dir / name) for name in archived]
             urls = []
-        if job_id:
-            await tracker.update(
+        try:
+            # Publish the terminal task before optional history writes. Failed disk
+            # writes must not hide usable images from callers in this process.
+            result = await manager.update(
+                task_id,
+                best_effort=True,
+                status=status,
+                message=error or "生成完成",
+                error=error,
+                generated_images=len(images),
+                image_urls=urls,
+                image_paths=paths,
+                text_content="\n".join(texts),
+                stats=stats,
+            )
+            await self._update_history(
                 job_id,
                 status=status,
                 generated_images=len(images),
@@ -507,30 +523,16 @@ class ImageGenerationService:
                 text_content="\n".join(texts),
                 stats=stats,
                 error=error,
+                callback_status=result.get("callback_status", "none"),
             )
-        result = await manager.update(
-            task_id,
-            status=status,
-            message=error or "生成完成",
-            error=error,
-            generated_images=len(images),
-            image_urls=urls,
-            image_paths=paths,
-            text_content="\n".join(texts),
-            stats=stats,
-        )
-        if job_id:
-            await tracker.update(
-                job_id, callback_status=result.get("callback_status", "none")
-            )
-        event = self._events.pop(task_id, None)
-        if event:
-            event.set()
+        finally:
+            event = self._events.pop(task_id, None)
+            if event:
+                event.set()
         callback = self._callbacks.pop(task_id, None)
         if callback and self._state == "ready":
-            await manager.update(task_id, callback_status="running")
-            if job_id:
-                await tracker.update(job_id, callback_status="running")
+            await manager.update(task_id, best_effort=True, callback_status="running")
+            await self._update_history(job_id, callback_status="running")
             callback_task = asyncio.create_task(callback(copy.deepcopy(result)))
             self._callback_tasks[task_id] = callback_task
             callback_status = "succeeded"
@@ -543,13 +545,25 @@ class ImageGenerationService:
                 logger.warning(f"[插件接入] 任务 {task_id} 完成回调失败", exc_info=True)
             finally:
                 self._callback_tasks.pop(task_id, None)
-            await manager.update(task_id, callback_status=callback_status)
-            if job_id:
-                await tracker.update(job_id, callback_status=callback_status)
+            await manager.update(
+                task_id, best_effort=True, callback_status=callback_status
+            )
+            await self._update_history(job_id, callback_status=callback_status)
         elif callback:
-            await manager.update(task_id, callback_status="interrupted")
-            if job_id:
-                await tracker.update(job_id, callback_status="interrupted")
+            await manager.update(
+                task_id, best_effort=True, callback_status="interrupted"
+            )
+            await self._update_history(job_id, callback_status="interrupted")
+
+    async def _update_history(self, job_id, **changes):
+        if job_id:
+            try:
+                await self.plugin.generation_tracker.update(job_id, **changes)
+            except Exception:
+                logger.error(
+                    f"[插件接入] 历史记录 {job_id} 更新失败，任务结果仍可查询",
+                    exc_info=True,
+                )
 
     async def close(self):
         self._state = "closing"

@@ -145,14 +145,24 @@ class BackgroundTaskManager:
             await self._save()
             return copy.deepcopy(record)
 
-    async def update(self, task_id: str, **changes: Any) -> dict[str, Any] | None:
+    async def update(
+        self, task_id: str, *, best_effort: bool = False, **changes: Any
+    ) -> dict[str, Any] | None:
         async with self._lock:
             record = self._records.get(task_id)
             if record is None:
                 return None
             record.update(changes)
             record["updated_at"] = _timestamp()
-            await self._save()
+            try:
+                await self._save()
+            except Exception:
+                if not best_effort:
+                    raise
+                logger.error(
+                    f"[后台任务] {task_id} 持久化失败，保留内存中的任务结果",
+                    exc_info=True,
+                )
             return copy.deepcopy(record)
 
     async def get(self, task_id: str, session_id: str) -> dict[str, Any] | None:
