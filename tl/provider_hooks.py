@@ -121,6 +121,27 @@ def validate_openai_images_settings(settings: dict[str, Any]) -> None:
         settings["custom_size"] = normalize_custom_size_input(custom_size)
 
 
+def validate_openai_responses_settings(settings: dict[str, Any]) -> None:
+    if settings.get("size_mode") != "auto":
+        validate_openai_images_settings(settings)
+
+
+def openai_responses_candidate_config(
+    base_config: Any, candidate: Any, settings: dict[str, Any]
+) -> dict[str, Any]:
+    if settings.get("size_mode") == "auto":
+        return {"resolution": "auto", "aspect_ratio": ""}
+    return openai_images_candidate_config(base_config, candidate, settings)
+
+
+def openai_responses_tool_profile(
+    plugin_or_config: Any, settings: dict[str, Any]
+) -> dict[str, Any]:
+    if settings.get("size_mode") == "auto":
+        return {"custom_size_mode": False, "settings": settings}
+    return openai_images_tool_profile(plugin_or_config, settings)
+
+
 def normalize_doubao_settings(settings: dict[str, Any]) -> None:
     """Normalize doubao-specific override settings."""
     settings["endpoint_mode"] = normalize_doubao_endpoint_mode(

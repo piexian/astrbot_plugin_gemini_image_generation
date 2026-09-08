@@ -11,6 +11,7 @@ import pytest
 from tl.api.openai_responses import OpenAIResponsesProvider, read_responses_response
 from tl.api.registry import get_api_provider
 from tl.api_types import APIError, ApiRequestConfig
+from tl.generation_scheduler import generation_progress
 from tl.tl_api import GeminiAPIClient
 
 
@@ -86,6 +87,79 @@ async def test_reference_images_are_input_blocks(monkeypatch):
         "type": "input_image",
         "image_url": "data:image/png;base64,aW1hZ2U=",
     }
+
+
+@pytest.mark.asyncio
+async def test_extended_output_options_and_auto_size():
+    req = await OpenAIResponsesProvider().build_request(
+        client=object(),
+        config=config(
+            model="gpt-image-2.5-flare",
+            provider_settings={
+                "size_mode": "auto",
+                "quality": "max",
+                "background": "transparent",
+                "output_format": "webp",
+                "output_compression": 0,
+                "action": "generate",
+                "partial_images": 3,
+                "moderation": "low",
+            },
+        ),
+    )
+    assert req.payload["tools"][0] == {
+        "type": "image_generation",
+        "model": "gpt-image-2.5-flare",
+        "size": "auto",
+        "quality": "max",
+        "background": "transparent",
+        "output_format": "webp",
+        "output_compression": 0,
+        "action": "generate",
+        "partial_images": 3,
+        "moderation": "low",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model, settings",
+    [
+        ("gpt-image-2", {"quality": "xhigh"}),
+        ("gpt-image-2.5-flare", {"background": "transparent", "output_format": "jpeg"}),
+        ("gpt-image-2.5-flare", {"output_compression": 101}),
+        ("gpt-image-2.5-flare", {"partial_images": 4}),
+        ("gpt-image-2.5-flare", {"action": "edit"}),
+    ],
+)
+async def test_invalid_output_combinations_fail_before_request(model, settings):
+    with pytest.raises(APIError) as error:
+        await OpenAIResponsesProvider().build_request(
+            client=object(), config=config(model=model, provider_settings=settings)
+        )
+    assert error.value.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_previews_are_emitted_without_becoming_final_images():
+    preview = AsyncMock()
+    response = Response(
+        [
+            {
+                "type": "response.image_generation_call.partial_image",
+                "partial_image_b64": "aW1hZ2U=",
+                "output_format": "png",
+            },
+            {
+                "type": "response.completed",
+                "response": {"status": "completed", "output": []},
+            },
+        ]
+    )
+    with generation_progress(None, preview=preview):
+        result = await read_responses_response(response=response)
+    preview.assert_awaited_once_with("aW1hZ2U=", "png")
+    assert result["output"] == []
 
 
 @pytest.mark.asyncio

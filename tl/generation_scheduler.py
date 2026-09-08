@@ -11,19 +11,30 @@ from functools import wraps
 from .api_types import APIError
 
 _PROGRESS = ContextVar("generation_progress", default=None)
+_PREVIEW = ContextVar("generation_preview", default=None)
 _RESERVATION = ContextVar("generation_reservation", default=None)
 
 
 @contextmanager
-def generation_progress(callback):
-    if callback is None:
+def generation_progress(callback, *, preview=None):
+    if callback is None and preview is None:
         yield
         return
-    token = _PROGRESS.set(callback)
+    token = _PROGRESS.set(callback) if callback is not None else None
+    preview_token = _PREVIEW.set(preview) if preview is not None else None
     try:
         yield
     finally:
-        _PROGRESS.reset(token)
+        if token is not None:
+            _PROGRESS.reset(token)
+        if preview_token is not None:
+            _PREVIEW.reset(preview_token)
+
+
+async def emit_generation_preview(image_base64, output_format="png"):
+    callback = _PREVIEW.get()
+    if callback is not None:
+        await callback(image_base64, output_format)
 
 
 @contextmanager

@@ -1397,23 +1397,26 @@
               "quality": {
                 "description": "图像质量",
                 "type": "string",
-                "hint": "留空使用默认值",
+                "hint": "GPT Image 2.5 支持 xhigh/max；较旧 GPT Image 模型最高 high。",
                 "default": "auto",
                 "options": [
                   "auto",
-                  "high",
+                  "low",
                   "medium",
-                  "low"
+                  "high",
+                  "xhigh",
+                  "max"
                 ]
               },
               "size_mode": {
                 "description": "尺寸模式",
                 "type": "string",
-                "hint": "preset 使用该供应商条目的分辨率和长宽比；custom 使用下方 custom_size 直接透传到 OpenAI Images API。",
+                "hint": "auto 由上游选择尺寸；custom 使用像素尺寸；preset 使用分辨率和比例。",
                 "default": "custom",
                 "options": [
                   "preset",
-                  "custom"
+                  "custom",
+                  "auto"
                 ]
               },
               "custom_size": {
@@ -1442,6 +1445,56 @@
                 "type": "string",
                 "hint": "自由输入，传入 Responses 顶层 model，负责调用生图工具。",
                 "default": "gpt-5.6-luna"
+              },
+              "background": {
+                "description": "背景透明度",
+                "type": "string",
+                "hint": "transparent 需使用 PNG 或 WebP。",
+                "default": "auto",
+                "options": [
+                  "",
+                  "auto",
+                  "transparent",
+                  "opaque"
+                ]
+              },
+              "output_compression": {
+                "description": "输出压缩率",
+                "type": "int",
+                "hint": "仅在 output_format 为 jpeg 或 webp 时有效。0 表示不传（使用服务端默认值），1-100 为自定义压缩率",
+                "default": 0,
+                "slider": {
+                  "min": 0,
+                  "max": 100,
+                  "step": 1
+                }
+              },
+              "moderation": {
+                "description": "审核模式",
+                "type": "string",
+                "hint": "审核策略配置，如 low。仅 GPT image 模型支持，留空不传",
+                "default": "",
+                "options": [
+                  "",
+                  "low"
+                ]
+              },
+              "action": {
+                "description": "生成或编辑模式",
+                "type": "string",
+                "default": "auto",
+                "options": [
+                  "auto",
+                  "generate",
+                  "edit"
+                ],
+                "hint": "auto 自动选择；edit 需要参考图。"
+              },
+              "partial_images": {
+                "description": "生成预览数量",
+                "type": "int",
+                "default": 0,
+                "hint": "0 关闭，1–3 请求部分图片，在工作台生成记录中显示临时预览。"
               }
             }
           },

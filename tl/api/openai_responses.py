@@ -9,8 +9,11 @@ from typing import Any
 import aiohttp
 
 from ..api_types import APIError, ApiRequestConfig
+from ..generation_scheduler import emit_generation_preview
+from ..openai_image_size import derive_custom_size_from_preset_params
 from ..tl_utils import save_base64_image
 from .base import ProviderRequest
+from .openai_image_options import gpt_image_output_options
 from .openai_images import _resolve_size_value
 from .reference_values import resolve_reference_api_values
 
@@ -45,7 +48,7 @@ async def read_responses_response(
     data_lines: list[str] = []
     images: dict[str, dict[str, Any]] = {}
 
-    def event_result() -> dict[str, Any] | None:
+    async def event_result() -> dict[str, Any] | None:
         if not data_lines:
             return None
         raw = "\n".join(data_lines)
@@ -59,6 +62,11 @@ async def read_responses_response(
         if not isinstance(event, dict):
             raise _unknown_result()
         kind = event.get("type")
+        if kind == "response.image_generation_call.partial_image":
+            await emit_generation_preview(
+                event.get("partial_image_b64"), event.get("output_format") or "png"
+            )
+            return None
         if kind in {"error", "response.failed"}:
             result = event.get("response") or event
             return {"status": "failed", "error": result.get("error") or result}
@@ -90,7 +98,7 @@ async def read_responses_response(
             line, pending = pending.split("\n", 1)
             line = line.rstrip("\r")
             if not line:
-                result = event_result()
+                result = await event_result()
                 if result is not None:
                     return result
             elif line.startswith("data:"):
@@ -99,7 +107,7 @@ async def read_responses_response(
     pending += decoder.decode(b"", final=True)
     if pending.startswith("data:"):
         data_lines.append(pending[5:].lstrip(" ").rstrip("\r"))
-    result = event_result()
+    result = await event_result()
     if result is not None:
         return result
     raise _unknown_result()
@@ -124,19 +132,66 @@ class OpenAIResponsesProvider:
         else:
             url = base + "/v1/responses"
         tool: dict[str, Any] = {"type": "image_generation", "model": model}
-        size = _resolve_size_value(
-            "gpt-image-2",
-            config.resolution,
-            settings,
-            suppress_resolution=config.suppress_resolution,
+        size = (
+            "auto"
+            if settings.get("size_mode") == "auto"
+            else _resolve_size_value(
+                "gpt-image-2",
+                config.resolution,
+                settings,
+                suppress_resolution=config.suppress_resolution,
+            )
         )
-        if size:
+        if (
+            settings.get("size_mode", "preset") == "preset"
+            and model.lower().startswith("gpt-image-2")
+            and config.resolution in {"1K", "2K", "4K"}
+        ):
+            try:
+                size = derive_custom_size_from_preset_params(
+                    config.resolution,
+                    config.aspect_ratio or settings.get("aspect_ratio") or "1:1",
+                )
+            except ValueError as exc:
+                raise APIError(
+                    str(exc), error_type="invalid_size", retryable=False
+                ) from exc
+        if size and not config.suppress_resolution:
             tool["size"] = size
-        for key in ("quality", "output_format"):
-            value = (config.quality if key == "quality" else None) or settings.get(key)
-            if value:
-                tool[key] = value
+        tool.update(
+            gpt_image_output_options(
+                model,
+                {**settings, "quality": config.quality or settings.get("quality")},
+            )
+        )
         tool.setdefault("output_format", "png")
+        action = settings.get("action") or "auto"
+        if action not in {"auto", "generate", "edit"}:
+            raise APIError(
+                "action 仅支持 auto、generate、edit。",
+                error_type="invalid_parameter",
+                retryable=False,
+            )
+        if action == "edit" and not config.reference_images:
+            raise APIError(
+                "强制编辑需要至少一张参考图。",
+                error_type="invalid_reference_image",
+                retryable=False,
+            )
+        tool["action"] = action
+        partial_images = settings.get("partial_images", 0)
+        if (
+            isinstance(partial_images, bool)
+            or not isinstance(partial_images, int)
+            or not 0 <= partial_images <= 3
+        ):
+            raise APIError(
+                "partial_images 必须是 0–3 的整数。",
+                error_type="invalid_parameter",
+                retryable=False,
+            )
+        if partial_images:
+            tool["partial_images"] = partial_images
         refs = await resolve_reference_api_values(
             client,
             config,

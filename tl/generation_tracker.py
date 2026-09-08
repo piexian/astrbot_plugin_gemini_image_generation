@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import copy
+import io
 import json
 import os
 import re
@@ -491,6 +493,38 @@ class GenerationTracker:
                 f"prompt={_bounded_text(prompt, 30)!r}, 记录总数={len(self._jobs)}"
             )
             return self._snapshot(record)
+
+    async def preview(
+        self, job_id: str, image_base64: str, output_format: str = "png"
+    ) -> None:
+        """Broadcast a bounded raster thumbnail without persisting a partial result."""
+        if not isinstance(image_base64, str) or len(image_base64) > 48 * 1024 * 1024:
+            return
+
+        def thumbnail():
+            from PIL import Image
+
+            raw = base64.b64decode(image_base64, validate=True)
+            with Image.open(io.BytesIO(raw)) as image:
+                image.thumbnail((512, 512))
+                converted = image.convert("RGBA")
+                output = io.BytesIO()
+                converted.save(output, format="PNG")
+            return (
+                "data:image/png;base64," + base64.b64encode(output.getvalue()).decode()
+            )
+
+        try:
+            preview = await asyncio.to_thread(thumbnail)
+        except Exception as exc:
+            logger.warning(
+                f"[生成预览] 无法读取部分图片，继续等待完整结果: {type(exc).__name__}"
+            )
+            return
+        async with self._lock:
+            record = self._jobs.get(str(job_id))
+            if record is not None and record.get("status") == "running":
+                self._broadcast({**record, "preview": preview})
 
     async def update(self, job_id: str, **changes: Any) -> None:
         async with self._lock:

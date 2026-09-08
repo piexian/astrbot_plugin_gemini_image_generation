@@ -310,12 +310,14 @@ def openai_images_capability(candidate: Any) -> dict[str, Any]:
 
 
 def openai_responses_capability(candidate: Any) -> dict[str, Any]:
+    from .api.openai_image_options import gpt_image_quality_values
+
     return _profile(
         candidate,
         parameters={
             "quality": {
                 "type": "string",
-                "enum": ["auto", "high", "medium", "low"],
+                "enum": gpt_image_quality_values(_model(candidate)),
                 "default_source": "provider_config",
             },
         },

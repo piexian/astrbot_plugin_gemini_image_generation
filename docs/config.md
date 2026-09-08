@@ -251,10 +251,21 @@ Studio 保存仅更新群访问与限流字段，不修改供应商、不重载�
 | `size_mode` / `custom_size` | `custom` / `1024x1024` | 复用自定义尺寸配置 |
 | `quality` | `auto` | 生图质量 |
 | `output_format` | `png` | 图片保存格式 |
+| `output_compression` | `100` | JPEG/WebP 压缩参数，0–100；PNG 不发送此参数 |
+| `background` | `auto` | `auto` / `opaque` / `transparent`；透明背景需 PNG/WebP |
+| `action` | `auto` | `auto` / `generate` / `edit`；强制编辑必须有参考图 |
+| `partial_images` | `0` | 0 关闭预览；1–3 请求生成中的部分图片 |
+| `moderation` | `auto` | 官方提供的内容审核模式 `auto` / `low` |
 
 两个模型字段都是自由文本，允许填写自定义名称或网关别名。默认组合已在 CPA 实测生成成功，不代表 OpenAI 官方或其他网关支持这些名称；应以所接服务实际能力为准。
 
-文生图和参考图请求均通过 Responses 的 `image_generation` 工具；参考图按已有设置转换成 `input_image`。一次请求不承诺原生批量，多图沿用插件调度。插件读取 SSE 完成事件并保存完整图片，不把部分预览当作最终图片。也支持网关返回完整 JSON 响应。
+GPT Image 2.5 的 `quality` 支持 `auto/low/medium/high/xhigh/max`，较旧 GPT Image 模型不接受 `xhigh/max`；自定义网关模型名仍可手动填写。`size_mode=auto` 交由上游决定尺寸；`custom` 校验 16 倍数、最大边 3840、比例不超过 3:1、总像素 655360–8294400。GPT Image 2/2.5 的预设尺寸按分辨率与比例推导。
+
+文生图和参考图请求均通过 Responses 的 `image_generation` 工具；参考图按已有设置转换成 `input_image`。连续编辑沿用上一轮图片作为下一轮参考图，可设 `action=edit`，不保存跨用户的 Responses 对话 ID。一次请求不承诺原生批量，多图沿用插件调度。插件读取 SSE 完成事件并保存完整图片，也支持网关返回完整 JSON 响应。
+
+启用预览后，工作台运行中的任务卡显示临时 PNG 缩略图；预览不落盘、不进入画廊、不计入生成数量，刷新页面后只保留正常任务状态，最终结果到达时替换预览。命令/插件调用的生成记录也可在工作台看到预览。
+
+协议依据：[Responses 生图工具](https://developers.openai.com/api/docs/guides/tools-image-generation)、[图像尺寸与输出参数](https://developers.openai.com/api/docs/guides/image-generation)。网关可能仅实现部分参数，遇到明确不支持的参数应调整配置，不自动改用其他协议。
 
 已提交后超时、断流或缺少完成事件会报告“任务结果未知”，停止自动重试和跨候选切换，避免重复生成；明确的鉴权/限流错误仍走现有错误处理。长时间生图需确保插件总超时、单次超时和网关超时匹配。
 

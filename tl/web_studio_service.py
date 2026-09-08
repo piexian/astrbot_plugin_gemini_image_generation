@@ -877,7 +877,12 @@ class WebStudioService:
                     await self.tracker.update(job_id, status=status)
 
                 async with self._api_semaphore:
-                    with generation_progress(progress):
+                    with generation_progress(
+                        progress,
+                        preview=lambda data, fmt: self.tracker.preview(
+                            job_id, data, fmt
+                        ),
+                    ):
                         result = await self.api_client.generate_image(
                             config=request_config,
                             max_retries=_positive_int(

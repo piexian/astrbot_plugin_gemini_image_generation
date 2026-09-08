@@ -102,6 +102,14 @@ const SafeDOM = {
     return typeof source === 'string' && source.startsWith('blob:');
   },
 
+  previewImage(source) {
+    // Preview SSE contains a server-decoded, bounded PNG thumbnail, never a URL.
+    if (typeof source !== 'string' || !/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(source)) return null;
+    const image = this.el('img', {alt: '生成中的预览，非最终结果', style: {maxWidth: '100%', maxHeight: '256px', objectFit: 'contain'}});
+    image.src = source;
+    return image;
+  },
+
   // 仅供注入静态常量池内联 SVG（禁止外部不可信输入）
   setSvgIcon(element, iconName) {
     const svgCode = IconSet[iconName];
@@ -2576,6 +2584,15 @@ class ProgressView {
     if (p.aspect_ratio) metaRow.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [`比例: ${p.aspect_ratio}`]));
     metaRow.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [`张数: ${record.generated_images || 0} / ${record.requested_images || 1}`]));
     card.appendChild(metaRow);
+
+    if (record.status === 'running' && record.preview) {
+      const preview = SafeDOM.previewImage(record.preview);
+      if (preview) {
+        card.appendChild(SafeDOM.el('div', {className: 'job-preview'}, [
+          SafeDOM.el('p', {}, ['生成预览 · 正在等待完整图片']), preview
+        ]));
+      }
+    }
 
     // 源图片链接：供应商返回的持久 URL 随任务记录，便于画廊清理或归档失败后取回原图
     const sourceUrls = Array.isArray(record.source_urls)
