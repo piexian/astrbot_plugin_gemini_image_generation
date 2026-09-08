@@ -33,7 +33,7 @@ v2.0.0 重构了生图供应商配置，`api_settings` 和旧的全局 `api_type
 | 无法获取头像 | 确认使用 NapCat 平台，并检查网络权限 |
 | 切图效果不佳 | 尝试 `/切图 4 4` 手动指定网格，或配置 `vision_provider_id` |
 | 白底透明化不稳定 | 优先使用主体吸附模式；复杂背景建议用专门抠图工具处理 |
-| 中文乱码（local 模式） | 等待字体自动下载，或手动放置 `.ttf` 字体到 `tl/` 目录 |
+| 中文乱码（local 模式） | 字体优先从 `astrdark.cyou` 镜像下载，失败后回退 Noto 官方 GitHub。每个下载源优先使用插件 `proxy`，未设置时使用 HTTPS/HTTP 代理环境变量；代理失败后尝试直连。也可手动放置 `.ttf`、`.otf` 或 `.ttc` 中文字体到 `tl/` 目录 |
 | 网络连接失败 | 在 `provider_settings.proxy` 或具体供应商条目中配置代理地址 |
 | OpenAI Images 尺寸报错 | 检查 `custom_size` 是否为合法 `WxH`，并满足官方尺寸约束 |
 

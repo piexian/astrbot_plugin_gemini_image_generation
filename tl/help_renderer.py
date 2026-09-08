@@ -16,10 +16,8 @@ from PIL import Image, ImageDraw, ImageFont
 # 注意：如果自动下载失败，可手动将字体文件放入 tl 目录（支持 .ttf/.otf/.ttc 格式）
 FONT_FILENAME = "NotoSerifCJKsc-SemiBold.otf"
 FONT_DOWNLOAD_URLS = [
-    # GitHub 加速镜像
-    "https://run.pieixan.icu/https://raw.githubusercontent.com/notofonts/noto-cjk/main/Serif/OTF/SimplifiedChinese/NotoSerifCJKsc-SemiBold.otf",
-    "https://gh-proxy.piexian.workers.dev/https://raw.githubusercontent.com/notofonts/noto-cjk/main/Serif/OTF/SimplifiedChinese/NotoSerifCJKsc-SemiBold.otf",
-    # GitHub 原始链接（备用）
+    # 优先使用 Xget 镜像，失败后回退官方源。
+    "https://astrdark.cyou/gh/notofonts/noto-cjk/raw/main/Serif/OTF/SimplifiedChinese/NotoSerifCJKsc-SemiBold.otf",
     "https://raw.githubusercontent.com/notofonts/noto-cjk/main/Serif/OTF/SimplifiedChinese/NotoSerifCJKsc-SemiBold.otf",
 ]
 
@@ -59,7 +57,7 @@ def _get_font_path() -> Path:
         return Path(__file__).parent / FONT_FILENAME
 
 
-async def ensure_font_downloaded() -> bool:
+async def ensure_font_downloaded(proxy: str | None = None) -> bool:
     """
     确保字体文件已下载（仅在 local 模式下需要）
     返回是否成功获取字体
@@ -104,12 +102,22 @@ async def ensure_font_downloaded() -> bool:
 
         import aiohttp
 
-        for url in FONT_DOWNLOAD_URLS:
+        proxy = (
+            proxy
+            or os.environ.get("HTTPS_PROXY")
+            or os.environ.get("https_proxy")
+            or os.environ.get("HTTP_PROXY")
+            or os.environ.get("http_proxy")
+        )
+        routes = [proxy, None] if proxy else [None]
+        for url, download_proxy in (
+            (url, route) for url in FONT_DOWNLOAD_URLS for route in routes
+        ):
             try:
                 logger.debug(f"尝试下载字体: {url}")
                 timeout = aiohttp.ClientTimeout(total=60, connect=10)
                 async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.get(url) as resp:
+                    async with session.get(url, proxy=download_proxy) as resp:
                         if resp.status != 200:
                             logger.debug(f"下载失败: HTTP {resp.status}")
                             continue
@@ -119,8 +127,12 @@ async def ensure_font_downloaded() -> bool:
                             logger.debug(f"下载的文件过小: {len(data)} bytes")
                             continue
 
-                        with open(font_path, "wb") as f:
-                            f.write(data)
+                        # 镜像/代理错误页可能也返回 200，交给实际渲染器验证。
+                        await asyncio.to_thread(
+                            ImageFont.truetype, io.BytesIO(data), 16
+                        )
+
+                        await asyncio.to_thread(font_path.write_bytes, data)
 
                         logger.info(
                             f"✓ 字体下载成功: {font_path} ({len(data) / 1024 / 1024:.1f}MB)"

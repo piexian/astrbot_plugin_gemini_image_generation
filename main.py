@@ -584,7 +584,7 @@ class GeminiImageGenerationPlugin(Star):
     async def _ensure_font_for_local_mode(self):
         """确保 local 渲染模式所需的字体已下载"""
         try:
-            await ensure_font_downloaded()
+            await ensure_font_downloaded(proxy=self.cfg.proxy)
         except Exception as e:
             logger.warning(f"字体下载任务异常: {e}")
 
