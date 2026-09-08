@@ -277,18 +277,27 @@ GPT Image 2.5 的 `quality` 支持 `auto/low/medium/high/xhigh/max`，较旧 GPT
 |--------|--------|------|
 | `api_keys` | `[]` | API Key 列表，支持多 Key 轮换 |
 | `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
-| `model` | `gpt-image-1` | 模型名称，例如 `dall-e-2` / `dall-e-3` / `gpt-image-1` / `gpt-image-2` |
+| `model` | `gpt-image-2.5-flare` | 自由输入：支持 Flare/Sunburst 及日期快照、GPT Image 2/1.5/1；保留旧 DALL·E 兼容路径 |
 | `api_base` | - | API 端点地址，留空使用 OpenAI 官方 |
-| `quality` | - | 图像质量。GPT image：`auto` / `high` / `medium` / `low`；dall-e-3：`hd` / `standard` |
-| `response_format` | `b64_json` | 响应格式：`b64_json` / `url` |
-| `size_mode` | `preset` | 尺寸模式：`preset` 使用供应商分辨率映射；`custom` 使用 `custom_size` |
+| `quality` | - | GPT Image 2.5 另支持 `xhigh/max`，旧 GPT Image 最高 `high`；DALL·E 3 使用 `hd/standard` |
+| `response_format` | `b64_json` | 仅旧 DALL·E/兼容模型发送；GPT Image 在生成和编辑接口均返回 base64，不发送该字段 |
+| `size_mode` | `preset` | `preset` 按模型能力解析分辨率与比例；`custom` 使用像素尺寸；`auto` 交由上游选择 |
 | `custom_size` | `1024x1024` | 自定义尺寸，仅 `size_mode=custom` 生效。格式 `WxH`，支持 `x` 或 `×` |
 | `style` | - | 图像风格，仅 dall-e-3：`vivid` / `natural` |
 | `background` | - | 背景透明度，仅 GPT image：`auto` / `transparent` / `opaque` |
 | `output_format` | - | 输出格式，仅 GPT image：`png` / `jpeg` / `webp` |
-| `output_compression` | `0` | 输出压缩率 `0-100`，`0` 表示不传，仅 GPT image + jpeg/webp |
+| `output_compression` | `100` | JPEG/WebP 的 0–100 压缩参数，包含 0 均按原值发送；PNG 不发送 |
 | `moderation` | - | 审核模式，仅 GPT image，例如 `low` |
 | `generations_only` | `false` | 开启后强制只用 `/v1/images/generations`，不走 `/v1/images/edits` |
+| `n` | `1` | GPT Image 非流式单次张数上限，1–10；实际请求不超过本轮剩余张数 |
+| `stream` | `false` | GPT Image 原生流式返回；启用时单次一张，多图由插件分次调度 |
+| `partial_images` | `0` | 流式时的预览数量 0–3；预览只展示在运行中的工作台任务，不作为最终结果 |
+
+GPT Image 编辑使用 `image[]` 上传，最多 16 张参考图，PNG/JPEG/WebP 保留对应上传类型。生成与编辑均传递质量、背景、输出格式、压缩率和 moderation；透明背景搭配 JPEG 会在本地拒绝。GPT Image 不发送非官方的 seed 字段。
+
+升级注意：旧配置曾用压缩率 `0` 表示“不传参数”。现在按官方 API 把 `0` 原样发送；如果旧配置的本意是使用默认压缩率，请改成 `100`。新模板默认为 `100`。已有模型名称不会自动改写，网关必须自身支持所填模型的 Images 路由；CPA 等服务的 Images 白名单与 Responses 工具能力可能不同。
+
+接口依据：[生成](https://developers.openai.com/api/reference/resources/images/methods/generate)、[编辑](https://developers.openai.com/api/reference/resources/images/methods/edit)。
 
 ### OpenAI Images 自定义尺寸
 

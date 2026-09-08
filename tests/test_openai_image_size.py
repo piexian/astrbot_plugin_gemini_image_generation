@@ -120,10 +120,15 @@ def test_derive_custom_size_rejects_invalid_preset_combo_inputs() -> None:
         derive_custom_size_from_preset_params("2K", "17:10")
 
 
-def test_resolve_size_value_in_preset_mode_keeps_original_mapping() -> None:
+def test_resolve_size_value_in_preset_mode_tracks_model_size_support() -> None:
     settings = {"size_mode": "preset"}
 
-    assert _resolve_size_value("gpt-image-2", "2K", settings) == "1536x1024"
+    assert _resolve_size_value("gpt-image-1", "2K", settings) == "1536x1024"
+    assert _resolve_size_value("gpt-image-2", "2K", settings) == "2048x2048"
+    assert (
+        _resolve_size_value("gpt-image-2.5-flare", "4K", settings, aspect_ratio="16:9")
+        == "3840x2160"
+    )
 
 
 def test_client_custom_mode_uses_config_size_when_no_request_override() -> None:

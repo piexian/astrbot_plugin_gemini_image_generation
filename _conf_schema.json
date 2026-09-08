@@ -1137,8 +1137,8 @@
               "model": {
                 "description": "模型名称",
                 "type": "string",
-                "hint": "OpenAI Images API 模型名称",
-                "default": "gpt-image-1"
+                "hint": "自由输入，支持 GPT Image 2.5 Flare/Sunburst 及日期快照、GPT Image 2/1.5/1 和兼容服务模型。",
+                "default": "gpt-image-2.5-flare"
               },
               "api_base": {
                 "description": "API 端点地址",
@@ -1190,20 +1190,22 @@
               "max_reference_images": {
                 "description": "最大参考图片数量",
                 "type": "int",
-                "hint": "单次请求最多使用的参考图片数量；超过后按顺序截取。",
+                "hint": "GPT Image 最多 16 张；DALL·E 仅单图。实际数量还受候选配置限制。",
                 "default": 6
               },
               "quality": {
                 "description": "图像质量",
                 "type": "string",
-                "hint": "留空使用默认值",
+                "hint": "GPT Image 2.5 支持 xhigh/max；旧 GPT Image 最高 high；hd/standard 用于 DALL·E。",
                 "default": "",
                 "options": [
                   "",
                   "auto",
-                  "high",
-                  "medium",
                   "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
                   "hd",
                   "standard"
                 ]
@@ -1225,7 +1227,8 @@
                 "default": "preset",
                 "options": [
                   "preset",
-                  "custom"
+                  "custom",
+                  "auto"
                 ]
               },
               "custom_size": {
@@ -1275,8 +1278,8 @@
               "output_compression": {
                 "description": "输出压缩率",
                 "type": "int",
-                "hint": "仅在 output_format 为 jpeg 或 webp 时有效。0 表示不传（使用服务端默认值），1-100 为自定义压缩率",
-                "default": 0,
+                "hint": "JPEG/WebP 的 0–100 压缩参数，按 API 原值发送（包括 0）；100 是服务端默认值。PNG 不发送此参数。",
+                "default": 100,
                 "slider": {
                   "min": 0,
                   "max": 100,
@@ -1298,6 +1301,27 @@
                 "type": "bool",
                 "hint": "开启后丢去所有参考图仅输入文本提示词进行生成。",
                 "default": false
+              },
+              "n": {
+                "description": "单次生成张数上限",
+                "type": "int",
+                "default": 1,
+                "hint": "GPT Image 非流式请求支持 1–10 张，工作台批量调度会按剩余张数限制；流式每次一张。"
+              },
+              "stream": {
+                "description": "流式生成",
+                "type": "bool",
+                "default": false,
+                "hint": "GPT Image 原生 SSE 返回；开启后可在工作台展示生成预览。"
+              },
+              "partial_images": {
+                "description": "生成预览数量",
+                "type": "int",
+                "default": 0,
+                "hint": "0 关闭，1–3 请求部分图片，在工作台生成记录中显示临时预览。",
+                "condition": {
+                  "stream": true
+                }
               }
             }
           },
@@ -1461,8 +1485,8 @@
               "output_compression": {
                 "description": "输出压缩率",
                 "type": "int",
-                "hint": "仅在 output_format 为 jpeg 或 webp 时有效。0 表示不传（使用服务端默认值），1-100 为自定义压缩率",
-                "default": 0,
+                "hint": "JPEG/WebP 的 0–100 压缩参数，按 API 原值发送（包括 0）；100 是服务端默认值。PNG 不发送此参数。",
+                "default": 100,
                 "slider": {
                   "min": 0,
                   "max": 100,

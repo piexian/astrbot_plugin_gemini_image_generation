@@ -49,6 +49,7 @@ GENERATION_SETTING_KEYS = frozenset(
         "moderation",
         "action",
         "partial_images",
+        "stream",
         "generations_only",
         "size",
         "watermark",

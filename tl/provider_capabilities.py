@@ -287,17 +287,23 @@ def stepfun_capability(candidate: Any) -> dict[str, Any]:
 
 
 def openai_images_capability(candidate: Any) -> dict[str, Any]:
+    from .api.openai_image_options import gpt_image_quality_values
+    from .api.openai_images import _is_gpt_image_model
+
     model = _model(candidate).lower()
     if model == "dall-e-3":
         quality_values = ["hd", "standard"]
     elif model == "dall-e-2":
         quality_values = ["standard"]
     elif model.startswith(("gpt-image", "chatgpt-image")):
-        quality_values = ["auto", "high", "medium", "low"]
+        quality_values = gpt_image_quality_values(model)
     else:
         quality_values = ["auto", "high", "medium", "low", "hd", "standard"]
     return _profile(
         candidate,
+        native_batch_limit=min(max(int(_settings(candidate).get("n", 1)), 1), 10)
+        if _is_gpt_image_model(model) and not _settings(candidate).get("stream")
+        else 1,
         parameters={
             "quality": {
                 "type": "string",
@@ -305,7 +311,10 @@ def openai_images_capability(candidate: Any) -> dict[str, Any]:
                 "default_source": "provider_config",
             },
         },
-        request_setting_map={"quality": "quality"},
+        request_setting_map={
+            "quality": "quality",
+            **({"image_count": "n"} if _is_gpt_image_model(model) else {}),
+        },
     )
 
 
@@ -566,7 +575,7 @@ def candidate_reference_limit(candidate: Any) -> int:
     elif api_type == "openai_images":
         from .api.openai_images import _is_gpt_image_model
 
-        native = configured if _is_gpt_image_model(model) else 1
+        native = 16 if _is_gpt_image_model(model) else 1
     return min(configured, native)
 
 

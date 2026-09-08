@@ -99,6 +99,8 @@ def normalize_doubao_output_format(value: Any) -> str:
 
 def validate_openai_images_settings(settings: dict[str, Any]) -> None:
     """Validate and normalize openai_images override settings."""
+    if settings.get("size_mode") == "auto":
+        return
     try:
         size_mode = normalize_size_mode(settings.get("size_mode"))
     except ValueError as exc:
@@ -249,6 +251,9 @@ def openai_images_candidate_config(
     if getattr(base_config, "suppress_resolution", False):
         return {"resolution": None, "aspect_ratio": None}
 
+    if settings.get("size_mode") == "auto":
+        return {"resolution": "auto", "aspect_ratio": ""}
+
     size_mode = normalize_size_mode(settings.get("size_mode"))
     if size_mode != "custom":
         return {}
@@ -313,6 +318,8 @@ def openai_images_tool_profile(
     plugin_or_config: Any, settings: dict[str, Any]
 ) -> dict[str, Any]:
     """Return LLM-tool behavior flags for openai_images."""
+    if settings.get("size_mode") == "auto":
+        return {"custom_size_mode": False, "settings": settings}
     try:
         size_mode = normalize_size_mode(settings.get("size_mode"))
     except ValueError as exc:

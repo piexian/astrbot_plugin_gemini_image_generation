@@ -212,7 +212,7 @@ view.destroy();
 
 def test_all_real_schema_templates_types_enums_conditions_and_new_key_actions():
     assert len(TEMPLATES) == 16
-    assert sum(len(template["fields"]) for template in TEMPLATES.values()) == 277
+    assert sum(len(template["fields"]) for template in TEMPLATES.values()) == 280
     _run(r"""
 const view = create(); await view.open();
 for (const [type, template] of Object.entries(TEMPLATES)) {

@@ -104,6 +104,9 @@ _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
         tool_profile_path="tl.provider_hooks.openai_images_tool_profile",
         capability_profile_path="tl.provider_capabilities.openai_images_capability",
         model_catalog_kind="openai",
+        response_reader_path="tl.api.openai_images.read_images_response",
+        retry_ambiguous_transport_errors=False,
+        rebuild_on_retry=True,
     ),
     ProviderSpec(
         "openai_responses",

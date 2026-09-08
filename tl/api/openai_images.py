@@ -9,13 +9,17 @@
 
 from __future__ import annotations
 
+import codecs
+import json
 from typing import Any
 
 import aiohttp
 from astrbot.api import logger
 
 from ..api_types import APIError, ApiRequestConfig
+from ..generation_scheduler import emit_generation_preview
 from ..openai_image_size import (
+    derive_custom_size_from_preset_params,
     derive_custom_size_matching_aspect,
     normalize_size_mode,
     resolve_openai_custom_size,
@@ -23,6 +27,7 @@ from ..openai_image_size import (
 )
 from ..tl_utils import save_base64_image
 from .base import ProviderRequest
+from .openai_image_options import gpt_image_output_options
 from .reference_pipeline import load_reference_bytes
 
 # ---------- 按模型族分的合法尺寸映射 ----------
@@ -70,6 +75,7 @@ def _resolve_size_value(
     *,
     ref_image_dims: tuple[int, int] | None = None,
     suppress_resolution: bool = False,
+    aspect_ratio: str | None = None,
 ) -> str | None:
     """根据配置和请求参数决定最终传给 OpenAI Images API 的 size。
 
@@ -77,13 +83,20 @@ def _resolve_size_value(
     - preset 模式：返回 None（不传 size，由 API 默认按原图）
     - custom 模式：根据参考图实际比例推导一个合法 custom size，避免回落到固定 custom_size
     """
+    if suppress_resolution:
+        return None
+    if settings.get("size_mode") == "auto":
+        if model.lower().startswith("dall-e-"):
+            raise APIError(
+                "DALL·E 不支持 auto 尺寸，请使用预设尺寸。",
+                error_type="invalid_size",
+                retryable=False,
+            )
+        return "auto"
     try:
         size_mode = normalize_size_mode(settings.get("size_mode"))
     except ValueError as e:
         raise APIError(str(e), None, "invalid_size_mode", retryable=False) from e
-
-    if suppress_resolution:
-        return None
 
     # 保留参考图尺寸场景：resolution 被显式置空
     if not resolution and ref_image_dims is not None:
@@ -128,9 +141,113 @@ def _resolve_size_value(
             raise APIError(str(e), None, "invalid_size", retryable=False) from e
 
     if resolution:
+        if model.lower().startswith("gpt-image-2") and resolution in {"1K", "2K", "4K"}:
+            try:
+                return derive_custom_size_from_preset_params(
+                    resolution, aspect_ratio or settings.get("aspect_ratio") or "1:1"
+                )
+            except ValueError as exc:
+                raise APIError(
+                    str(exc), error_type="invalid_size", retryable=False
+                ) from exc
         size_map = _get_size_mapping(model)
         return size_map.get(resolution, resolution)
     return None
+
+
+async def read_images_response(*, response: aiohttp.ClientResponse) -> dict[str, Any]:
+    """Read native Images events; only completed events contain final images."""
+    if "text/event-stream" not in response.headers.get("Content-Type", "").lower():
+        result = json.loads(await response.text())
+        if not isinstance(result, dict):
+            raise ValueError("Images API response must be an object")
+        return result
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    pending = ""
+    lines: list[str] = []
+
+    async def consume():
+        if not lines:
+            return None
+        raw = "\n".join(lines)
+        lines.clear()
+        if raw.strip() == "[DONE]":
+            return None
+        event = json.loads(raw)
+        kind = event.get("type", "")
+        if kind in {"image_generation.partial_image", "image_edit.partial_image"}:
+            await emit_generation_preview(
+                event.get("b64_json"), event.get("output_format") or "png"
+            )
+        elif kind in {"image_generation.completed", "image_edit.completed"}:
+            return (
+                {**event, "data": [{"b64_json": event.get("b64_json")}]}
+                if event.get("b64_json")
+                else {"error": {"message": "图片完成事件缺少图片数据"}}
+            )
+        elif kind == "error":
+            return {"error": event.get("error") or event}
+        return None
+
+    async for chunk in response.content.iter_any():
+        pending += decoder.decode(chunk)
+        while "\n" in pending:
+            line, pending = pending.split("\n", 1)
+            line = line.rstrip("\r")
+            if not line:
+                result = await consume()
+                if result is not None:
+                    return result
+            elif line.startswith("data:"):
+                lines.append(line[5:].lstrip(" "))
+    pending += decoder.decode(b"", final=True)
+    if pending.startswith("data:"):
+        lines.append(pending[5:].lstrip(" ").rstrip("\r"))
+    result = await consume()
+    if result is not None:
+        return result
+    raise APIError(
+        "图片流中断，结果未知，已停止自动重试。",
+        error_type="outcome_unknown",
+        retryable=False,
+    )
+
+
+def _gpt_request_options(
+    config: ApiRequestConfig, settings: dict[str, Any]
+) -> dict[str, Any]:
+    model = config.model or "gpt-image-2.5-flare"
+    options = gpt_image_output_options(
+        model, {**settings, "quality": config.quality or settings.get("quality")}
+    )
+    count = settings.get("n", config.effective_image_count)
+    if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 10:
+        raise APIError(
+            "GPT Image 的 n 必须为 1–10。",
+            error_type="invalid_parameter",
+            retryable=False,
+        )
+    options["n"] = count
+    if settings.get("stream", False):
+        if count != 1:
+            raise APIError(
+                "流式图片请求每次生成一张，多图请使用插件批量调度。",
+                error_type="invalid_parameter",
+                retryable=False,
+            )
+        partial = settings.get("partial_images", 0)
+        if (
+            isinstance(partial, bool)
+            or not isinstance(partial, int)
+            or not 0 <= partial <= 3
+        ):
+            raise APIError(
+                "partial_images 必须为 0–3。",
+                error_type="invalid_parameter",
+                retryable=False,
+            )
+        options.update(stream=True, partial_images=partial)
+    return options
 
 
 class OpenAIImagesProvider:
@@ -226,7 +343,15 @@ class OpenAIImagesProvider:
             )
 
         # ---------- 推断输出格式 ----------
-        resp_output_format = response_data.get("output_format") or ""
+        resp_output_format = (
+            response_data.get("output_format")
+            or (
+                (request_config.provider_settings or {}).get("output_format")
+                if request_config
+                else ""
+            )
+            or ""
+        )
         save_ext = (
             resp_output_format
             if resp_output_format in {"png", "jpeg", "webp"}
@@ -264,7 +389,7 @@ class OpenAIImagesProvider:
                 continue
 
             # 优先处理 URL
-            if "url" in image_item:
+            if image_item.get("url"):
                 image_url = image_item["url"]
                 if isinstance(image_url, str) and image_url:
                     if client._request_has_proxy(request_config):
@@ -292,6 +417,13 @@ class OpenAIImagesProvider:
                         logger.debug(
                             f"[openai_images] base64 图片 ({save_ext}): {len(b64_data)} 字节"
                         )
+                    else:
+                        raise APIError(
+                            "图片已生成但保存失败，已停止自动重试。",
+                            http_status,
+                            "outcome_unknown",
+                            retryable=False,
+                        )
 
             # 记录修订后的提示词（dall-e-3 only）
             revised = image_item.get("revised_prompt")
@@ -313,8 +445,9 @@ class OpenAIImagesProvider:
         logger.warning(f"[openai_images] 未返回图片: {error_msg}")
         raise APIError(
             f"图像生成失败: {error_msg}",
-            error_obj.get("code") if isinstance(error_obj, dict) else None,
+            http_status,
             "no_image",
+            error_obj.get("code") if isinstance(error_obj, dict) else None,
             retryable=False,
         )
 
@@ -326,7 +459,7 @@ class OpenAIImagesProvider:
         settings: dict[str, Any],
     ) -> dict[str, Any]:  # noqa: ANN401
         """构建 /v1/images/generations 请求体"""
-        model = config.model or "gpt-image-1"
+        model = config.model or "gpt-image-2.5-flare"
         payload: dict[str, Any] = {
             "model": model,
             "prompt": config.prompt,
@@ -338,6 +471,7 @@ class OpenAIImagesProvider:
             config.resolution,
             settings,
             suppress_resolution=config.suppress_resolution,
+            aspect_ratio=config.aspect_ratio,
         )
         if size_value:
             payload["size"] = size_value
@@ -360,27 +494,11 @@ class OpenAIImagesProvider:
         # ---- GPT image 模型专属参数 ----
         is_gpt = _is_gpt_image_model(model)
 
-        background = str(settings.get("background") or "").strip()
-        if background and is_gpt:
-            payload["background"] = background
-
-        output_format = str(settings.get("output_format") or "").strip()
-        if output_format and is_gpt:
-            payload["output_format"] = output_format
-
-        try:
-            output_compression = int(settings.get("output_compression", 0))
-        except (TypeError, ValueError):
-            output_compression = 0
-        if output_compression > 0 and is_gpt and output_format in {"jpeg", "webp"}:
-            payload["output_compression"] = min(output_compression, 100)
-
-        moderation = str(settings.get("moderation") or "").strip()
-        if moderation and is_gpt:
-            payload["moderation"] = moderation
+        if is_gpt:
+            payload.update(_gpt_request_options(config, settings))
 
         # ---- seed ----
-        if config.seed is not None:
+        if config.seed is not None and not is_gpt:
             payload["seed"] = config.seed
 
         logger.debug(
@@ -402,11 +520,16 @@ class OpenAIImagesProvider:
         返回 payload dict 中包含 ``_multipart`` 标记和 ``_form_data`` 对象，
         由 tl_api._perform_request 识别并切换为 FormData 发送。
         """
-        model = config.model or "gpt-image-1"
+        model = config.model or "gpt-image-2.5-flare"
         form = aiohttp.FormData()
 
         # ---- image (required): 第一张参考图 ----
-        ref_images = config.reference_images or []
+        limit = (
+            min(max(int(settings.get("max_reference_images", 6)), 1), 16)
+            if _is_gpt_image_model(model)
+            else 1
+        )
+        ref_images = (config.reference_images or [])[:limit]
         if not ref_images:
             raise APIError(
                 "/v1/images/edits 需要至少一张参考图",
@@ -426,10 +549,10 @@ class OpenAIImagesProvider:
                 retryable=False,
             )
         form.add_field(
-            "image",
+            "image[]" if _is_gpt_image_model(model) else "image",
             image_data,
-            filename="image.png",
-            content_type="image/png",
+            filename="image." + self._image_format(image_data),
+            content_type="image/" + self._image_format(image_data),
         )
 
         # ---- 多图支持 (GPT image 模型支持多张 image) ----
@@ -440,10 +563,10 @@ class OpenAIImagesProvider:
                 )
                 if extra_data:
                     form.add_field(
-                        "image",
+                        "image[]",
                         extra_data,
-                        filename=f"image_{idx}.png",
-                        content_type="image/png",
+                        filename=f"image_{idx}." + self._image_format(extra_data),
+                        content_type="image/" + self._image_format(extra_data),
                     )
 
         # ---- prompt ----
@@ -462,16 +585,22 @@ class OpenAIImagesProvider:
             settings,
             ref_image_dims=ref_dims,
             suppress_resolution=config.suppress_resolution,
+            aspect_ratio=config.aspect_ratio,
         )
         if size_value:
             form.add_field("size", size_value)
 
-        response_format = str(settings.get("response_format") or "b64_json").strip()
-        form.add_field("response_format", response_format)
-
-        quality = str(settings.get("quality") or "").strip()
-        if quality:
-            form.add_field("quality", quality)
+        if _is_gpt_image_model(model):
+            for key, value in _gpt_request_options(config, settings).items():
+                form.add_field(
+                    key, str(value).lower() if isinstance(value, bool) else str(value)
+                )
+        else:
+            response_format = str(settings.get("response_format") or "b64_json").strip()
+            form.add_field("response_format", response_format)
+            quality = str(settings.get("quality") or "").strip()
+            if quality:
+                form.add_field("quality", quality)
 
         logger.debug(
             f"[openai_images] edits payload: model={model} ref_images={len(ref_images)} "
@@ -485,6 +614,14 @@ class OpenAIImagesProvider:
             "model": model,
             "prompt": config.prompt,
         }
+
+    @staticmethod
+    def _image_format(data: bytes) -> str:
+        if data.startswith(b"\xff\xd8\xff"):
+            return "jpeg"
+        if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+            return "webp"
+        return "png"
 
     @staticmethod
     def _probe_image_dims(image_bytes: bytes | None) -> tuple[int, int] | None:
