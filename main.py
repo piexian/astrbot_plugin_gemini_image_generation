@@ -54,10 +54,12 @@ from .tl.enhanced_prompts import (
     get_style_change_prompt,
     get_wallpaper_prompt,
 )
+from .tl.generation_scheduler import GenerationScheduler
 from .tl.generation_tracker import GenerationTracker, requester_from_event
 from .tl.llm_query_tools import BackgroundTaskStatusTool, ProviderModelQueryTool
 from .tl.llm_tools import GeminiImageGenerationTool
 from .tl.plugin_config import get_session_tool_timeout, max_configured_reference_images
+from .tl.plugin_service import ImageGenerationService, PluginServiceError
 from .tl.provider_capabilities import select_candidates
 from .tl.provider_runtime import ProviderRuntime, provider_operation
 from .tl.provider_settings import candidate_is_keyless
@@ -109,6 +111,10 @@ class GeminiImageGenerationPlugin(Star):
 
         # 加载配置（传入数据目录用于备份）
         self.cfg = ConfigLoader(config or {}, data_dir=self._plugin_data_dir).load()
+        self.generation_scheduler = GenerationScheduler(
+            self.cfg.generation_max_concurrency, self.cfg.generation_max_queue_size
+        )
+        self._public_service = ImageGenerationService(self)
         # 生成图保留区的容量上限（写图时按需清理）
         set_image_cache_max_size_mb(self.cfg.image_cache_max_size_mb)
         self.background_task_manager = BackgroundTaskManager(
@@ -148,6 +154,13 @@ class GeminiImageGenerationPlugin(Star):
 
         # 插件重载不会再次触发 AstrBot 全局 loaded hook，因此必须在构造期注册。
         self._register_web_studio_routes()
+        self._public_service.initialized()
+
+    def get_service(self, api_version: int = 1) -> ImageGenerationService:
+        """获取公开服务；调用前通过 get_status()/wait_ready() 确认可用状态。"""
+        if type(api_version) is not int or api_version != 1:
+            raise PluginServiceError("unsupported_version", "仅支持插件生图接口 v1")
+        return self._public_service
 
     def _cleanup_legacy_cache_dirs(self):
         """清理旧版本插件数据目录下的缓存（已迁移到 AstrBot 临时目录）。
@@ -348,6 +361,9 @@ class GeminiImageGenerationPlugin(Star):
             logger.warning(f"注册 LLM 工具失败: {e}，将使用装饰器方式")
 
     def _provider_jobs_busy(self) -> bool:
+        scheduler = getattr(self, "generation_scheduler", None)
+        if scheduler is not None and scheduler.busy:
+            return True
         for service in (self.web_studio_service, self.background_task_manager):
             if any(not task.done() for task in service._runtime_tasks.values()):
                 return True
@@ -404,6 +420,8 @@ class GeminiImageGenerationPlugin(Star):
         """插件卸载/重载时调用"""
         self._web_closed = True
         self.provider_runtime.closed = True
+        await self._public_service.close()
+        await self.generation_scheduler.close()
         if self.studio_providers is not None:
             await self.studio_providers.close()
         # 已开始的配置事务先完成，避免关闭资源时仍在切换客户端。
@@ -422,13 +440,13 @@ class GeminiImageGenerationPlugin(Star):
             logger.debug(f"[WebUI] 工作台路由注销失败: {e}")
         self._web_routes = []
         try:
-            await self.generation_tracker.close()
-        except Exception as e:
-            logger.debug(f"关闭生成历史追踪器失败: {e}")
-        try:
             await self.background_task_manager.close()
         except Exception as e:
             logger.debug(f"关闭后台任务管理器失败: {e}")
+        try:
+            await self.generation_tracker.close()
+        except Exception as e:
+            logger.debug(f"关闭生成历史追踪器失败: {e}")
         if self.api_client and hasattr(self.api_client, "close"):
             try:
                 await self.api_client.close()
@@ -497,6 +515,7 @@ class GeminiImageGenerationPlugin(Star):
         ):
             self.api_client = get_api_client(all_api_keys)
             self.api_client.provider_runtime = self.provider_runtime
+            self.api_client.generation_scheduler = self.generation_scheduler
             self.api_client.api_keys = all_api_keys
             self.api_client.set_provider_candidates(
                 usable_candidates,

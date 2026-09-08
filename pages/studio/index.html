@@ -244,8 +244,14 @@
                 <option value="command">指令触发 (command)</option>
                 <option value="llm_tool">LLM 工具 (llm_tool)</option>
                 <option value="llm_batch">LLM 批量 (llm_batch)</option>
+                <option value="plugin">插件调用 (plugin)</option>
                 <option value="legacy">历史图片 (legacy)</option>
               </select>
+            </div>
+            <div class="filter-item">
+              <label for="gallery-plugin-input" class="form-label">插件标识</label>
+              <input type="text" id="gallery-plugin-input" class="comic-input"
+                     maxlength="128" placeholder="全部插件" aria-label="按插件标识筛选">
             </div>
             <div class="filter-item">
               <label for="gallery-group-input" class="form-label">群组 ID</label>

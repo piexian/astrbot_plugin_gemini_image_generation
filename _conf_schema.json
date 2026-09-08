@@ -2103,6 +2103,18 @@
           "step": 1
         }
       },
+      "generation_max_concurrency": {
+        "description": "全入口生成并发上限",
+        "hint": "指令、LLM、Studio 与外部插件共享的生成执行槽。修改后重载插件生效。",
+        "type": "int",
+        "default": 3
+      },
+      "generation_max_queue_size": {
+        "description": "全入口生成队列上限",
+        "hint": "不含执行中的请求。队列满时拒绝新请求；排队不占供应商请求超时。修改后重载插件生效。",
+        "type": "int",
+        "default": 100
+      },
       "background_task_retention_hours": {
         "description": "后台任务记录保留小时数",
         "type": "int",

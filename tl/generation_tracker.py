@@ -28,7 +28,7 @@ TERMINAL_STATUSES = {
     "failed",
     "interrupted",
 }
-_KNOWN_SOURCES = {"command", "llm_tool", "llm_batch", "webui"}
+_KNOWN_SOURCES = {"command", "llm_tool", "llm_batch", "webui", "plugin"}
 _SAFE_FILE_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 _PARAM_KEYS = (
     "resolution",
@@ -81,6 +81,7 @@ class TrackingContext:
     source: str
     parent_job_id: str | None = None
     item_name: str | None = None
+    managed_externally: bool = False
 
 
 _TRACKING_CONTEXT: ContextVar[TrackingContext | None] = ContextVar(
@@ -94,11 +95,14 @@ def tracking_context(
     source: str,
     parent_job_id: str | None = None,
     item_name: str | None = None,
+    *,
+    managed_externally: bool = False,
 ) -> Iterator[TrackingContext]:
     """在当前异步调用链中传播任务来源和父子关系。"""
     current = _TRACKING_CONTEXT.get()
     value = TrackingContext(
         source=source if source in _KNOWN_SOURCES else "command",
+        managed_externally=managed_externally,
         parent_job_id=_bounded_text(
             parent_job_id
             if parent_job_id is not None
@@ -289,7 +293,7 @@ class GenerationTracker:
         changed: list[dict[str, Any]] = []
         finished_at = _timestamp()
         for record in self._jobs.values():
-            if record.get("status") != "running":
+            if record.get("status") not in {"queued", "running"}:
                 continue
             record["status"] = "interrupted"
             record["finished_at"] = finished_at
@@ -331,7 +335,7 @@ class GenerationTracker:
         for group in ordered_groups:
             if len(self._jobs) <= self.max_records:
                 break
-            if any(record.get("status") == "running" for record in group):
+            if any(record.get("status") in {"queued", "running"} for record in group):
                 continue
             if protected.intersection(
                 name for record in group for name in record.get("images") or []
@@ -385,6 +389,9 @@ class GenerationTracker:
             "user_name": _bounded_text(source.get("user_name"), 200),
             "group_id": group_id,
             "chat_type": chat_type,
+            **(
+                {"umo": _bounded_text(source["umo"], 1024)} if source.get("umo") else {}
+            ),
         }
 
     @staticmethod
@@ -422,6 +429,7 @@ class GenerationTracker:
         parent_job_id: str | None = None,
         item_name: str | None = None,
         requested_images: int = 1,
+        caller: dict[str, str] | None = None,
         reference_names: list[str] | None = None,
     ) -> dict[str, Any]:
         if self._closed:
@@ -433,6 +441,12 @@ class GenerationTracker:
                 "parent_job_id": _bounded_text(parent_job_id, 128) or None,
                 "item_name": _bounded_text(item_name, 64) or None,
                 "source": source if source in _KNOWN_SOURCES else "command",
+                "caller": {
+                    "plugin_id": _bounded_text((caller or {}).get("plugin_id"), 128),
+                    "plugin_name": _bounded_text(
+                        (caller or {}).get("plugin_name"), 200
+                    ),
+                },
                 "status": "running",
                 "prompt": _bounded_text(prompt, 2000),
                 "params": self._clean_params(params),
@@ -492,6 +506,7 @@ class GenerationTracker:
                 "error",
                 "stats",
                 "source_urls",
+                "callback_status",
             }
             for key, value in changes.items():
                 if key not in allowed:
@@ -511,7 +526,12 @@ class GenerationTracker:
                     record[key] = self._clean_images(value)
                 elif key == "source_urls":
                     record[key] = self._clean_source_urls(value)
-                elif key == "status" and value in TERMINAL_STATUSES | {"running"}:
+                elif key == "callback_status":
+                    record[key] = _bounded_text(value, 32)
+                elif key == "status" and value in TERMINAL_STATUSES | {
+                    "queued",
+                    "running",
+                }:
                     record[key] = value
             if record.get("status") in TERMINAL_STATUSES:
                 finished_at = str(record.get("finished_at") or _timestamp())
@@ -600,7 +620,7 @@ class GenerationTracker:
         cutoff = _now() - timedelta(hours=max(int(hours), 1))
         records = []
         for record in self._jobs.values():
-            if record.get("status") == "running":
+            if record.get("status") in {"queued", "running"}:
                 records.append(record)
                 continue
             finished = _parse_timestamp(
@@ -623,6 +643,7 @@ class GenerationTracker:
         source: str,
         group_id: str,
         user_id: str,
+        plugin_id: str = "",
     ) -> dict[str, Any]:
         page = min(max(int(page), 1), 100)
         size = min(max(int(size), 1), 100)
@@ -635,6 +656,9 @@ class GenerationTracker:
             if record.get("status") == "failed":
                 continue
             requester = record.get("requester") or {}
+            caller = record.get("caller") or {}
+            if plugin_id and caller.get("plugin_id") != plugin_id:
+                continue
             if source and record.get("source") != source:
                 continue
             if group_id and str(requester.get("group_id") or "") != group_id:
@@ -649,6 +673,8 @@ class GenerationTracker:
                         record.get("item_name"),
                         requester.get("user_name"),
                         record.get("error"),
+                        caller.get("plugin_id"),
+                        caller.get("plugin_name"),
                     )
                 ).casefold()
                 if keyword not in haystack:
@@ -691,7 +717,9 @@ class GenerationTracker:
                 if not targets:
                     failed.append({"job_id": job_id, "error": "记录不存在"})
                     continue
-                if any(record.get("status") == "running" for record in targets):
+                if any(
+                    record.get("status") in {"queued", "running"} for record in targets
+                ):
                     failed.append({"job_id": job_id, "error": "运行中的任务不能删除"})
                     continue
                 with self.gallery_lock:

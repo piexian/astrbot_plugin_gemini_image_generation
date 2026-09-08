@@ -92,6 +92,10 @@ v2.0.0 起，插件只使用 `供应商配置` 中配置的生图供应商。
 
 ### 前台/后台混合模式
 
+指令、LLM、Studio 与外部插件共用生成执行槽；等待执行槽时工作台显示“排队中”。排队不占供应商请求超时，LLM 前台等待仍按实际时间计算。外部插件任务由调用插件自行使用结果，不默认反向激活聊天 Agent，接入方式见 [其他插件接入指南](plugin-api.md)。
+
+工作台任务、画廊及图片详情会记录外部插件身份；可在画廊选择“插件调用”来源、填写插件标识或搜索名称。会话及使用者只在调用方提供时展示，回调失败不会覆盖生图结果。
+
 LLM 工具会根据当前 `tool_call_timeout` 和 `llm_tool_timeout_reserve_percent` 计算前台等待窗口：
 
 超时取自当前会话绑定的 AstrBot 配置，优先读取 `agent_runner.config.misc.tool_call_timeout`，兼容旧版的 `provider_settings.tool_call_timeout`。例如工具超时为 300 秒、预留比例为 75% 时，前台等待 75 秒。后台生成的总超时仍由插件的 `total_timeout` 控制。

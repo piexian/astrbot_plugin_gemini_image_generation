@@ -935,6 +935,7 @@ code, kbd, samp, pre, .mono {
 }
 
 .status-pill--running { background-color: var(--pop); color: var(--pop-ink); }
+.status-pill--queued { background-color: var(--warn); color: var(--status-ink); }
 .status-pill--succeeded { background-color: var(--ok); color: var(--status-ink); }
 .status-pill--partial_success { background-color: var(--warn); color: var(--status-ink); }
 .status-pill--failed { background-color: var(--accent); color: var(--status-ink); }

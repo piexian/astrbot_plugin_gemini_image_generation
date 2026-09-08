@@ -19,6 +19,7 @@
 - **多供应商支持**：Google Gemini、Gemini Interactions（Nano Banana 系列）、Vertex AI（服务账号 JSON / Express API Key 双认证）、OpenAI 兼容、OpenAI Images、Agnes AI、xAI Images、MiniMax、阶跃星辰、豆包、SenseNova、DashScope（通义万相/千问图像/z-image）。
 - **供应商与模型路由**：支持供应商、原始模型或别名选择；未指定时按配置轮询，显式指定时只在匹配候选内重试。
 - **LLM 工具集成**：支持自然语言生图、参数能力查询、后台任务查询和命名批量生成；前台超时后返回任务号并继续生成。
+- **插件接入接口**：其他 AstrBot 插件可获取公开服务实例、查询就绪状态并提交后台生图任务，支持查询、等待及完成回调；会话与使用者信息可选。详见 [其他插件接入指南](docs/plugin-api.md)。
 - **表情包切分**：内置 SmartMemeSplitter v4，默认优先走自适应黑描边贴纸切分，并保留手动网格、视觉识别等兜底路径。
 - **限流与缓存**：支持群白名单/黑名单、全插件共享额度与 UMO 会话限流叠加、KV 持久化；Studio 统一管理群限制模式、群号名单与限流规则，可搜索本体已有会话并即时保存。生成图保留在插件数据目录并按容量自动清理，临时文件统一写入 AstrBot 临时目录。
 - **内置 WebUI 创作台**：Dashboard 插件页「studio」——在线工作台（模型扁平直选、临时生成参数弹窗确认、单图多张与批量生成、参考图上传/画廊拾取）、全来源生成任务实时进度（SSE）、历史画廊（筛选/灯箱/下载/删除/再次生成/用作参考图）；生成历史持久化归档，存量图片自动迁入，运行任务使用的上传参考图受租约保护。详见 [使用指南](docs/usage.md#webui-创作台)。
@@ -57,12 +58,13 @@ https://github.com/piexian/astrbot_plugin_gemini_image_generation
 - 可选配置 `provider_settings.provider_polling`，按列表从上到下自动尝试生成；重复供应商会自动去重，未知供应商会记录错误并跳过；
 - 使用 `openai_images`、`doubao` 或 `dashscope` 且 `size_mode=custom` 时，配置界面只显示 `custom_size`，避免混用通用分辨率字段。
 
-常用配置入口：
+文档索引：
 
 - [完整配置参考](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/config.md)
 - [使用指南](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/usage.md)
 - [故障排除](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/troubleshooting.md)
 - [新增 API 供应商](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/新增API供应商.md)
+- [其他插件接入指南（API v1）](docs/plugin-api.md)
 
 ## 常用命令
 

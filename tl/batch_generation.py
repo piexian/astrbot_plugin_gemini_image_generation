@@ -193,10 +193,9 @@ async def run_batch_job(
             )
             if status == "interrupted":
                 for record in tracker.records_snapshot():
-                    if (
-                        record.get("parent_job_id") == parent_job_id
-                        and record.get("status") == "running"
-                    ):
+                    if record.get("parent_job_id") == parent_job_id and record.get(
+                        "status"
+                    ) in {"queued", "running"}:
                         await tracker.update(
                             record["job_id"], status="interrupted", error=error
                         )

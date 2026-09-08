@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from astrbot.api import logger
 
+from .generation_scheduler import generation_progress
 from .generation_tracker import current_tracking_context, requester_from_event
 from .thought_signature import log_thought_signature_debug
 from .tl_api import APIError, ApiRequestConfig
@@ -127,6 +128,8 @@ class ImageGenerator:
         if self.tracker is None:
             return None
         context = current_tracking_context()
+        if context and context.managed_externally:
+            return None
         source = (
             context.source if context else ("llm_tool" if is_tool_call else "command")
         )
@@ -379,17 +382,21 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
                 f"超时配置: is_tool_call={is_tool_call}, per_retry_timeout={per_retry_timeout}s, max_retries={self.max_attempts_per_key}, max_total_time={max_total_time}s"
             )
 
-            (
-                image_urls,
-                image_paths,
-                text_content,
-                thought_signature,
-            ) = await self.api_client.generate_image(
-                config=request_config,
-                max_retries=self.max_attempts_per_key,
-                per_retry_timeout=per_retry_timeout,
-                max_total_time=max_total_time,
-            )
+            async def progress(status):
+                await self.tracker.update(tracking_job_id, status=status)
+
+            with generation_progress(progress if tracking_job_id else None):
+                (
+                    image_urls,
+                    image_paths,
+                    text_content,
+                    thought_signature,
+                ) = await self.api_client.generate_image(
+                    config=request_config,
+                    max_retries=self.max_attempts_per_key,
+                    per_retry_timeout=per_retry_timeout,
+                    max_total_time=max_total_time,
+                )
             self._set_request_stats(
                 {
                     "retry_count": request_config.retry_count,

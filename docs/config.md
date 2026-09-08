@@ -99,10 +99,14 @@ google / gemini_interactions / vertex / openai / agnes_ai / xai / minimax / step
 | `batch_max_images_per_task` | `10` | 单个命名提示词的目标图片数量上限；供应商原生单次上限更小时自动拆分补齐 |
 | `batch_max_tasks` | `20` | 一次 `batch_tasks` 允许的命名任务条目上限 |
 | `batch_concurrency` | `3` | 后台批量生成并发数；每个条目内部按供应商单次上限顺序补齐 |
+| `generation_max_concurrency` | `3` | 指令、LLM、Studio 与外部插件共用的生成执行槽上限；重载生效 |
+| `generation_max_queue_size` | `100` | 全入口等待队列容量，不含执行请求；排队不占供应商请求超时，满时拒绝提交；重载生效 |
 | `background_task_retention_hours` | `24` | 后台任务状态记录保留时间；插件重启会把未完成任务标记为 `interrupted` |
 | `background_failure_notify_llm` | `true` | 无图片产出的后台生图失败时，由 AI 重新组织语言告知用户；回灌不可用时发送简短失败提示，关闭时直发错误文本。有图片产出的后台结果始终反向激活 AI，要求调用 `send_message_to_user` 发送图片 |
 
 分辨率、长宽比、最大参考图数量、Google 文本响应、Google 搜索接地、OpenAI/OpenAI 兼容参数名等均在 `provider_settings.provider_overrides` 的各供应商条目内配置。
+
+外部插件默认自行限流，显式选择接入后才扣本插件额度：有完整 UMO 时匹配会话规则，无 UMO 时按稳定插件标识独立应用默认限流。全局限流开启时额外叠加，关闭时默认限流仍生效。默认规则无需为每个插件重复配置，详见 [其他插件接入指南](plugin-api.md#限流与并发)。
 
 ### LLM 工具本地路径参考图
 

@@ -25,6 +25,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 from .api_types import ApiRequestConfig
 from .file_uri import file_uri_to_path
+from .generation_scheduler import generation_progress
 from .generation_tracker import (
     TERMINAL_STATUSES,
     GenerationTracker,
@@ -824,7 +825,7 @@ class WebStudioService:
             )
             for child_job_id, _ in child_jobs:
                 record = self.tracker.get(child_job_id)
-                if record and record.get("status") == "running":
+                if record and record.get("status") in {"queued", "running"}:
                     await self.tracker.update(
                         child_job_id,
                         status="interrupted",
@@ -871,19 +872,24 @@ class WebStudioService:
                     generation_settings=payload.get("generation_settings") or None,
                     image_count=remaining,
                 )
+
+                async def progress(status):
+                    await self.tracker.update(job_id, status=status)
+
                 async with self._api_semaphore:
-                    result = await self.api_client.generate_image(
-                        config=request_config,
-                        max_retries=_positive_int(
-                            getattr(self.config, "max_attempts_per_key", 3), 3
-                        ),
-                        per_retry_timeout=_positive_int(
-                            getattr(self.config, "total_timeout", 120), 120
-                        ),
-                        max_total_time=_positive_int(
-                            getattr(self.config, "total_timeout", 120), 120
-                        ),
-                    )
+                    with generation_progress(progress):
+                        result = await self.api_client.generate_image(
+                            config=request_config,
+                            max_retries=_positive_int(
+                                getattr(self.config, "max_attempts_per_key", 3), 3
+                            ),
+                            per_retry_timeout=_positive_int(
+                                getattr(self.config, "total_timeout", 120), 120
+                            ),
+                            max_total_time=_positive_int(
+                                getattr(self.config, "total_timeout", 120), 120
+                            ),
+                        )
                 image_urls, image_paths, text_content, _signature = result
                 # 部分供应商会把同一本地文件同时放入两个列表，计数前先去重。
                 returned = dict.fromkeys(
@@ -1314,7 +1320,7 @@ class WebStudioService:
             names = {
                 str(name) for record in group for name in record.get("images") or []
             }
-            if any(record.get("status") == "running" for record in group):
+            if any(record.get("status") in {"queued", "running"} for record in group):
                 protected.update(names)
         for group in ordered:
             if total <= maximum:

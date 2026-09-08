@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
 import uuid
@@ -75,6 +76,9 @@ class BackgroundTaskManager:
         changed = False
         now_text = _timestamp()
         for record in self._records.values():
+            if record.get("callback_status") in {"pending", "running"}:
+                record["callback_status"] = "interrupted"
+                changed = True
             if record.get("status") in {"queued", "running"}:
                 record["status"] = "interrupted"
                 record["updated_at"] = now_text
@@ -86,6 +90,11 @@ class BackgroundTaskManager:
         cutoff = _now() - timedelta(hours=self.retention_hours)
         expired: list[str] = []
         for task_id, record in self._records.items():
+            if (
+                record.get("status") in {"queued", "running"}
+                or task_id in self._runtime_tasks
+            ):
+                continue
             value = record.get("updated_at") or record.get("created_at")
             try:
                 updated_at = datetime.fromisoformat(str(value))
@@ -108,6 +117,7 @@ class BackgroundTaskManager:
         routing_mode: str,
         message: str,
         total_items: int = 1,
+        plugin_id: str | None = None,
     ) -> dict[str, Any]:
         async with self._lock:
             self._prune_expired()
@@ -129,9 +139,11 @@ class BackgroundTaskManager:
                 "current_item": None,
                 "items": [],
             }
+            if plugin_id is not None:
+                record["plugin_id"] = plugin_id
             self._records[task_id] = record
             await self._save()
-            return dict(record)
+            return copy.deepcopy(record)
 
     async def update(self, task_id: str, **changes: Any) -> dict[str, Any] | None:
         async with self._lock:
@@ -141,7 +153,7 @@ class BackgroundTaskManager:
             record.update(changes)
             record["updated_at"] = _timestamp()
             await self._save()
-            return dict(record)
+            return copy.deepcopy(record)
 
     async def get(self, task_id: str, session_id: str) -> dict[str, Any] | None:
         async with self._lock:
@@ -151,9 +163,24 @@ class BackgroundTaskManager:
             record = self._records.get(str(task_id or "").strip())
             if record is None:
                 return None
-            if record.get("session_id") != str(session_id or "unknown"):
+            if record.get("plugin_id") or record.get("session_id") != str(
+                session_id or "unknown"
+            ):
                 raise PermissionError("任务不存在或不属于当前会话")
-            return dict(record)
+            return copy.deepcopy(record)
+
+    async def get_for_plugin(
+        self, task_id: str, plugin_id: str
+    ) -> dict[str, Any] | None:
+        async with self._lock:
+            if self._prune_expired():
+                await self._save()
+            record = self._records.get(task_id)
+            if record is None:
+                return None
+            if record.get("plugin_id") != plugin_id:
+                raise PermissionError("任务不属于当前插件")
+            return copy.deepcopy(record)
 
     def attach(
         self,

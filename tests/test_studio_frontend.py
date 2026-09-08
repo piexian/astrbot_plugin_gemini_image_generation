@@ -56,6 +56,10 @@ assert.deepEqual(SafeDOM.requesterLabels({user_id: '10001'}, 'command'),
 assert.deepEqual(SafeDOM.requesterLabels({user_name: 'admin'}, 'webui'),
   ['工作台提交', '用户: admin']);
 assert.deepEqual(SafeDOM.requesterLabels(undefined, 'legacy'), ['会话类型未知']);
+assert.deepEqual(SafeDOM.requesterLabels({}, 'plugin'), []);
+assert.deepEqual(SafeDOM.requesterLabels({umo: 'qq:GroupMessage:1', user_name: '小明'}, 'plugin'), ['会话: qq:GroupMessage:1', '用户: 小明']);
+assert.equal(SafeDOM.sourceLabel('plugin', {plugin_id: 'story', plugin_name: '故事插件'}), '插件调用 · 故事插件');
+assert.equal(SafeDOM.sourceLabel('plugin', {plugin_id: 'story'}), '插件调用 · story');
 assert.deepEqual(SafeDOM.requesterLabels({user_name: '<img onerror=alert(1)>'}, 'command'),
   ['会话类型未知', '用户: <img onerror=alert(1)>']);
 """

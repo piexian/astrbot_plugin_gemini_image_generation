@@ -604,6 +604,8 @@ async def test_plugin_closes_limiter_after_request_producers(command_plugin):
     plugin.studio_providers = None
     plugin.provider_runtime = SimpleNamespace(closed=False)
     plugin.configuration_lock = asyncio.Lock()
+    plugin._public_service = module("service")
+    plugin.generation_scheduler = module("scheduler")
     plugin.web_studio_service = module("studio")
     plugin.generation_tracker = module("tracker")
     plugin.background_task_manager = module("background")
@@ -612,7 +614,16 @@ async def test_plugin_closes_limiter_after_request_producers(command_plugin):
     await plugin.terminate()
     assert plugin._web_closed
     assert closed[-1] == "limiter"
-    assert set(closed) == {"studio", "tracker", "background", "api", "limiter"}
+    assert set(closed) == {
+        "service",
+        "scheduler",
+        "studio",
+        "tracker",
+        "background",
+        "api",
+        "limiter",
+    }
+    assert closed.index("background") < closed.index("tracker")
 
 
 @pytest.mark.asyncio
