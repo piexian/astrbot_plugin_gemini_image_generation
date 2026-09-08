@@ -16,7 +16,7 @@
 - **多模式图像生成**：纯文本生图、参考图改图、风格转换、手办化、表情包生成。
 - **快速预设**：头像、海报、壁纸、卡片、手机壁纸、手办化、表情包一键生成。
 - **智能参考图**：自动读取消息图片、引用图片、合并转发、群文件，以及用户头像和 @ 对象头像。
-- **多供应商支持**：Google Gemini、Gemini Interactions（Nano Banana 系列）、Vertex AI（服务账号 JSON / Express API Key 双认证）、OpenAI 兼容、OpenAI Images、Agnes AI、xAI Images、MiniMax、阶跃星辰、豆包、SenseNova、SenseAudio（同步 / 异步图片生成）、DashScope（通义万相/千问图像/z-image）。
+- **多供应商支持**：Google Gemini、Gemini Interactions（Nano Banana 系列）、Vertex AI（服务账号 JSON / Express API Key 双认证）、OpenAI 兼容、OpenAI Images、OpenAI Responses（可自定义顶层模型与生图模型）、Agnes AI、xAI Images、MiniMax、阶跃星辰、豆包、SenseNova、SenseAudio（同步 / 异步图片生成）、DashScope（通义万相/千问图像/z-image）。
 - **供应商与模型路由**：支持供应商、原始模型或别名选择；未指定时按配置轮询，显式指定时只在匹配候选内重试。
 - **LLM 工具集成**：支持自然语言生图、参数能力查询、后台任务查询和命名批量生成；前台超时后返回任务号并继续生成。
 - **插件接入接口**：其他 AstrBot 插件可获取公开服务实例、查询就绪状态并提交后台生图任务，支持查询、等待及完成回调；会话与使用者信息可选。详见 [其他插件接入指南](docs/plugin-api.md)。
@@ -56,7 +56,7 @@ https://github.com/piexian/astrbot_plugin_gemini_image_generation
 - 在 `provider_settings.provider_overrides` 中添加供应商模板（如 `google` / `openai_images` / `agnes_ai`），填入 `api_keys`、`model`、`api_base` 等字段；
 - 同类型可添加多条模板，通过 `priority` 控制优先级；相同优先级按配置表顺序尝试；
 - 可选配置 `provider_settings.provider_polling`，按列表从上到下自动尝试生成；重复供应商会自动去重，未知供应商会记录错误并跳过；
-- 使用 `openai_images`、`doubao` 或 `dashscope` 且 `size_mode=custom` 时，配置界面只显示 `custom_size`，避免混用通用分辨率字段。
+- 使用 `openai_images`、`openai_responses`、`doubao` 或 `dashscope` 且 `size_mode=custom` 时，配置界面只显示 `custom_size`，避免混用通用分辨率字段。
 
 接入 SenseAudio 时，添加 `senseaudio` 模板并填入 `api_keys` 即可使用默认 Image 2.0 模型；`request_mode` 可选同步或异步。模型尺寸限制和配置示例见 [SenseAudio 配置](docs/config.md#senseaudio图片生成专用配置)。
 
@@ -92,7 +92,7 @@ https://github.com/piexian/astrbot_plugin_gemini_image_generation
 各供应商的端点、参数、尺寸适配规则等完整说明见 [完整配置参考](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/config.md)：
 
 ```text
-google / gemini_interactions / vertex / openai / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova / senseaudio / dashscope / modelscope / siliconflow
+google / gemini_interactions / vertex / openai / agnes_ai / xai / minimax / stepfun / openai_images / openai_responses / doubao / sensenova / senseaudio / dashscope / modelscope / siliconflow
 ```
 
 ## 项目结构

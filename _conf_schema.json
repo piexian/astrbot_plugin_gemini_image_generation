@@ -18,6 +18,7 @@
           "minimax",
           "stepfun",
           "openai_images",
+          "openai_responses",
           "doubao",
           "sensenova",
           "senseaudio",
@@ -1297,6 +1298,150 @@
                 "type": "bool",
                 "hint": "开启后丢去所有参考图仅输入文本提示词进行生成。",
                 "default": false
+              }
+            }
+          },
+          "openai_responses": {
+            "description": "OpenAI Responses 生图",
+            "hint": "通过 Responses 的 image_generation 工具生成或编辑图片，两个模型名均可自由输入。",
+            "items": {
+              "enabled": {
+                "description": "启用此条配置",
+                "type": "bool",
+                "hint": "临时关闭本条模型配置而不删除它；关闭后该条不参与轮询和生图，同渠道其他条目不受影响。",
+                "default": true
+              },
+              "priority": {
+                "description": "优先级",
+                "type": "int",
+                "hint": "同类型供应商配置多条时按优先级从高到低尝试；相同优先级按配置表从上到下尝试。",
+                "default": 0
+              },
+              "api_keys": {
+                "description": "API Key 列表",
+                "type": "list",
+                "hint": "多个 API Key，支持轮换使用",
+                "default": []
+              },
+              "daily_limit_per_key": {
+                "description": "每个 Key 每日限额",
+                "type": "int",
+                "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
+                "default": 0
+              },
+              "model_alias": {
+                "description": "模型别名（可选）",
+                "type": "string",
+                "hint": "供指令和 LLM 工具选择模型使用；同一别名可在多个供应商中复用。实际请求仍发送原始模型名。",
+                "default": ""
+              },
+              "model": {
+                "description": "生图模型",
+                "type": "string",
+                "hint": "自由输入，传入 tools[].model；模型是否可用取决于服务商。",
+                "default": "gpt-image-2.5-flare"
+              },
+              "api_base": {
+                "description": "API 端点地址",
+                "type": "string",
+                "hint": "Responses 服务地址，支持域名根路径、/v1 或完整 /v1/responses 地址。",
+                "default": "https://api.openai.com"
+              },
+              "proxy": {
+                "description": "代理地址",
+                "type": "string",
+                "hint": "填写即启用代理，留空使用全局代理或环境变量。",
+                "default": ""
+              },
+              "resolution": {
+                "description": "图像分辨率",
+                "type": "string",
+                "hint": "该供应商默认图像分辨率。",
+                "default": "1K",
+                "options": [
+                  "1K",
+                  "2K",
+                  "4K"
+                ],
+                "condition": {
+                  "size_mode": "preset"
+                }
+              },
+              "aspect_ratio": {
+                "description": "长宽比",
+                "type": "string",
+                "hint": "该供应商默认长宽比。",
+                "default": "1:1",
+                "options": [
+                  "1:1",
+                  "16:9",
+                  "4:3",
+                  "3:2",
+                  "9:16",
+                  "4:5",
+                  "5:4",
+                  "21:9",
+                  "3:4",
+                  "2:3"
+                ],
+                "condition": {
+                  "size_mode": "preset"
+                }
+              },
+              "max_reference_images": {
+                "description": "最大参考图片数量",
+                "type": "int",
+                "hint": "单次请求最多使用的参考图片数量；超过后按顺序截取。",
+                "default": 6
+              },
+              "quality": {
+                "description": "图像质量",
+                "type": "string",
+                "hint": "留空使用默认值",
+                "default": "auto",
+                "options": [
+                  "auto",
+                  "high",
+                  "medium",
+                  "low"
+                ]
+              },
+              "size_mode": {
+                "description": "尺寸模式",
+                "type": "string",
+                "hint": "preset 使用该供应商条目的分辨率和长宽比；custom 使用下方 custom_size 直接透传到 OpenAI Images API。",
+                "default": "custom",
+                "options": [
+                  "preset",
+                  "custom"
+                ]
+              },
+              "custom_size": {
+                "description": "自定义尺寸",
+                "type": "string",
+                "hint": "仅在 size_mode=custom 时生效。具体限制与示例请查看 docs。",
+                "default": "1024x1024",
+                "condition": {
+                  "size_mode": "custom"
+                }
+              },
+              "output_format": {
+                "description": "输出图像格式",
+                "type": "string",
+                "hint": "png 支持透明背景，jpeg 文件更小，webp 兼顾两者。仅 GPT image 模型支持，留空不传",
+                "default": "png",
+                "options": [
+                  "",
+                  "png",
+                  "jpeg",
+                  "webp"
+                ]
+              },
+              "base_model": {
+                "description": "顶层模型",
+                "type": "string",
+                "hint": "自由输入，传入 Responses 顶层 model，负责调用生图工具。",
+                "default": "gpt-5.6-luna"
               }
             }
           },

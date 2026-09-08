@@ -79,7 +79,7 @@ google / openai_images / minimax
 支持的模板：
 
 ```text
-google / gemini_interactions / vertex / openai / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova / senseaudio / dashscope / modelscope / siliconflow
+google / gemini_interactions / vertex / openai / agnes_ai / xai / minimax / stepfun / openai_images / openai_responses / doubao / sensenova / senseaudio / dashscope / modelscope / siliconflow
 ```
 
 下方 `doubao_settings`、`openai_images_settings`、`agnes_ai_settings`、`xai_settings`、`minimax_settings`、`stepfun_settings`、`sensenova_settings`、`dashscope_settings`、`modelscope_settings`、`siliconflow_settings` 章节对应这些模板的专用字段；`gemini_interactions` 无历史投影字段，全部配置都在模板内。代码中的同名 `*_settings` 字段仅作为兼容旧调用的首个候选投影；多候选场景以 `provider_settings.provider_overrides` 和运行时派生的 `provider_settings_by_type` 为准。
@@ -239,6 +239,24 @@ Studio 保存仅更新群访问与限流字段，不修改供应商、不重载�
 当前插件的 `doubao` provider 只封装图片生成接口；Agent Plan 的视频任务接口尚未纳入本插件的图片生成流程。
 
 豆包组图官方文档：<https://www.volcengine.com/docs/82379/1824121?lang=zh#fc9f85e4>
+
+## openai_responses（Responses 生图）
+
+在 `provider_settings.provider_overrides` 中添加 `openai_responses` 模板，填写该服务的 `api_keys` 和 `api_base`。地址支持域名根路径、以 `/v1` 结尾的地址，或完整的 `/v1/responses` 地址。
+
+| 字段 | 默认值 | 作用 |
+|---|---|---|
+| `base_model` | `gpt-5.6-luna` | 顶层对话模型，传入请求的 `model` |
+| `model` | `gpt-image-2.5-flare` | 生图模型，传入 `tools[].model`；指令、别名和候选选择使用此模型 |
+| `size_mode` / `custom_size` | `custom` / `1024x1024` | 复用自定义尺寸配置 |
+| `quality` | `auto` | 生图质量 |
+| `output_format` | `png` | 图片保存格式 |
+
+两个模型字段都是自由文本，允许填写自定义名称或网关别名。默认组合已在 CPA 实测生成成功，不代表 OpenAI 官方或其他网关支持这些名称；应以所接服务实际能力为准。
+
+文生图和参考图请求均通过 Responses 的 `image_generation` 工具；参考图按已有设置转换成 `input_image`。一次请求不承诺原生批量，多图沿用插件调度。插件读取 SSE 完成事件并保存完整图片，不把部分预览当作最终图片。也支持网关返回完整 JSON 响应。
+
+已提交后超时、断流或缺少完成事件会报告“任务结果未知”，停止自动重试和跨候选切换，避免重复生成；明确的鉴权/限流错误仍走现有错误处理。长时间生图需确保插件总超时、单次超时和网关超时匹配。
 
 ## openai_images_settings（OpenAI Images API 专用配置）
 

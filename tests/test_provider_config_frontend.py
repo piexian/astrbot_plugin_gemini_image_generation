@@ -193,9 +193,26 @@ await view.open(); assert.equal(calls.filter(call => call.method === 'get').leng
 """)
 
 
+def test_responses_models_can_be_entered_and_saved_freely():
+    _run(r"""
+const view = create(); await view.open();
+change(root.querySelector('[data-pc-new-type]'), 'openai_responses'); action('add').click();
+assert.equal(field('base_model').tagName, 'input');
+assert.equal(field('base_model').value, 'gpt-5.6-luna');
+assert.equal(field('model').value, 'gpt-image-2.5-flare');
+input(field('base_model'), 'custom-router-name');
+input(field('model'), 'custom-image-name');
+apply(); action('save').click(); await tick();
+const entry = posts()[0].payload.entries.find(entry => entry.api_type === 'openai_responses');
+assert.equal(entry.values.base_model, 'custom-router-name');
+assert.equal(entry.values.model, 'custom-image-name');
+view.destroy();
+""")
+
+
 def test_all_real_schema_templates_types_enums_conditions_and_new_key_actions():
-    assert len(TEMPLATES) == 15
-    assert sum(len(template["fields"]) for template in TEMPLATES.values()) == 256
+    assert len(TEMPLATES) == 16
+    assert sum(len(template["fields"]) for template in TEMPLATES.values()) == 272
     _run(r"""
 const view = create(); await view.open();
 for (const [type, template] of Object.entries(TEMPLATES)) {
@@ -205,11 +222,11 @@ for (const [type, template] of Object.entries(TEMPLATES)) {
     assert.ok(control, `${type}.${name}`);
     assert.equal(control.getAttribute('aria-label'), schema.description);
     if (schema.options && schema.type !== 'list') assert.equal(control.tagName, 'select');
-    if (name === 'model' && !schema.options) assert.equal(control.tagName, 'input');
+    if (['model', 'base_model'].includes(name) && !schema.options) assert.equal(control.tagName, 'input');
   }
   if (template.fields.size_mode) {
     const wrap = body.querySelector('[data-pc-field-wrap="custom_size"]');
-    assert.equal(wrap.hidden, true);
+    assert.equal(wrap.hidden, template.fields.size_mode.default !== 'custom');
     change(field('size_mode'), 'custom'); assert.equal(wrap.hidden, false);
     input(field('custom_size'), '2048*1536');
     change(field('size_mode'), 'preset'); assert.equal(wrap.hidden, true);

@@ -49,6 +49,7 @@ tl/
 | `minimax` | `MiniMaxProvider` | MiniMax `/v1/image_generation` |
 | `stepfun` | `StepfunProvider` | StepFun `/v1/images/generations` 与 `/v1/images/edits` |
 | `openai_images` | `OpenAIImagesProvider` | OpenAI `/v1/images/generations` 与 `/v1/images/edits` |
+| `openai_responses` | `OpenAIResponsesProvider` | Responses `image_generation` 工具，独立顶层/生图模型与 SSE 完成事件解析 |
 | `doubao` | `DoubaoProvider` | 火山引擎 Ark / 豆包图片接口（支持 official / Agent Plan 端点） |
 | `sensenova` | `SenseNovaProvider` | SenseNova（商汤日日新）`/v1/images/generations`（仅文生图，11 种固定尺寸） |
 | `senseaudio` | `SenseAudioProvider` | SenseAudio `/v1/image/sync` 或 `/v1/image/async` + `/v1/image/pending`，单参考图、模型专属固定尺寸 |
@@ -84,6 +85,8 @@ class ApiProvider(Protocol):
 ```
 
 `build_request()` 返回 `ProviderRequest(url, headers, payload)`。`parse_response()` 返回：
+
+需专用流读取时可在 `ProviderSpec.response_reader_path` 注册异步 reader，接收 `response` 并返回供 `parse_response` 消费的字典。参考 `openai_responses.py`：保留完成图片、忽略预览、断流报 `outcome_unknown`；该错误会停止本候选重试与外层轮询。`retry_ambiguous_transport_errors=False` 可阻止响应丢失后重新提交计费任务，不影响连接建立前失败的常规重试。
 
 | 返回值 | 类型 | 说明 |
 |--------|------|------|

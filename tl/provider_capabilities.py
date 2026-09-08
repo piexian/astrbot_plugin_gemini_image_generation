@@ -309,6 +309,20 @@ def openai_images_capability(candidate: Any) -> dict[str, Any]:
     )
 
 
+def openai_responses_capability(candidate: Any) -> dict[str, Any]:
+    return _profile(
+        candidate,
+        parameters={
+            "quality": {
+                "type": "string",
+                "enum": ["auto", "high", "medium", "low"],
+                "default_source": "provider_config",
+            },
+        },
+        request_setting_map={"quality": "quality"},
+    )
+
+
 def doubao_capability(candidate: Any) -> dict[str, Any]:
     settings = _settings(candidate)
     model = _model(candidate) or str(settings.get("endpoint_id") or "").strip()
