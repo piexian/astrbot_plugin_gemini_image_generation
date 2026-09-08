@@ -295,6 +295,7 @@ class WebStudioAPI:
             source = self._query_text("source", 32)
             group_id = self._query_text("group_id", 128)
             user_id = self._query_text("user_id", 128)
+            plugin_id = self._query_text("plugin_id", 128)
         except StudioServiceError as exc:
             return self._service_error(exc)
         return self._ok(
@@ -305,6 +306,7 @@ class WebStudioAPI:
                 source=source,
                 group_id=group_id,
                 user_id=user_id,
+                **({"plugin_id": plugin_id} if plugin_id else {}),
             )
         )
 

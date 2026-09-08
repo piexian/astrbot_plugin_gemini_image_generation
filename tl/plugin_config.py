@@ -182,6 +182,8 @@ class PluginConfig:
     batch_max_images_per_task: int = 10
     batch_max_tasks: int = 20
     batch_concurrency: int = 3
+    generation_max_concurrency: int = 3
+    generation_max_queue_size: int = 100
     background_task_retention_hours: int = 24
     background_failure_notify_llm: bool = True
 
@@ -751,6 +753,12 @@ class ConfigLoader:
         )
         config.batch_concurrency = _clean_positive_int(
             image_settings.get("batch_concurrency"), 3
+        )
+        config.generation_max_concurrency = _clean_positive_int(
+            image_settings.get("generation_max_concurrency"), 3
+        )
+        config.generation_max_queue_size = _clean_positive_int(
+            image_settings.get("generation_max_queue_size"), 100
         )
         config.background_task_retention_hours = _clean_positive_int(
             image_settings.get("background_task_retention_hours"), 24

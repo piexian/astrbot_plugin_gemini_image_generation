@@ -22,6 +22,8 @@ main.py
 
 ## 稳定内部入口
 
+其他插件应通过主插件的 `get_service(api_version=1)` 获取公开服务，协议见 [其他插件接入指南](../docs/plugin-api.md)。`plugin_service.py` 管理服务就绪、插件任务及回调；`generation_scheduler.py` 在共用 API 入口管理全入口 FIFO 并发，以下内部入口不构成对外兼容承诺。
+
 | 入口 | 位置 | 作用 |
 |------|------|------|
 | `PluginConfig` | `plugin_config.py` | 运行时配置数据对象 |

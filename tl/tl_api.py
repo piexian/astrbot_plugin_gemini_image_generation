@@ -29,6 +29,7 @@ from .api import (
 )
 from .api_headers import apply_api_key_to_headers, extract_api_key_from_headers
 from .api_types import APIError, ApiRequestConfig
+from .generation_scheduler import scheduled_generation
 from .provider_capabilities import (
     apply_request_overrides,
     explicit_runtime_parameters,
@@ -727,6 +728,7 @@ class GeminiAPIClient:
         return req.url, req.headers, req.payload
 
     @provider_operation("api")
+    @scheduled_generation
     async def generate_image(
         self,
         config: ApiRequestConfig,

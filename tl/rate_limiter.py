@@ -12,6 +12,7 @@ from collections.abc import Callable, Coroutine
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 from astrbot.api import logger
 
@@ -93,7 +94,10 @@ class RateLimiter:
                 if not isinstance(buckets, dict):
                     raise ValueError("Invalid rate-limit buckets")
                 for key, bucket in buckets.items():
-                    if key != self.GLOBAL_KEY:
+                    if key.startswith("plugin/") and ":" not in key:
+                        if not key.removeprefix("plugin/").strip():
+                            raise ValueError("Invalid plugin rate-limit key")
+                    elif key != self.GLOBAL_KEY:
                         validate_umo(key)
                     if not isinstance(bucket, list):
                         raise ValueError("Invalid rate-limit bucket")
@@ -209,8 +213,9 @@ class RateLimiter:
         *,
         cost: int = 1,
         event: AstrMessageEvent | None = None,
+        plugin_id: str | None = None,
     ) -> LimitDecision:
-        """预留逻辑任务额度；None 仅供无聊天事件的 Studio 使用。"""
+        """预留逻辑任务额度；无 UMO 的插件按稳定标识使用默认规则。"""
         if type(cost) is not int or not 1 <= cost <= MAX_REQUESTS:
             return LimitDecision(False, "无效的生成任务数量", "input")
         if umo is not None:
@@ -262,13 +267,23 @@ class RateLimiter:
             ]
             if umo is not None:
                 policies.append((umo, "session", self._session_policy(umo)))
+            elif plugin_id:
+                policies.append(
+                    (
+                        f"plugin/{quote(plugin_id, safe='')}",
+                        "plugin",
+                        self.config.default_rate_limit,
+                    )
+                )
             active = [
                 (key, scope, p) for key, scope, p in policies if p.get("enabled", False)
             ]
             denials = []
             for key, scope, policy in active:
                 period, maximum = policy["period_seconds"], policy["max_requests"]
-                label = "全局" if scope == "global" else "当前会话"
+                label = {"global": "全局", "session": "当前会话", "plugin": "当前插件"}[
+                    scope
+                ]
                 if cost > maximum:
                     return LimitDecision(
                         False,

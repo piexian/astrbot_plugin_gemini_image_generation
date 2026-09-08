@@ -121,7 +121,8 @@ const SafeDOM = {
   },
 
   // 来源标识 -> 中文标签
-  sourceLabel(source) {
+  sourceLabel(source, caller) {
+    if (source === 'plugin') return `插件调用 · ${caller?.plugin_name || caller?.plugin_id || '插件'}`;
     const labels = {
       command: '指令',
       llm_tool: 'LLM 工具',
@@ -201,6 +202,8 @@ const SafeDOM = {
       chatLabel = groupId ? `群聊 · 群号: ${groupId}` : '群聊 · 群号未记录';
     }
     const labels = [chatLabel];
+    if (source === 'plugin' && chatType !== 'private' && chatType !== 'group' && !groupId) labels.length = 0;
+    if (source === 'plugin' && requester?.umo) labels.push(`会话: ${requester.umo}`);
     if (userName && userId) labels.push(`用户: ${userName}（ID: ${userId}）`);
     else if (userId) labels.push(`用户 ID: ${userId}`);
     else if (userName) labels.push(`用户: ${userName}`);
@@ -208,8 +211,12 @@ const SafeDOM = {
   },
 
   requesterMeta(record) {
+    const labels = this.requesterLabels(record.requester, record.source);
+    if (record.source === 'plugin' && record.caller?.plugin_id) labels.unshift(`插件 ID: ${record.caller.plugin_id}`);
+    const callbackLabels = { pending: '待通知', running: '通知中', removed: '已取消通知', succeeded: '已通知', failed: '通知失败', interrupted: '通知已中断' };
+    if (callbackLabels[record.callback_status]) labels.push(callbackLabels[record.callback_status]);
     return this.el('div', { className: 'job-meta-row requester-meta' },
-      this.requesterLabels(record.requester, record.source).map((label) =>
+      labels.map((label) =>
         this.el('span', { className: 'meta-pill' }, [label])
       )
     );
@@ -720,8 +727,9 @@ const Lightbox = {
       this.tagsEl.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [`耗时: ${(item.duration_ms / 1000).toFixed(1)}s`]));
     }
     if (item.source) {
-      this.tagsEl.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [`来源: ${SafeDOM.sourceLabel(item.source)}`]));
+      this.tagsEl.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [`来源: ${SafeDOM.sourceLabel(item.source, item.caller)}`]));
     }
+    if (item.caller?.plugin_id) this.tagsEl.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [`插件 ID: ${item.caller.plugin_id}`]));
     for (const label of SafeDOM.requesterLabels(item.requester, item.source)) {
       this.tagsEl.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [label]));
     }
@@ -779,7 +787,8 @@ class Store {
       keyword: '',
       source: '',
       group_id: '',
-      user_id: ''
+      user_id: '',
+      plugin_id: ''
     };
     this.galleryData = {
       items: [],
@@ -836,8 +845,8 @@ class Store {
 
   getJobsList() {
     return Array.from(this.activeJobs.values()).sort((a, b) => {
-      const aRunning = a.status === 'running';
-      const bRunning = b.status === 'running';
+      const aRunning = ['queued', 'running'].includes(a.status);
+      const bRunning = ['queued', 'running'].includes(b.status);
       if (aRunning && !bRunning) return -1;
       if (!aRunning && bRunning) return 1;
       const aTime = new Date(a.created_at || 0).getTime();
@@ -849,7 +858,7 @@ class Store {
   getRunningJobsCount() {
     let count = 0;
     for (const job of this.activeJobs.values()) {
-      if (job.status === 'running') count++;
+      if (['queued', 'running'].includes(job.status)) count++;
     }
     return count;
   }
@@ -2482,6 +2491,7 @@ class ProgressView {
     });
     const dot = SafeDOM.el('span', { className: 'status-dot' });
     const textMap = {
+      queued: '排队中',
       running: '进行中',
       succeeded: '已完成',
       partial_success: '部分成功',
@@ -2508,7 +2518,7 @@ class ProgressView {
     const header = SafeDOM.el('div', { className: 'job-header' });
     const headerLeft = SafeDOM.el('div', { className: 'job-header-left' });
 
-    const sourceTag = SafeDOM.el('span', { className: 'job-source-tag' }, [SafeDOM.sourceLabel(record.source)]);
+    const sourceTag = SafeDOM.el('span', { className: 'job-source-tag' }, [SafeDOM.sourceLabel(record.source, record.caller)]);
     const idSpan = SafeDOM.el('button', {
       type: 'button',
       className: 'job-id-text',
@@ -2528,7 +2538,7 @@ class ProgressView {
     const statusPill = this.createStatusPill(record.status);
 
     let durationText = '00:00';
-    if (record.status === 'running') {
+    if (['queued', 'running'].includes(record.status)) {
       const createdAt = new Date(record.created_at || '').getTime();
       const diff = Number.isFinite(createdAt)
         ? Math.max(0, Math.floor((Date.now() - createdAt) / 1000))
@@ -2609,6 +2619,7 @@ class ProgressView {
               aspect_ratio: p.aspect_ratio,
               duration_ms: record.duration_ms,
               source: record.source,
+              caller: record.caller,
               requester: record.requester
             }));
             Lightbox.open(previewItems, idx);
@@ -2701,7 +2712,7 @@ class ProgressView {
     const statusPill = this.createStatusPill(parent.status);
 
     let durationText = '00:00';
-    if (parent.status === 'running') {
+    if (['queued', 'running'].includes(parent.status)) {
       const createdAt = new Date(parent.created_at || '').getTime();
       const diff = Number.isFinite(createdAt)
         ? Math.max(0, Math.floor((Date.now() - createdAt) / 1000))
@@ -2807,7 +2818,8 @@ class ProgressView {
                 aspect_ratio: child.params?.aspect_ratio,
                 duration_ms: child.duration_ms,
                 source: child.source,
-                requester: child.requester
+                caller: child.caller,
+              requester: child.requester
               }));
               Lightbox.open(previewItems, idx);
             }
@@ -2874,6 +2886,7 @@ class GalleryView {
 
     this.searchInput = document.getElementById('gallery-search-input');
     this.sourceSelect = document.getElementById('gallery-source-select');
+    this.pluginInput = document.getElementById('gallery-plugin-input');
     this.groupInput = document.getElementById('gallery-group-input');
     this.userInput = document.getElementById('gallery-user-input');
     this.btnSearch = document.getElementById('btn-search-gallery');
@@ -2901,6 +2914,7 @@ class GalleryView {
     this.btnSearch.addEventListener('click', () => {
       this.store.galleryQuery.keyword = this.searchInput.value.trim();
       this.store.galleryQuery.source = this.sourceSelect.value;
+      this.store.galleryQuery.plugin_id = this.pluginInput.value.trim();
       this.store.galleryQuery.group_id = this.groupInput.value.trim();
       this.store.galleryQuery.user_id = this.userInput.value.trim();
       this.store.galleryQuery.page = 1;
@@ -2916,10 +2930,12 @@ class GalleryView {
     this.btnReset.addEventListener('click', () => {
       this.searchInput.value = '';
       this.sourceSelect.value = '';
+      this.pluginInput.value = '';
       this.groupInput.value = '';
       this.userInput.value = '';
       this.store.galleryQuery.keyword = '';
       this.store.galleryQuery.source = '';
+      this.store.galleryQuery.plugin_id = '';
       this.store.galleryQuery.group_id = '';
       this.store.galleryQuery.user_id = '';
       this.store.galleryQuery.page = 1;
@@ -3114,7 +3130,8 @@ class GalleryView {
           aspect_ratio: item.params?.aspect_ratio,
           duration_ms: item.duration_ms,
           source: item.source,
-          requester: item.requester
+          caller: item.caller,
+              requester: item.requester
         }));
         Lightbox.open(previewItems, 0);
       });
@@ -3133,7 +3150,7 @@ class GalleryView {
     const promptEl = SafeDOM.el('div', { className: 'gallery-card-prompt' }, [item.prompt || '（历史图片，无提示词记录）']);
 
     const meta = SafeDOM.el('div', { className: 'gallery-card-meta' });
-    const sourceEl = SafeDOM.el('span', {}, [`[${SafeDOM.sourceLabel(item.source)}]`]);
+    const sourceEl = SafeDOM.el('span', {}, [`[${SafeDOM.sourceLabel(item.source, item.caller)}]`]);
     const timeEl = SafeDOM.el('span', {}, [
       item.created_at ? new Date(item.created_at).toLocaleDateString('zh-CN') : ''
     ]);
