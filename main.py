@@ -57,7 +57,7 @@ from .tl.enhanced_prompts import (
 from .tl.generation_tracker import GenerationTracker, requester_from_event
 from .tl.llm_query_tools import BackgroundTaskStatusTool, ProviderModelQueryTool
 from .tl.llm_tools import GeminiImageGenerationTool
-from .tl.plugin_config import max_configured_reference_images
+from .tl.plugin_config import get_session_tool_timeout, max_configured_reference_images
 from .tl.provider_capabilities import select_candidates
 from .tl.provider_runtime import ProviderRuntime, provider_operation
 from .tl.provider_settings import candidate_is_keyless
@@ -444,20 +444,9 @@ class GeminiImageGenerationPlugin(Star):
 
     def get_tool_timeout(self, event: AstrMessageEvent | None = None) -> int:
         """获取当前聊天环境的 tool_call_timeout 配置"""
-        try:
-            if event:
-                umo = event.unified_msg_origin
-                chat_config = self.context.get_config(umo=umo)
-                return chat_config.get("provider_settings", {}).get(
-                    "tool_call_timeout", 120
-                )
-            default_config = self.context.get_config()
-            return default_config.get("provider_settings", {}).get(
-                "tool_call_timeout", 120
-            )
-        except Exception as e:
-            logger.warning(f"获取 tool_call_timeout 配置失败: {e}，使用默认值 120 秒")
-            return 120
+        return get_session_tool_timeout(
+            self.context, event.unified_msg_origin if event else None
+        )
 
     def _ensure_api_client(self, *, quiet: bool = False) -> bool:
         """确保 API 客户端已初始化"""

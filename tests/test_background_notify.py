@@ -63,7 +63,9 @@ class _Context:
         assert umo == _Event.unified_msg_origin
         return {
             "provider_settings": {"stream": True},
-            "agent_runner": {"config": {"misc": {"max_steps": "7"}}},
+            "agent_runner": {
+                "config": {"misc": {"max_steps": "7", "tool_call_timeout": 300}}
+            },
         }
 
     def get_llm_tool_manager(self):
@@ -163,6 +165,7 @@ async def test_notifier_preserves_roles_and_reactivates_main_agent(monkeypatch) 
     ]
     assert "Proceed according to your system instructions" in req.prompt
     assert build["config"].streaming_response is True
+    assert build["config"].tool_call_timeout == 300
     assert calls["step_limits"] == [7]
     assert calls["persisted"] == [calls["conversation"]]
 
