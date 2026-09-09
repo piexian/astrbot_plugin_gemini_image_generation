@@ -18,6 +18,7 @@
           "minimax",
           "stepfun",
           "openai_images",
+          "openai_responses",
           "doubao",
           "sensenova",
           "senseaudio",
@@ -1136,13 +1137,238 @@
               "model": {
                 "description": "模型名称",
                 "type": "string",
-                "hint": "OpenAI Images API 模型名称",
-                "default": "gpt-image-1"
+                "hint": "自由输入，支持 GPT Image 2.5 Flare/Sunburst 及日期快照、GPT Image 2/1.5/1 和兼容服务模型。",
+                "default": "gpt-image-2.5-flare"
               },
               "api_base": {
                 "description": "API 端点地址",
                 "type": "string",
                 "hint": "OpenAI Images API 地址",
+                "default": "https://api.openai.com"
+              },
+              "proxy": {
+                "description": "代理地址",
+                "type": "string",
+                "hint": "填写即启用代理，留空使用全局代理或环境变量。",
+                "default": ""
+              },
+              "resolution": {
+                "description": "图像分辨率",
+                "type": "string",
+                "hint": "该供应商默认图像分辨率。",
+                "default": "1K",
+                "options": [
+                  "1K",
+                  "2K",
+                  "4K"
+                ],
+                "condition": {
+                  "size_mode": "preset"
+                }
+              },
+              "aspect_ratio": {
+                "description": "长宽比",
+                "type": "string",
+                "hint": "该供应商默认长宽比。",
+                "default": "1:1",
+                "options": [
+                  "1:1",
+                  "16:9",
+                  "4:3",
+                  "3:2",
+                  "9:16",
+                  "4:5",
+                  "5:4",
+                  "21:9",
+                  "3:4",
+                  "2:3"
+                ],
+                "condition": {
+                  "size_mode": "preset"
+                }
+              },
+              "max_reference_images": {
+                "description": "最大参考图片数量",
+                "type": "int",
+                "hint": "GPT Image 最多 16 张；DALL·E 仅单图。实际数量还受候选配置限制。",
+                "default": 6
+              },
+              "quality": {
+                "description": "图像质量",
+                "type": "string",
+                "hint": "GPT Image 2.5 支持 xhigh/max；旧 GPT Image 最高 high；hd/standard 用于 DALL·E。",
+                "default": "",
+                "options": [
+                  "",
+                  "auto",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "hd",
+                  "standard"
+                ]
+              },
+              "response_format": {
+                "description": "响应格式",
+                "type": "string",
+                "hint": "url 返回临时链接（60分钟有效），b64_json 返回 base64 编码。",
+                "default": "b64_json",
+                "options": [
+                  "b64_json",
+                  "url"
+                ]
+              },
+              "size_mode": {
+                "description": "尺寸模式",
+                "type": "string",
+                "hint": "preset 使用该供应商条目的分辨率和长宽比；custom 使用下方 custom_size 直接透传到 OpenAI Images API。",
+                "default": "preset",
+                "options": [
+                  "preset",
+                  "custom",
+                  "auto"
+                ]
+              },
+              "custom_size": {
+                "description": "自定义尺寸",
+                "type": "string",
+                "hint": "仅在 size_mode=custom 时生效。具体限制与示例请查看 docs。",
+                "default": "1024x1024",
+                "condition": {
+                  "size_mode": "custom"
+                }
+              },
+              "style": {
+                "description": "图像风格",
+                "type": "string",
+                "hint": "vivid 生成超现实戏剧性图像，natural 生成更自然的图像。仅 dall-e-3 支持，留空不传",
+                "default": "",
+                "options": [
+                  "",
+                  "vivid",
+                  "natural"
+                ]
+              },
+              "background": {
+                "description": "背景透明度",
+                "type": "string",
+                "hint": "transparent 透明背景，opaque 不透明，auto 自动。仅 GPT image 模型支持，留空不传",
+                "default": "",
+                "options": [
+                  "",
+                  "auto",
+                  "transparent",
+                  "opaque"
+                ]
+              },
+              "output_format": {
+                "description": "输出图像格式",
+                "type": "string",
+                "hint": "png 支持透明背景，jpeg 文件更小，webp 兼顾两者。仅 GPT image 模型支持，留空不传",
+                "default": "",
+                "options": [
+                  "",
+                  "png",
+                  "jpeg",
+                  "webp"
+                ]
+              },
+              "output_compression": {
+                "description": "输出压缩率",
+                "type": "int",
+                "hint": "JPEG/WebP 的 0–100 压缩参数，按 API 原值发送（包括 0）；100 是服务端默认值。PNG 不发送此参数。",
+                "default": 100,
+                "slider": {
+                  "min": 0,
+                  "max": 100,
+                  "step": 1
+                }
+              },
+              "moderation": {
+                "description": "审核模式",
+                "type": "string",
+                "hint": "审核策略配置，如 low。仅 GPT image 模型支持，留空不传",
+                "default": "",
+                "options": [
+                  "",
+                  "low"
+                ]
+              },
+              "generations_only": {
+                "description": "仅使用文生图",
+                "type": "bool",
+                "hint": "开启后丢去所有参考图仅输入文本提示词进行生成。",
+                "default": false
+              },
+              "n": {
+                "description": "单次生成张数上限",
+                "type": "int",
+                "default": 1,
+                "hint": "GPT Image 非流式请求支持 1–10 张，工作台批量调度会按剩余张数限制；流式每次一张。"
+              },
+              "stream": {
+                "description": "流式生成",
+                "type": "bool",
+                "default": false,
+                "hint": "GPT Image 原生 SSE 返回；开启后可在工作台展示生成预览。"
+              },
+              "partial_images": {
+                "description": "生成预览数量",
+                "type": "int",
+                "default": 0,
+                "hint": "0 关闭，1–3 请求部分图片，在工作台生成记录中显示临时预览。",
+                "condition": {
+                  "stream": true
+                }
+              }
+            }
+          },
+          "openai_responses": {
+            "description": "OpenAI Responses 生图",
+            "hint": "通过 Responses 的 image_generation 工具生成或编辑图片，两个模型名均可自由输入。",
+            "items": {
+              "enabled": {
+                "description": "启用此条配置",
+                "type": "bool",
+                "hint": "临时关闭本条模型配置而不删除它；关闭后该条不参与轮询和生图，同渠道其他条目不受影响。",
+                "default": true
+              },
+              "priority": {
+                "description": "优先级",
+                "type": "int",
+                "hint": "同类型供应商配置多条时按优先级从高到低尝试；相同优先级按配置表从上到下尝试。",
+                "default": 0
+              },
+              "api_keys": {
+                "description": "API Key 列表",
+                "type": "list",
+                "hint": "多个 API Key，支持轮换使用",
+                "default": []
+              },
+              "daily_limit_per_key": {
+                "description": "每个 Key 每日限额",
+                "type": "int",
+                "hint": "每个 API Key 每日最大调用次数，0 表示不限制",
+                "default": 0
+              },
+              "model_alias": {
+                "description": "模型别名（可选）",
+                "type": "string",
+                "hint": "供指令和 LLM 工具选择模型使用；同一别名可在多个供应商中复用。实际请求仍发送原始模型名。",
+                "default": ""
+              },
+              "model": {
+                "description": "生图模型",
+                "type": "string",
+                "hint": "自由输入，传入 tools[].model；模型是否可用取决于服务商。",
+                "default": "gpt-image-2.5-flare"
+              },
+              "api_base": {
+                "description": "API 端点地址",
+                "type": "string",
+                "hint": "Responses 服务地址，支持域名根路径、/v1 或完整 /v1/responses 地址。",
                 "default": "https://api.openai.com"
               },
               "proxy": {
@@ -1195,36 +1421,26 @@
               "quality": {
                 "description": "图像质量",
                 "type": "string",
-                "hint": "留空使用默认值",
-                "default": "",
+                "hint": "GPT Image 2.5 支持 xhigh/max；较旧 GPT Image 模型最高 high。",
+                "default": "auto",
                 "options": [
-                  "",
                   "auto",
-                  "high",
-                  "medium",
                   "low",
-                  "hd",
-                  "standard"
-                ]
-              },
-              "response_format": {
-                "description": "响应格式",
-                "type": "string",
-                "hint": "url 返回临时链接（60分钟有效），b64_json 返回 base64 编码。",
-                "default": "b64_json",
-                "options": [
-                  "b64_json",
-                  "url"
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
                 ]
               },
               "size_mode": {
                 "description": "尺寸模式",
                 "type": "string",
-                "hint": "preset 使用该供应商条目的分辨率和长宽比；custom 使用下方 custom_size 直接透传到 OpenAI Images API。",
-                "default": "preset",
+                "hint": "auto 由上游选择尺寸；custom 使用像素尺寸；preset 使用分辨率和比例。",
+                "default": "custom",
                 "options": [
                   "preset",
-                  "custom"
+                  "custom",
+                  "auto"
                 ]
               },
               "custom_size": {
@@ -1236,34 +1452,11 @@
                   "size_mode": "custom"
                 }
               },
-              "style": {
-                "description": "图像风格",
-                "type": "string",
-                "hint": "vivid 生成超现实戏剧性图像，natural 生成更自然的图像。仅 dall-e-3 支持，留空不传",
-                "default": "",
-                "options": [
-                  "",
-                  "vivid",
-                  "natural"
-                ]
-              },
-              "background": {
-                "description": "背景透明度",
-                "type": "string",
-                "hint": "transparent 透明背景，opaque 不透明，auto 自动。仅 GPT image 模型支持，留空不传",
-                "default": "",
-                "options": [
-                  "",
-                  "auto",
-                  "transparent",
-                  "opaque"
-                ]
-              },
               "output_format": {
                 "description": "输出图像格式",
                 "type": "string",
                 "hint": "png 支持透明背景，jpeg 文件更小，webp 兼顾两者。仅 GPT image 模型支持，留空不传",
-                "default": "",
+                "default": "png",
                 "options": [
                   "",
                   "png",
@@ -1271,11 +1464,29 @@
                   "webp"
                 ]
               },
+              "base_model": {
+                "description": "顶层模型",
+                "type": "string",
+                "hint": "自由输入，传入 Responses 顶层 model，负责调用生图工具。",
+                "default": "gpt-5.6-luna"
+              },
+              "background": {
+                "description": "背景透明度",
+                "type": "string",
+                "hint": "transparent 需使用 PNG 或 WebP。",
+                "default": "auto",
+                "options": [
+                  "",
+                  "auto",
+                  "transparent",
+                  "opaque"
+                ]
+              },
               "output_compression": {
                 "description": "输出压缩率",
                 "type": "int",
-                "hint": "仅在 output_format 为 jpeg 或 webp 时有效。0 表示不传（使用服务端默认值），1-100 为自定义压缩率",
-                "default": 0,
+                "hint": "JPEG/WebP 的 0–100 压缩参数，按 API 原值发送（包括 0）；100 是服务端默认值。PNG 不发送此参数。",
+                "default": 100,
                 "slider": {
                   "min": 0,
                   "max": 100,
@@ -1292,11 +1503,22 @@
                   "low"
                 ]
               },
-              "generations_only": {
-                "description": "仅使用文生图",
-                "type": "bool",
-                "hint": "开启后丢去所有参考图仅输入文本提示词进行生成。",
-                "default": false
+              "action": {
+                "description": "生成或编辑模式",
+                "type": "string",
+                "default": "auto",
+                "options": [
+                  "auto",
+                  "generate",
+                  "edit"
+                ],
+                "hint": "auto 自动选择；edit 需要参考图。"
+              },
+              "partial_images": {
+                "description": "生成预览数量",
+                "type": "int",
+                "default": 0,
+                "hint": "0 关闭，1–3 请求部分图片，在工作台生成记录中显示临时预览。"
               }
             }
           },

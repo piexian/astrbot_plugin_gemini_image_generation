@@ -414,7 +414,12 @@ class ImageGenerationService:
 
             with (
                 generation_reservation(ticket),
-                generation_progress(progress),
+                generation_progress(
+                    progress,
+                    preview=(lambda data, fmt: tracker.preview(job_id, data, fmt))
+                    if job_id
+                    else None,
+                ),
                 tracking_context("plugin", managed_externally=True),
             ):
                 while len(images) < request["image_count"]:

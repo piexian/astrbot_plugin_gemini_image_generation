@@ -385,7 +385,14 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
             async def progress(status):
                 await self.tracker.update(tracking_job_id, status=status)
 
-            with generation_progress(progress if tracking_job_id else None):
+            with generation_progress(
+                progress if tracking_job_id else None,
+                preview=(
+                    lambda data, fmt: self.tracker.preview(tracking_job_id, data, fmt)
+                )
+                if tracking_job_id
+                else None,
+            ):
                 (
                     image_urls,
                     image_paths,

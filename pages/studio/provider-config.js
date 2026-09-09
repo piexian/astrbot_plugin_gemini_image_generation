@@ -4,7 +4,7 @@
   const copy = value => JSON.parse(JSON.stringify(value));
   const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
   const SECRET_FIELDS = new Set(['api_keys', 'api_base', 'proxy']);
-  const GENERAL = new Set(['enabled', 'priority', 'model', 'model_alias', 'endpoint_id', 'endpoint_mode', 'api_keys', 'api_base', 'proxy', 'service_account_files', 'project_id', 'location']);
+  const GENERAL = new Set(['enabled', 'priority', 'model', 'base_model', 'model_alias', 'endpoint_id', 'endpoint_mode', 'api_keys', 'api_base', 'proxy', 'service_account_files', 'project_id', 'location']);
   const GENERATION = new Set(['resolution', 'aspect_ratio', 'size', 'size_mode', 'custom_size', 'default_size', 'width', 'height', 'quality', 'n', 'negative_prompt', 'seed', 'output_format', 'style', 'style_type', 'style_weight']);
   let sequence = 0;
 

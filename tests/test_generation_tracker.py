@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import io
 import json
 from types import SimpleNamespace
 
@@ -12,6 +14,33 @@ from tl.generation_tracker import (
     tracking_context,
 )
 from tl.image_generator import ImageGenerator
+
+
+@pytest.mark.asyncio
+async def test_preview_is_transient_and_not_counted(tmp_path):
+    from PIL import Image
+
+    tracker = GenerationTracker(tmp_path, max_records=20)
+    queue = tracker.subscribe()
+    record = await tracker.begin(source="webui", prompt="draw", params={}, requester={})
+    queue.get_nowait()
+    output = io.BytesIO()
+    Image.new("RGB", (1024, 1024), "red").save(output, format="PNG")
+    await tracker.preview(
+        record["job_id"], base64.b64encode(output.getvalue()).decode()
+    )
+    preview = queue.get_nowait()["data"]
+    assert preview["generated_images"] == 0
+    assert preview["images"] == []
+    raw = base64.b64decode(preview["preview"].split(",", 1)[1])
+    with Image.open(io.BytesIO(raw)) as image:
+        assert image.size == (512, 512)
+    assert "preview" not in tracker.path.read_text()
+    await tracker.complete(
+        record["job_id"], image_files=[], text_content=None, stats={}
+    )
+    assert "preview" not in queue.get_nowait()["data"]
+    await tracker.close()
 
 
 @pytest.mark.parametrize(

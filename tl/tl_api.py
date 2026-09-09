@@ -897,7 +897,7 @@ class GeminiAPIClient:
                 return result
             except APIError as e:
                 last_error = e
-                if e.error_type in {"cancelled", "timeout"}:
+                if e.error_type in {"cancelled", "timeout", "outcome_unknown"}:
                     logger.warning(
                         f"[provider_polling] 候选 {candidate_id} 因 {e.error_type} 中止：{e.message}"
                     )
@@ -1269,6 +1269,26 @@ class GeminiAPIClient:
                     err_type = self._classify_error(e, err_msg)
                     status_code = getattr(e, "status", None)
                     err = APIError(err_msg, status_code, err_type)
+                    spec = get_provider_spec(api_type)
+                    if (
+                        spec
+                        and not spec.retry_ambiguous_transport_errors
+                        and isinstance(
+                            e,
+                            (
+                                asyncio.TimeoutError,
+                                aiohttp.ClientConnectionError,
+                                aiohttp.ClientPayloadError,
+                            ),
+                        )
+                        and not isinstance(e, aiohttp.ClientConnectorError)
+                    ):
+                        err = APIError(
+                            "生图连接中断，任务结果未知，已停止自动重试。",
+                            status_code,
+                            "outcome_unknown",
+                            retryable=False,
+                        )
 
                 # 首先检查是否为不可重试错误
                 if not is_retryable(err):
@@ -1385,34 +1405,49 @@ class GeminiAPIClient:
 
         async with session.post(url, **post_kwargs) as response:
             logger.debug(f"响应状态: {response.status}")
-            response_text = await response.text()
-            content_type = response.headers.get("Content-Type", "") or ""
-
-            # 解析 JSON 响应，添加错误处理
-            try:
-                response_data = json.loads(response_text) if response_text else {}
-            except json.JSONDecodeError as e:
-                # SSE 响应（text/event-stream）需要额外解析
-                if (
-                    "text/event-stream" in content_type.lower()
-                    or response_text.strip().startswith("data:")
-                ):
-                    try:
-                        response_data = self._parse_sse_payload(response_text)
-                        logger.debug("检测到 SSE 响应，已完成 JSON 转换")
-                    except Exception as sse_error:
-                        logger.error(f"SSE 解析失败: {sse_error}")
+            spec = get_provider_spec(api_type)
+            reader = (
+                load_callable(spec.response_reader_path)
+                if spec and spec.response_reader_path
+                else None
+            )
+            if reader and response.status == 200:
+                try:
+                    response_data = await reader(response=response)
+                except (ValueError, TypeError) as exc:
+                    raise APIError(
+                        "生图响应无法解析，任务结果未知，已停止自动重试。",
+                        response.status,
+                        "outcome_unknown",
+                        retryable=False,
+                    ) from exc
+            else:
+                response_text = await response.text()
+                content_type = response.headers.get("Content-Type", "") or ""
+                # Other providers retain their existing JSON/SSE interpretation.
+                try:
+                    response_data = json.loads(response_text) if response_text else {}
+                except json.JSONDecodeError as e:
+                    if (
+                        "text/event-stream" in content_type.lower()
+                        or response_text.strip().startswith("data:")
+                    ):
+                        try:
+                            response_data = self._parse_sse_payload(response_text)
+                            logger.debug("检测到 SSE 响应，已完成 JSON 转换")
+                        except Exception as sse_error:
+                            logger.error(f"SSE 解析失败: {sse_error}")
+                            logger.error(f"响应内容前500字符: {response_text[:500]}")
+                            raise APIError(
+                                f"API 返回了无效的 JSON/SSE 响应: {sse_error}",
+                                response.status,
+                            ) from None
+                    else:
+                        logger.error(f"JSON 解析失败: {e}")
                         logger.error(f"响应内容前500字符: {response_text[:500]}")
                         raise APIError(
-                            f"API 返回了无效的 JSON/SSE 响应: {sse_error}",
-                            response.status,
+                            f"API 返回了无效的 JSON 响应: {e}", response.status
                         ) from None
-                else:
-                    logger.error(f"JSON 解析失败: {e}")
-                    logger.error(f"响应内容前500字符: {response_text[:500]}")
-                    raise APIError(
-                        f"API 返回了无效的 JSON 响应: {e}", response.status
-                    ) from None
 
             self._record_token_usage(request_config, response_data, response.status)
 

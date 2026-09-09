@@ -66,7 +66,7 @@ def test_schema_hides_openai_images_resolution_fields_in_size_mode() -> None:
         "openai_images"
     ]["items"]
 
-    assert items["size_mode"]["options"] == ["preset", "custom"]
+    assert items["size_mode"]["options"] == ["preset", "custom", "auto"]
     assert items["resolution"]["condition"] == {"size_mode": "preset"}
     assert items["aspect_ratio"]["condition"] == {"size_mode": "preset"}
     assert items["custom_size"]["condition"] == {"size_mode": "custom"}

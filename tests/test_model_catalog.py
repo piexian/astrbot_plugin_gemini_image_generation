@@ -132,6 +132,7 @@ def test_all_existing_provider_metadata_remains():
         "minimax",
         "stepfun",
         "openai_images",
+        "openai_responses",
         "doubao",
         "sensenova",
         "senseaudio",
@@ -140,7 +141,7 @@ def test_all_existing_provider_metadata_remains():
         "siliconflow",
     ]
     capabilities = catalog_capabilities()
-    assert len(capabilities) == 15
+    assert len(capabilities) == 16
     assert sum(item["supported"] for item in capabilities.values()) == 11
     for api_type in ("agnes_ai", "minimax", "stepfun", "modelscope", "doubao"):
         assert capabilities[api_type]["supported"] is True

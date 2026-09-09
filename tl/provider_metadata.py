@@ -31,6 +31,8 @@ class ProviderSpec:
     model_catalog_kind: str | None = None
     # False 表示候选可用非 API Key 凭证（如 service account 文件）代替 api_keys
     requires_api_keys: bool = True
+    response_reader_path: str | None = None
+    retry_ambiguous_transport_errors: bool = True
 
 
 _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
@@ -102,6 +104,20 @@ _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
         tool_profile_path="tl.provider_hooks.openai_images_tool_profile",
         capability_profile_path="tl.provider_capabilities.openai_images_capability",
         model_catalog_kind="openai",
+        response_reader_path="tl.api.openai_images.read_images_response",
+        retry_ambiguous_transport_errors=False,
+        rebuild_on_retry=True,
+    ),
+    ProviderSpec(
+        "openai_responses",
+        "tl.api.openai_responses.OpenAIResponsesProvider",
+        settings_attr="openai_responses_settings",
+        settings_validator_path="tl.provider_hooks.validate_openai_responses_settings",
+        candidate_config_hook_path="tl.provider_hooks.openai_responses_candidate_config",
+        tool_profile_path="tl.provider_hooks.openai_responses_tool_profile",
+        capability_profile_path="tl.provider_capabilities.openai_responses_capability",
+        response_reader_path="tl.api.openai_responses.read_responses_response",
+        retry_ambiguous_transport_errors=False,
     ),
     ProviderSpec(
         "doubao",

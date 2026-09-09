@@ -37,6 +37,23 @@ assert.equal(button.attributes.get('aria-disabled'), 'false');
     subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
 
 
+def test_generation_preview_only_accepts_inline_png_thumbnail() -> None:
+    start = APP_JS.index("const SafeDOM = {")
+    end = APP_JS.index("const ImageLoader = {", start)
+    script = "const assert = require('node:assert/strict');\n"
+    script += (
+        "const document = {createElement: () => ({style: {}, setAttribute() {}})};\n"
+    )
+    script += APP_JS[start:end]
+    script += """
+assert.equal(SafeDOM.previewImage('https://example.com/preview.png'), null);
+assert.equal(SafeDOM.previewImage('data:image/svg+xml;base64,PHN2Zz4='), null);
+assert.equal(SafeDOM.previewImage('data:image/png;base64,aW1hZ2U=').src, 'data:image/png;base64,aW1hZ2U=');
+assert.equal(SafeDOM.isSafeImageSource('data:image/png;base64,aW1hZ2U='), false);
+"""
+    subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+
+
 def test_requester_labels_distinguish_chats_and_legacy_records() -> None:
     start = APP_JS.index("const SafeDOM = {")
     end = APP_JS.index("const ImageLoader = {", start)

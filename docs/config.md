@@ -79,7 +79,7 @@ google / openai_images / minimax
 支持的模板：
 
 ```text
-google / gemini_interactions / vertex / openai / agnes_ai / xai / minimax / stepfun / openai_images / doubao / sensenova / senseaudio / dashscope / modelscope / siliconflow
+google / gemini_interactions / vertex / openai / agnes_ai / xai / minimax / stepfun / openai_images / openai_responses / doubao / sensenova / senseaudio / dashscope / modelscope / siliconflow
 ```
 
 下方 `doubao_settings`、`openai_images_settings`、`agnes_ai_settings`、`xai_settings`、`minimax_settings`、`stepfun_settings`、`sensenova_settings`、`dashscope_settings`、`modelscope_settings`、`siliconflow_settings` 章节对应这些模板的专用字段；`gemini_interactions` 无历史投影字段，全部配置都在模板内。代码中的同名 `*_settings` 字段仅作为兼容旧调用的首个候选投影；多候选场景以 `provider_settings.provider_overrides` 和运行时派生的 `provider_settings_by_type` 为准。
@@ -240,6 +240,35 @@ Studio 保存仅更新群访问与限流字段，不修改供应商、不重载�
 
 豆包组图官方文档：<https://www.volcengine.com/docs/82379/1824121?lang=zh#fc9f85e4>
 
+## openai_responses（Responses 生图）
+
+在 `provider_settings.provider_overrides` 中添加 `openai_responses` 模板，填写该服务的 `api_keys` 和 `api_base`。地址支持域名根路径、以 `/v1` 结尾的地址，或完整的 `/v1/responses` 地址。
+
+| 字段 | 默认值 | 作用 |
+|---|---|---|
+| `base_model` | `gpt-5.6-luna` | 顶层对话模型，传入请求的 `model` |
+| `model` | `gpt-image-2.5-flare` | 生图模型，传入 `tools[].model`；指令、别名和候选选择使用此模型 |
+| `size_mode` / `custom_size` | `custom` / `1024x1024` | 复用自定义尺寸配置 |
+| `quality` | `auto` | 生图质量 |
+| `output_format` | `png` | 图片保存格式 |
+| `output_compression` | `100` | JPEG/WebP 压缩参数，0–100；PNG 不发送此参数 |
+| `background` | `auto` | `auto` / `opaque` / `transparent`；透明背景需 PNG/WebP |
+| `action` | `auto` | `auto` / `generate` / `edit`；强制编辑必须有参考图 |
+| `partial_images` | `0` | 0 关闭预览；1–3 请求生成中的部分图片 |
+| `moderation` | `auto` | 官方提供的内容审核模式 `auto` / `low` |
+
+两个模型字段都是自由文本，允许填写自定义名称或网关别名。默认组合已在 CPA 实测生成成功，不代表 OpenAI 官方或其他网关支持这些名称；应以所接服务实际能力为准。
+
+GPT Image 2.5 的 `quality` 支持 `auto/low/medium/high/xhigh/max`，较旧 GPT Image 模型不接受 `xhigh/max`；自定义网关模型名仍可手动填写。`size_mode=auto` 交由上游决定尺寸；`custom` 校验 16 倍数、最大边 3840、比例不超过 3:1、总像素 655360–8294400。GPT Image 2/2.5 的预设尺寸按分辨率与比例推导。
+
+文生图和参考图请求均通过 Responses 的 `image_generation` 工具；参考图按已有设置转换成 `input_image`。连续编辑沿用上一轮图片作为下一轮参考图，可设 `action=edit`，不保存跨用户的 Responses 对话 ID。一次请求不承诺原生批量，多图沿用插件调度。插件读取 SSE 完成事件并保存完整图片，也支持网关返回完整 JSON 响应。
+
+启用预览后，工作台运行中的任务卡显示临时 PNG 缩略图；预览不落盘、不进入画廊、不计入生成数量，刷新页面后只保留正常任务状态，最终结果到达时替换预览。命令/插件调用的生成记录也可在工作台看到预览。
+
+协议依据：[Responses 生图工具](https://developers.openai.com/api/docs/guides/tools-image-generation)、[图像尺寸与输出参数](https://developers.openai.com/api/docs/guides/image-generation)。网关可能仅实现部分参数，遇到明确不支持的参数应调整配置，不自动改用其他协议。
+
+已提交后超时、断流或缺少完成事件会报告“任务结果未知”，停止自动重试和跨候选切换，避免重复生成；明确的鉴权/限流错误仍走现有错误处理。长时间生图需确保插件总超时、单次超时和网关超时匹配。
+
 ## openai_images_settings（OpenAI Images API 专用配置）
 
 配置路径：`provider_settings.provider_overrides` 中选择 `openai_images` 模板。
@@ -248,18 +277,27 @@ Studio 保存仅更新群访问与限流字段，不修改供应商、不重载�
 |--------|--------|------|
 | `api_keys` | `[]` | API Key 列表，支持多 Key 轮换 |
 | `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
-| `model` | `gpt-image-1` | 模型名称，例如 `dall-e-2` / `dall-e-3` / `gpt-image-1` / `gpt-image-2` |
+| `model` | `gpt-image-2.5-flare` | 自由输入：支持 Flare/Sunburst 及日期快照、GPT Image 2/1.5/1；保留旧 DALL·E 兼容路径 |
 | `api_base` | - | API 端点地址，留空使用 OpenAI 官方 |
-| `quality` | - | 图像质量。GPT image：`auto` / `high` / `medium` / `low`；dall-e-3：`hd` / `standard` |
-| `response_format` | `b64_json` | 响应格式：`b64_json` / `url` |
-| `size_mode` | `preset` | 尺寸模式：`preset` 使用供应商分辨率映射；`custom` 使用 `custom_size` |
+| `quality` | - | GPT Image 2.5 另支持 `xhigh/max`，旧 GPT Image 最高 `high`；DALL·E 3 使用 `hd/standard` |
+| `response_format` | `b64_json` | 仅旧 DALL·E/兼容模型发送；GPT Image 在生成和编辑接口均返回 base64，不发送该字段 |
+| `size_mode` | `preset` | `preset` 按模型能力解析分辨率与比例；`custom` 使用像素尺寸；`auto` 交由上游选择 |
 | `custom_size` | `1024x1024` | 自定义尺寸，仅 `size_mode=custom` 生效。格式 `WxH`，支持 `x` 或 `×` |
 | `style` | - | 图像风格，仅 dall-e-3：`vivid` / `natural` |
 | `background` | - | 背景透明度，仅 GPT image：`auto` / `transparent` / `opaque` |
 | `output_format` | - | 输出格式，仅 GPT image：`png` / `jpeg` / `webp` |
-| `output_compression` | `0` | 输出压缩率 `0-100`，`0` 表示不传，仅 GPT image + jpeg/webp |
+| `output_compression` | `100` | JPEG/WebP 的 0–100 压缩参数，包含 0 均按原值发送；PNG 不发送 |
 | `moderation` | - | 审核模式，仅 GPT image，例如 `low` |
 | `generations_only` | `false` | 开启后强制只用 `/v1/images/generations`，不走 `/v1/images/edits` |
+| `n` | `1` | GPT Image 非流式单次张数上限，1–10；实际请求不超过本轮剩余张数 |
+| `stream` | `false` | GPT Image 原生流式返回；启用时单次一张，多图由插件分次调度 |
+| `partial_images` | `0` | 流式时的预览数量 0–3；预览只展示在运行中的工作台任务，不作为最终结果 |
+
+GPT Image 编辑使用 `image[]` 上传，最多 16 张参考图，PNG/JPEG/WebP 保留对应上传类型。生成与编辑均传递质量、背景、输出格式、压缩率和 moderation；透明背景搭配 JPEG 会在本地拒绝。GPT Image 不发送非官方的 seed 字段。
+
+升级注意：旧配置曾用压缩率 `0` 表示“不传参数”。现在按官方 API 把 `0` 原样发送；如果旧配置的本意是使用默认压缩率，请改成 `100`。新模板默认为 `100`。已有模型名称不会自动改写，网关必须自身支持所填模型的 Images 路由；CPA 等服务的 Images 白名单与 Responses 工具能力可能不同。
+
+接口依据：[生成](https://developers.openai.com/api/reference/resources/images/methods/generate)、[编辑](https://developers.openai.com/api/reference/resources/images/methods/edit)。
 
 ### OpenAI Images 自定义尺寸
 

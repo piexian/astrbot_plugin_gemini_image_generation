@@ -39,6 +39,7 @@ def test_schema_covers_all_generation_fields_without_exposing_connection_values(
         "daily_limit_per_key",
         "model_alias",
         "model",
+        "base_model",
         "api_base",
         "proxy",
         "endpoint_id",

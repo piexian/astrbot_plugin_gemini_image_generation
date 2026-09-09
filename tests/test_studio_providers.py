@@ -212,7 +212,7 @@ async def test_sensitive_urls_are_masked_for_entries_and_common(url):
 async def test_schema_is_complete_and_unconstrained_models_remain_free_text():
     svc = service()
     result = await svc.get_config()
-    assert len(result["templates"]) == 15
+    assert len(result["templates"]) == 16
     assert set(result["common_fields"]) == {
         "proxy",
         "vision_model",

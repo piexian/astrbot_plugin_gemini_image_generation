@@ -571,7 +571,8 @@ def test_candidate_config_uses_request_level_settings_and_proxy() -> None:
 
     candidate_config = client._build_candidate_config(config, candidate)
 
-    assert candidate_config.provider_settings is candidate.settings
+    assert candidate_config.provider_settings == {**candidate.settings, "n": 1}
+    assert "n" not in candidate.settings
     assert candidate_config.proxy == "http://proxy.local:8080"
 
 
