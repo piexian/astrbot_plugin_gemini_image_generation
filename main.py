@@ -1074,7 +1074,7 @@ class GeminiImageGenerationPlugin(Star):
         pass
 
     @quick_mode_group.command("头像")
-    async def quick_avatar(self, event: AstrMessageEvent, prompt: str):
+    async def quick_avatar(self, event: AstrMessageEvent, prompt: str = ""):
         """头像快速模式 - 1K分辨率，1:1比例"""
         prompt = self._extract_prompt_from_message(event, prompt, ("快速",), ("头像",))
         async for result in self._handle_quick_mode(
@@ -1083,7 +1083,7 @@ class GeminiImageGenerationPlugin(Star):
             yield result
 
     @quick_mode_group.command("海报")
-    async def quick_poster(self, event: AstrMessageEvent, prompt: str):
+    async def quick_poster(self, event: AstrMessageEvent, prompt: str = ""):
         """海报快速模式 - 2K分辨率，16:9比例"""
         prompt = self._extract_prompt_from_message(event, prompt, ("快速",), ("海报",))
         async for result in self._handle_quick_mode(
@@ -1092,7 +1092,7 @@ class GeminiImageGenerationPlugin(Star):
             yield result
 
     @quick_mode_group.command("壁纸")
-    async def quick_wallpaper(self, event: AstrMessageEvent, prompt: str):
+    async def quick_wallpaper(self, event: AstrMessageEvent, prompt: str = ""):
         """壁纸快速模式 - 4K分辨率，16:9比例"""
         prompt = self._extract_prompt_from_message(event, prompt, ("快速",), ("壁纸",))
         async for result in self._handle_quick_mode(
@@ -1101,7 +1101,7 @@ class GeminiImageGenerationPlugin(Star):
             yield result
 
     @quick_mode_group.command("卡片")
-    async def quick_card(self, event: AstrMessageEvent, prompt: str):
+    async def quick_card(self, event: AstrMessageEvent, prompt: str = ""):
         """卡片快速模式 - 1K分辨率，3:2比例"""
         prompt = self._extract_prompt_from_message(event, prompt, ("快速",), ("卡片",))
         async for result in self._handle_quick_mode(
@@ -1110,7 +1110,7 @@ class GeminiImageGenerationPlugin(Star):
             yield result
 
     @quick_mode_group.command("手机")
-    async def quick_mobile(self, event: AstrMessageEvent, prompt: str):
+    async def quick_mobile(self, event: AstrMessageEvent, prompt: str = ""):
         """手机快速模式 - 2K分辨率，9:16比例"""
         prompt = self._extract_prompt_from_message(event, prompt, ("快速",), ("手机",))
         async for result in self._handle_quick_mode(
@@ -1119,7 +1119,7 @@ class GeminiImageGenerationPlugin(Star):
             yield result
 
     @quick_mode_group.command("手办化")
-    async def quick_figure(self, event: AstrMessageEvent, prompt: str):
+    async def quick_figure(self, event: AstrMessageEvent, prompt: str = ""):
         """手办化快速模式 - 树脂收藏级手办效果"""
         prompt = self._extract_prompt_from_message(
             event, prompt, ("快速",), ("手办化",)
