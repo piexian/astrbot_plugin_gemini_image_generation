@@ -109,3 +109,33 @@ async def test_request_stats_legacy_property_is_context_local() -> None:
     assert second_result == ({"request": "second"}, {"request": "second"})
     assert "request" not in generator.last_request_stats
     assert generator.last_request_stats == generator.get_request_stats()
+
+
+@pytest.mark.asyncio
+async def test_generate_image_core_binds_session_save_dir(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from tl import image_generator as ig
+
+    calls: list[tuple[str, object]] = []
+    token = object()
+
+    async def fake_bind(event, context=None):
+        calls.append(("bind", event, context))
+        return token
+
+    monkeypatch.setattr(ig, "bind_session_image_dir", fake_bind)
+    monkeypatch.setattr(
+        ig, "reset_session_image_dir", lambda value: calls.append(("reset", value))
+    )
+    generator = ImageGenerator(
+        context=None, api_client=_FakeAPIClient(), filter_valid_fn=_keep_all
+    )
+    event = SimpleNamespace(unified_msg_origin="platform:GroupMessage:123")
+
+    success, _ = await generator.generate_image_core(
+        event=event, prompt="draw", reference_images=[], avatar_reference=[]
+    )
+
+    assert success is True
+    assert calls == [("bind", event, None), ("reset", token)]

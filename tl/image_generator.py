@@ -11,6 +11,7 @@ from astrbot.api import logger
 
 from .generation_scheduler import generation_progress
 from .generation_tracker import current_tracking_context, requester_from_event
+from .session_image_dir import bind_session_image_dir, reset_session_image_dir
 from .thought_signature import log_thought_signature_debug
 from .tl_api import APIError, ApiRequestConfig
 
@@ -258,6 +259,19 @@ class ImageGenerator:
             logger.warning(f"[生成追踪] 写入失败状态异常: {exc}")
 
     async def generate_image_core(
+        self,
+        event: AstrMessageEvent,
+        *args,
+        **kwargs,
+    ) -> tuple[bool, tuple[list[str], list[str], str | None, str | None] | str]:
+        """聊天会话生成图绑定工作区保存目录（框架发送白名单内）后执行生成。"""
+        token = await bind_session_image_dir(event, self.context)
+        try:
+            return await self._generate_image_core_impl(event, *args, **kwargs)
+        finally:
+            reset_session_image_dir(token)
+
+    async def _generate_image_core_impl(
         self,
         event: AstrMessageEvent,
         prompt: str,
@@ -511,6 +525,8 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
                         "\n⚠️ t2i 公共服务器当前可能繁忙，建议稍后再试；"
                         "如需稳定产能可参考 https://docs.astrbot.app/others/self-host-t2i.html 自建。"
                     )
+            elif e.error_type == "workspace_unavailable":
+                error_msg += "\n🧐 可能原因：无法解析当前会话的工作区目录。\n✅ 建议：查看日志确认框架工作区服务状态后重试。"
             else:
                 error_msg += "\n🧐 可能原因：请求参数异常或服务返回未知错误。\n✅ 建议：简化提示词/减少参考图后重试，并查看日志获取更多细节。"
             logger.error(error_msg)
