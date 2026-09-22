@@ -104,6 +104,7 @@ LLM 工具会根据当前 `tool_call_timeout` 和 `llm_tool_timeout_reserve_perc
 
 - 图片在窗口内生成完成时，以 `CallToolResult` 结构化返回图片。
 - 超过等待窗口时，自动切到后台继续生成；完成后反向激活主 Agent，提供图片 URL/路径，要求调用 `send_message_to_user` 的 `image` 组件发送图片。批量任务同样聚合结果后反向激活。
+- 聊天来源（指令/LLM 工具）的生成图保存到会话工作区下的 `astrbot_plugin_gemini_image_generation/` 子目录（位于框架本地文件发送白名单内，非管理员会话也能由 AI 直接发送）；全部会话工作区共享 `image_cache_max_size_mb` 容量上限，超限时跨会话按最旧文件优先清理；工作区解析失败时本次生成直接报错。工作台与插件 API 来源仍保存在插件数据目录。
 - 后台图片不再由插件直接发送；反向激活不可用或 Agent 未调用发送工具时，任务会记录发送未成功，图片 URL/路径可通过任务查询获取。
 - 转入后台时返回 JSON，其中包含 `task_id`、`status`、`routing_mode` 和当前轮询/重试说明。
 

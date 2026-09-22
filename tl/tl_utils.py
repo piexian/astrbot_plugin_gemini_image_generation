@@ -18,6 +18,7 @@ import aiohttp
 import cv2
 from astrbot.api import logger
 
+from .api_types import APIError
 from .file_uri import file_uri_to_path
 from .reference_image import (
     REFERENCE_IMAGE_CACHE_DIR,
@@ -26,6 +27,7 @@ from .reference_image import (
     detect_reference_image_mime,
     is_qq_image_host,
 )
+from .session_image_dir import cleanup_session_images_by_size, current_session_image_dir
 
 
 def _decode_base64_to_temp_file(
@@ -100,7 +102,7 @@ def get_temp_dir() -> Path:
     return temp_dir
 
 
-# 生成图保留区（插件数据目录 images/）的容量上限（MB），由配置覆盖；<=0 表示不清理
+# 生成图保留区容量上限（MB）：会话工作区按全部会话插件名子目录总量、其余按插件 images/ 目录计，超限按最旧清理；<=0 表示不清理
 _DEFAULT_IMAGE_CACHE_MAX_SIZE_MB = 512.0
 _image_cache_max_size_mb = _DEFAULT_IMAGE_CACHE_MAX_SIZE_MB
 
@@ -154,15 +156,24 @@ def cleanup_image_cache_by_size(
         logger.warning(f"生成图缓存清理失败: {e}")
 
 
+def _image_save_dir() -> Path:
+    """生成图保存目录：聊天会话为工作区子目录（框架发送白名单内），其余为插件 images/。"""
+    return current_session_image_dir() or (get_plugin_data_dir() / "images")
+
+
 def _build_image_path(
     image_format: str = "png", prefix: str = "gemini_advanced_image"
 ) -> Path:
     """生成规范的图片路径，避免重复逻辑"""
-    # 生成图需要保留供发送与复用，放插件数据目录并按容量自清理；
+    # 生成图需要保留供发送与复用，按保存目录做容量自清理；
     # AstrBot 临时目录没有防清理机制，不适合存放待发送的生成图
-    images_dir = get_plugin_data_dir() / "images"
+    images_dir = _image_save_dir()
     images_dir.mkdir(parents=True, exist_ok=True)
-    cleanup_image_cache_by_size(images_dir)
+    if current_session_image_dir() is not None:
+        # 工作区按全部会话目录总量管理，避免按会话独立累积
+        cleanup_session_images_by_size(_image_cache_max_size_mb)
+    else:
+        cleanup_image_cache_by_size(images_dir)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
     unique_suffix = uuid4().hex[:6]
@@ -259,6 +270,9 @@ async def save_image_stream(
         stream_reader: aiohttp.StreamReader 或任意异步可迭代的字节流
         image_format: 图片格式
         target_path: 指定文件路径，便于缓存复用
+
+    Raises:
+        APIError: 会话工作区不可用时抛出（不落盘）
     """
     file_path = target_path or _build_image_path(image_format)
     try:
@@ -323,14 +337,18 @@ async def save_base64_image(base64_data: str, image_format: str = "png") -> str 
 
     Returns:
         保存的文件路径，失败返回None；若已保存过相同数据则返回现有路径
+
+    Raises:
+        APIError: 会话工作区不可用时抛出（不落盘）
     """
 
-    # 去掉空白后计算哈希，用于去重
+    # 去掉空白后计算哈希，用于去重；缓存键包含保存目录，避免跨会话复用错路径
     cleaned_data = "".join(base64_data.split())
     data_hash = hashlib.md5(cleaned_data.encode()).hexdigest()
+    cache_key = f"{_image_save_dir()}:{data_hash}"
 
     # 检查是否已保存过相同的数据
-    existing_path = _base64_image_cache.get(data_hash)
+    existing_path = _base64_image_cache.get(cache_key)
     if existing_path:
         # 检查文件是否还存在
         if Path(existing_path).exists():
@@ -338,7 +356,7 @@ async def save_base64_image(base64_data: str, image_format: str = "png") -> str 
             return existing_path
         else:
             # 文件已被删除，从缓存中移除
-            del _base64_image_cache[data_hash]
+            del _base64_image_cache[cache_key]
 
     try:
         file_path = _build_image_path(image_format)
@@ -360,11 +378,13 @@ async def save_base64_image(base64_data: str, image_format: str = "png") -> str 
             f.write(raw)
 
         # 加入缓存，避免重复保存相同数据（使用 LRU 策略）
-        _base64_image_cache.set(data_hash, str(file_path))
+        _base64_image_cache.set(cache_key, str(file_path))
 
         logger.debug(f"图像已保存: {file_path}")
         return str(file_path)
 
+    except APIError:
+        raise
     except Exception as e:
         logger.error(f"保存图像失败: {e}")
         return None
@@ -380,6 +400,9 @@ async def save_image_data(image_data: bytes, image_format: str = "png") -> str |
 
     Returns:
         保存的文件路径，失败返回None
+
+    Raises:
+        APIError: 会话工作区不可用时抛出（不落盘）
     """
     try:
         file_path = _build_image_path(image_format)
@@ -389,6 +412,8 @@ async def save_image_data(image_data: bytes, image_format: str = "png") -> str |
         logger.debug(f"图像已保存: {file_path}")
         return str(file_path)
 
+    except APIError:
+        raise
     except Exception as e:
         logger.error(f"保存图像失败: {e}")
         return None
