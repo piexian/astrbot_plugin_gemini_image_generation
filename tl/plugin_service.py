@@ -64,6 +64,9 @@ def _text(value, name, maximum=128, required=False):
 class ImageGenerationService:
     api_version = 1
 
+    # SDK v1 固定能力标识：声明接口实现支持的能力，不代表账号权限或当前可执行。
+    features = ("image.generate", "image.tasks", "image.callbacks")
+
     def __init__(self, plugin):
         self.plugin = plugin
         self.instance_id = uuid.uuid4().hex
@@ -77,6 +80,12 @@ class ImageGenerationService:
 
     def initialized(self):
         self._state = "ready"
+
+    def for_api_version(self, api_version: int = 1) -> ImageGenerationService:
+        """按 SDK 约定协商版本并返回当前服务实例；只接受真正的 int 1。"""
+        if type(api_version) is not int or api_version != 1:
+            raise PluginServiceError("unsupported_version", "仅支持插件生图接口 v1")
+        return self
 
     def get_status(self) -> dict[str, Any]:
         state, reason = self._state, None
@@ -137,6 +146,7 @@ class ImageGenerationService:
             )
         return {
             "api_version": self.api_version,
+            "features": list(self.features),
             "max_images_per_task": self.plugin.cfg.batch_max_images_per_task,
             "candidates": candidates,
         }

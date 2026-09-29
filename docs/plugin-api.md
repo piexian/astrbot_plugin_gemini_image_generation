@@ -4,22 +4,30 @@
 
 ## 获取服务实例
 
-使用 AstrBot 的插件注册接口获取已启用的插件，再获取公开服务。不要导入 `tl/` 内部模块、读取 API Key 或保存内部客户端。
+按 `metadata.yaml` 的 `name` 从 AstrBot 注册表查找插件，再获取公开服务；不要导入内部模块、读取 API Key 或保存内部客户端。注册表无记录可能是未安装或加载失败，不能直接判定为未安装。
 
 ```python
 async def get_image_service(context):
     metadata = context.get_registered_star("astrbot_plugin_gemini_image_generation")
-    if metadata is None or metadata.star_cls is None:
-        raise RuntimeError("请先安装并启用 Gemini 图像生成插件")
+    if metadata is None:
+        raise RuntimeError("当前未发现 Gemini 图像生成插件，请检查安装和加载状态")
+    if not metadata.activated:
+        raise RuntimeError("Gemini 图像生成插件已被禁用，请先在插件管理中启用")
+    if metadata.star_cls is None:
+        raise RuntimeError("Gemini 图像生成插件当前没有可调用实例，请检查加载状态")
     getter = getattr(metadata.star_cls, "get_service", None)
-    if getter is None:
-        raise RuntimeError("当前生图插件版本不支持公开接入接口")
+    if not callable(getter):
+        raise RuntimeError("当前版本不支持插件接入接口，请升级 Gemini 图像生成插件")
     service = getter(api_version=1)
     await service.wait_ready(timeout=10)
     return service
 ```
 
-`get_service()` 在同次加载期间返回同一个实例；不支持的 API 版本会抛出带 `code="unsupported_version"` 的异常。配置缺失时仍能获取实例并查询状态。
+插件作者、版本和显示名以 `metadata`（AstrBot 的 `StarMetadata`）为准，例如用 `metadata.version` 提示用户升级；服务状态不重复维护这些字段。
+
+示例用于业务调用阶段；不要在 `initialize()` 中阻塞等待依赖，依赖加载和卸载时通过本体钩子重新绑定或清理引用。
+
+`get_service()` 为同步方法，在同次加载期间返回同一个实例；只接受整型 `1`（不接受布尔值），其他值抛出带 `code="unsupported_version"` 的 `RuntimeError` 子类。未配置供应商或仍在初始化时也能获取实例并查询状态。
 
 `get_status()` 为同步方法，返回：
 
@@ -32,7 +40,7 @@ async def get_image_service(context):
 | `reason` | `not_configured`、`configuration_updating`、`configuration_failed`、`queue_full`、`service_closed` 等原因，正常为 null |
 | `active_requests` / `queued_requests` | 全入口生成执行槽占用和等待数量 |
 
-`wait_ready(timeout=None)` 等待就绪；可传秒数限制等待，超时抛出 `TimeoutError`。关闭时返回明确错误。查询状态不初始化客户端、不发起网络请求、不扣额度。状态可能在查询后变化，仍需处理提交失败。
+`wait_ready(timeout=None)` 等待就绪并返回与 `get_status()` 同形的快照；可传秒数限制等待，超时抛出 `TimeoutError`，服务已关闭或正在关闭时抛出带 `code="service_closed"` 的 `RuntimeError` 子类。调用方应显式传入有界超时。查询状态不初始化客户端、不发起网络请求、不扣额度。状态可能在查询后变化，仍需处理提交失败。
 
 供应商热更新保留服务实例；插件卸载或重载后，旧实例永久关闭。调用方应重新从注册接口获取新实例，不能仅以“持有实例”判断已经就绪。
 
@@ -77,7 +85,15 @@ async def generate_cover(context, prompt):
 | `negative_prompt` / `watermark` / `quality` | 可选公共生成参数，只路由到支持它们的候选 |
 | `on_complete` | 可选异步函数，参数为最终任务记录 |
 
-`capabilities()` 同步返回 `api_version`、`max_images_per_task` 和 `candidates`。候选描述复用现有模型能力数据，不包含密钥。不提供临时凭证、覆盖供应商配置或命名批量任务接口。
+`capabilities()` 同步返回 `api_version`、`features`、`max_images_per_task` 和 `candidates`：
+
+| 字段 | 含义 |
+| --- | --- |
+| `features` | 固定为 `image.generate`（提交生成）、`image.tasks`（查询/等待/取消任务）、`image.callbacks`（完成回调），表示接口实现支持的能力集合 |
+| `max_images_per_task` | 单次任务的图片数上限，即 `submit(image_count=...)` 上限 |
+| `candidates` | 已配置供应商候选及模型能力数据，不含密钥 |
+
+`features` 表示接口实现支持的能力，不代表账号已获得供应商权限或当前一定可执行。不提供临时凭证、覆盖供应商配置或命名批量任务接口。
 
 有 AstrBot 事件时，将 `event.unified_msg_origin` 传入 `umo`；只提供群号或用户 ID 不会推断出完整会话。无会话时只声明插件身份即可调用。插件身份用于同实例协作和追踪，并非针对不可信插件的认证边界。
 

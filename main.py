@@ -59,7 +59,7 @@ from .tl.generation_tracker import GenerationTracker, requester_from_event
 from .tl.llm_query_tools import BackgroundTaskStatusTool, ProviderModelQueryTool
 from .tl.llm_tools import GeminiImageGenerationTool
 from .tl.plugin_config import get_session_tool_timeout, max_configured_reference_images
-from .tl.plugin_service import ImageGenerationService, PluginServiceError
+from .tl.plugin_service import ImageGenerationService
 from .tl.provider_capabilities import select_candidates
 from .tl.provider_runtime import ProviderRuntime, provider_operation
 from .tl.provider_settings import candidate_is_keyless
@@ -158,9 +158,7 @@ class GeminiImageGenerationPlugin(Star):
 
     def get_service(self, api_version: int = 1) -> ImageGenerationService:
         """获取公开服务；调用前通过 get_status()/wait_ready() 确认可用状态。"""
-        if type(api_version) is not int or api_version != 1:
-            raise PluginServiceError("unsupported_version", "仅支持插件生图接口 v1")
-        return self._public_service
+        return self._public_service.for_api_version(api_version)
 
     def _cleanup_legacy_cache_dirs(self):
         """清理旧版本插件数据目录下的缓存（已迁移到 AstrBot 临时目录）。
