@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -384,3 +385,106 @@ async def test_partial_generation_preserves_images_and_restart_does_not_replay_c
     restored = await reloaded.get_for_plugin(accepted["task_id"], "a")
     assert restored["status"] == "partial_success"
     assert restored["callback_status"] == "interrupted"
+
+
+@pytest.mark.asyncio
+async def test_sdk_version_negotiation_rejects_bool_and_other_versions(tmp_path):
+    service, _ = make_service(tmp_path)
+    assert service.for_api_version() is service
+    assert service.for_api_version(1) is service
+    # True == 1 但 type(True) 不是 int，必须与真正的 int 1 区分。
+    for bad in (True, False, 0, 2, 1.0, "1", None):
+        with pytest.raises(PluginServiceError) as exc:
+            service.for_api_version(bad)
+        assert exc.value.code == "unsupported_version"
+        assert isinstance(exc.value, RuntimeError)
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_sdk_capabilities_declare_fixed_features_without_secrets(tmp_path):
+    service, _ = make_service(tmp_path)
+    capabilities = service.capabilities()
+    assert capabilities["api_version"] == 1
+    assert capabilities["features"] == [
+        "image.generate",
+        "image.tasks",
+        "image.callbacks",
+    ]
+    assert (
+        capabilities["max_images_per_task"]
+        == service.plugin.cfg.batch_max_images_per_task
+    )
+    candidate = capabilities["candidates"][0]
+    assert candidate["provider"] == "xai"
+    assert candidate["model"] == "grok-imagine-image"
+    serialized = json.dumps(capabilities, ensure_ascii=False)
+    assert "api_keys" not in serialized and "settings" not in serialized
+    assert "test" not in serialized  # 测试密钥值不得出现在能力声明中
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_sdk_status_lifecycle_initializing_reload_and_closed(tmp_path):
+    service, _ = make_service(tmp_path)
+    # initialized() 之前也能取得服务并查询状态；ready 只反映本地条件。
+    fresh = ImageGenerationService(service.plugin)
+    status = fresh.get_status()
+    assert status["api_version"] == 1
+    assert status["instance_id"]
+    assert status["state"] == "initializing"
+    assert status["ready"] is False
+    assert status["reason"] is None
+    with pytest.raises(TimeoutError):
+        await fresh.wait_ready(timeout=0.01)
+    # 每次插件加载生成新的 instance_id；重载后旧实例永久失效。
+    assert fresh.instance_id != service.instance_id
+    await service.close()
+    closed = service.get_status()
+    assert closed["state"] == "closed"
+    assert closed["ready"] is False
+    assert closed["reason"] == "service_closed"
+    assert closed["instance_id"] == service.instance_id
+    with pytest.raises(PluginServiceError) as exc:
+        await service.submit(plugin_id="a", prompt="draw")
+    assert exc.value.code == "service_closed"
+
+
+@pytest.mark.asyncio
+async def test_sdk_documented_discovery_handles_registry_states(tmp_path):
+    """执行接入文档中的示例，避免测试替身另写一套发现逻辑。"""
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "docs" / "plugin-api.md"
+    example = path.read_text(encoding="utf-8").split("```python\n", 1)[1]
+    example = example.split("```", 1)[0]
+    namespace = {}
+    exec(compile(example, str(path), "exec"), namespace)
+    discover = namespace["get_image_service"]
+
+    service, _ = make_service(tmp_path)
+    provider = SimpleNamespace(get_service=service.for_api_version)
+    name = "astrbot_plugin_gemini_image_generation"
+    registry: dict = {}
+    context = SimpleNamespace(get_registered_star=registry.get)
+    try:
+        with pytest.raises(RuntimeError, match="当前未发现"):
+            await discover(context)
+        registry[name] = SimpleNamespace(activated=False, star_cls=provider)
+        with pytest.raises(RuntimeError, match="已被禁用"):
+            await discover(context)
+        registry[name] = SimpleNamespace(activated=True, star_cls=None)
+        with pytest.raises(RuntimeError, match="没有可调用实例"):
+            await discover(context)
+        registry[name] = SimpleNamespace(activated=True, star_cls=SimpleNamespace())
+        with pytest.raises(RuntimeError, match="不支持插件接入接口"):
+            await discover(context)
+        registry[name] = SimpleNamespace(
+            activated=True, star_cls=provider, version="v3.0.7"
+        )
+        found = await discover(context)
+        assert found is service
+        assert found.get_status()["ready"] is True
+        assert "version" not in found.get_status()
+    finally:
+        await service.close()
