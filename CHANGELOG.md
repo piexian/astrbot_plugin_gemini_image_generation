@@ -2,6 +2,13 @@
 
 > **升级提示**：v1.9.0 以后的配置文件格式不兼容旧版本。升级后如遇配置模板显示错误，请查看 [配置迁移说明](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/troubleshooting.md#配置迁移说明)。
 
+## [3.0.8] - 2026-09-30
+
+### Fixed
+
+- 补齐跨插件服务 v1 能力声明
+
+
 ## [3.0.7] - 2026-09-23
 
 ### Fixed
