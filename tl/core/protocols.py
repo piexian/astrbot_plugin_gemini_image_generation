@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Iterable, Mapping
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
-from .models import Artifact, Job, JobEvent, LeaseRecord
+from .models import Artifact, Attempt, Job, JobEvent, LeaseRecord
 from .requests import BodyFactory, GenerationRequest, ProviderAttempt
 from .results import GenerationResult
+from .states import JobState
 
 
 @runtime_checkable
@@ -22,6 +23,20 @@ class JobStoreProtocol(Protocol):
     async def append_event(self, event: JobEvent) -> None: ...
 
     async def list_events(self, job_id: str) -> list[JobEvent]: ...
+
+    async def list_jobs(
+        self, states: Iterable[JobState | str] | None = None
+    ) -> list[Job]: ...
+
+    async def add_attempt(self, attempt: Attempt) -> Attempt: ...
+
+    async def add_artifact(self, job_id: str, artifact: Artifact) -> Artifact: ...
+
+    async def add_lease(self, lease: LeaseRecord) -> LeaseRecord: ...
+
+    async def release_lease(self, lease_id: str) -> None: ...
+
+    async def close(self) -> None: ...
 
 
 @runtime_checkable

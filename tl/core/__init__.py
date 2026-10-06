@@ -13,6 +13,7 @@ from .errors import (
     ServiceClosedError,
     StateTransitionError,
 )
+from .job_store import JobStore, SQLiteJobStore
 from .leases import Lease, LeaseKind, LeaseSet
 from .models import Artifact, Attempt, Job, JobEvent, LeaseRecord
 from .requests import BodyFactory, GenerationRequest, ProviderAttempt
@@ -33,6 +34,7 @@ __all__ = [
     "GenerationRequest",
     "GenerationResult",
     "InvalidRequestError",
+    "JobStore",
     "Job",
     "JobCancelledError",
     "JobEvent",
@@ -46,6 +48,7 @@ __all__ = [
     "ProviderAttempt",
     "QueueFullError",
     "ServiceClosedError",
+    "SQLiteJobStore",
     "StateTransitionError",
     "TERMINAL_STATES",
     "can_transition",
