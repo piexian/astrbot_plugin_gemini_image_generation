@@ -271,7 +271,7 @@ def test_v1_schema_migrates_revision_column_without_recreating_database(
     assert restored is not None
     assert restored.revision == 0
     assert "revision" in columns
-    assert versions == [1, 2, 3, 4, 5]
+    assert versions == [1, 2, 3, 4, 5, 6]
     store.close_sync()
 
 
@@ -731,6 +731,64 @@ async def test_expire_leases_marks_due_lease_and_keeps_cleanup_guard(tmp_path) -
             await store.delete_job(job.job_id)
     finally:
         await store.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_owner_recovery_is_scoped_when_another_owner_is_live(
+    tmp_path,
+) -> None:
+    first = SQLiteJobStore(tmp_path, import_legacy=False)
+    second = SQLiteJobStore(tmp_path, import_legacy=False)
+    first_job = Job(
+        job_id="first-owned",
+        request=_request(),
+        state=JobState.RUNNING,
+        owner_id=first.owner_id,
+        fencing_token=first.fencing_token,
+    )
+    second_job = Job(
+        job_id="second-owned",
+        request=_request(),
+        state=JobState.RUNNING,
+        owner_id=second.owner_id,
+        fencing_token=second.fencing_token,
+    )
+    await first.create(first_job)
+    await second.create(second_job)
+    stale_snapshot = await first.get(first_job.job_id)
+    _make_owner_stale(tmp_path / "jobs.sqlite3", first.owner_id)
+    third = SQLiteJobStore(tmp_path, import_legacy=False)
+    try:
+        assert (await third.get(first_job.job_id)).state is JobState.INTERRUPTED
+        assert (await third.get(second_job.job_id)).state is JobState.RUNNING
+        with pytest.raises(ServiceClosedError):
+            await first.save(stale_snapshot)
+    finally:
+        await third.close()
+        await second.close()
+        await first.close()
+
+
+@pytest.mark.asyncio
+async def test_owner_assigned_job_recovers_after_normal_restart(tmp_path) -> None:
+    first = SQLiteJobStore(tmp_path, import_legacy=False)
+    job = Job(
+        job_id="normal-restart-owned",
+        request=_request(),
+        state=JobState.RUNNING,
+        owner_id=first.owner_id,
+        fencing_token=first.fencing_token,
+    )
+    await first.create(job)
+    await first.close()
+
+    second = SQLiteJobStore(tmp_path, import_legacy=False)
+    try:
+        restored = await second.get(job.job_id)
+        assert restored is not None
+        assert restored.state is JobState.INTERRUPTED
+    finally:
+        await second.close()
 
 
 def test_oversized_request_is_rejected() -> None:

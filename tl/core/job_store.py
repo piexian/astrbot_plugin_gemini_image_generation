@@ -40,7 +40,7 @@ from .states import TERMINAL_STATES, JobState, can_transition, coerce_state
 logger = logging.getLogger(__name__)
 _WriteResult = TypeVar("_WriteResult")
 
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
 _DEFAULT_STALE_OWNER_TIMEOUT = 60.0
 _DEFAULT_RETENTION = timedelta(hours=24)
 # Reject an oversized source intact, without a completion marker. An operator
@@ -244,6 +244,9 @@ class SQLiteJobStore:
         self.released_at: str | None = None
         self._owner_registered = False
         self._should_recover = False
+        self._stale_owner_ids: set[str] = set()
+        self._recover_ownerless = False
+        self.fencing_token = 0
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._harden_permissions()
         self._connection = sqlite3.connect(
@@ -587,6 +590,37 @@ class SQLiteJobStore:
                         (_timestamp(),),
                     )
                 current = 5
+            if current < 6:
+                with self._transaction() as migration_connection:
+                    columns = {
+                        row["name"]
+                        for row in migration_connection.execute(
+                            "PRAGMA table_info(jobs)"
+                        ).fetchall()
+                    }
+                    if "owner_id" not in columns:
+                        migration_connection.execute(
+                            "ALTER TABLE jobs ADD COLUMN owner_id TEXT"
+                        )
+                    if "fencing_token" not in columns:
+                        migration_connection.execute(
+                            "ALTER TABLE jobs ADD COLUMN fencing_token INTEGER NOT NULL DEFAULT 0"
+                        )
+                    owner_columns = {
+                        row["name"]
+                        for row in migration_connection.execute(
+                            "PRAGMA table_info(store_owners)"
+                        ).fetchall()
+                    }
+                    if "fencing_token" not in owner_columns:
+                        migration_connection.execute(
+                            "ALTER TABLE store_owners ADD COLUMN fencing_token INTEGER NOT NULL DEFAULT 0"
+                        )
+                    migration_connection.execute(
+                        "INSERT INTO schema_migrations(version, applied_at) VALUES (6, ?)",
+                        (_timestamp(),),
+                    )
+                current = 6
             if current != _SCHEMA_VERSION:
                 raise RuntimeError(
                     f"不支持的 JobStore schema 版本: {current}，期望 {_SCHEMA_VERSION}"
@@ -603,35 +637,48 @@ class SQLiteJobStore:
         now_text = _timestamp(now)
         with self._transaction() as connection:
             live_owner = False
+            stale_owner_ids: set[str] = set()
             rows = connection.execute(
-                "SELECT owner_id, heartbeat_at FROM store_owners WHERE released_at IS NULL"
+                "SELECT owner_id, heartbeat_at, released_at FROM store_owners"
             ).fetchall()
             for row in rows:
+                if row["released_at"] is not None:
+                    stale_owner_ids.add(row["owner_id"])
+                    continue
                 heartbeat = _parse_time(row["heartbeat_at"])
                 is_stale = heartbeat is None or heartbeat.timestamp() < cutoff
                 if is_stale:
+                    stale_owner_ids.add(row["owner_id"])
                     connection.execute(
                         "UPDATE store_owners SET released_at = ? WHERE owner_id = ?",
                         (now_text, row["owner_id"]),
                     )
                 else:
                     live_owner = True
+            token_row = connection.execute(
+                "SELECT COALESCE(MAX(fencing_token), 0) AS token FROM store_owners"
+            ).fetchone()
+            self.fencing_token = int(token_row["token"] or 0) + 1
             connection.execute(
                 """
                 INSERT INTO store_owners(
-                    owner_id, process_id, started_at, heartbeat_at, released_at
-                ) VALUES (?, ?, ?, ?, NULL)
+                    owner_id, process_id, started_at, heartbeat_at, released_at,
+                    fencing_token
+                ) VALUES (?, ?, ?, ?, NULL, ?)
                 """,
                 (
                     self.owner_id,
                     self.process_id,
                     self.started_at,
                     now_text,
+                    self.fencing_token,
                 ),
             )
         self._owner_registered = True
         self.heartbeat_at = now_text
-        return not live_owner
+        self._stale_owner_ids = stale_owner_ids
+        self._recover_ownerless = not live_owner
+        return bool(stale_owner_ids or self._recover_ownerless)
 
     def _heartbeat_locked(self, connection: sqlite3.Connection) -> None:
         if not self._owner_registered:
@@ -647,6 +694,15 @@ class SQLiteJobStore:
         if result.rowcount != 1:
             raise ServiceClosedError("JobStore owner 已失效，请重新打开")
         self.heartbeat_at = now_text
+
+    async def heartbeat(self) -> None:
+        self._ensure_open()
+
+        def operation() -> None:
+            with self._transaction():
+                return None
+
+        await self._run_write(operation)
 
     def _read_json_file(self, path: Path) -> Any:
         try:
@@ -741,10 +797,10 @@ class SQLiteJobStore:
                     inserted = connection.execute(
                         """
                         INSERT OR IGNORE INTO jobs(
-                            job_id, state, revision, parent_job_id, created_at, updated_at,
+                            job_id, state, revision, owner_id, fencing_token, parent_job_id, created_at, updated_at,
                             deadline_at, request_json, result_json, error_code,
                             error_message, cancel_requested, metadata_json
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         values,
                     ).rowcount
@@ -879,18 +935,35 @@ class SQLiteJobStore:
     def _recover_after_crash(self) -> None:
         now = _timestamp()
         with self._transaction() as connection:
+            states = tuple(
+                state.value
+                for state in (
+                    JobState.ACCEPTED,
+                    JobState.QUEUED,
+                    JobState.RUNNING,
+                    JobState.RESULT_READY,
+                    JobState.DELIVERY_PENDING,
+                )
+            )
+            clauses = [f"state IN ({','.join('?' for _ in states)})"]
+            params: list[Any] = list(states)
+            if self._stale_owner_ids:
+                clauses.append(
+                    f"owner_id IN ({','.join('?' for _ in self._stale_owner_ids)})"
+                )
+                params.extend(self._stale_owner_ids)
+            if self._recover_ownerless:
+                clauses.append("owner_id IS NULL")
             rows = connection.execute(
-                "SELECT job_id, state, revision FROM jobs WHERE state IN (?, ?, ?, ?, ?)",
-                tuple(
-                    state.value
-                    for state in (
-                        JobState.ACCEPTED,
-                        JobState.QUEUED,
-                        JobState.RUNNING,
-                        JobState.RESULT_READY,
-                        JobState.DELIVERY_PENDING,
-                    )
-                ),
+                "SELECT job_id, state, revision, owner_id FROM jobs WHERE "
+                + clauses[0]
+                + " AND ("
+                + " OR ".join(clauses[1:])
+                + ")"
+                if len(clauses) > 1
+                else "SELECT job_id, state, revision, owner_id FROM jobs WHERE "
+                + clauses[0],
+                params,
             ).fetchall()
             for row in rows:
                 state = (
@@ -906,7 +979,8 @@ class SQLiteJobStore:
                 new_revision = previous_revision + 1
                 connection.execute(
                     """
-                    UPDATE jobs SET state = ?, revision = ?, updated_at = ?,
+                    UPDATE jobs SET state = ?, revision = ?, owner_id = NULL,
+                        fencing_token = 0, updated_at = ?,
                         error_code = ?, error_message = ?
                     WHERE job_id = ?
                     """,
@@ -1002,6 +1076,8 @@ class SQLiteJobStore:
             job.job_id,
             job.state.value,
             job.revision,
+            job.owner_id,
+            job.fencing_token,
             job.parent_job_id,
             payload["created_at"],
             payload["updated_at"],
@@ -1022,6 +1098,8 @@ class SQLiteJobStore:
             "job_id": row["job_id"],
             "state": row["state"],
             "revision": row["revision"],
+            "owner_id": row["owner_id"],
+            "fencing_token": row["fencing_token"],
             "parent_job_id": row["parent_job_id"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
@@ -1060,14 +1138,18 @@ class SQLiteJobStore:
         job = copy.deepcopy(job)
 
         def operation() -> Job:
+            if job.owner_id is not None and (
+                job.owner_id != self.owner_id or job.fencing_token != self.fencing_token
+            ):
+                raise StaleJobError(f"Job owner fencing rejected: {job.job_id}")
             with self._transaction() as connection:
                 connection.execute(
                     """
                     INSERT INTO jobs(
-                        job_id, state, revision, parent_job_id, created_at, updated_at,
+                        job_id, state, revision, owner_id, fencing_token, parent_job_id, created_at, updated_at,
                         deadline_at, request_json, result_json, error_code,
                         error_message, cancel_requested, metadata_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     self._job_values(job),
                 )
@@ -1108,12 +1190,28 @@ class SQLiteJobStore:
         def operation() -> Job:
             with self._transaction() as connection:
                 previous = connection.execute(
-                    "SELECT state, revision FROM jobs WHERE job_id = ?",
+                    "SELECT state, revision, owner_id, fencing_token FROM jobs WHERE job_id = ?",
                     (job.job_id,),
                 ).fetchone()
                 if previous is None:
                     raise JobNotFoundError(f"Job 不存在: {job.job_id}")
                 previous_revision = int(previous["revision"])
+                if previous["owner_id"] is not None and (
+                    job.owner_id != previous["owner_id"]
+                    or job.fencing_token != int(previous["fencing_token"] or 0)
+                ):
+                    raise StaleJobError(
+                        f"Job owner fencing rejected: {job.job_id}",
+                        details={"job_id": job.job_id, "owner_id": job.owner_id},
+                    )
+                if job.owner_id is not None and (
+                    job.owner_id != self.owner_id
+                    or job.fencing_token != self.fencing_token
+                ):
+                    raise StaleJobError(
+                        f"Job owner fencing rejected: {job.job_id}",
+                        details={"job_id": job.job_id, "owner_id": job.owner_id},
+                    )
                 if previous_revision != expected:
                     raise StaleJobError(
                         f"Job 快照已过期: {job.job_id}",
@@ -1142,9 +1240,9 @@ class SQLiteJobStore:
                 values = self._job_values(job)
                 result = connection.execute(
                     """
-                    UPDATE jobs SET state = ?, parent_job_id = ?, created_at = ?,
-                        updated_at = ?, deadline_at = ?, request_json = ?,
-                        result_json = ?, error_code = ?, error_message = ?,
+                    UPDATE jobs SET state = ?, owner_id = ?, fencing_token = ?,
+                        parent_job_id = ?, created_at = ?, updated_at = ?, deadline_at = ?,
+                        request_json = ?, result_json = ?, error_code = ?, error_message = ?,
                         cancel_requested = ?, metadata_json = ?,
                         revision = revision + 1
                     WHERE job_id = ? AND revision = ?
@@ -1161,6 +1259,8 @@ class SQLiteJobStore:
                         values[10],
                         values[11],
                         values[12],
+                        values[13],
+                        values[14],
                         job.job_id,
                         expected,
                     ),
@@ -1208,7 +1308,16 @@ class SQLiteJobStore:
     def _sync_result_artifacts_locked(connection: sqlite3.Connection, job: Job) -> None:
         if job.result is None:
             return
-        for artifact_id in job.result.to_storage_dict()["artifacts"]:
+        artifact_ids = list(job.result.to_storage_dict()["artifacts"])
+        if artifact_ids:
+            placeholders = ",".join("?" for _ in artifact_ids)
+            connection.execute(
+                f"DELETE FROM artifacts WHERE job_id = ? AND artifact_id NOT IN ({placeholders})",
+                (job.job_id, *artifact_ids),
+            )
+        else:
+            connection.execute("DELETE FROM artifacts WHERE job_id = ?", (job.job_id,))
+        for artifact_id in artifact_ids:
             connection.execute(
                 """
                 INSERT OR IGNORE INTO artifacts(
@@ -1291,7 +1400,7 @@ class SQLiteJobStore:
             with self._transaction() as connection:
                 connection.execute(
                     """
-                    INSERT OR REPLACE INTO attempts(
+                    INSERT INTO attempts(
                         attempt_id, job_id, number, provider, model, status,
                         started_at, finished_at, error_code, error_message
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1369,19 +1478,122 @@ class SQLiteJobStore:
 
         return await self._run_write(operation)
 
-    async def release_lease(
-        self, lease_id: str, *, released_at: datetime | None = None
+    async def update_lease(
+        self,
+        lease_id: str,
+        *,
+        job_id: str,
+        status: str,
+        error: str | None = None,
+        owner_id: str | None = None,
     ) -> None:
         self._ensure_open()
 
         def operation() -> None:
             with self._transaction() as connection:
-                connection.execute(
-                    "UPDATE leases SET status = 'released', released_at = ? WHERE lease_id = ?",
-                    (_timestamp(released_at), str(lease_id)),
+                row = connection.execute(
+                    "SELECT job_id, metadata_json FROM leases WHERE lease_id = ?",
+                    (str(lease_id),),
+                ).fetchone()
+                if row is None:
+                    raise JobNotFoundError(f"Lease 不存在: {lease_id}")
+                if row["job_id"] != job_id:
+                    raise StaleJobError(f"Lease owner 不匹配: {lease_id}")
+                metadata = _json_loads(row["metadata_json"], {})
+                if not isinstance(metadata, dict):
+                    metadata = {}
+                if owner_id is not None and metadata.get("owner_id") not in {
+                    None,
+                    owner_id,
+                }:
+                    raise StaleJobError(f"Lease fencing rejected: {lease_id}")
+                attempts = int(metadata.get("release_attempts", 0) or 0) + 1
+                metadata["release_attempts"] = attempts
+                if error:
+                    metadata["release_error"] = str(error)[:500]
+                result = connection.execute(
+                    "UPDATE leases SET status = ?, metadata_json = ? WHERE lease_id = ? AND job_id = ?",
+                    (status, _json(metadata), str(lease_id), job_id),
                 )
+                if result.rowcount != 1:
+                    raise StaleJobError(f"Lease 更新竞争失败: {lease_id}")
 
         await self._run_write(operation)
+
+    async def release_lease(
+        self,
+        lease_id: str,
+        *,
+        released_at: datetime | None = None,
+        job_id: str | None = None,
+        owner_id: str | None = None,
+    ) -> None:
+        self._ensure_open()
+
+        def operation() -> None:
+            with self._transaction() as connection:
+                row = connection.execute(
+                    "SELECT job_id, metadata_json FROM leases WHERE lease_id = ?",
+                    (str(lease_id),),
+                ).fetchone()
+                if row is None:
+                    raise JobNotFoundError(f"Lease 不存在: {lease_id}")
+                if job_id is not None and row["job_id"] != job_id:
+                    raise StaleJobError(f"Lease owner 不匹配: {lease_id}")
+                if owner_id is not None:
+                    metadata = _json_loads(row["metadata_json"], {})
+                    if isinstance(metadata, dict) and metadata.get("owner_id") not in {
+                        None,
+                        owner_id,
+                    }:
+                        raise StaleJobError(f"Lease fencing rejected: {lease_id}")
+                    job_row = connection.execute(
+                        "SELECT owner_id FROM jobs WHERE job_id = ?", (row["job_id"],)
+                    ).fetchone()
+                    if job_row is not None and job_row["owner_id"] not in {
+                        None,
+                        owner_id,
+                    }:
+                        raise StaleJobError(
+                            f"Job owner fencing rejected: {row['job_id']}"
+                        )
+                result = connection.execute(
+                    "UPDATE leases SET status = 'released', released_at = ? WHERE lease_id = ? AND job_id = ?",
+                    (_timestamp(released_at), str(lease_id), row["job_id"]),
+                )
+                if result.rowcount != 1:
+                    raise StaleJobError(f"Lease 释放竞争失败: {lease_id}")
+
+        await self._run_write(operation)
+
+    async def list_leases(self, job_id: str | None = None) -> list[LeaseRecord]:
+        def operation() -> list[LeaseRecord]:
+            with self._lock:
+                self._ensure_open()
+                self._heartbeat_locked(self._connection)
+                if job_id is None:
+                    rows = self._connection.execute(
+                        "SELECT * FROM leases ORDER BY lease_id"
+                    ).fetchall()
+                else:
+                    rows = self._connection.execute(
+                        "SELECT * FROM leases WHERE job_id = ? ORDER BY lease_id",
+                        (job_id,),
+                    ).fetchall()
+            return [
+                LeaseRecord(
+                    lease_id=row["lease_id"],
+                    job_id=row["job_id"],
+                    kind=row["kind"],
+                    status=row["status"],
+                    acquired_at=_parse_time(row["acquired_at"]) or utc_now(),
+                    released_at=_parse_time(row["released_at"]),
+                    metadata=_json_loads(row["metadata_json"], {}),
+                )
+                for row in rows
+            ]
+
+        return await asyncio.to_thread(operation)
 
     async def list_artifacts(self, job_id: str) -> list[Artifact]:
         def operation() -> list[Artifact]:
@@ -1434,8 +1646,12 @@ class SQLiteJobStore:
             VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
-                f"deletion-{uuid.uuid4().hex}", row["job_id"], row["state"],
-                row["revision"], _timestamp(now), reason,
+                f"deletion-{uuid.uuid4().hex}",
+                row["job_id"],
+                row["state"],
+                row["revision"],
+                _timestamp(now),
+                reason,
             ),
         )
         # foreign_keys=ON: attempts/artifacts/leases/job_events cascade within
@@ -1531,7 +1747,9 @@ class SQLiteJobStore:
                     if not isinstance(expiry, str):
                         continue
                     try:
-                        expiry = _aware_utc(datetime.fromisoformat(expiry), "expires_at")
+                        expiry = _aware_utc(
+                            datetime.fromisoformat(expiry), "expires_at"
+                        )
                     except ValueError:
                         continue
                     if expiry > now:
@@ -1575,7 +1793,9 @@ class SQLiteJobStore:
                     "PRAGMA wal_checkpoint(TRUNCATE)"
                 ).fetchone()
                 if busy:
-                    raise CheckpointBusyError("WAL checkpoint 被其他连接占用，请稍后重试")
+                    raise CheckpointBusyError(
+                        "WAL checkpoint 被其他连接占用，请稍后重试"
+                    )
 
         await self._run_write(operation)
 

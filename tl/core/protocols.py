@@ -26,9 +26,7 @@ class JobStoreProtocol(Protocol):
 
     async def get(self, job_id: str) -> Job | None: ...
 
-    async def save(
-        self, job: Job, *, expected_revision: int | None = None
-    ) -> Job: ...
+    async def save(self, job: Job, *, expected_revision: int | None = None) -> Job: ...
 
     async def append_event(self, event: JobEvent) -> None: ...
 
@@ -44,7 +42,26 @@ class JobStoreProtocol(Protocol):
 
     async def add_lease(self, lease: LeaseRecord) -> LeaseRecord: ...
 
-    async def release_lease(self, lease_id: str) -> None: ...
+    async def update_lease(
+        self,
+        lease_id: str,
+        *,
+        job_id: str,
+        status: str,
+        error: str | None = None,
+        owner_id: str | None = None,
+    ) -> None: ...
+
+    async def release_lease(
+        self,
+        lease_id: str,
+        *,
+        released_at: datetime | None = None,
+        job_id: str | None = None,
+        owner_id: str | None = None,
+    ) -> None: ...
+
+    async def list_leases(self, job_id: str | None = None) -> list[LeaseRecord]: ...
 
     async def delete_job(self, job_id: str) -> None:
         """Delete an old terminal Job without unreleased leases; keep an audit row."""
@@ -63,6 +80,8 @@ class JobStoreProtocol(Protocol):
         ...
 
     async def close(self) -> None: ...
+
+    async def heartbeat(self) -> None: ...
 
 
 @runtime_checkable

@@ -216,6 +216,8 @@ class Job:
     request: GenerationRequest
     state: JobState = JobState.ACCEPTED
     revision: int = 0
+    owner_id: str | None = None
+    fencing_token: int = 0
     parent_job_id: str | None = None
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
@@ -229,6 +231,12 @@ class Job:
     def __post_init__(self) -> None:
         if type(self.revision) is not int or self.revision < 0:
             raise ValueError("revision 必须是非负整数")
+        if self.owner_id is not None and (
+            not isinstance(self.owner_id, str) or not self.owner_id
+        ):
+            raise ValueError("owner_id 必须是非空字符串")
+        if type(self.fencing_token) is not int or self.fencing_token < 0:
+            raise ValueError("fencing_token 必须是非负整数")
         if self.deadline_at is not None:
             if not isinstance(self.deadline_at, datetime):
                 raise ValueError("deadline_at 必须是 datetime")
@@ -285,6 +293,8 @@ class Job:
             request=request,
             parent_job_id=parent_job_id or request.parent_job_id,
             revision=0,
+            owner_id=None,
+            fencing_token=0,
             created_at=timestamp,
             updated_at=timestamp,
             deadline_at=request.deadline_at,
@@ -367,6 +377,8 @@ class Job:
             "job_id": self.job_id,
             "state": self.state.value,
             "revision": self.revision,
+            "owner_id": self.owner_id,
+            "fencing_token": self.fencing_token,
             "parent_job_id": self.parent_job_id,
             "created_at": _timestamp(self.created_at),
             "updated_at": _timestamp(self.updated_at),
@@ -428,6 +440,8 @@ class Job:
             request=request,
             state=coerce_state(payload.get("state", JobState.ACCEPTED.value)),
             revision=payload.get("revision", 0),
+            owner_id=payload.get("owner_id"),
+            fencing_token=payload.get("fencing_token", 0),
             parent_job_id=payload.get("parent_job_id"),
             created_at=created,
             updated_at=updated,

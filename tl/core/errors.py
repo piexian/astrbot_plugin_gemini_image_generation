@@ -183,6 +183,11 @@ class JobDeletionError(CoreError):
     retryable = False
 
 
+class RecoveryRequiredError(CoreError):
+    code = "recovery_required"
+    retryable = False
+
+
 class CheckpointBusyError(CoreError):
     code = "checkpoint_busy"
     retryable = True

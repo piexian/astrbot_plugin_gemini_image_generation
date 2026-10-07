@@ -65,6 +65,9 @@ class FakeLeaseSource:
         self.reservations.append(reservation)
         return reservation
 
+    async def resolve(self, references):
+        return tuple(f"resolved:{item}" for item in references)
+
 
 def request(*, timeout: float = 2.0, references: tuple[str, ...] = ()):
     return GenerationRequest(
@@ -260,4 +263,29 @@ async def test_stale_worker_cannot_overwrite_new_result(tmp_path):
         assert result.result.artifacts == ("winner",)
     finally:
         block.set()
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_keeps_long_provider_owner_live(tmp_path):
+    block = asyncio.Event()
+    provider = FakeProvider(block=block)
+    scheduler, store = make_scheduler(
+        tmp_path,
+        provider,
+        heartbeat_interval=0.02,
+    )
+    second = None
+    try:
+        handle = await scheduler.submit(request(timeout=1.0))
+        await provider.started.wait()
+        await asyncio.sleep(0.08)
+        second = SQLiteJobStore(tmp_path, import_legacy=False, stale_owner_timeout=0.05)
+        snapshot = await second.get(handle.job_id)
+        assert snapshot is not None
+        assert snapshot.state is JobState.RUNNING
+    finally:
+        block.set()
+        if second is not None:
+            await second.close()
         await scheduler.close()
