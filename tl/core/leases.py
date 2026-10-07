@@ -7,6 +7,7 @@ lease 的释放是幂等的，并且 ``LeaseSet`` 会在异常和取消路径中
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -25,6 +26,13 @@ class LeaseKind(str, Enum):
     DELIVERY = "delivery"
 
 
+class LeaseStatus(str, Enum):
+    ACTIVE = "active"
+    RELEASING = "releasing"
+    RELEASED = "released"
+    RELEASE_FAILED = "release_failed"
+
+
 ReleaseCallback = Callable[[], Any | Awaitable[Any]]
 
 
@@ -36,27 +44,50 @@ class Lease:
     release_callback: ReleaseCallback | None = None
     expires_at: datetime | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
-    released: bool = False
+    status: LeaseStatus | str = LeaseStatus.ACTIVE
+    release_attempts: int = 0
+    release_error: str | None = None
+
+    @property
+    def released(self) -> bool:
+        """Compatibility view for callers that only need terminal success."""
+
+        return self.status == LeaseStatus.RELEASED
 
     async def release(self) -> None:
-        """释放一次资源；重复调用不会重复归还 quota 或删除文件。"""
+        """Release once, retaining a failed lease for a later retry."""
 
-        if self.released:
+        if self.status == LeaseStatus.RELEASED:
             return
-        self.released = True
+        self.status = LeaseStatus.RELEASING
+        self.release_attempts += 1
+        self.release_error = None
         callback = self.release_callback
         if callback is None:
+            self.status = LeaseStatus.RELEASED
             return
         try:
             result = callback()
             if inspect.isawaitable(result):
                 await result
+        except asyncio.CancelledError:
+            self.status = LeaseStatus.RELEASE_FAILED
+            self.release_error = "CancelledError"
+            raise
         except BaseException as exc:
-            # 标记已释放后再抛出，调用方可以记录失败但不会二次归还。
+            self.status = LeaseStatus.RELEASE_FAILED
+            self.release_error = f"{type(exc).__name__}: {exc}"[:500]
             raise LeaseError(
                 f"释放 {self.kind} lease 失败",
-                details={"job_id": self.job_id, "kind": str(self.kind)},
+                details={
+                    "job_id": self.job_id,
+                    "kind": str(self.kind),
+                    "status": self.status.value,
+                    "attempts": self.release_attempts,
+                },
             ) from exc
+        else:
+            self.status = LeaseStatus.RELEASED
 
 
 class LeaseSet:
@@ -77,21 +108,35 @@ class LeaseSet:
         return tuple(self._leases)
 
     async def release_all(self) -> None:
-        if self._released:
+        if self._released and all(lease.released for lease in self._leases):
             return
-        self._released = True
         errors: list[BaseException] = []
+        cancellations: list[asyncio.CancelledError] = []
         # 反向释放，保持文件/artifact 依赖其输入 lease 的惯例。
         for lease in reversed(self._leases):
             try:
                 await lease.release()
+            except asyncio.CancelledError as exc:
+                cancellations.append(exc)
             except BaseException as exc:  # cleanup must continue for all leases
                 errors.append(exc)
+        if cancellations:
+            self._released = False
+            raise cancellations[0]
         if errors:
+            self._released = False
             raise LeaseError(
                 f"{len(errors)} 个 lease 释放失败",
-                details={"errors": [type(error).__name__ for error in errors]},
+                details={
+                    "errors": [type(error).__name__ for error in errors],
+                    "failed_leases": [
+                        lease.token
+                        for lease in self._leases
+                        if lease.status == LeaseStatus.RELEASE_FAILED
+                    ],
+                },
             ) from errors[0]
+        self._released = True
 
     async def __aenter__(self) -> LeaseSet:
         return self

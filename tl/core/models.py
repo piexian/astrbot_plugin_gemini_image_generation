@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
-import copy
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from .errors import StateTransitionError, redact_sensitive
-from .requests import GenerationRequest
+from .errors import (
+    MAX_EVENT_DATA_BYTES,
+    MAX_METADATA_BYTES,
+    StateTransitionError,
+    bounded_json,
+    redact_artifact_reference,
+    redact_text,
+)
+from .requests import GenerationRequest, reference_descriptor
 from .results import GenerationResult
 from .states import JobState, can_transition, coerce_state
 
@@ -33,6 +39,20 @@ def _parse_timestamp(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+def _parse_deadline(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("deadline_at 必须是带时区的 ISO datetime")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError("deadline_at 不是有效的 ISO datetime") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("deadline_at 不允许使用 naive datetime")
+    return parsed.astimezone(timezone.utc)
+
+
 @dataclass(frozen=True, slots=True)
 class Artifact:
     artifact_id: str
@@ -42,15 +62,31 @@ class Artifact:
     size_bytes: int | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
-    def as_dict(self) -> dict[str, Any]:
+    def to_storage_dict(self) -> dict[str, Any]:
         return {
-            "artifact_id": self.artifact_id,
+            "artifact_id": redact_artifact_reference(self.artifact_id),
             "kind": self.kind,
-            "location": self.location,
+            "location": redact_artifact_reference(self.location)
+            if self.location
+            else None,
             "mime_type": self.mime_type,
             "size_bytes": self.size_bytes,
-            "metadata": redact_sensitive(self.metadata),
+            "metadata": bounded_json(
+                self.metadata, limit=MAX_METADATA_BYTES, field_name="artifact.metadata"
+            ),
         }
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return self.to_storage_dict()
+
+    def to_log_dict(self) -> dict[str, Any]:
+        return {
+            "artifact_id": redact_artifact_reference(self.artifact_id),
+            "kind": self.kind,
+        }
+
+    def as_dict(self) -> dict[str, Any]:
+        return self.to_public_dict()
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,7 +102,7 @@ class Attempt:
     error_code: str | None = None
     error_message: str | None = None
 
-    def as_dict(self) -> dict[str, Any]:
+    def to_storage_dict(self) -> dict[str, Any]:
         return {
             "attempt_id": self.attempt_id,
             "job_id": self.job_id,
@@ -77,8 +113,24 @@ class Attempt:
             "started_at": _timestamp(self.started_at),
             "finished_at": _timestamp(self.finished_at) if self.finished_at else None,
             "error_code": self.error_code,
-            "error_message": self.error_message,
+            "error_message": redact_text(self.error_message)
+            if self.error_message
+            else None,
         }
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return self.to_storage_dict()
+
+    def to_log_dict(self) -> dict[str, Any]:
+        return {
+            "attempt_id": self.attempt_id,
+            "job_id": self.job_id,
+            "number": self.number,
+            "status": self.status,
+        }
+
+    def as_dict(self) -> dict[str, Any]:
+        return self.to_public_dict()
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +143,7 @@ class LeaseRecord:
     released_at: datetime | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
-    def as_dict(self) -> dict[str, Any]:
+    def to_storage_dict(self) -> dict[str, Any]:
         return {
             "lease_id": self.lease_id,
             "job_id": self.job_id,
@@ -99,8 +151,24 @@ class LeaseRecord:
             "status": self.status,
             "acquired_at": _timestamp(self.acquired_at),
             "released_at": _timestamp(self.released_at) if self.released_at else None,
-            "metadata": redact_sensitive(self.metadata),
+            "metadata": bounded_json(
+                self.metadata, limit=MAX_METADATA_BYTES, field_name="lease.metadata"
+            ),
         }
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return self.to_storage_dict()
+
+    def to_log_dict(self) -> dict[str, Any]:
+        return {
+            "lease_id": self.lease_id,
+            "job_id": self.job_id,
+            "kind": self.kind,
+            "status": self.status,
+        }
+
+    def as_dict(self) -> dict[str, Any]:
+        return self.to_public_dict()
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,15 +180,32 @@ class JobEvent:
     state: JobState | None = None
     data: Mapping[str, Any] = field(default_factory=dict)
 
-    def as_dict(self) -> dict[str, Any]:
+    def to_storage_dict(self) -> dict[str, Any]:
+        data = bounded_json(
+            self.data, limit=MAX_EVENT_DATA_BYTES, field_name="event.data"
+        )
         return {
             "event_id": self.event_id,
             "job_id": self.job_id,
             "event_type": self.event_type,
             "created_at": _timestamp(self.created_at),
             "state": self.state.value if self.state else None,
-            "data": copy.deepcopy(dict(self.data)),
+            "data": data,
         }
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return self.to_storage_dict()
+
+    def to_log_dict(self) -> dict[str, Any]:
+        return {
+            "event_id": self.event_id,
+            "job_id": self.job_id,
+            "event_type": self.event_type,
+            "state": self.state.value if self.state else None,
+        }
+
+    def as_dict(self) -> dict[str, Any]:
+        return self.to_public_dict()
 
 
 @dataclass(slots=True)
@@ -130,6 +215,7 @@ class Job:
     job_id: str
     request: GenerationRequest
     state: JobState = JobState.ACCEPTED
+    revision: int = 0
     parent_job_id: str | None = None
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
@@ -139,6 +225,38 @@ class Job:
     error_message: str | None = None
     cancel_requested: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if type(self.revision) is not int or self.revision < 0:
+            raise ValueError("revision 必须是非负整数")
+        if self.deadline_at is not None:
+            if not isinstance(self.deadline_at, datetime):
+                raise ValueError("deadline_at 必须是 datetime")
+            if self.deadline_at.tzinfo is None or self.deadline_at.utcoffset() is None:
+                raise ValueError("deadline_at 不允许使用 naive datetime")
+            deadline = self.deadline_at.astimezone(timezone.utc)
+            request_deadline = self.request.deadline_at
+            if request_deadline is not None:
+                request_deadline = request_deadline.astimezone(timezone.utc)
+                if request_deadline != deadline:
+                    raise ValueError(
+                        "Job.deadline_at 与 GenerationRequest.deadline_at 不一致"
+                    )
+            if self.request.deadline_at != deadline:
+                from dataclasses import replace
+
+                object.__setattr__(
+                    self,
+                    "request",
+                    replace(self.request, deadline_at=deadline),
+                )
+            object.__setattr__(self, "deadline_at", deadline)
+        elif self.request.deadline_at is not None:
+            object.__setattr__(
+                self,
+                "deadline_at",
+                self.request.deadline_at.astimezone(timezone.utc),
+            )
 
     @property
     def status(self) -> str:
@@ -166,6 +284,7 @@ class Job:
             job_id=job_id or f"job-{uuid.uuid4().hex}",
             request=request,
             parent_job_id=parent_job_id or request.parent_job_id,
+            revision=0,
             created_at=timestamp,
             updated_at=timestamp,
             deadline_at=request.deadline_at,
@@ -212,37 +331,78 @@ class Job:
         self.error_message = str(message)
         self.updated_at = now or utc_now()
 
-    def as_dict(self) -> dict[str, Any]:
+    def _request_storage_dict(self) -> dict[str, Any]:
+        requester = {
+            key: redact_text(value)
+            for key, value in self.request.requester.items()
+            if key
+            in {"user_id", "user_name", "group_id", "chat_type", "session_id", "umo"}
+        }
+        request = {
+            "prompt": redact_text(self.request.prompt),
+            "source": redact_text(self.request.source),
+            "image_count": self.request.image_count,
+            "provider": self.request.provider,
+            "model": self.request.model,
+            "candidate_id": self.request.candidate_id,
+            "resolution": self.request.resolution,
+            "aspect_ratio": self.request.aspect_ratio,
+            "negative_prompt": redact_text(self.request.negative_prompt)
+            if self.request.negative_prompt
+            else None,
+            "quality": self.request.quality,
+            "watermark": self.request.watermark,
+            "reference_images": [
+                reference_descriptor(item) for item in self.request.reference_images
+            ],
+            "parent_job_id": self.request.parent_job_id,
+            "requester": requester,
+            "metadata": bounded_json(
+                self.request.metadata,
+                limit=MAX_METADATA_BYTES,
+                field_name="request.metadata",
+            ),
+        }
         return {
             "job_id": self.job_id,
             "state": self.state.value,
+            "revision": self.revision,
             "parent_job_id": self.parent_job_id,
             "created_at": _timestamp(self.created_at),
             "updated_at": _timestamp(self.updated_at),
             "deadline_at": _timestamp(self.deadline_at) if self.deadline_at else None,
-            "request": {
-                "prompt": self.request.prompt,
-                "source": self.request.source,
-                "image_count": self.request.image_count,
-                "provider": self.request.provider,
-                "model": self.request.model,
-                "candidate_id": self.request.candidate_id,
-                "resolution": self.request.resolution,
-                "aspect_ratio": self.request.aspect_ratio,
-                "negative_prompt": self.request.negative_prompt,
-                "quality": self.request.quality,
-                "watermark": self.request.watermark,
-                "reference_images": list(self.request.reference_images),
-                "parent_job_id": self.request.parent_job_id,
-                "requester": dict(self.request.requester),
-                "metadata": redact_sensitive(self.request.metadata),
-            },
-            "result": self.result.as_dict() if self.result else None,
-            "error_code": self.error_code,
-            "error_message": self.error_message,
+            "request": request,
+            "result": self.result.to_storage_dict() if self.result else None,
+            "error_code": redact_text(self.error_code) if self.error_code else None,
+            "error_message": redact_text(self.error_message)
+            if self.error_message
+            else None,
             "cancel_requested": self.cancel_requested,
-            "metadata": redact_sensitive(self.metadata),
+            "metadata": bounded_json(
+                self.metadata, limit=MAX_METADATA_BYTES, field_name="job.metadata"
+            ),
         }
+
+    def to_storage_dict(self) -> dict[str, Any]:
+        return self._request_storage_dict()
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return self._request_storage_dict()
+
+    def to_log_dict(self) -> dict[str, Any]:
+        return {
+            "job_id": self.job_id,
+            "state": self.state.value,
+            "revision": self.revision,
+            "source": redact_text(self.request.source),
+            "provider": self.request.provider,
+            "model": self.request.model,
+            "artifact_count": len(self.result.artifacts) if self.result else 0,
+            "error": redact_text(self.error_message) if self.error_message else None,
+        }
+
+    def as_dict(self) -> dict[str, Any]:
+        return self.to_public_dict()
 
     def to_dict(self) -> dict[str, Any]:
         return self.as_dict()
@@ -255,7 +415,7 @@ class Job:
         request = GenerationRequest.from_values(**dict(request_data))
         created = _parse_timestamp(payload.get("created_at")) or utc_now()
         updated = _parse_timestamp(payload.get("updated_at")) or created
-        deadline = _parse_timestamp(payload.get("deadline_at"))
+        deadline = _parse_deadline(payload.get("deadline_at"))
         result_data = payload.get("result")
         if isinstance(result_data, Mapping):
             result_values = dict(result_data)
@@ -267,6 +427,7 @@ class Job:
             job_id=str(payload.get("job_id") or ""),
             request=request,
             state=coerce_state(payload.get("state", JobState.ACCEPTED.value)),
+            revision=payload.get("revision", 0),
             parent_job_id=payload.get("parent_job_id"),
             created_at=created,
             updated_at=updated,
