@@ -2,12 +2,20 @@
 
 > **升级提示**：v1.9.0 以后的配置文件格式不兼容旧版本。升级后如遇配置模板显示错误，请查看 [配置迁移说明](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/troubleshooting.md#配置迁移说明)。
 
-## [Unreleased]
+## [3.0.9] - 2026-10-10
+
+### Added
+
+- **核心调度器 v2 第一阶段**：新增 `tl/core/` 领域模型与 Job 状态机、SQLite WAL JobStore（含旧 `background_tasks.json`/`generation_history.json` 启动导入与损坏恢复）、最小 JobScheduler 与 ProviderRouter（候选选择/fallback/错误分类统一收归，retry 按剩余总 deadline 截断）；本阶段仅新增模块，未接入现有入口，行为无变化。配套架构文档见 `docs/architecture/`。
 
 ### Fixed
 
 - **LLM 工具调用生成超时被框架 `tool_call_timeout` 截断**（issue #109）：工具调用与指令调用统一使用插件 `total_timeout` 作为生成总上限，不再被框架超时封顶；框架 `tool_call_timeout` 仅用于计算前台等待/转后台时机，超时提示改为建议调大插件 `total_timeout`。
 - **unique_session 会话隔离下会话级 `tool_call_timeout` 读取失效**：框架开启会话隔离后事件 umo 被改写为 `{platform}:GroupMessage:{sender_id}_{group_id}`，按群号保存的会话配置匹配失败、静默回退默认配置；现在检测到隔离改写且原 umo 未命中会话配置时，按事件真实群号重建群 umo 再查一次。
+
+### Changed
+
+- 精简测试套件（1480 → 626），只保留安全边界、持久化恢复、契约回归与供应商关键契约守护；新增 Code Quality CI（ruff + pytest 3.11/3.12 矩阵）。
 
 ## [3.0.8] - 2026-09-30
 
