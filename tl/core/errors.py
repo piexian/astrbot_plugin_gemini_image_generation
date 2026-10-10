@@ -264,3 +264,24 @@ class RemoteFetchRejectedError(PathPolicyError):
 
     code = "remote_fetch_rejected"
     retryable = False
+
+
+class ReferenceResolveError(CoreError):
+    """参考图输入无法解析（形态识别、读取、解码或格式识别失败）。"""
+
+    code = "reference_resolve_failed"
+    retryable = False
+
+
+class ReferenceTooLargeError(CoreError):
+    """参考图超过字节或像素上限。"""
+
+    code = "reference_too_large"
+    retryable = False
+
+
+class ReferenceTimeoutError(CoreError):
+    """参考图解析超过 deadline。"""
+
+    code = "reference_timeout"
+    retryable = True

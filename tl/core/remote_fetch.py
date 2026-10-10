@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from urllib.parse import urljoin
 
@@ -68,6 +69,7 @@ class RemoteFetchService:
         *,
         deadline_at: datetime | None = None,
         proxy: str | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> bytes:
         """抓取 URL 字节；deadline_at 截断总时长，proxy 由调用方显式传入。"""
 
@@ -101,6 +103,7 @@ class RemoteFetchService:
                         current,
                         timeout=timeout,
                         proxy=proxy,
+                        headers=headers,
                         allow_redirects=False,
                     ) as response:
                         if response.status in _REDIRECT_STATUSES:
