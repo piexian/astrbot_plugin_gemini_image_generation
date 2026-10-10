@@ -139,3 +139,35 @@ async def test_generate_image_core_binds_session_save_dir(monkeypatch) -> None:
 
     assert success is True
     assert calls == [("bind", event, None), ("reset", token)]
+
+
+class _RecordingAPIClient:
+    def __init__(self) -> None:
+        self.kwargs: dict | None = None
+
+    async def generate_image(self, *, config, **kwargs):
+        self.kwargs = kwargs
+        return [], ["/tmp/generated.png"], None, None
+
+
+@pytest.mark.asyncio
+async def test_tool_call_generation_uses_plugin_total_timeout(monkeypatch) -> None:
+    api_client = _RecordingAPIClient()
+    generator = ImageGenerator(
+        context=None,
+        api_client=api_client,
+        total_timeout=777,
+    )
+    monkeypatch.setattr("tl.image_generator.Path.exists", lambda self: True)
+
+    success, _ = await generator.generate_image_core(
+        event=None,
+        prompt="draw",
+        reference_images=[],
+        avatar_reference=[],
+        is_tool_call=True,
+    )
+
+    assert success is True
+    assert api_client.kwargs["per_retry_timeout"] == 777
+    assert api_client.kwargs["max_total_time"] == 777
