@@ -2,6 +2,12 @@
 
 > **升级提示**：v1.9.0 以后的配置文件格式不兼容旧版本。升级后如遇配置模板显示错误，请查看 [配置迁移说明](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/troubleshooting.md#配置迁移说明)。
 
+## [3.1.0] - 2026-10-11
+
+### Fixed
+
+- **v2 调度层自建 logger**：`tl/core/router.py` 与 `tl/core/job_store.py` 误用内置 `logging` 模块自建记录器，统一替换为 `from astrbot.api import logger`，纳入插件全局日志。
+
 ## [3.0.9] - 2026-10-10
 
 ### Added
