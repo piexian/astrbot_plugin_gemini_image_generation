@@ -222,3 +222,45 @@ class ProviderRouteError(CoreError):
 class NoSupportedProviderError(ProviderRouteError):
     code = "no_supported_provider"
     retryable = False
+
+
+class PathPolicyError(CoreError):
+    """本地路径或远端地址未通过 PathPolicy 安全校验。"""
+
+    code = "path_policy_rejected"
+    retryable = False
+
+
+class RemoteFetchError(CoreError):
+    """RemoteFetchService 抓取失败的基类（网络/HTTP 层）。"""
+
+    code = "remote_fetch_failed"
+    retryable = True
+
+
+class RemoteFetchBodyTooLargeError(RemoteFetchError):
+    """远端响应体超过 max_body_bytes 上限。"""
+
+    code = "remote_body_too_large"
+    retryable = False
+
+
+class RemoteFetchTimeoutError(RemoteFetchError):
+    """远端抓取连接或总时长超过 deadline。"""
+
+    code = "remote_fetch_timeout"
+    retryable = True
+
+
+class RemoteFetchTooManyRedirectsError(RemoteFetchError):
+    """远端重定向跳数超过上限。"""
+
+    code = "remote_too_many_redirects"
+    retryable = False
+
+
+class RemoteFetchRejectedError(PathPolicyError):
+    """抓取目标（含重定向跳）被 PathPolicy 拒绝。"""
+
+    code = "remote_fetch_rejected"
+    retryable = False
