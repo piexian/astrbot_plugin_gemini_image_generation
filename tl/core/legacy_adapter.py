@@ -59,14 +59,20 @@ class LegacyClientAdapter:
     async def build_request(
         self, request: GenerationRequest, attempt: ProviderAttempt
     ) -> tuple[str, dict[str, str], Any]:
+        # 路由固定沿用入口的真实 requested_provider/model（None 即全量轮询）；
+        # 适配器自身的 provider/model 仅作结果标注，不得写入 requested_*——
+        # legacy client 按其过滤候选，哨兵值会导致空路由。
+        metadata = request.metadata or {}
+
         def body_factory() -> ApiRequestConfig:
             # legacy client 自建请求，factory 仅为 contract 形状服务；
             # 每次调用构造新实例，保证重试时幂等重建。
             return ApiRequestConfig(
-                model=self._model,
+                model=request.model or self._model,
                 prompt=request.prompt,
                 candidate_id=self._candidate_id,
-                requested_provider=self._provider,
+                requested_provider=request.provider,
+                requested_model=request.model,
                 resolution=request.resolution,
                 aspect_ratio=request.aspect_ratio,
                 negative_prompt=request.negative_prompt,
@@ -80,6 +86,8 @@ class LegacyClientAdapter:
                     else None
                 ),
                 image_count=request.image_count,
+                suppress_resolution=bool(metadata.get("suppress_resolution", False)),
+                enable_smart_retry=bool(metadata.get("enable_smart_retry", True)),
             )
 
         return "", {}, body_factory
@@ -106,11 +114,13 @@ class LegacyClientAdapter:
             self._model,
             total_timeout,
         )
-        return await self._client.generate_image(
+        response = await self._client.generate_image(
             config,
             max_retries=_LEGACY_MAX_RETRIES,
             total_timeout=total_timeout,
         )
+        # config 随返回值传出：client 在其上回写 successful_*，供 parse_response 标注。
+        return response, config
 
     async def parse_response(
         self,
@@ -119,7 +129,8 @@ class LegacyClientAdapter:
         request: GenerationRequest,
         attempt: ProviderAttempt,
     ) -> GenerationResult:
-        urls, paths, text, error = response
+        legacy_tuple, config = response
+        urls, paths, text, error = legacy_tuple
         if error:
             # legacy client 内部已自重试，这里标记不可重试：
             # Router 不再重复重试，错误直接 fallback 到下一候选。
@@ -128,11 +139,17 @@ class LegacyClientAdapter:
             )
         artifacts = tuple(sorted(set(urls or ()) | set(paths or ())))
         # 空 urls/paths 也返回（text-only 输出）；partial 语义由上游判定。
+        # client 在本次构造的 config 上回写实际命中候选，标注优先采用回写值。
+        provider = getattr(config, "successful_provider", None) or self._provider
+        model = getattr(config, "successful_model", None) or self._model
+        candidate_id = (
+            getattr(config, "successful_candidate_id", None) or self._candidate_id
+        )
         return GenerationResult(
             artifacts=artifacts,
             text=text,
-            provider=self._provider,
-            model=self._model,
-            candidate_id=self._candidate_id,
+            provider=provider,
+            model=model,
+            candidate_id=candidate_id,
             attempt_count=attempt.number,
         )

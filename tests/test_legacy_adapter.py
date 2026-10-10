@@ -154,7 +154,10 @@ async def test_config_mapping_and_fresh_instances_per_factory_call():
     assert config.prompt == "draw a cat"
     assert config.reference_images == ["/tmp/a.png", "/tmp/b.png"]
     assert config.candidate_id == "cand-9"
-    assert config.requested_provider == "gemini"
+    assert config.candidate_id == "cand-9"
+    # requested_* 只来自入口请求（此处未指定 → 全量轮询），适配器标注不外泄。
+    assert config.requested_provider is None
+    assert config.requested_model is None
     assert config.resolution == "2K"
     assert config.aspect_ratio == "16:9"
     assert config.negative_prompt == "blurry"
@@ -177,3 +180,85 @@ async def test_optional_fields_default_to_none_without_settings():
     # 空 urls/paths 仍返回 text-only 结果。
     assert result.artifacts == ()
     assert result.text == "text-only"
+
+
+@pytest.mark.asyncio
+async def test_send_returns_config_pair_and_parse_prefers_writeback():
+    client = FakeClient((["u"], [], None, None))
+    adapter = LegacyClientAdapter(
+        client, provider="gemini", model="gemini-x", candidate_id="cand-1"
+    )
+    request = make_request()
+    attempt = ProviderAttempt(number=1)
+    url, headers, body_factory = await adapter.build_request(request, attempt)
+    response = await adapter.send(
+        request,
+        attempt,
+        url=url,
+        headers=headers,
+        body_factory=body_factory,
+    )
+    # send 返回 (legacy 4 元组, config) 二元组。
+    assert isinstance(response, tuple)
+    legacy_tuple, config = response
+    assert legacy_tuple == (["u"], [], None, None)
+
+    # client 在 config 上回写 successful_* 时，parse_response 标注采用回写值。
+    config.successful_provider = "openai"
+    config.successful_model = "gpt-image-2"
+    config.successful_candidate_id = "cand-real"
+    result = await adapter.parse_response(response, request=request, attempt=attempt)
+    assert result.provider == "openai"
+    assert result.model == "gpt-image-2"
+    assert result.candidate_id == "cand-real"
+
+    # 未回写时回退适配器自身标注。
+    adapter2 = LegacyClientAdapter(client, provider="gemini", model="gemini-x")
+    url2, headers2, body_factory2 = await adapter2.build_request(request, attempt)
+    response2 = await adapter2.send(
+        request,
+        attempt,
+        url=url2,
+        headers=headers2,
+        body_factory=body_factory2,
+    )
+    result2 = await adapter2.parse_response(response2, request=request, attempt=attempt)
+    assert result2.provider == "gemini"
+    assert result2.model == "gemini-x"
+    assert result2.candidate_id is None
+
+
+@pytest.mark.asyncio
+async def test_routing_pins_and_legacy_knobs_flow_from_request():
+    """requested_* 路由与 legacy 专属开关只从请求透传，适配器哨兵不得进 config。"""
+    client = FakeClient((["u"], [], None, None))
+    adapter = LegacyClientAdapter(client, provider="legacy", model="auto")
+    request = make_request(
+        provider="doubao",
+        model="doubao-seedream-4",
+        metadata={"suppress_resolution": True, "enable_smart_retry": False},
+    )
+    attempt = ProviderAttempt(number=1)
+    url, headers, body_factory = await adapter.build_request(request, attempt)
+    await adapter.send(
+        request, attempt, url=url, headers=headers, body_factory=body_factory
+    )
+    config = client.calls[-1]["config"]
+    assert config.requested_provider == "doubao"
+    assert config.requested_model == "doubao-seedream-4"
+    assert config.model == "doubao-seedream-4"
+    assert config.suppress_resolution is True
+    assert config.enable_smart_retry is False
+
+    # 无固定时 requested_* 为 None（全量轮询），legacy 开关回落默认值。
+    plain = make_request()
+    url2, headers2, factory2 = await adapter.build_request(plain, attempt)
+    await adapter.send(
+        plain, attempt, url=url2, headers=headers2, body_factory=factory2
+    )
+    config2 = client.calls[-1]["config"]
+    assert config2.requested_provider is None
+    assert config2.requested_model is None
+    assert config2.model == "auto"
+    assert config2.suppress_resolution is False
+    assert config2.enable_smart_retry is True

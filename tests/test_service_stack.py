@@ -25,10 +25,11 @@ class _FakeClient:
 
     async def generate_image(self, config, *, max_retries=3, total_timeout=120):
         self.configs.append(config)
-        if config.requested_provider in self.fail_providers:
+        # 候选标签经 config.model 兜底传入（requested_* 只承载入口真实路由）。
+        if config.model in self.fail_providers:
             # 直接抛异常走 Router 异常 fallback（RuntimeError 不可重试，
             # 立即转下一候选）；parse_response error 字段路径二选一不覆盖。
-            raise RuntimeError(f"{config.requested_provider} candidate failed")
+            raise RuntimeError(f"{config.model} candidate failed")
         return (["https://img.test/generated.png"], [], "ok", None)
 
 
@@ -73,7 +74,7 @@ async def test_stack_assembles_and_submits(tmp_path):
         assert len(client.configs) == 1
         config = client.configs[0]
         assert config.model == "gemini-x"
-        assert config.requested_provider == "gemini"
+        assert config.requested_provider is None
         assert config.candidate_id == "cand-a"
         assert config.proxy == "http://proxy.test:7890"
         # 参考图已被 ReferenceService 解析为落盘缓存路径。
@@ -89,7 +90,7 @@ async def test_stack_assembles_and_submits(tmp_path):
 async def test_stack_falls_back_to_next_candidate(tmp_path):
     root = tmp_path / "allowed"
     root.mkdir()
-    client = _FakeClient(fail_providers=frozenset({"alpha"}))
+    client = _FakeClient(fail_providers=frozenset({"alpha-x"}))
     service = build_generation_stack(
         client,
         [
@@ -109,9 +110,9 @@ async def test_stack_falls_back_to_next_candidate(tmp_path):
         assert result.result is not None
         assert result.result.provider == "beta"
         # 候选 A 抛异常后 fallback，仅 A、B 各收到一次请求。
-        assert [item.requested_provider for item in client.configs] == [
-            "alpha",
-            "beta",
+        assert [item.model for item in client.configs] == [
+            "alpha-x",
+            "beta-x",
         ]
     finally:
         await service.close()

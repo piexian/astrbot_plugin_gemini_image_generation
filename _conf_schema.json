@@ -2829,6 +2829,12 @@
         "type": "int",
         "hint": "单次 API 调用的总超时时间（秒）。建议根据网络状况和服务质量调整，过短可能导致频繁超时",
         "default": 120
+      },
+      "scheduler_v2": {
+        "description": "启用 v2 调度器（灰度）",
+        "type": "bool",
+        "hint": "开启后命令入口生成任务改走新调度器（任务持久化/统一参考图解析/deadline 治理）；关闭保持原路径",
+        "default": false
       }
     }
   },

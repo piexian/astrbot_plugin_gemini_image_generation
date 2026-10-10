@@ -41,6 +41,8 @@ from .tl import (
     split_image,
 )
 from .tl.background_tasks import BackgroundTaskManager
+from .tl.core.stack import build_generation_stack
+from .tl.core.states import JobState
 from .tl.enhanced_prompts import (
     get_avatar_prompt,
     get_card_prompt,
@@ -63,6 +65,7 @@ from .tl.plugin_service import ImageGenerationService
 from .tl.provider_capabilities import select_candidates
 from .tl.provider_runtime import ProviderRuntime, provider_operation
 from .tl.provider_settings import candidate_is_keyless
+from .tl.reference_image import REFERENCE_IMAGE_CACHE_DIR
 from .tl.tl_api import APIClient, ApiRequestConfig, get_api_client
 from .tl.tl_utils import (
     AvatarManager,
@@ -70,6 +73,12 @@ from .tl.tl_utils import (
     set_image_cache_max_size_mb,
 )
 from .tl.tool_permission import ensure_admin_default_tool_permission
+from .tl.v2_bridge import (
+    apply_result_to_config as v2_apply_result_to_config,
+    command_request as v2_command_request,
+    split_artifacts as v2_split_artifacts,
+    v2_failure_error,
+)
 from .tl.web_studio_service import WebStudioService
 
 
@@ -96,6 +105,8 @@ class GeminiImageGenerationPlugin(Star):
 
         # 初始化状态
         self.api_client: APIClient | None = None
+        # v2 调度器（灰度）：scheduler_v2 开启且首次使用时装配。
+        self._v2_service = None
         self.llm_image_tool: GeminiImageGenerationTool | None = None
         self.llm_provider_query_tool: ProviderModelQueryTool | None = None
         self.llm_task_status_tool: BackgroundTaskStatusTool | None = None
@@ -444,6 +455,14 @@ class GeminiImageGenerationPlugin(Star):
             await self.generation_tracker.close()
         except Exception as e:
             logger.debug(f"关闭生成历史追踪器失败: {e}")
+        # v2 栈先于 legacy client 关闭，避免关闭期间仍有任务引用会话。
+        v2_service = getattr(self, "_v2_service", None)
+        if v2_service is not None:
+            try:
+                await v2_service.close()
+            except Exception as e:
+                logger.warning(f"[v2] 关闭调度器失败: {e}")
+            self._v2_service = None
         if self.api_client and hasattr(self.api_client, "close"):
             try:
                 await self.api_client.close()
@@ -473,6 +492,25 @@ class GeminiImageGenerationPlugin(Star):
                 logger.error("API 客户端仍未初始化，请检查插件 API 配置")
             return False
         return True
+
+    def _ensure_v2_service(self):
+        """装配 v2 栈（灰度）；失败置空回退 legacy 路径，不做自动恢复。"""
+        if self._v2_service is not None:
+            return self._v2_service
+        if not self._ensure_api_client():
+            return None
+        try:
+            service = build_generation_stack(
+                client=self.api_client,
+                candidates=[{"provider": "legacy", "model": "auto"}],
+                data_dir=os.path.join(self._plugin_data_dir, "v2"),
+                allowed_local_roots=(REFERENCE_IMAGE_CACHE_DIR,),
+            )
+        except Exception as e:
+            logger.warning(f"[v2] 调度器装配失败，本次回退 legacy 路径: {e}")
+            return None
+        self._v2_service = service
+        return service
 
     def _load_api_client_from_config(self, *, quiet: bool = False):
         """从插件配置读取模型/密钥并初始化客户端"""
@@ -729,17 +767,51 @@ class GeminiImageGenerationPlugin(Star):
             yield event.plain_result("🎨  生成中...")
 
             api_start = time.perf_counter()
-            (
-                image_urls,
-                image_paths,
-                text_content,
-                thought_signature,
-            ) = await self.api_client.generate_image(
-                config=config,
-                max_retries=self.cfg.max_attempts_per_key,
-                per_retry_timeout=self.cfg.total_timeout,
-                max_total_time=self.cfg.total_timeout * 2,
-            )
+            # 灰度：scheduler_v2 开启时命令入口改走 v2 调度器（生命周期/持久化/
+            # 参考图/deadline 治理）；候选路由与限流仍由入口检查和 legacy client 承担。
+            deadline = self.cfg.total_timeout * 2
+            service = None
+            if getattr(self.cfg, "scheduler_v2", False):
+                service = self._ensure_v2_service()
+            if service is not None:
+                handle = await service.submit(
+                    v2_command_request(
+                        prompt=enhanced_prompt,
+                        resolution=effective_resolution,
+                        aspect_ratio=effective_aspect_ratio,
+                        requested_provider=requested_provider,
+                        requested_model=requested_model,
+                        reference_images=all_ref_images,
+                        deadline_seconds=deadline,
+                        metadata={
+                            "suppress_resolution": suppress_resolution,
+                            "enable_smart_retry": self.cfg.enable_smart_retry,
+                        },
+                    )
+                )
+                # wait 超时多留 10 秒，防调度器异常挂死入口。
+                job_result = await service.wait(handle.job_id, timeout=deadline + 10)
+                if job_result.state not in (JobState.SUCCEEDED, JobState.PARTIAL):
+                    raise v2_failure_error(job_result)
+                v2_result = job_result.result
+                if v2_result is None:
+                    raise v2_failure_error(job_result)
+                image_urls, image_paths = v2_split_artifacts(v2_result.artifacts)
+                text_content = v2_result.text
+                thought_signature = None
+                v2_apply_result_to_config(config, v2_result)
+            else:
+                (
+                    image_urls,
+                    image_paths,
+                    text_content,
+                    thought_signature,
+                ) = await self.api_client.generate_image(
+                    config=config,
+                    max_retries=self.cfg.max_attempts_per_key,
+                    per_retry_timeout=self.cfg.total_timeout,
+                    max_total_time=self.cfg.total_timeout * 2,
+                )
             api_duration = time.perf_counter() - api_start
 
             if tracking_job_id:
