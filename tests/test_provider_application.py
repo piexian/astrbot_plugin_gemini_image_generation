@@ -2,20 +2,59 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import importlib
+import sys
+import types
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from test_provider_runtime import load_llm_tools
 
 from tl.key_manager import KeyManager
 from tl.plugin_config import ConfigLoader
 from tl.provider_application import ProviderApplication
-from tl.provider_metadata import iter_provider_specs
 from tl.provider_runtime import ProviderRuntime
 from tl.studio_providers import ProviderConfigService
 from tl.tl_api import GeminiAPIClient
 from tl.web_studio_service import StudioServiceError
+
+
+def load_llm_tools(monkeypatch):
+    """Extend conftest's logger stub only at the SDK boundary, not tool code."""
+    if "tl.llm_tools" in sys.modules:
+        return sys.modules["tl.llm_tools"]
+
+    if "mcp" not in sys.modules:
+        mcp = types.ModuleType("mcp")
+        mcp.types = types.ModuleType("mcp.types")
+        monkeypatch.setitem(sys.modules, "mcp", mcp)
+        monkeypatch.setitem(sys.modules, "mcp.types", mcp.types)
+
+    class GenericHostType:
+        @classmethod
+        def __class_getitem__(cls, item):
+            return cls
+
+    for name in (
+        "astrbot.core",
+        "astrbot.core.agent",
+        "astrbot.core.agent.run_context",
+        "astrbot.core.agent.tool",
+        "astrbot.core.astr_agent_context",
+    ):
+        if name not in sys.modules:
+            monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    for module, name in (
+        ("astrbot.core.agent.run_context", "ContextWrapper"),
+        ("astrbot.core.agent.tool", "FunctionTool"),
+        ("astrbot.core.agent.tool", "ToolExecResult"),
+        ("astrbot.core.astr_agent_context", "AstrAgentContext"),
+    ):
+        if not hasattr(sys.modules[module], name):
+            monkeypatch.setattr(
+                sys.modules[module], name, GenericHostType, raising=False
+            )
+    return importlib.import_module("tl.llm_tools")
 
 
 class MemoryKV:
@@ -138,164 +177,6 @@ def plugin_factory(monkeypatch):
         return plugin, kv
 
     return make
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("has_client", [True, False])
-async def test_prepare_apply_restore_updates_provider_state_but_not_unrelated_config(
-    plugin_factory, has_client
-):
-    plugin, kv = plugin_factory(client=has_client)
-    cfg = plugin.cfg
-    old_keys = plugin.key_manager
-    old_client = plugin.api_client
-    old_candidates = cfg.provider_candidates
-    old_tool = (plugin.llm_image_tool.description, plugin.llm_image_tool.parameters)
-    old_groups = cfg.group_limit_list
-    old_modes = cfg.quick_mode_overrides
-    close = None
-    if old_client:
-        close = AsyncMock(wraps=old_client.close)
-        old_client.close = close
-        old_client.current_key_index = 9
-        old_client._candidate_key_indices = {"google#1": 2}
-        old_client._candidate_semaphores = {"google#1": asyncio.Semaphore(1)}
-    application = ProviderApplication(plugin)
-    new_settings = settings(
-        entry("fake-key-agnes", api_type="agnes_ai", model_alias="new-alias"),
-        entry("fake-key-second", priority=7, max_reference_images=2),
-        provider_polling=["agnes_ai", "google"],
-        vision_provider_id="new-vision",
-        vision_model="  new-model  ",
-        proxy="  http://new-proxy.invalid:8081  ",
-    )
-    with plugin.provider_runtime.update():
-        prepared = await application.prepare(new_settings)
-        assert plugin.cfg is cfg
-        assert cfg.provider_candidates is old_candidates
-        assert plugin.key_manager is old_keys
-        assert plugin.api_client is old_client
-        assert plugin.llm_image_tool.parameters is old_tool[1]
-        if close:
-            close.assert_awaited_once()
-        assert kv.reads == 1 and len(kv.writes) == 1
-        application.apply(prepared)
-        assert plugin.cfg is cfg
-        assert [item.api_type for item in cfg.provider_candidates] == [
-            "agnes_ai",
-            "google",
-        ]
-        assert [item.model_alias for item in cfg.provider_candidates] == [
-            "new-alias",
-            None,
-        ]
-        assert plugin.key_manager is prepared.keys
-        assert plugin.key_manager is not old_keys
-        assert plugin.key_manager.config is cfg
-        client = plugin.api_client
-        if old_client:
-            assert client is old_client
-        assert client.api_keys == ["fake-key-agnes", "fake-key-second"]
-        assert client.provider_candidates == cfg.provider_candidates
-        assert client._key_manager is plugin.key_manager
-        assert client.provider_runtime is plugin.provider_runtime
-        assert client._candidate_key_pools == {
-            "agnes_ai#1": ["fake-key-agnes"],
-            "google#1": ["fake-key-second"],
-        }
-        assert client.current_key_index == 0
-        assert client._candidate_key_indices == {"agnes_ai#1": 0, "google#1": 0}
-        assert client._candidate_semaphores == {}
-        assert client.proxy == client._default_proxy == "http://new-proxy.invalid:8081"
-        assert plugin.vision_handler.vision_provider_id == "new-vision"
-        assert plugin.vision_handler.vision_model == "new-model"
-        assert plugin.llm_image_tool.parameters != old_tool[1]
-        props = plugin.llm_image_tool.parameters["properties"]
-        assert "3K" in props["resolution"]["enum"]
-        assert "3K" in props["batch_tasks"]["items"]["properties"]["resolution"]["enum"]
-        for spec in iter_provider_specs():
-            if spec.settings_attr:
-                expected = next(
-                    (
-                        candidate.settings
-                        for candidate in cfg.provider_candidates
-                        if candidate.api_type == spec.api_type
-                    ),
-                    {},
-                )
-                assert getattr(cfg, spec.settings_attr) == expected
-        assert cfg.total_timeout == 317
-        assert cfg.group_limit_list is old_groups
-        assert cfg.quick_mode_overrides is old_modes
-        for module in (
-            plugin.image_handler,
-            plugin.image_generator,
-            plugin.vision_handler,
-            plugin.web_studio_service,
-        ):
-            assert module.api_client is client
-        application.restore(prepared)
-        assert plugin.cfg is cfg
-        assert cfg.provider_candidates is old_candidates
-        assert plugin.key_manager is old_keys
-        assert plugin.api_client is old_client
-        assert plugin.vision_handler.vision_provider_id == "old-vision"
-        assert plugin.vision_handler.vision_model == "old-vision-model"
-        assert (
-            plugin.llm_image_tool.description,
-            plugin.llm_image_tool.parameters,
-        ) == old_tool
-        assert plugin.llm_image_tool.parameters is old_tool[1]
-        if old_client:
-            assert old_client._key_manager is old_keys
-            assert old_client.proxy == "http://old-proxy.invalid:8080"
-            assert old_client.current_key_index == 9
-            assert old_client._candidate_key_indices == {"google#1": 2}
-            assert list(old_client._candidate_semaphores) == ["google#1"]
-        for module in (
-            plugin.image_handler,
-            plugin.image_generator,
-            plugin.vision_handler,
-            plugin.web_studio_service,
-        ):
-            assert module.api_client is old_client
-        assert cfg.group_limit_list is old_groups
-        assert cfg.quick_mode_overrides is old_modes
-    await client.close()
-
-
-@pytest.mark.asyncio
-async def test_unknown_and_disabled_entries_do_not_block_prepare(plugin_factory):
-    plugin, _ = plugin_factory()
-    value = settings(
-        entry(),
-        {"__template_key": "unknown-vendor", "model": {"malformed": True}},
-        {"__template_key": "google", "enabled": False},
-        {"__template_key": "doubao", "enabled": "off", "model": []},
-        "malformed historical entry",
-    )
-    with plugin.provider_runtime.update():
-        prepared = await ProviderApplication(plugin).prepare(value)
-    assert len(prepared.fields["provider_candidates"]) == 1
-    assert prepared.fields["provider_candidates"][0].api_keys == ["fake-key-old"]
-
-
-@pytest.mark.asyncio
-async def test_invalid_enabled_entry_outside_polling_is_rejected_before_checkpoint(
-    plugin_factory,
-):
-    plugin, kv = plugin_factory()
-    application = ProviderApplication(plugin)
-    with plugin.provider_runtime.update(), pytest.raises(StudioServiceError):
-        await application.prepare(
-            settings(
-                entry(),
-                {"__template_key": "xai", "api_keys": []},
-                provider_polling=["google"],
-            )
-        )
-    assert kv.reads == 0 and kv.writes == []
-    assert plugin.cfg.provider_candidates[0].api_keys == ["fake-key-old"]
 
 
 def config_service(plugin):

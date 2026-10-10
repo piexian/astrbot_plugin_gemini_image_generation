@@ -188,8 +188,10 @@ async def test_legacy_rules_and_counter_cooldown_do_not_silently_open(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_rate_limiter_debounces_successive_kv_writes():
+async def test_rate_limiter_debounces_successive_kv_writes(monkeypatch):
     writes = []
+    now = [1000.0]
+    monkeypatch.setattr("tl.rate_limiter.time.monotonic", lambda: now[0])
 
     async def put_kv(key, value):
         writes.append(copy.deepcopy(value))
@@ -216,6 +218,8 @@ async def test_rate_limiter_delayed_save_flushes_latest_bucket(monkeypatch):
     async def immediate_sleep(delay):
         return None
 
+    now = [1000.0]
+    monkeypatch.setattr("tl.rate_limiter.time.monotonic", lambda: now[0])
     limiter = RateLimiter(config(session_max=10), put_kv=put_kv)
     limiter.SAVE_DEBOUNCE_SECONDS = 60
     monkeypatch.setattr("tl.rate_limiter.asyncio.sleep", immediate_sleep)
