@@ -79,6 +79,10 @@ async def _call(value: Any, *args: Any, **kwargs: Any) -> Any:
     return await result if inspect.isawaitable(result) else result
 
 
+# Router 路径兜底余量：截断由 Router 按自身 deadline 执行，包裹超时留出余量。
+_ROUTER_EXECUTE_GRACE_SECONDS = 1.0
+
+
 class JobScheduler:
     def __init__(
         self,
@@ -369,12 +373,29 @@ class JobScheduler:
             runtime_job.request = replace(
                 runtime_job.request, reference_images=resolved
             )
-            result = await dispatch_provider(
-                self.provider,
-                runtime_job,
-                max_attempts=self.max_attempts,
-                backoff=self.retry_backoff,
-            )
+            # Router 专属入口：provider contract 无 execute 方法。
+            if callable(getattr(self.provider, "execute", None)):
+                # retry 与 deadline 截断由 Router 自身持有；包裹仅作兜底，
+                # 留出余量避免与 Router 在同一 deadline 时刻竞争。
+                net = copy.copy(runtime_job)
+                if net.deadline_at is not None:
+                    net.deadline_at = net.deadline_at + timedelta(
+                        seconds=_ROUTER_EXECUTE_GRACE_SECONDS
+                    )
+                result = await self._deadline_call(
+                    net,
+                    lambda: self.provider.execute(
+                        runtime_job.request, deadline_at=runtime_job.deadline_at
+                    ),
+                    "provider execute",
+                )
+            else:
+                result = await dispatch_provider(
+                    self.provider,
+                    runtime_job,
+                    max_attempts=self.max_attempts,
+                    backoff=self.retry_backoff,
+                )
             if self.artifact_store is not None and hasattr(self.artifact_store, "save"):
                 method = self.artifact_store.save
                 parameters = inspect.signature(method).parameters
@@ -424,7 +445,9 @@ class JobScheduler:
                             data={"error_type": type(error).__name__},
                         )
                     )
-                    job.set_error(type(error).__name__, str(error))
+                    # CoreError 携带公开 code，其余异常回退异常类名。
+                    code = getattr(error, "code", None) or type(error).__name__
+                    job.set_error(str(code), str(error))
                     job.transition(JobState.FAILED)
                     await self.store.save(job)
                 except (StaleJobError, ValueError):

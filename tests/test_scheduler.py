@@ -10,6 +10,7 @@ from tl.core.job_store import SQLiteJobStore
 from tl.core.models import Job
 from tl.core.requests import GenerationRequest
 from tl.core.results import GenerationResult
+from tl.core.router import ProviderCandidate, ProviderRouter
 from tl.core.scheduler import JobScheduler
 from tl.core.states import JobState
 
@@ -288,4 +289,115 @@ async def test_heartbeat_keeps_long_provider_owner_live(tmp_path):
         block.set()
         if second is not None:
             await second.close()
+        await scheduler.close()
+
+
+class RouterCandidateProvider:
+    """Router 候选 contract 的最小 fake。"""
+
+    def __init__(
+        self,
+        name: str,
+        *,
+        send_error: Exception | None = None,
+        hang: bool = False,
+        artifacts: tuple[str, ...] = ("artifact-ok",),
+    ):
+        self.name = name
+        self.send_error = send_error
+        self.hang = hang
+        self.artifacts = artifacts
+        self.send_count = 0
+
+    async def supports(self, request):
+        return True
+
+    async def normalize(self, request):
+        return request
+
+    async def build_request(self, request, attempt):
+        return "https://provider.test/generate", {}, lambda: {"attempt": attempt.number}
+
+    async def send(self, request, attempt, *, url, headers, body_factory):
+        self.send_count += 1
+        if self.hang:
+            await asyncio.sleep(30)
+        if self.send_error is not None:
+            raise self.send_error
+        return {"attempt": body_factory()["attempt"]}
+
+    async def parse_response(self, response, *, request, attempt):
+        return GenerationResult(artifacts=self.artifacts)
+
+
+@pytest.mark.asyncio
+async def test_router_single_candidate_succeeds(tmp_path):
+    provider = RouterCandidateProvider("alpha")
+    router = ProviderRouter([ProviderCandidate(provider, "c1")])
+    scheduler, _ = make_scheduler(tmp_path, router)
+    try:
+        result = await scheduler.wait((await scheduler.submit(request())).job_id)
+        assert result.state is JobState.SUCCEEDED
+        assert result.result is not None
+        assert result.result.provider == "alpha"
+        assert result.result.candidate_id == "c1"
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_router_falls_back_to_next_candidate(tmp_path):
+    first = RouterCandidateProvider("first", send_error=ValueError("bad"))
+    second = RouterCandidateProvider("second")
+    router = ProviderRouter(
+        [ProviderCandidate(first, "c1"), ProviderCandidate(second, "c2")],
+        backoff=0.0,
+    )
+    scheduler, _ = make_scheduler(tmp_path, router)
+    try:
+        result = await scheduler.wait((await scheduler.submit(request())).job_id)
+        assert result.state is JobState.SUCCEEDED
+        assert result.result is not None
+        assert result.result.provider == "second"
+        assert first.send_count == 1
+        assert second.send_count == 1
+        # attempts 记录：Router 在结果上聚合全部候选的总尝试数。
+        assert result.result.attempt_count == 2
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_router_all_candidates_failed(tmp_path):
+    first = RouterCandidateProvider("first", send_error=ValueError("first failed"))
+    second = RouterCandidateProvider("second", send_error=ValueError("second failed"))
+    router = ProviderRouter(
+        [ProviderCandidate(first, "c1"), ProviderCandidate(second, "c2")],
+        backoff=0.0,
+    )
+    scheduler, store = make_scheduler(tmp_path, router)
+    try:
+        job_id = (await scheduler.submit(request())).job_id
+        result = await scheduler.wait(job_id)
+        assert result.state is JobState.FAILED
+        assert result.error_code == "provider_route_failed"
+        assert "所有候选" in (result.error_message or "")
+        events = await store.list_events(job_id)
+        assert any(event.event_type == "job_runtime_error" for event in events)
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_router_deadline_truncation(tmp_path):
+    provider = RouterCandidateProvider("slow", hang=True)
+    router = ProviderRouter([provider], backoff=0.0)
+    scheduler, _ = make_scheduler(tmp_path, router)
+    try:
+        result = await scheduler.wait(
+            (await scheduler.submit(request(timeout=0.2))).job_id
+        )
+        assert result.state is JobState.FAILED
+        assert result.error_code == "deadline_exceeded"
+    finally:
         await scheduler.close()
