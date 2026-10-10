@@ -79,6 +79,86 @@ def test_session_tool_timeout_config_layouts(config, expected):
     assert get_session_tool_timeout(context) == expected
 
 
+def _make_timeout_context(get_config, conf_ids):
+    class _ConfigMgr:
+        def get_conf_info(self, umo):
+            return {"id": conf_ids.get(umo, "default")}
+
+    return SimpleNamespace(get_config=get_config, astrbot_config_mgr=_ConfigMgr())
+
+
+def _session_isolated_event(group_id="10001", *, isolated=True):
+    return SimpleNamespace(
+        unified_msg_origin="qq:GroupMessage:8801_10001",
+        get_extra=lambda key: (
+            True if isolated and key == "_session_isolated" else None
+        ),
+        get_group_id=lambda: group_id,
+    )
+
+
+def test_session_tool_timeout_falls_back_to_group_umo_under_unique_session():
+    rewritten = "qq:GroupMessage:8801_10001"
+    group_umo = "qq:GroupMessage:10001"
+
+    def get_config(umo=None):
+        if umo == group_umo:
+            return {"agent_runner": {"config": {"misc": {"tool_call_timeout": 300}}}}
+        return {"provider_settings": {"tool_call_timeout": 120}}
+
+    conf_ids = {rewritten: "default", group_umo: "group_conf"}
+    context = _make_timeout_context(get_config, conf_ids)
+    event = _session_isolated_event()
+
+    assert get_session_tool_timeout(context, rewritten, event=event) == 300
+
+
+def test_session_tool_timeout_no_fallback_when_umo_resolves_session_config():
+    rewritten = "qq:GroupMessage:8801_10001"
+
+    def get_config(umo=None):
+        return {"agent_runner": {"config": {"misc": {"tool_call_timeout": 200}}}}
+
+    conf_ids = {rewritten: "session_conf"}
+    context = _make_timeout_context(get_config, conf_ids)
+    event = _session_isolated_event()
+
+    assert get_session_tool_timeout(context, rewritten, event=event) == 200
+
+
+@pytest.mark.parametrize(
+    ("group_id", "isolated"),
+    [
+        (None, True),
+        ("10001", False),
+        ("8801_10001", True),
+    ],
+)
+def test_session_tool_timeout_no_fallback_cases(group_id, isolated):
+    rewritten = "qq:GroupMessage:8801_10001"
+
+    def get_config(umo=None):
+        return {"provider_settings": {"tool_call_timeout": 120}}
+
+    conf_ids = {"qq:GroupMessage:10001": "group_conf"}
+    context = _make_timeout_context(get_config, conf_ids)
+    event = _session_isolated_event(group_id=group_id, isolated=isolated)
+
+    assert get_session_tool_timeout(context, rewritten, event=event) == 120
+
+
+def test_session_tool_timeout_without_event_keeps_original_umo():
+    rewritten = "qq:GroupMessage:8801_10001"
+
+    def get_config(umo=None):
+        return {"provider_settings": {"tool_call_timeout": 120}}
+
+    conf_ids = {"qq:GroupMessage:10001": "group_conf"}
+    context = _make_timeout_context(get_config, conf_ids)
+
+    assert get_session_tool_timeout(context, rewritten) == 120
+
+
 def test_foreground_wait_uses_session_runner_timeout():
     event = SimpleNamespace(unified_msg_origin="qq:GroupMessage:test")
     calls = []

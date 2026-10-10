@@ -280,7 +280,6 @@ class GeminiImageGenerationPlugin(Star):
             max_attempts_per_key=self.cfg.max_attempts_per_key,
             max_reference_images=self._max_configured_reference_images(),
             filter_valid_fn=self.image_handler.filter_valid_reference_images,
-            get_tool_timeout_fn=self.get_tool_timeout,
             tracker=self.generation_tracker,
             archive_images_fn=self.web_studio_service.archive_images,
         )
@@ -461,7 +460,7 @@ class GeminiImageGenerationPlugin(Star):
     def get_tool_timeout(self, event: AstrMessageEvent | None = None) -> int:
         """获取当前聊天环境的 tool_call_timeout 配置"""
         return get_session_tool_timeout(
-            self.context, event.unified_msg_origin if event else None
+            self.context, event.unified_msg_origin if event else None, event=event
         )
 
     def _ensure_api_client(self, *, quiet: bool = False) -> bool:

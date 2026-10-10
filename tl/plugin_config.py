@@ -25,10 +25,44 @@ DOUBAO_SEQUENTIAL_IMAGES_MIN = _provider_hooks.DOUBAO_SEQUENTIAL_IMAGES_MIN
 _validate_openai_images_settings = _provider_hooks.validate_openai_images_settings
 
 
-def get_session_tool_timeout(context: Any, umo: str | None = None) -> int:
+def _session_isolated_fallback_umo(
+    context: Any, umo: str | None, event: Any
+) -> str | None:
+    """unique_session 会话隔离改写导致 umo 查不到会话配置时，返回按真实群号重建的群 umo。"""
+    if not (umo and event):
+        return None
+    try:
+        get_extra = getattr(event, "get_extra", None)
+        if not callable(get_extra) or not get_extra("_session_isolated"):
+            return None
+        parts = umo.split(":", 2)
+        if len(parts) != 3:
+            return None
+        group_id = event.get_group_id()
+        if not group_id or group_id == parts[2]:
+            return None
+        mgr = getattr(context, "astrbot_config_mgr", None)
+        if mgr is None:
+            return None
+        if mgr.get_conf_info(umo).get("id", "default") != "default":
+            return None
+        rebuilt = f"{parts[0]}:{parts[1]}:{group_id}"
+        if mgr.get_conf_info(rebuilt).get("id", "default") == "default":
+            return None
+        return rebuilt
+    except Exception:
+        return None
+
+
+def get_session_tool_timeout(
+    context: Any, umo: str | None = None, event: Any = None
+) -> int:
     """读取会话的框架工具超时，兼容 agent_runner 配置迁移前的版本。"""
     try:
         config = context.get_config(umo=umo) if umo else context.get_config()
+        fallback_umo = _session_isolated_fallback_umo(context, umo, event)
+        if fallback_umo:
+            config = context.get_config(umo=fallback_umo)
         misc = config.get("agent_runner", {}).get("config", {}).get("misc", {})
         if "tool_call_timeout" in misc:
             return misc["tool_call_timeout"]

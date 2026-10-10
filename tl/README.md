@@ -344,7 +344,7 @@ StepFun provider。
 (False, "错误消息")
 ```
 
-`is_tool_call=True` 时使用 AstrBot 工具调用超时；普通指令使用插件 `total_timeout`。
+工具调用与指令调用统一使用插件 `total_timeout` 作为生成总上限；框架 `tool_call_timeout` 仅用于计算前台等待/转后台时机。
 
 ### `llm_tools.py`
 
