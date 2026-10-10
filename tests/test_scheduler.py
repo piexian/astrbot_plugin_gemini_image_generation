@@ -415,27 +415,17 @@ class _LegacyE2EClient:
 
 
 class _ReferenceStoreHarness:
-    """为 ReferenceService 补上引用租约（reserve），并把 JobStore 持久化
-    往返产出的 ref: 描述符翻译回可解析输入。"""
+    """为 ReferenceService 补上引用租约（reserve），resolve 原样转发。"""
 
     def __init__(self, service):
         self.service = service
-        self.by_descriptor = {}
         self.resolved_locations = []
-
-    def register(self, *raw_inputs):
-        from tl.core.requests import reference_descriptor
-
-        for item in raw_inputs:
-            descriptor = reference_descriptor(item)
-            self.by_descriptor[descriptor["reference_id"]] = item
 
     async def reserve(self, references):
         return FakeReservation()
 
     async def resolve(self, references):
-        inputs = tuple(self.by_descriptor.get(item, item) for item in references)
-        artifacts = [item async for item in self.service.resolve(inputs)]
+        artifacts = [item async for item in self.service.resolve(references)]
         self.resolved_locations.extend(item.location for item in artifacts)
         return artifacts
 
@@ -469,7 +459,6 @@ async def test_legacy_adapter_end_to_end_with_reference_service(tmp_path):
     router = ProviderRouter([ProviderCandidate(adapter, "cand-1")])
     store = SQLiteJobStore(tmp_path, import_legacy=False)
     harness = _ReferenceStoreHarness(service)
-    harness.register(str(ref))
     scheduler = JobScheduler(store, provider=router, reference_store=harness)
     try:
         request = GenerationRequest(
@@ -488,5 +477,55 @@ async def test_legacy_adapter_end_to_end_with_reference_service(tmp_path):
         for location in client.configs[0].reference_images:
             assert location.startswith(str(cache_dir))
             assert RefPath(location).is_file()
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_original_references_cleared_after_jobs(tmp_path):
+    provider = FakeProvider()
+    scheduler, _ = make_scheduler(tmp_path, provider, reference_store=FakeLeaseSource())
+    try:
+        # 无引用与有引用各跑一个，任务完成回调都应清掉登记。
+        await scheduler.wait((await scheduler.submit(request())).job_id)
+        await scheduler.wait(
+            (await scheduler.submit(request(references=("raw-ref.png",)))).job_id
+        )
+        # 断言用途直接访问内部 dict。
+        assert scheduler._original_references == {}
+    finally:
+        await scheduler.close()
+    assert scheduler._original_references == {}
+
+
+@pytest.mark.asyncio
+async def test_run_without_registration_resolves_store_descriptors(tmp_path):
+    """重启恢复：无内存登记时回退 store 里的脱敏描述符。"""
+
+    class SpyResolver:
+        def __init__(self):
+            self.inputs = []
+
+        async def reserve(self, references):
+            return FakeReservation()
+
+        async def resolve(self, references):
+            self.inputs.append(tuple(references))
+            return tuple(f"resolved:{item}" for item in references)
+
+    resolver = SpyResolver()
+    scheduler, store = make_scheduler(tmp_path, reference_store=resolver)
+    try:
+        source_request = request(references=("/tmp/raw-ref.png",))
+        job = Job.create(source_request, job_id="recovered")
+        # 模拟 JobStore 持久化往返：原始引用被替换为 ref: 描述符。
+        restored = Job.from_dict(job.to_storage_dict())
+        await store.create(restored)
+        await scheduler._run(restored.job_id)
+        assert len(resolver.inputs) == 1
+        received = resolver.inputs[0]
+        assert received and all(item.startswith("ref:") for item in received)
+        final = await store.get(restored.job_id)
+        assert final.state is JobState.SUCCEEDED
     finally:
         await scheduler.close()

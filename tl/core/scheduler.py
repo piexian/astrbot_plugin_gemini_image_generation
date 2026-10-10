@@ -118,6 +118,10 @@ class JobScheduler:
         self._lock = asyncio.Lock()
         self._heartbeat_task: asyncio.Task[Any] | None = None
         self._cleanup_tasks: set[asyncio.Task[Any]] = set()
+        # 持久化只存脱敏描述符，原始引用归调度器内存持有，随 runtime task
+        # 生命周期清理；登记/读取/清理都在事件循环内串行执行，dict 操作
+        # 原子，无需加锁。
+        self._original_references: dict[str, tuple[str, ...]] = {}
 
     async def submit(self, request: GenerationRequest) -> JobHandle:
         async with self._lock:
@@ -134,6 +138,9 @@ class JobScheduler:
             await self.store.create(job)
             job.transition(JobState.QUEUED)
             job = await self.store.save(job)
+            # 持久化成功后登记原始引用，供 _run 解析回真实输入。
+            if request.reference_images:
+                self._original_references[job.job_id] = request.reference_images
             done = asyncio.Event()
             self._done[job.job_id] = done
             task: asyncio.Task[Any] | None = None
@@ -154,6 +161,7 @@ class JobScheduler:
                     await asyncio.gather(task, return_exceptions=True)
                 self._tasks.pop(job.job_id, None)
                 await self._orphan(job.job_id)
+                self._original_references.pop(job.job_id, None)
                 done.set()
                 raise
             self._ensure_heartbeat()
@@ -181,6 +189,7 @@ class JobScheduler:
 
     def _task_done(self, job_id: str, task: asyncio.Task[Any]) -> None:
         self._tasks.pop(job_id, None)
+        self._original_references.pop(job_id, None)
         event = self._done.get(job_id)
         if event is not None:
             event.set()
@@ -285,14 +294,16 @@ class JobScheduler:
         lease.release_callback = release_and_persist
         return lease
 
-    async def _resolve_references(self, job: Job) -> tuple[str, ...]:
-        if not job.request.reference_images:
+    async def _resolve_references(
+        self, job: Job, references: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        if not references:
             return ()
         if self.reference_store is None or not hasattr(self.reference_store, "resolve"):
             raise RuntimeError("reference resolver 不可用")
 
         async def resolve_all() -> Any:
-            resolved = self.reference_store.resolve(job.request.reference_images)
+            resolved = self.reference_store.resolve(references)
             resolved = await resolved if inspect.isawaitable(resolved) else resolved
             if hasattr(resolved, "__aiter__"):
                 return [item async for item in resolved]
@@ -371,7 +382,11 @@ class JobScheduler:
                     ),
                 )
             )
-            resolved = await self._resolve_references(job)
+            # 登记的原始引用优先；无登记（重启恢复）回退 store 描述符。
+            resolved = await self._resolve_references(
+                job,
+                self._original_references.get(job_id) or job.request.reference_images,
+            )
             runtime_job = copy.deepcopy(job)
             runtime_job.request = replace(
                 runtime_job.request, reference_images=resolved
@@ -528,6 +543,7 @@ class JobScheduler:
                 return
             self._closed = True
             tasks = [task for task in self._tasks.values() if not task.done()]
+            self._original_references.clear()
             for task in tasks:
                 task.cancel()
         if tasks:
