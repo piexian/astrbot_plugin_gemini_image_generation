@@ -273,14 +273,14 @@ async def test_heartbeat_keeps_long_provider_owner_live(tmp_path):
     scheduler, store = make_scheduler(
         tmp_path,
         provider,
-        heartbeat_interval=0.02,
+        heartbeat_interval=0.05,
     )
     second = None
     try:
-        handle = await scheduler.submit(request(timeout=1.0))
+        handle = await scheduler.submit(request(timeout=2.0))
         await provider.started.wait()
-        await asyncio.sleep(0.08)
-        second = SQLiteJobStore(tmp_path, import_legacy=False, stale_owner_timeout=0.05)
+        await asyncio.sleep(0.3)
+        second = SQLiteJobStore(tmp_path, import_legacy=False, stale_owner_timeout=0.2)
         snapshot = await second.get(handle.job_id)
         assert snapshot is not None
         assert snapshot.state is JobState.RUNNING

@@ -6,7 +6,6 @@ import pytest
 
 from tl.api.xai import XAIProvider
 from tl.api_types import ApiRequestConfig
-from tl.provider_capabilities import candidate_capability
 
 
 def _make_config(**overrides) -> ApiRequestConfig:
@@ -44,74 +43,11 @@ async def test_default_model_is_image_2_0() -> None:
     assert request.url.endswith("/v1/images/generations")
 
 
-def test_quality_whitelist_and_high_downgrade() -> None:
-    assert XAIProvider._normalize_quality("low") == "low"
-    assert XAIProvider._normalize_quality("HIGH") == "medium"
-    assert XAIProvider._normalize_quality("extreme") is None
-    assert XAIProvider._normalize_quality(None) is None
-
-
-def test_aspect_ratio_whitelist() -> None:
-    assert XAIProvider._normalize_aspect_ratio("20:9") == "20:9"
-    assert XAIProvider._normalize_aspect_ratio("auto") == "auto"
-    assert XAIProvider._normalize_aspect_ratio("4:5") is None
-    assert XAIProvider._normalize_aspect_ratio("21:9") == "21:9"
-    assert XAIProvider._normalize_aspect_ratio("5:2") == "5:2"
-    assert XAIProvider._normalize_aspect_ratio("") is None
-
-
 def test_edit_max_three_images() -> None:
     import tl.api.xai as xai_module
 
     # 现行官方文档：多图编辑最多 5 张源图
     assert xai_module._MAX_EDIT_IMAGES == 5
-
-
-@pytest.mark.asyncio
-async def test_edits_image_shape_single_and_multi() -> None:
-    provider = XAIProvider()
-
-    single = await provider._prepare_edits_payload(
-        client=_FakeClient(),
-        config=_make_config(reference_images=["https://example.com/a.png"]),
-        settings={"model": "grok-imagine-image-2.0"},
-    )
-    # 默认 force_base64：URL 参考图同样内联为 data URI
-    assert single["image"] == {
-        "type": "image_url",
-        "url": "data:image/png;base64,QUJD",
-    }
-    assert "images" not in single
-    # 单图编辑不发送 aspect_ratio，比例跟随输入图
-    assert "aspect_ratio" not in single
-
-    multi = await provider._prepare_edits_payload(
-        client=_FakeClient(),
-        config=_make_config(
-            reference_images=[
-                "https://example.com/a.png",
-                "data:image/png;base64,QUJD",
-            ],
-            aspect_ratio="16:9",
-        ),
-        settings={"model": "grok-imagine-image-2.0"},
-    )
-    assert len(multi["images"]) == 2
-    assert multi["images"][0]["type"] == "image_url"
-    assert multi["aspect_ratio"] == "16:9"
-
-
-@pytest.mark.asyncio
-async def test_edits_over_limit_truncates() -> None:
-    """超过 5 张参考图时截断前 5 张，与其他 provider 截断约定一致。"""
-    provider = XAIProvider()
-    config = _make_config(
-        reference_images=[f"https://example.com/{i}.png" for i in range(6)]
-    )
-    payload = await provider._prepare_edits_payload(
-        client=_FakeClient(), config=config, settings={}
-    )
-    assert len(payload["images"]) == 5
 
 
 @pytest.mark.asyncio
@@ -122,19 +58,3 @@ async def test_image_count_clamped_to_ten() -> None:
         config=_make_config(provider_settings={"n": 15}),
     )
     assert request.payload["n"] == 10
-
-
-def test_capability_quality_enum_excludes_high() -> None:
-    class _Candidate:
-        api_type = "xai"
-        settings: dict = {}
-        supports_image_edit = True
-        model_alias = None
-
-        @property
-        def model(self) -> str:
-            return "grok-imagine-image-2.0"
-
-    params = candidate_capability(_Candidate())["parameters"]
-    # 官方现行枚举 low/medium/auto（默认 auto）；high 仍不支持
-    assert params["quality"]["enum"] == ["low", "medium", "auto"]

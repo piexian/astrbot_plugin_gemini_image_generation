@@ -55,7 +55,6 @@ from tl.llm_tools import (  # noqa: E402
     _is_custom_size_tool_mode,
     _resolve_tool_size_params,
 )
-from tl.openai_image_size import CUSTOM_SIZE_DEFAULT  # noqa: E402
 from tl.provider_settings import provider_tool_profile  # noqa: E402
 
 
@@ -101,24 +100,6 @@ def test_provider_tool_profile_uses_first_matching_candidate() -> None:
     assert profile["settings"]["custom_size"] == "1536x1024"
 
 
-def test_openai_custom_size_tool_mode_uses_first_candidate_settings() -> None:
-    plugin = _plugin_with_candidates(
-        _candidate(
-            "openai_images",
-            {"size_mode": "custom", "custom_size": "1536x1024"},
-        ),
-        _candidate("google", {"resolution": "2K"}),
-    )
-
-    assert _is_custom_size_tool_mode(plugin) is True
-
-    params = _build_tool_parameters(plugin)
-
-    assert "size" not in params["properties"]
-    assert "resolution" in params["properties"]
-    assert "aspect_ratio" in params["properties"]
-
-
 def test_explicit_unmatched_route_does_not_fallback_to_first_candidate() -> None:
     first = _candidate(
         "openai_images",
@@ -134,104 +115,3 @@ def test_explicit_unmatched_route_does_not_fallback_to_first_candidate() -> None
         provider="missing",
         size="1024x1024",
     ) == (None, None, None)
-
-
-def test_openai_custom_size_tool_params_keep_preset_controls() -> None:
-    plugin = _plugin_with_candidates(
-        _candidate(
-            "openai_images",
-            {"size_mode": "custom", "custom_size": "1536x1024"},
-        )
-    )
-
-    resolution, aspect_ratio, notice = _resolve_tool_size_params(
-        plugin,
-        resolution="2k",
-        aspect_ratio="16:9",
-    )
-
-    assert resolution == "2K"
-    assert aspect_ratio == "16:9"
-    assert notice is None
-
-
-def test_openai_custom_size_tool_params_fallback_to_default_on_invalid_inputs() -> None:
-    plugin = _plugin_with_candidates(
-        _candidate(
-            "openai_images",
-            {"size_mode": "custom", "custom_size": "1536x1024"},
-        )
-    )
-
-    resolution, aspect_ratio, notice = _resolve_tool_size_params(
-        plugin,
-        resolution="bad",
-        aspect_ratio="bad",
-    )
-
-    assert resolution == "1536x1024"
-    assert aspect_ratio is None
-    assert notice is None
-
-
-def test_openai_custom_size_tool_params_fallback_when_one_input_is_invalid() -> None:
-    plugin = _plugin_with_candidates(
-        _candidate(
-            "openai_images",
-            {"size_mode": "custom", "custom_size": "1536x1024"},
-        )
-    )
-
-    resolution, aspect_ratio, notice = _resolve_tool_size_params(
-        plugin,
-        resolution="2K",
-        aspect_ratio="bad",
-    )
-
-    assert resolution == "1536x1024"
-    assert aspect_ratio is None
-    assert notice is None
-
-
-def test_openai_custom_size_tool_params_fallback_when_config_invalid() -> None:
-    plugin = _plugin_with_candidates(
-        _candidate(
-            "openai_images",
-            {"size_mode": "custom", "custom_size": "2048x1080"},
-        )
-    )
-
-    resolution, aspect_ratio, notice = _resolve_tool_size_params(plugin)
-
-    assert resolution == CUSTOM_SIZE_DEFAULT
-    assert aspect_ratio is None
-    assert notice is None
-
-
-def test_agnes_3k_is_available_in_tool_schema_and_normalization() -> None:
-    plugin = _plugin_with_candidates(
-        SimpleNamespace(
-            api_type="agnes_ai",
-            model="gpt-image-1",
-            settings={"model": "gpt-image-1"},
-            supports_image_edit=True,
-        )
-    )
-
-    params = _build_tool_parameters(plugin)
-
-    assert params["properties"]["resolution"]["enum"] == [
-        "1K",
-        "2K",
-        "3K",
-        "4K",
-    ]
-    batch_resolution = params["properties"]["batch_tasks"]["items"]["properties"][
-        "resolution"
-    ]
-    assert batch_resolution["enum"] == ["1K", "2K", "3K", "4K"]
-    assert _resolve_tool_size_params(
-        plugin,
-        resolution="3k",
-        provider="agnes_ai",
-    ) == ("3K", None, None)

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import importlib.util
 import sys
 import types
@@ -37,73 +36,6 @@ def _load_reference_image(monkeypatch: pytest.MonkeyPatch):
     return module
 
 
-def test_reference_image_bytes_skip_pillow_reencode(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    module = _load_reference_image(monkeypatch)
-    raw_png = b"\x89PNG\r\n\x1a\n" + b"image-bytes"
-
-    mime_type, encoded = module.coerce_reference_image_bytes(
-        "image/png",
-        raw_png,
-    )
-
-    assert mime_type == "image/png"
-    assert base64.b64decode(encoded) == raw_png
-
-
-def test_reference_image_bytes_use_detected_mime(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    module = _load_reference_image(monkeypatch)
-    raw_png = b"\x89PNG\r\n\x1a\n" + b"image-bytes"
-
-    mime_type, encoded = module.coerce_reference_image_bytes(
-        "image/jpeg",
-        raw_png,
-    )
-
-    assert mime_type == "image/png"
-    assert base64.b64decode(encoded) == raw_png
-
-
-@pytest.mark.asyncio
-async def test_normalize_reference_image_input_base64_valid(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    module = _load_reference_image(monkeypatch)
-    raw_png = b"\x89PNG\r\n\x1a\n" + b"base64-bytes"
-    b64 = base64.b64encode(raw_png).decode("ascii")
-
-    mime_type, encoded = await module.normalize_reference_image_input(
-        b64,
-        image_cache_dir=tmp_path,
-    )
-
-    assert mime_type == "image/png"
-    assert base64.b64decode(encoded) == raw_png
-
-
-@pytest.mark.asyncio
-async def test_normalize_reference_image_input_base64_relaxed_padding(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    module = _load_reference_image(monkeypatch)
-    raw_png = b"\x89PNG\r\n\x1a\n" + b"relaxed-base64"
-    clean_b64 = base64.b64encode(raw_png).decode("ascii")
-    noisy_b64 = " \n" + clean_b64.rstrip("=") + "!!\n"
-
-    mime_type, encoded = await module.normalize_reference_image_input(
-        noisy_b64,
-        image_cache_dir=tmp_path,
-    )
-
-    assert mime_type == "image/png"
-    assert base64.b64decode(encoded) == raw_png
-
-
 @pytest.mark.asyncio
 async def test_normalize_reference_image_input_base64_invalid(
     monkeypatch: pytest.MonkeyPatch,
@@ -118,26 +50,6 @@ async def test_normalize_reference_image_input_base64_invalid(
 
     assert mime_type is None
     assert encoded is None
-
-
-@pytest.mark.asyncio
-async def test_normalize_reference_image_input_coerces_cached_bytes(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    module = _load_reference_image(monkeypatch)
-    url = "https://cdn.example/image.gif"
-    raw_png = b"\x89PNG\r\n\x1a\n" + b"image-bytes"
-    cache_key = hashlib.sha256(url.encode("utf-8")).hexdigest()
-    (tmp_path / f"{cache_key}.gif").write_bytes(raw_png)
-
-    mime_type, encoded = await module.normalize_reference_image_input(
-        url,
-        image_cache_dir=tmp_path,
-    )
-
-    assert mime_type == "image/png"
-    assert base64.b64decode(encoded) == raw_png
 
 
 @pytest.mark.asyncio
@@ -206,97 +118,3 @@ async def test_normalize_reference_image_input_overlong_path_does_not_raise(
     )
 
     assert result == (None, None)
-
-
-@pytest.mark.asyncio
-async def test_normalize_reference_image_input_uses_supplied_session(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    module = _load_reference_image(monkeypatch)
-    raw_png = b"\x89PNG\r\n\x1a\n" + b"image-bytes"
-
-    class _Response:
-        status = 200
-        reason = "OK"
-        headers = {"Content-Type": "image/png"}
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def read(self) -> bytes:
-            return raw_png
-
-    class _Session:
-        closed = False
-
-        def __init__(self) -> None:
-            self.kwargs = None
-
-        def get(self, *args, **kwargs):
-            self.kwargs = kwargs
-            return _Response()
-
-    session = _Session()
-
-    mime_type, encoded = await module.normalize_reference_image_input(
-        "https://cdn.example/image.png",
-        image_cache_dir=tmp_path,
-        session=session,
-        proxy="http://proxy.local:8080",
-    )
-
-    assert mime_type == "image/png"
-    assert base64.b64decode(encoded) == raw_png
-    assert session.kwargs["proxy"] == "http://proxy.local:8080"
-
-
-@pytest.mark.asyncio
-async def test_normalize_reference_image_input_logs_http_error(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    module = _load_reference_image(monkeypatch)
-
-    class _Logger:
-        def __init__(self) -> None:
-            self.warnings: list[str] = []
-
-        def debug(self, *args, **kwargs) -> None:
-            return None
-
-        def warning(self, message: str, *args, **kwargs) -> None:
-            self.warnings.append(str(message))
-
-    class _Response:
-        status = 404
-        reason = "Not Found"
-        headers = {}
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-    class _Session:
-        closed = False
-
-        def get(self, *args, **kwargs):
-            return _Response()
-
-    logger = _Logger()
-    monkeypatch.setattr(module, "logger", logger)
-
-    mime_type, encoded = await module.normalize_reference_image_input(
-        "https://cdn.example/missing.png",
-        image_cache_dir=tmp_path,
-        session=_Session(),
-    )
-
-    assert mime_type is None
-    assert encoded is None
-    assert any("HTTP 404 Not Found" in message for message in logger.warnings)

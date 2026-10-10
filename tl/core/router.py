@@ -134,13 +134,13 @@ class ProviderRouter:
         candidates = list(self._candidates)
         if request.candidate_id:
             candidates = [
-                item
-                for item in candidates
-                if item.candidate_id == request.candidate_id
+                item for item in candidates if item.candidate_id == request.candidate_id
             ]
         elif request.provider:
             preferred = [item for item in candidates if item.name == request.provider]
-            candidates = preferred + [item for item in candidates if item not in preferred]
+            candidates = preferred + [
+                item for item in candidates if item not in preferred
+            ]
         selected: list[ProviderCandidate] = []
         for candidate in candidates:
             provider = candidate.provider
@@ -252,7 +252,11 @@ class ProviderRouter:
                 ),
             )
             built = await _call(provider.build_request, normalized, attempt_input)
-            if not isinstance(built, tuple) or len(built) != 3 or not callable(built[2]):
+            if (
+                not isinstance(built, tuple)
+                or len(built) != 3
+                or not callable(built[2])
+            ):
                 raise InvalidRequestError(
                     "provider build_request 须返回 (url, headers, body_factory)"
                 )
@@ -286,7 +290,11 @@ class ProviderRouter:
         except asyncio.CancelledError:
             raise
         except BaseException as error:
-            return self._outcome(candidate, attempts, OUTCOME_FAILED, error), None, error
+            return (
+                self._outcome(candidate, attempts, OUTCOME_FAILED, error),
+                None,
+                error,
+            )
         return self._outcome(candidate, attempts, OUTCOME_SUCCEEDED), result, None
 
     def _outcome(
