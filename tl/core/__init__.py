@@ -9,6 +9,8 @@ from .errors import (
     InvalidRequestError,
     JobCancelledError,
     JobNotFoundError,
+    NoSupportedProviderError,
+    ProviderRouteError,
     QueueFullError,
     ServiceClosedError,
     StateTransitionError,
@@ -18,6 +20,7 @@ from .leases import Lease, LeaseKind, LeaseSet
 from .models import Artifact, Attempt, Job, JobEvent, LeaseRecord
 from .requests import BodyFactory, GenerationRequest, ProviderAttempt
 from .results import GenerationResult
+from .router import CandidateOutcome, ProviderCandidate, ProviderRouter
 from .states import (
     LEGACY_STATE_ALIASES,
     TERMINAL_STATES,
@@ -30,6 +33,7 @@ __all__ = [
     "Artifact",
     "Attempt",
     "BodyFactory",
+    "CandidateOutcome",
     "CoreError",
     "GenerationRequest",
     "GenerationResult",
@@ -45,7 +49,11 @@ __all__ = [
     "LeaseKind",
     "LeaseSet",
     "LEGACY_STATE_ALIASES",
+    "NoSupportedProviderError",
     "ProviderAttempt",
+    "ProviderCandidate",
+    "ProviderRouteError",
+    "ProviderRouter",
     "QueueFullError",
     "ServiceClosedError",
     "SQLiteJobStore",

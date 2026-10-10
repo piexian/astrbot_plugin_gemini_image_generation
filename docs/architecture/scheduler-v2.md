@@ -98,7 +98,7 @@ clear 状态。
 
 ## 分阶段接入顺序
 
-第一阶段（当前）只提交领域模型、协议、lease 生命周期测试和本文档。后续按
-JobStore → JobScheduler → ProviderRouter → ReferenceService → 命令 → LLM Tool →
+领域模型、协议、JobStore、JobScheduler 与 ProviderRouter 已落地。后续按
+ReferenceService → 命令 → LLM Tool →
 WebUI Studio → SDK 的顺序迁移；每次迁移都运行项目测试、ruff、compileall，
 并停在可审查提交，不自动跨入下一高风险阶段。

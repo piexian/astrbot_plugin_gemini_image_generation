@@ -40,9 +40,15 @@ async def run_with_retry(
     deadline: datetime | None,
     max_attempts: int = 3,
     backoff: float = 0.05,
+    retryable: Callable[[BaseException], bool] | None = None,
 ) -> T:
-    """Run attempt factories without retrying past the total deadline."""
+    """Run attempt factories without retrying past the total deadline.
+
+    ``retryable`` overrides the default ``is_retryable`` classification for
+    callers such as ProviderRouter that treat timeouts as transient.
+    """
     max_attempts = max(int(max_attempts), 1)
+    classify = retryable or is_retryable
     remaining = _remaining(deadline, None)
     deadline_mono = time.monotonic() + remaining if remaining is not None else None
     last_error: BaseException | None = None
@@ -61,7 +67,7 @@ async def run_with_retry(
             raise
         except BaseException as error:
             last_error = error
-            if attempt >= max_attempts or not is_retryable(error):
+            if attempt >= max_attempts or not classify(error):
                 raise
             remaining = _remaining(deadline, deadline_mono)
             if remaining is not None and remaining <= 0:

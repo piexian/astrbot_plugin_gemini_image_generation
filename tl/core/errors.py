@@ -211,3 +211,14 @@ class StateTransitionError(CoreError):
 class LeaseError(CoreError):
     code = "lease_error"
     retryable = False
+
+
+class ProviderRouteError(CoreError):
+    """Router 候选链全部失败后的聚合错误；details 携带逐候选结果。"""
+
+    code = "provider_route_failed"
+
+
+class NoSupportedProviderError(ProviderRouteError):
+    code = "no_supported_provider"
+    retryable = False
