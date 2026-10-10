@@ -401,3 +401,92 @@ async def test_router_deadline_truncation(tmp_path):
         assert result.error_code == "deadline_exceeded"
     finally:
         await scheduler.close()
+
+
+class _LegacyE2EClient:
+    """端到端用例的鸭子类型 legacy client。"""
+
+    def __init__(self):
+        self.configs = []
+
+    async def generate_image(self, config, *, max_retries=3, total_timeout=120):
+        self.configs.append(config)
+        return (["https://img.test/generated.png"], [], "ok", None)
+
+
+class _ReferenceStoreHarness:
+    """为 ReferenceService 补上引用租约（reserve），并把 JobStore 持久化
+    往返产出的 ref: 描述符翻译回可解析输入。"""
+
+    def __init__(self, service):
+        self.service = service
+        self.by_descriptor = {}
+        self.resolved_locations = []
+
+    def register(self, *raw_inputs):
+        from tl.core.requests import reference_descriptor
+
+        for item in raw_inputs:
+            descriptor = reference_descriptor(item)
+            self.by_descriptor[descriptor["reference_id"]] = item
+
+    async def reserve(self, references):
+        return FakeReservation()
+
+    async def resolve(self, references):
+        inputs = tuple(self.by_descriptor.get(item, item) for item in references)
+        artifacts = [item async for item in self.service.resolve(inputs)]
+        self.resolved_locations.extend(item.location for item in artifacts)
+        return artifacts
+
+
+@pytest.mark.asyncio
+async def test_legacy_adapter_end_to_end_with_reference_service(tmp_path):
+    from io import BytesIO
+    from pathlib import Path as RefPath
+
+    from PIL import Image as PILImage
+
+    from tl.core.legacy_adapter import LegacyClientAdapter
+    from tl.core.path_policy import PathPolicy
+    from tl.core.reference_service import ReferenceService
+    from tl.core.remote_fetch import RemoteFetchService
+
+    buf = BytesIO()
+    PILImage.new("RGB", (8, 8), (1, 2, 3)).save(buf, format="PNG")
+    root = tmp_path / "allowed"
+    root.mkdir()
+    ref = root / "ref.png"
+    ref.write_bytes(buf.getvalue())
+    cache_dir = tmp_path / "cache"
+    policy = PathPolicy((root,), allow_private_networks=True)
+    service = ReferenceService(policy, RemoteFetchService(policy), cache_dir)
+
+    client = _LegacyE2EClient()
+    adapter = LegacyClientAdapter(
+        client, provider="gemini", model="gemini-x", candidate_id="cand-1"
+    )
+    router = ProviderRouter([ProviderCandidate(adapter, "cand-1")])
+    store = SQLiteJobStore(tmp_path, import_legacy=False)
+    harness = _ReferenceStoreHarness(service)
+    harness.register(str(ref))
+    scheduler = JobScheduler(store, provider=router, reference_store=harness)
+    try:
+        request = GenerationRequest(
+            prompt="draw with reference",
+            source="test",
+            reference_images=(str(ref),),
+        )
+        result = await scheduler.wait((await scheduler.submit(request)).job_id)
+        assert result.state is JobState.SUCCEEDED
+        assert result.result is not None
+        assert result.result.provider == "gemini"
+        # 传给 legacy client 的参考图就是 ReferenceService 落盘的 location。
+        assert len(client.configs) == 1
+        assert client.configs[0].reference_images == harness.resolved_locations
+        assert client.configs[0].reference_images
+        for location in client.configs[0].reference_images:
+            assert location.startswith(str(cache_dir))
+            assert RefPath(location).is_file()
+    finally:
+        await scheduler.close()

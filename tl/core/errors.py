@@ -285,3 +285,14 @@ class ReferenceTimeoutError(CoreError):
 
     code = "reference_timeout"
     retryable = True
+
+
+class LegacyProviderError(CoreError):
+    """legacy client 返回 error 的适配层错误。
+
+    legacy client 内部已自重试，因此标记不可重试：Router 不再重复重试，
+    该错误直接触发 fallback 到下一候选。
+    """
+
+    code = "legacy_provider_failed"
+    retryable = False

@@ -301,7 +301,10 @@ class JobScheduler:
         values = await self._deadline_call(job, resolve_all, "reference resolve")
         if not values:
             raise RuntimeError("reference resolver 返回空结果")
-        return tuple(str(item) for item in values)
+        # resolver 产出 Artifact 时取落盘路径，字符串成员保持原样。
+        return tuple(
+            item.location if hasattr(item, "location") else str(item) for item in values
+        )
 
     async def _run(self, job_id: str) -> None:
         leases = LeaseSet()
