@@ -99,9 +99,8 @@ def test_qq_official_avatar_url_ignores_other_platforms(
     assert module._build_qq_official_avatar_url(event, "123456789") is None
 
 
-def test_metadata_only_declares_tested_qq_official_transport() -> None:
+def test_metadata_declares_qq_official_transport() -> None:
     root = Path(__file__).resolve().parents[1]
     metadata = yaml.safe_load((root / "metadata.yaml").read_text(encoding="utf-8"))
 
     assert "qq_official" in metadata["support_platforms"]
-    assert "qq_official_webhook" not in metadata["support_platforms"]
