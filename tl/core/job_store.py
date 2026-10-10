@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
-import logging
 import os
 import sqlite3
 import threading
@@ -21,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, TypeVar
 from urllib.parse import urlsplit, urlunsplit
+from astrbot.api import logger
 
 from .errors import (
     CheckpointBusyError,
@@ -37,7 +37,6 @@ from .requests import GenerationRequest
 from .results import GenerationResult
 from .states import TERMINAL_STATES, JobState, can_transition, coerce_state
 
-logger = logging.getLogger(__name__)
 _WriteResult = TypeVar("_WriteResult")
 
 _SCHEMA_VERSION = 6
