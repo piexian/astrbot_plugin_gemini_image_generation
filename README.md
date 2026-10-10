@@ -2,9 +2,6 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/Version-v3.0.7-blue)
-![License](https://img.shields.io/badge/License-AGPL--3.0-orange)
-
 **强大的 AstrBot 图像生成插件，支持生图、改图、头像参考、表情包切分和 LLM 工具调用。**
 
 </div>
@@ -35,7 +32,7 @@
 - QQ 官方机器人 WebSocket（`qq_official`，头像参考已通过真实实例验证）
 
 > [!WARNING]
-> 代码同时兼容 QQ 官方机器人 Webhook（`qq_official_webhook`）的头像获取结构，但目前没有真实 Webhook 实例可供验证，因此不在插件元数据中声明支持，也不保证一定可用。
+> 代码同时兼容 QQ 官方机器人 Webhook（`qq_official_webhook`）的头像获取结构，但目前没有真实 Webhook 实例可供验证，不保证一定可用。
 
 ### 安装方式
 
