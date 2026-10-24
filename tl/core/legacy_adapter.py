@@ -145,6 +145,21 @@ class LegacyClientAdapter:
         candidate_id = (
             getattr(config, "successful_candidate_id", None) or self._candidate_id
         )
+        # client 只回写本次构造的 config 副本，legacy 统计字段需经 stats 带出，
+        # 供 v2_bridge 回写入口 config；默认值省略键，不写 None 占位。
+        stats: dict[str, Any] = {}
+        retry_count = getattr(config, "retry_count", 0)
+        if retry_count:
+            stats["retry_count"] = retry_count
+        retry_note = getattr(config, "retry_note", None)
+        if retry_note:
+            stats["retry_note"] = retry_note
+        token_usage = getattr(config, "token_usage", None)
+        if token_usage:
+            stats["token_usage"] = dict(token_usage)
+        model_alias = getattr(config, "successful_model_alias", None)
+        if model_alias:
+            stats["successful_model_alias"] = model_alias
         return GenerationResult(
             artifacts=artifacts,
             text=text,
@@ -152,4 +167,5 @@ class LegacyClientAdapter:
             model=model,
             candidate_id=candidate_id,
             attempt_count=attempt.number,
+            stats=stats,
         )
