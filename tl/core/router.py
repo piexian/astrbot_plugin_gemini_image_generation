@@ -14,6 +14,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any
+
 from astrbot.api import logger
 
 from .errors import (
@@ -25,7 +26,6 @@ from .errors import (
 from .requests import GenerationRequest, ProviderAttempt
 from .results import GenerationResult
 from .retry import is_retryable, run_with_retry
-
 
 MAX_OUTCOME_MESSAGE_CHARS = 512
 
