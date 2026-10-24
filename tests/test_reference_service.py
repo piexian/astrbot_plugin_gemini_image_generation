@@ -28,6 +28,36 @@ def _png_bytes(size: tuple[int, int] = (8, 8), color: tuple[int, ...] = (255, 0,
     return buf.getvalue()
 
 
+def _gif_bytes(
+    size: tuple[int, int] = (8, 8), first_color: tuple[int, ...] = (255, 0, 0)
+) -> bytes:
+    """两帧 GIF：首帧 first_color、第二帧蓝色，用于断言转码取首帧。"""
+    buf = io.BytesIO()
+    frames = [
+        PILImage.new("RGB", size, first_color if i == 0 else (0, 0, 255))
+        for i in range(2)
+    ]
+    frames[0].save(buf, format="GIF", save_all=True, append_images=frames[1:])
+    return buf.getvalue()
+
+
+def _transparent_gif_bytes(
+    size: tuple[int, int] = (8, 8), first_color: tuple[int, ...] = (255, 0, 0)
+) -> bytes:
+    """首帧带透明索引的两帧 GIF，验证转码后保留 alpha。"""
+    palette = list(first_color) + [0, 0, 255] + [0, 0, 0] * 254
+    frames = []
+    for index in (0, 1):
+        frame = PILImage.new("P", size, index)
+        frame.putpalette(palette)
+        frames.append(frame)
+    buf = io.BytesIO()
+    frames[0].save(
+        buf, format="GIF", save_all=True, append_images=frames[1:], transparency=0
+    )
+    return buf.getvalue()
+
+
 def _policy(root: Path) -> PathPolicy:
     # loopback 测试服务器在私网段，策略必须放行。
     return PathPolicy((root,), allow_private_networks=True)
@@ -217,6 +247,158 @@ async def test_heic_passthrough_without_pixel_check(tmp_path) -> None:
     assert len(artifacts) == 1
     assert artifacts[0].mime_type == "image/heic"
     assert artifacts[0].size_bytes == len(heic)
+
+
+@pytest.mark.asyncio
+async def test_gif_transcodes_to_png_first_frame(tmp_path) -> None:
+    root = tmp_path / "allowed"
+    root.mkdir()
+    payload = _gif_bytes()
+    ref = root / "ref.gif"
+    ref.write_bytes(payload)
+    cache_dir = tmp_path / "cache"
+    service = _service(root, cache_dir)
+
+    artifacts = await _collect(service, (str(ref),))
+
+    artifact = artifacts[0]
+    assert artifact.mime_type == "image/png"
+    stored = Path(artifact.location)
+    assert stored.suffix == ".png"
+    assert artifact.size_bytes == stored.stat().st_size
+    with PILImage.open(stored) as img:
+        assert img.format == "PNG"
+        assert img.mode == "RGBA"
+        # 取首帧：红色保留，第二帧蓝色不出现
+        assert img.getpixel((0, 0)) == (255, 0, 0, 255)
+
+
+@pytest.mark.parametrize(
+    ("fmt", "color"),
+    [("BMP", (0, 255, 0)), ("TIFF", (0, 0, 255))],
+)
+@pytest.mark.asyncio
+async def test_bmp_tiff_transcode_to_png(tmp_path, fmt, color) -> None:
+    root = tmp_path / "allowed"
+    root.mkdir()
+    buf = io.BytesIO()
+    PILImage.new("RGB", (8, 8), color).save(buf, format=fmt)
+    ref = root / f"ref.{fmt.lower()}"
+    ref.write_bytes(buf.getvalue())
+    service = _service(root, tmp_path / "cache")
+
+    artifacts = await _collect(service, (str(ref),))
+
+    assert artifacts[0].mime_type == "image/png"
+    with PILImage.open(Path(artifacts[0].location)) as img:
+        assert img.format == "PNG"
+        assert img.getpixel((0, 0)) == color
+
+
+@pytest.mark.asyncio
+async def test_transparent_gif_keeps_alpha(tmp_path) -> None:
+    root = tmp_path / "allowed"
+    root.mkdir()
+    ref = root / "alpha.gif"
+    ref.write_bytes(_transparent_gif_bytes())
+    service = _service(root, tmp_path / "cache")
+
+    artifacts = await _collect(service, (str(ref),))
+
+    stored = Path(artifacts[0].location)
+    with PILImage.open(stored) as img:
+        assert img.mode == "RGBA"
+        assert img.getpixel((0, 0)) == (255, 0, 0, 0)
+
+
+@pytest.mark.asyncio
+async def test_unknown_magic_rejected(tmp_path) -> None:
+    root = tmp_path / "allowed"
+    root.mkdir()
+    service = _service(root, tmp_path / "cache")
+    ico = b"\x00\x00\x01\x00\x01\x00" + b"\x00" * 32
+    junk = b"NOTAIMG" + bytes(range(64))
+
+    for payload in (ico, junk):
+        data_uri = f"data:image/png;base64,{base64.b64encode(payload).decode()}"
+        with pytest.raises(ReferenceResolveError):
+            await _collect(service, (data_uri,))
+
+
+@pytest.mark.asyncio
+async def test_oversized_gif_rejected_before_transcode(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "allowed"
+    root.mkdir()
+    ref = root / "big.gif"
+    ref.write_bytes(_gif_bytes(size=(8, 8)))
+    service = _service(root, tmp_path / "cache")
+    service.max_pixels = 16  # 8x8=64 超限
+    calls: list[int] = []
+    original = reference_service_module.transcode_to_supported_mime
+
+    def _spy(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(reference_service_module, "transcode_to_supported_mime", _spy)
+
+    with pytest.raises(ReferenceTooLargeError):
+        await _collect(service, (str(ref),))
+    assert calls == []  # 像素超限在转码前拒绝
+
+
+@pytest.mark.asyncio
+async def test_url_fetch_gif_caches_png(tmp_path) -> None:
+    state = {"hits": 0, "referers": []}
+    gif_payload = _gif_bytes()
+
+    async def gif(request: web.Request) -> web.Response:
+        state["hits"] += 1
+        return web.Response(body=gif_payload, content_type="image/gif")
+
+    app = web.Application()
+    app.router.add_get("/img.gif", gif)
+    server = await _start(app)
+    try:
+        root = tmp_path / "allowed"
+        root.mkdir()
+        cache_dir = tmp_path / "cache"
+        service = _service(root, cache_dir)
+        url = str(server.make_url("/img.gif"))
+
+        first = (await _collect(service, (url,)))[0]
+        assert first.mime_type == "image/png"
+        assert Path(first.location).read_bytes().startswith(b"\x89PNG")
+        # URL 缓存与产物缓存写的都是转码后的 PNG 字节
+        cached_files = list(cache_dir.glob("*.png"))
+        assert len(cached_files) == 2
+        assert all(p.read_bytes().startswith(b"\x89PNG") for p in cached_files)
+
+        second = (await _collect(service, (url,)))[0]
+        assert state["hits"] == 1  # 命中 URL 缓存，未二次抓取
+        assert second.location == first.location
+        assert second.mime_type == "image/png"
+    finally:
+        await server.close()
+
+
+@pytest.mark.parametrize("fmt", ["PNG", "JPEG", "WEBP"])
+@pytest.mark.asyncio
+async def test_passthrough_formats_unchanged(tmp_path, fmt) -> None:
+    root = tmp_path / "allowed"
+    root.mkdir()
+    buf = io.BytesIO()
+    PILImage.new("RGB", (8, 8), (10, 20, 30)).save(buf, format=fmt)
+    payload = buf.getvalue()
+    data_uri = f"data:image/{fmt.lower()};base64,{base64.b64encode(payload).decode()}"
+    service = _service(root, tmp_path / "cache")
+
+    artifacts = await _collect(service, (data_uri,))
+
+    artifact = artifacts[0]
+    assert artifact.mime_type == f"image/{fmt.lower()}"
+    assert artifact.size_bytes == len(payload)
+    assert Path(artifact.location).read_bytes() == payload
 
 
 @pytest.mark.asyncio

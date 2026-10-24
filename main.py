@@ -768,7 +768,9 @@ class GeminiImageGenerationPlugin(Star):
 
             api_start = time.perf_counter()
             # 灰度：scheduler_v2 开启时命令入口改走 v2 调度器（生命周期/持久化/
-            # 参考图/deadline 治理）；候选路由与限流仍由入口检查和 legacy client 承担。
+            # deadline 治理）；带参考图的命令暂不支持（参考图按引用长度上限
+            # 校验，消息图片等长 data URI 会被拒绝）；候选路由与限流仍由入口
+            # 检查和 legacy client 承担。
             deadline = self.cfg.total_timeout * 2
             service = None
             if getattr(self.cfg, "scheduler_v2", False):

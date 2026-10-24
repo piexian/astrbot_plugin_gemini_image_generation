@@ -19,6 +19,8 @@ try:
 except ImportError:  # pragma: no cover - 取决于运行环境可选依赖
     PILImage = None
 
+from ..api.reference_pipeline import transcode_to_supported_mime
+from ..api_types import APIError
 from ..reference_image import (
     REFERENCE_IMAGE_CACHE_DIR,
     build_reference_image_headers,
@@ -43,6 +45,17 @@ from .remote_fetch import RemoteFetchService, _remaining
 # 本地路径优先判定的输入长度上限，与 tl/api/reference_pipeline 对齐。
 _LOCAL_PATH_MAX_CHARS = 1024
 _DATA_URI_PREFIX = "data:image/"
+
+# 透传白名单：这些魔数格式原样落盘，HEIC/HEIF 的像素校验豁免见 _check_pixels。
+_PASSTHROUGH_MIMES = frozenset(
+    {"image/png", "image/jpeg", "image/webp", "image/heic", "image/heif"}
+)
+# 需转码为 PNG 的附加魔数格式；其余文件头仍拒绝（比旧管道更严格）。
+_TRANSCODE_MAGIC_PREFIXES: tuple[tuple[str, tuple[bytes, ...]], ...] = (
+    ("image/gif", (b"GIF87a", b"GIF89a")),
+    ("image/bmp", (b"BM",)),
+    ("image/tiff", (b"II*\x00", b"MM\x00*")),
+)
 
 
 def _ensure_deadline(deadline_at: datetime | None) -> None:
@@ -72,6 +85,14 @@ def _looks_like_local_file(text: str) -> bool:
         and len(text) <= _LOCAL_PATH_MAX_CHARS
         and Path(text).is_file()
     )
+
+
+def _detect_transcodable_mime(raw: bytes) -> str | None:
+    """识别需转码的 GIF/BMP/TIFF 魔数。"""
+    for mime_type, prefixes in _TRANSCODE_MAGIC_PREFIXES:
+        if raw.startswith(prefixes):
+            return mime_type
+    return None
 
 
 class ReferenceService:
@@ -170,12 +191,13 @@ class ReferenceService:
         except RemoteFetchError as exc:
             logger.error("参考图抓取失败: %s", redact_url(url))
             raise ReferenceResolveError(f"参考图抓取失败: {redact_url(url)}") from exc
-        mime_type = self._check_bytes(raw)
-        save_reference_image_cache(url, raw, mime_type, self.cache_dir)
-        return self._finish(raw, mime_type, source=redact_url(url))
+        payload, mime_type = self._check_bytes(raw)
+        save_reference_image_cache(url, payload, mime_type, self.cache_dir)
+        return self._finish(payload, mime_type, source=redact_url(url))
 
     def _materialize(self, raw: bytes, *, source: str) -> Artifact:
-        return self._finish(raw, self._check_bytes(raw), source=source)
+        payload, mime_type = self._check_bytes(raw)
+        return self._finish(payload, mime_type, source=source)
 
     def _finish(self, raw: bytes, mime_type: str, *, source: str) -> Artifact:
         path = self._write_cache(raw, mime_type)
@@ -188,7 +210,8 @@ class ReferenceService:
             metadata={"source": source},
         )
 
-    def _check_bytes(self, raw: bytes) -> str:
+    def _check_bytes(self, raw: bytes) -> tuple[bytes, str]:
+        """大小 → 魔数 → 像素数 → 按需转码，返回落盘字节与 MIME。"""
         if not raw:
             raise ReferenceResolveError("参考图内容为空")
         if len(raw) > self.max_reference_bytes:
@@ -196,13 +219,38 @@ class ReferenceService:
                 f"参考图超过 {self.max_reference_bytes} 字节上限"
             )
         mime_type = detect_reference_image_mime(raw)
-        if not mime_type:
+        if mime_type:
+            # 透传格式不做转码，像素校验后原样落盘。
+            self._check_pixels(raw, mime_type)
+            return raw, mime_type
+        transcode_mime = _detect_transcodable_mime(raw)
+        if not transcode_mime:
             logger.warning("参考图格式无法识别（文件头不匹配）")
             raise ReferenceResolveError(
-                "无法识别参考图格式（仅支持 PNG/JPEG/WebP/HEIC/HEIF）"
+                "无法识别参考图格式（仅支持 PNG/JPEG/WebP/HEIC/HEIF/GIF/BMP/TIFF）"
             )
-        self._check_pixels(raw, mime_type)
-        return mime_type
+        # 像素数在解码前读取：超限的 GIF/BMP/TIFF 不进入转码。
+        self._check_pixels(raw, transcode_mime)
+        return self._transcode(raw, transcode_mime)
+
+    def _transcode(self, raw: bytes, mime_type: str) -> tuple[bytes, str]:
+        """GIF/BMP/TIFF 复用共享管道转 PNG（动图取首帧），不在本地另写转码。"""
+        try:
+            encoded, out_mime = transcode_to_supported_mime(
+                raw,
+                mime_type,
+                error_label="scheduler_v2",
+                supported=_PASSTHROUGH_MIMES,
+                max_bytes=self.max_reference_bytes,
+            )
+        except APIError as exc:
+            if exc.error_type == "reference_image_too_large":
+                raise ReferenceTooLargeError(
+                    f"参考图转码后超过 {self.max_reference_bytes} 字节上限"
+                ) from exc
+            logger.warning("参考图转码失败（%s）: %s", mime_type, exc.message)
+            raise ReferenceResolveError(f"参考图转码失败（{mime_type}）") from exc
+        return base64.b64decode(encoded), out_mime
 
     def _check_pixels(self, raw: bytes, mime_type: str) -> None:
         if PILImage is None:  # pragma: no cover - Pillow 缺失时拒绝而非放行
