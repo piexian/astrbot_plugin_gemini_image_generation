@@ -9,6 +9,7 @@ import asyncio
 import copy
 import inspect
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -83,6 +84,10 @@ async def _call(value: Any, *args: Any, **kwargs: Any) -> Any:
 _ROUTER_EXECUTE_GRACE_SECONDS = 1.0
 
 
+# wait() 读回的运行时结果登记容量：按插入顺序淘汰最旧项，保持有界。
+_RUNTIME_RESULT_CAPACITY = 256
+
+
 class JobScheduler:
     def __init__(
         self,
@@ -122,6 +127,9 @@ class JobScheduler:
         # 生命周期清理；登记/读取/清理都在事件循环内串行执行，dict 操作
         # 原子，无需加锁。
         self._original_references: dict[str, tuple[str, ...]] = {}
+        # wait() 需要读回未脱敏的运行时结果（存储/快照仍只保留脱敏形态）；
+        # 与 _original_references 相同，仅在事件循环内串行访问。
+        self._runtime_results: OrderedDict[str, GenerationResult] = OrderedDict()
 
     async def submit(self, request: GenerationRequest) -> JobHandle:
         async with self._lock:
@@ -303,7 +311,9 @@ class JobScheduler:
             raise RuntimeError("reference resolver 不可用")
 
         async def resolve_all() -> Any:
-            resolved = self.reference_store.resolve(references)
+            resolved = self.reference_store.resolve(
+                references, deadline_at=job.deadline_at
+            )
             resolved = await resolved if inspect.isawaitable(resolved) else resolved
             if hasattr(resolved, "__aiter__"):
                 return [item async for item in resolved]
@@ -437,6 +447,9 @@ class JobScheduler:
             job = await self.store.save(job)
             job.transition(JobState.PARTIAL if result.partial else JobState.SUCCEEDED)
             await self.store.save(job)
+            # 终态落库成功后才登记：并发赢家、失败、取消路径不登记，
+            # 避免 wait() 读回的结果遮蔽 store 里的最终结果。
+            self._remember_runtime_result(job_id, result)
         except asyncio.CancelledError:
             job = await self.store.get(job_id)
             if job is not None and job.state not in TERMINAL_STATES:
@@ -484,11 +497,24 @@ class JobScheduler:
                 # Lease records retain release_failed/active state for recovery.
                 pass
 
+    def _remember_runtime_result(self, job_id: str, result: GenerationResult) -> None:
+        """登记未脱敏运行时结果供 wait() 读回；超容量按插入顺序淘汰。"""
+
+        self._runtime_results[job_id] = result
+        while len(self._runtime_results) > _RUNTIME_RESULT_CAPACITY:
+            self._runtime_results.popitem(last=False)
+
     async def wait(self, job_id: str, timeout: float | None = None) -> JobResult:
         job = await self.store.get(job_id)
         if job is None:
             raise JobNotFoundError(f"Job 不存在: {job_id}")
-        if job.state not in TERMINAL_STATES:
+        # 成功终态已提交但 runtime task 未收尾时，运行时结果登记可能尚未
+        # 发生：与非终态一样先等任务结束，避免直接返回脱敏结果。
+        pending_registration = (
+            job.state in (JobState.SUCCEEDED, JobState.PARTIAL)
+            and job_id in self._tasks
+        )
+        if job.state not in TERMINAL_STATES or pending_registration:
             if job_id not in self._tasks:
                 raise RecoveryRequiredError(
                     f"Job {job_id} 没有 runtime task，请先恢复 Scheduler"
@@ -501,10 +527,17 @@ class JobScheduler:
             job = await self.store.get(job_id)
             if job is None:
                 raise JobNotFoundError(f"Job 不存在: {job_id}")
+        result = copy.deepcopy(job.result)
+        if (
+            job.state in (JobState.SUCCEEDED, JobState.PARTIAL)
+            and job_id in self._runtime_results
+        ):
+            # 进程内登记的运行时原文优先；条目淘汰或重启恢复回退脱敏结果。
+            result = copy.deepcopy(self._runtime_results[job_id])
         return JobResult(
             job.job_id,
             job.state,
-            copy.deepcopy(job.result),
+            result,
             job.error_code,
             job.error_message,
         )
@@ -544,6 +577,7 @@ class JobScheduler:
             self._closed = True
             tasks = [task for task in self._tasks.values() if not task.done()]
             self._original_references.clear()
+            self._runtime_results.clear()
             for task in tasks:
                 task.cancel()
         if tasks:

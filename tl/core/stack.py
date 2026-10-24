@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -31,9 +32,10 @@ class _ReferenceLeaseStore:
         return Lease(f"reference-{uuid.uuid4().hex}", LeaseKind.REFERENCE, "")
 
     async def resolve(
-        self, references: tuple[str, ...], *, deadline_at: Any = None
+        self, references: tuple[str, ...], *, deadline_at: datetime | None = None
     ) -> list[Artifact]:
-        return [item async for item in self._service.resolve(references)]
+        resolved = self._service.resolve(references, deadline_at=deadline_at)
+        return [item async for item in resolved]
 
 
 def _build_adapters(

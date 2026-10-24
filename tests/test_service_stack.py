@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 
 import pytest
 from PIL import Image as PILImage
 
+from tl.core.models import Artifact
 from tl.core.requests import GenerationRequest
-from tl.core.stack import build_generation_stack
+from tl.core.stack import _ReferenceLeaseStore, build_generation_stack
 from tl.core.states import JobState
 from tl.reference_image import REFERENCE_IMAGE_CACHE_DIR
 
@@ -176,3 +178,28 @@ async def test_stack_import_legacy_disabled_by_default(tmp_path):
         connection.close()
     assert jobs == 0
     assert imports == 0
+
+
+class _RecordingReferenceService:
+    """记录 resolve 入参的假 ReferenceService（async generator 形态）。"""
+
+    def __init__(self):
+        self.seen = []
+
+    async def resolve(self, references, *, deadline_at=None):
+        self.seen.append((tuple(references), deadline_at))
+        yield Artifact(artifact_id="ref-1", kind="reference", location="/tmp/ref-1")
+
+
+@pytest.mark.asyncio
+async def test_reference_lease_store_forwards_deadline():
+    service = _RecordingReferenceService()
+    store = _ReferenceLeaseStore(service)
+    deadline = datetime.now(timezone.utc) + timedelta(seconds=5)
+    artifacts = await store.resolve(("ref://a",), deadline_at=deadline)
+    # _ReferenceLeaseStore 把 deadline_at 原样转发给 ReferenceService。
+    assert service.seen == [(("ref://a",), deadline)]
+    assert [item.location for item in artifacts] == ["/tmp/ref-1"]
+    # 未传 deadline 时透传 None，保持默认抓取超时行为。
+    assert await store.resolve(("ref://b",)) == list(artifacts)
+    assert service.seen[-1] == (("ref://b",), None)

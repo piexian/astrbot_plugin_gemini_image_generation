@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from tl.core.dispatch import ProviderDispatchError
+from tl.core.errors import ReferenceTimeoutError
 from tl.core.job_store import SQLiteJobStore
 from tl.core.models import Job
 from tl.core.requests import GenerationRequest
@@ -66,7 +67,7 @@ class FakeLeaseSource:
         self.reservations.append(reservation)
         return reservation
 
-    async def resolve(self, references):
+    async def resolve(self, references, *, deadline_at=None):
         return tuple(f"resolved:{item}" for item in references)
 
 
@@ -424,7 +425,7 @@ class _ReferenceStoreHarness:
     async def reserve(self, references):
         return FakeReservation()
 
-    async def resolve(self, references):
+    async def resolve(self, references, *, deadline_at=None):
         artifacts = [item async for item in self.service.resolve(references)]
         self.resolved_locations.extend(item.location for item in artifacts)
         return artifacts
@@ -509,7 +510,7 @@ async def test_run_without_registration_resolves_store_descriptors(tmp_path):
         async def reserve(self, references):
             return FakeReservation()
 
-        async def resolve(self, references):
+        async def resolve(self, references, *, deadline_at=None):
             self.inputs.append(tuple(references))
             return tuple(f"resolved:{item}" for item in references)
 
@@ -527,5 +528,223 @@ async def test_run_without_registration_resolves_store_descriptors(tmp_path):
         assert received and all(item.startswith("ref:") for item in received)
         final = await store.get(restored.job_id)
         assert final.state is JobState.SUCCEEDED
+    finally:
+        await scheduler.close()
+
+
+class StaticArtifactsProvider:
+    """返回固定 artifacts 的最小 provider（走 dispatch 路径）。"""
+
+    def __init__(self, artifacts: tuple[str, ...]):
+        self.artifacts = artifacts
+        self.attempts = 0
+
+    async def supports(self, request):
+        return True
+
+    async def normalize(self, request):
+        return request
+
+    async def build_request(self, request, attempt):
+        self.attempts += 1
+        return "https://provider.test/generate", {}, lambda: {"attempt": attempt.number}
+
+    async def send(self, request, attempt, *, url, headers, body_factory):
+        return {}
+
+    async def parse_response(self, response, *, request, attempt):
+        return GenerationResult(artifacts=self.artifacts)
+
+
+@pytest.mark.asyncio
+async def test_wait_returns_runtime_artifacts_while_store_stays_redacted(tmp_path):
+    artifacts = (
+        "/tmp/runtime/session-1/image-001.png",
+        "https://cdn.test/img.png?sig=secret&exp=42",
+    )
+    scheduler, store = make_scheduler(tmp_path, StaticArtifactsProvider(artifacts))
+    try:
+        job_id = (await scheduler.submit(request())).job_id
+        result = await scheduler.wait(job_id)
+        assert result.state is JobState.SUCCEEDED
+        # wait() 读回运行时原文：本地绝对路径与带 query 的 URL 原样保留。
+        assert result.result is not None
+        assert result.result.artifacts == artifacts
+        # 多个 waiter 读到同一运行时结果，读取不消耗登记。
+        repeat = await scheduler.wait(job_id)
+        assert repeat.result is not None
+        assert repeat.result.artifacts == artifacts
+        stored = await store.get(job_id)
+        assert stored is not None and stored.result is not None
+        stored_artifacts = stored.result.artifacts
+        assert stored_artifacts != artifacts
+        # 存储侧脱敏：本地路径替换为 artifact:<hash>，URL 丢弃 query。
+        assert stored_artifacts[0].startswith("artifact:")
+        assert stored_artifacts[1] == "https://cdn.test/img.png"
+    finally:
+        await scheduler.close()
+
+
+class _GatedSaveStore:
+    """包一层 store：成功终态 save 提交后、返回 _run 前挂在闸门上。"""
+
+    def __init__(self, inner, gate):
+        self._inner = inner
+        self._gate = gate
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    async def save(self, job, *, expected_revision=None):
+        saved = await self._inner.save(job, expected_revision=expected_revision)
+        if job.state in (JobState.SUCCEEDED, JobState.PARTIAL):
+            await self._gate.wait()
+        return saved
+
+
+@pytest.mark.asyncio
+async def test_wait_waits_for_registration_after_terminal_commit(tmp_path):
+    """终态已提交而登记未发生时，wait() 等任务收尾再读运行时结果。"""
+    gate = asyncio.Event()
+    artifacts = ("/tmp/runtime/race.png",)
+    store = SQLiteJobStore(tmp_path, import_legacy=False)
+    scheduler = JobScheduler(store, provider=StaticArtifactsProvider(artifacts))
+    scheduler.store = _GatedSaveStore(store, gate)
+    try:
+        job_id = (await scheduler.submit(request())).job_id
+        # 轮询直到 SUCCEEDED save 已提交、_run 挂在闸门上。
+        for _ in range(200):
+            stored = await scheduler.store.get(job_id)
+            if stored.state is JobState.SUCCEEDED:
+                break
+            await asyncio.sleep(0.01)
+        assert stored.state is JobState.SUCCEEDED
+        waiting = asyncio.create_task(scheduler.wait(job_id))
+        await asyncio.sleep(0.05)
+        gate.set()
+        result = await waiting
+        assert result.state is JobState.SUCCEEDED
+        # 读回运行时原文而非脱敏的 artifact:<hash>。
+        assert result.result is not None
+        assert result.result.artifacts == artifacts
+    finally:
+        gate.set()
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_wait_falls_back_to_redacted_result_after_eviction(tmp_path, monkeypatch):
+    monkeypatch.setattr("tl.core.scheduler._RUNTIME_RESULT_CAPACITY", 1)
+    artifacts = ("/tmp/runtime/a.png", "https://cdn.test/b.png?sig=x")
+    scheduler, store = make_scheduler(tmp_path, StaticArtifactsProvider(artifacts))
+    try:
+        first = (await scheduler.submit(request())).job_id
+        assert (await scheduler.wait(first)).result.artifacts == artifacts
+        second = (await scheduler.submit(request())).job_id
+        assert (await scheduler.wait(second)).result.artifacts == artifacts
+        # 容量 1：second 登记淘汰 first，读回回退存储里的脱敏结果。
+        fallback = await scheduler.wait(first)
+        assert fallback.result is not None
+        assert fallback.result.artifacts != artifacts
+        stored = await store.get(first)
+        assert stored is not None and stored.result is not None
+        assert fallback.result.artifacts == stored.result.artifacts
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_close_clears_runtime_results(tmp_path):
+    provider = StaticArtifactsProvider(("/tmp/runtime/a.png",))
+    scheduler, _ = make_scheduler(tmp_path, provider)
+    job_id = (await scheduler.submit(request())).job_id
+    await scheduler.wait(job_id)
+    assert scheduler._runtime_results
+    await scheduler.close()
+    assert scheduler._runtime_results == {}
+
+
+@pytest.mark.asyncio
+async def test_cancelled_and_failed_jobs_are_not_registered(tmp_path):
+    block = asyncio.Event()
+    provider = FakeProvider(block=block, failures=100)
+    scheduler, _ = make_scheduler(tmp_path, provider, retry_backoff=0.01)
+    try:
+        cancelled = await scheduler.submit(request())
+        await provider.started.wait()
+        await scheduler.cancel(cancelled.job_id)
+        assert scheduler._runtime_results == {}
+        block.set()
+        failed = await scheduler.wait(
+            (await scheduler.submit(request(timeout=0.05))).job_id
+        )
+        assert failed.state is JobState.FAILED
+        assert scheduler._runtime_results == {}
+    finally:
+        block.set()
+        await scheduler.close()
+
+
+class DeadlineRecordingResolver:
+    """记录收到的 deadline_at，符合 ReferenceServiceProtocol.resolve 签名。"""
+
+    def __init__(self):
+        self.deadlines = []
+
+    async def reserve(self, references):
+        return FakeReservation()
+
+    async def resolve(self, references, *, deadline_at=None):
+        self.deadlines.append(deadline_at)
+        return tuple(f"resolved:{item}" for item in references)
+
+
+@pytest.mark.asyncio
+async def test_reference_resolve_receives_job_deadline(tmp_path):
+    resolver = DeadlineRecordingResolver()
+    scheduler, store = make_scheduler(
+        tmp_path, FakeProvider(), reference_store=resolver
+    )
+    try:
+        job_id = (
+            await scheduler.submit(request(timeout=3.0, references=("ref-1",)))
+        ).job_id
+        result = await scheduler.wait(job_id)
+        assert result.state is JobState.SUCCEEDED
+        stored = await store.get(job_id)
+        assert stored is not None
+        # scheduler 把 job 的 deadline 原样透传给 reference store。
+        assert resolver.deadlines == [stored.deadline_at]
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_reference_deadline_exhaustion_fails_job(tmp_path):
+    class ExhaustedDeadlineResolver:
+        """模拟 ReferenceService：deadline 耗尽时抛 ReferenceTimeoutError。"""
+
+        async def reserve(self, references):
+            return FakeReservation()
+
+        async def resolve(self, references, *, deadline_at=None):
+            # 真实服务由 fetch 按 deadline 截断后抛 ReferenceTimeoutError，
+            # 此处收到 deadline 即模拟耗尽场景。
+            if deadline_at is not None:
+                raise ReferenceTimeoutError("参考图解析 deadline 已耗尽")
+            return tuple(references)
+
+    provider = FakeProvider()
+    scheduler, _ = make_scheduler(
+        tmp_path, provider, reference_store=ExhaustedDeadlineResolver()
+    )
+    try:
+        result = await scheduler.wait(
+            (await scheduler.submit(request(timeout=1.0, references=("ref-1",)))).job_id
+        )
+        assert result.state is JobState.FAILED
+        assert result.error_code == "reference_timeout"
+        # 参考图解析失败在 provider 分发之前终止。
+        assert provider.attempts == 0
     finally:
         await scheduler.close()
