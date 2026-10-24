@@ -653,7 +653,10 @@ async def collect_image_sources(event, log_debug=logger.debug) -> list[str]:
 
                 # 文件组件（尝试按图片处理）
                 if comp.__class__.__name__ == "File":
-                    file_val = getattr(comp, "file", None) or getattr(comp, "url", None)
+                    # File.file 会尝试同步下载；此处只读取元数据，下载交给后续流程。
+                    file_val = getattr(comp, "file_", None) or getattr(
+                        comp, "url", None
+                    )
                     add_source(file_val, origin)
                     continue
 
