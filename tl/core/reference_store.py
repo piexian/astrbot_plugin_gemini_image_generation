@@ -101,6 +101,10 @@ class TmpReferenceStore:
         )
 
     def _evict(self, now: datetime) -> None:
+        # 只回收进程内句柄映射、不删落盘文件：文件按内容 sha256 命名写入参考图缓存目录
+        # (REFERENCE_IMAGE_CACHE_DIR)，同一份字节可能被多个句柄、URL 缓存或旧管道共用；
+        # 该目录由 AstrBot 的 TempDirCleaner 按容量统一清理（见 tl/reference_image.py 的
+        # get_reference_image_cache_dir 注释）。
         for ref_id in [
             ref_id for ref_id, entry in self._entries.items() if entry.expires_at <= now
         ]:
