@@ -26,7 +26,9 @@ class _FakeClient:
         self.fail_providers = fail_providers
         self.configs: list = []
 
-    async def generate_image(self, config, *, max_retries=3, total_timeout=120):
+    async def generate_image(
+        self, config, *, max_retries=3, total_timeout=120, **kwargs
+    ):
         self.configs.append(config)
         # 候选标签经 config.model 兜底传入（requested_* 只承载入口真实路由）。
         if config.model in self.fail_providers:
@@ -138,6 +140,7 @@ async def test_stack_close_is_idempotent(tmp_path):
     assert (data_dir / "jobs.sqlite3").exists()
     await service.close()
     await service.close()
+    assert service._scheduler.store._closed is True
     assert (data_dir / "jobs.sqlite3").exists()
 
 

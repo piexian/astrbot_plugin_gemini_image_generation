@@ -74,8 +74,13 @@ def _ensure_deadline(deadline_at: datetime | None) -> None:
         raise ReferenceTimeoutError("参考图解析 deadline 已耗尽")
 
 
-def _decode_base64(payload: str, label: str) -> bytes:
+def _decode_base64(payload: str, label: str, max_bytes: int | None = None) -> bytes:
     """严格解码 base64 文本；失败按解析失败处理。"""
+    if max_bytes is not None:
+        padding = len(payload) - len(payload.rstrip("="))
+        estimated = (len(payload) // 4) * 3 - padding
+        if estimated > max_bytes:
+            raise ReferenceTooLargeError(f"参考图超过 {max_bytes} 字节上限")
 
     try:
         return base64.b64decode(payload, validate=True)
@@ -89,7 +94,7 @@ def _looks_like_local_file(text: str) -> bool:
 
     return (
         "://" not in text
-        and not text.startswith("data:")
+        and not text.lower().startswith("data:")
         and len(text) <= _LOCAL_PATH_MAX_CHARS
         and Path(text).is_file()
     )
@@ -100,13 +105,14 @@ def classify_reference(
 ) -> Literal["handle", "inline", "file", "url", "local"]:
     """判定参考图输入形态；解析与 ingest 共用，避免两处判定漂移。"""
 
+    lowered = text.lower()
     if _HANDLE_RE.match(text):
         return "handle"
-    if text.startswith("data:"):
+    if lowered.startswith("data:"):
         return "inline"
-    if text.startswith("file:"):
+    if lowered.startswith("file:"):
         return "file"
-    if text.startswith(("http://", "https://")):
+    if lowered.startswith(("http://", "https://")):
         return "url"
     if _looks_like_local_file(text):
         return "local"
@@ -154,6 +160,8 @@ class ReferenceService:
             raise ValueError("tmp 句柄存储必须是 TmpReferenceStore 实例")
         self._tmp_store = tmp_store
         self._stores = registry
+        self._url_locks: dict[str, asyncio.Lock] = {}
+        self._url_lock_users: dict[str, int] = {}
 
     async def resolve(
         self,
@@ -190,15 +198,24 @@ class ReferenceService:
                 deadline_at=deadline_at,
             )
         if shape == "inline":
-            if text.startswith("data:"):
-                if not (text.startswith(_DATA_URI_PREFIX) and ";base64," in text):
+            lowered = text.lower()
+            if lowered.startswith("data:"):
+                marker = ";base64,"
+                if not (lowered.startswith(_DATA_URI_PREFIX) and marker in lowered):
                     logger.warning("不支持的参考图 data URI 形态")
                     raise ReferenceResolveError(
                         "参考图 data URI 仅支持 data:image/*;base64 形态"
                     )
-                raw = _decode_base64(text.split(";base64,", 1)[1], "data URI")
+                raw = _decode_base64(
+                    text[lowered.index(marker) + len(marker) :],
+                    "data URI",
+                    self.max_reference_bytes,
+                )
                 return self._materialize(raw, source="inline")
-            return self._materialize(_decode_base64(text, "裸 base64"), source="inline")
+            return self._materialize(
+                _decode_base64(text, "裸 base64", self.max_reference_bytes),
+                source="inline",
+            )
         if shape == "file":
             raw, source = self._load_local(text)
             return self._materialize(raw, source=source)
@@ -223,16 +240,24 @@ class ReferenceService:
         if isinstance(data, bytes):
             return self._check_bytes(data)
         text = data.strip()
-        if text.startswith("data:"):
-            if not (text.startswith(_DATA_URI_PREFIX) and ";base64," in text):
+        lowered = text.lower()
+        if lowered.startswith("data:"):
+            marker = ";base64,"
+            if not (lowered.startswith(_DATA_URI_PREFIX) and marker in lowered):
                 logger.warning("不支持的参考图 data URI 形态")
                 raise ReferenceResolveError(
                     "参考图 data URI 仅支持 data:image/*;base64 形态"
                 )
             return self._check_bytes(
-                _decode_base64(text.split(";base64,", 1)[1], "data URI")
+                _decode_base64(
+                    text[lowered.index(marker) + len(marker) :],
+                    "data URI",
+                    self.max_reference_bytes,
+                )
             )
-        return self._check_bytes(_decode_base64(text, "裸 base64"))
+        return self._check_bytes(
+            _decode_base64(text, "裸 base64", self.max_reference_bytes)
+        )
 
     async def ingest_inline(
         self, references: Sequence[str], *, requester: Mapping[str, str]
@@ -258,6 +283,10 @@ class ReferenceService:
             logger.warning("本地参考图未通过安全校验: %s", exc)
             raise
         try:
+            if resolved.stat().st_size > self.max_reference_bytes:
+                raise ReferenceTooLargeError(
+                    f"参考图超过 {self.max_reference_bytes} 字节上限"
+                )
             raw = resolved.read_bytes()
         except OSError as exc:
             logger.error("读取本地参考图失败: %s", exc)
@@ -265,38 +294,61 @@ class ReferenceService:
         return raw, resolved.as_uri()
 
     async def _load_url(self, url: str, deadline_at: datetime | None) -> Artifact:
+        try:
+            await self.fetcher.check_url(url, deadline_at)
+        except RemoteFetchTimeoutError as exc:
+            raise ReferenceTimeoutError("参考图 URL 安全校验超时") from exc
         host = urlsplit(url).hostname or ""
         headers = (
             build_reference_image_headers(host, for_qq=True)
             if is_qq_image_host(host)
             else build_reference_image_headers(host)
         )
-        cached = check_reference_image_cache(url, self.cache_dir)
-        if cached is not None:
-            try:
-                raw = cached.read_bytes()
-            except OSError as exc:
-                logger.error("读取参考图缓存失败: %s", redact_url(url))
-                raise ReferenceResolveError(
-                    f"读取参考图缓存失败: {redact_url(url)}"
-                ) from exc
-            return self._materialize(raw, source=redact_url(url))
+        lock = self._url_locks.get(url)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._url_locks[url] = lock
+        self._url_lock_users[url] = self._url_lock_users.get(url, 0) + 1
         try:
-            raw = await self.fetcher.fetch(
-                url, deadline_at=deadline_at, headers=headers
-            )
-        except RemoteFetchTimeoutError as exc:
-            logger.error("参考图抓取超时: %s", redact_url(url))
-            raise ReferenceTimeoutError(f"参考图抓取超时: {redact_url(url)}") from exc
-        except PathPolicyError:
-            logger.warning("参考图抓取目标被安全策略拒绝: %s", redact_url(url))
-            raise
-        except RemoteFetchError as exc:
-            logger.error("参考图抓取失败: %s", redact_url(url))
-            raise ReferenceResolveError(f"参考图抓取失败: {redact_url(url)}") from exc
-        payload, mime_type = self._check_bytes(raw)
-        save_reference_image_cache(url, payload, mime_type, self.cache_dir)
-        return self._finish(payload, mime_type, source=redact_url(url))
+            async with lock:
+                cached = check_reference_image_cache(url, self.cache_dir)
+                if cached is not None:
+                    try:
+                        raw = cached.read_bytes()
+                    except OSError as exc:
+                        logger.error("读取参考图缓存失败: %s", redact_url(url))
+                        raise ReferenceResolveError(
+                            f"读取参考图缓存失败: {redact_url(url)}"
+                        ) from exc
+                    return self._materialize(raw, source=redact_url(url))
+                try:
+                    raw = await self.fetcher.fetch(
+                        url, deadline_at=deadline_at, headers=headers
+                    )
+                except RemoteFetchTimeoutError as exc:
+                    logger.error("参考图抓取超时: %s", redact_url(url))
+                    raise ReferenceTimeoutError(
+                        f"参考图抓取超时: {redact_url(url)}"
+                    ) from exc
+                except PathPolicyError:
+                    logger.warning("参考图抓取目标被安全策略拒绝: %s", redact_url(url))
+                    raise
+                except RemoteFetchError as exc:
+                    logger.error("参考图抓取失败: %s", redact_url(url))
+                    raise ReferenceResolveError(
+                        f"参考图抓取失败: {redact_url(url)}"
+                    ) from exc
+                payload, mime_type = self._check_bytes(raw)
+                save_reference_image_cache(url, payload, mime_type, self.cache_dir)
+                return self._finish(payload, mime_type, source=redact_url(url))
+        finally:
+            users = self._url_lock_users[url] - 1
+            if users == 0:
+                self._url_lock_users.pop(url, None)
+                if self._url_locks.get(url) is lock:
+                    self._url_locks.pop(url, None)
+            else:
+                self._url_lock_users[url] = users
 
     def _materialize(self, raw: bytes, *, source: str) -> Artifact:
         payload, mime_type = self._check_bytes(raw)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 from datetime import datetime, timedelta, timezone
@@ -219,6 +220,18 @@ async def test_bytes_overflow_rejected(tmp_path) -> None:
 
     with pytest.raises(ReferenceTooLargeError):
         await _collect(service, (data_uri,))
+
+
+@pytest.mark.asyncio
+async def test_local_bytes_overflow_rejected_before_read(tmp_path) -> None:
+    root = tmp_path / "allowed"
+    root.mkdir()
+    ref = root / "large.png"
+    ref.write_bytes(b"x" * 32)
+    service = _service(root, tmp_path / "cache", max_reference_bytes=8)
+
+    with pytest.raises(ReferenceTooLargeError):
+        await _collect(service, (str(ref),))
 
 
 @pytest.mark.asyncio
@@ -599,3 +612,118 @@ def test_reference_descriptor_not_confused_with_handle():
     assert refs[0]["display"] == handle
     assert "base64" not in encoded
     assert "/" not in refs[0]["display"]
+
+
+def test_classify_reference_is_case_insensitive(tmp_path):
+    root = tmp_path / "allowed"
+    root.mkdir()
+    ref = root / "ref.png"
+    ref.write_bytes(_png_bytes())
+
+    assert reference_service_module.classify_reference("HtTpS://x") == "url"
+    assert (
+        reference_service_module.classify_reference(
+            ref.as_uri().replace("file:", "FiLe:")
+        )
+        == "file"
+    )
+    assert (
+        reference_service_module.classify_reference("dAtA:image/png;base64,abc")
+        == "inline"
+    )
+
+
+@pytest.mark.asyncio
+async def test_ingest_oversized_base64_rejected_before_decode(tmp_path, monkeypatch):
+    root = tmp_path / "allowed"
+    root.mkdir()
+    service = _service(root, tmp_path / "cache", max_reference_bytes=8)
+    payload = base64.b64encode(b"x" * 32).decode()
+    original = reference_service_module.base64.b64decode
+
+    def fail_if_decoded(*args, **kwargs):
+        raise AssertionError("base64 payload should be rejected before decoding")
+
+    monkeypatch.setattr(reference_service_module.base64, "b64decode", fail_if_decoded)
+    with pytest.raises(ReferenceTooLargeError):
+        await service.ingest(f"DaTa:ImAgE/pNg;BaSe64,{payload}", requester={})
+    monkeypatch.setattr(reference_service_module.base64, "b64decode", original)
+
+
+@pytest.mark.asyncio
+async def test_case_insensitive_file_uri_scheme(tmp_path) -> None:
+    root = tmp_path / "allowed"
+    root.mkdir()
+    ref = root / "ref.png"
+    ref.write_bytes(_png_bytes())
+    service = _service(root, tmp_path / "cache")
+
+    artifacts = await _collect(service, (ref.as_uri().replace("file:", "FiLe:"),))
+    assert artifacts[0].location
+
+
+@pytest.mark.asyncio
+async def test_case_insensitive_http_uri_scheme(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "allowed"
+    root.mkdir()
+    service = _service(root, tmp_path / "cache")
+    monkeypatch.setattr(service.policy, "validate_url", lambda url: url)
+
+    async def fake_to_thread(func, *args):
+        return func(*args)
+
+    monkeypatch.setattr(reference_service_module.asyncio, "to_thread", fake_to_thread)
+
+    async def fake_fetch(url, **kwargs):
+        return _PNG_BYTES
+
+    monkeypatch.setattr(service.fetcher, "fetch", fake_fetch)
+    artifact = await service._load_url("HTTP://example.invalid/image.png", None)
+    assert artifact.metadata["source"].endswith("example.invalid/image.png")
+
+
+@pytest.mark.asyncio
+async def test_url_cache_hit_still_validates_policy(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "allowed"
+    root.mkdir()
+    cache_dir = tmp_path / "cache"
+    service = _service(root, cache_dir)
+    service.policy.allow_private_networks = False
+
+    async def fake_to_thread(func, *args):
+        return func(*args)
+
+    monkeypatch.setattr(reference_service_module.asyncio, "to_thread", fake_to_thread)
+    url = "http://127.0.0.1:9/secret.png"
+    cache_dir.mkdir()
+    cache_key = reference_service_module.hashlib.sha256(url.encode()).hexdigest()
+    (cache_dir / f"{cache_key}.png").write_bytes(_PNG_BYTES)
+
+    with pytest.raises(PathPolicyError):
+        await service._load_url(url, None)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_url_misses_are_serialized(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "allowed"
+    root.mkdir()
+    service = _service(root, tmp_path / "cache")
+    monkeypatch.setattr(service.policy, "validate_url", lambda url: url)
+
+    async def fake_to_thread(func, *args):
+        return func(*args)
+
+    monkeypatch.setattr(reference_service_module.asyncio, "to_thread", fake_to_thread)
+    calls = 0
+
+    async def fake_fetch(url, **kwargs):
+        nonlocal calls
+        calls += 1
+        return _PNG_BYTES
+
+    monkeypatch.setattr(service.fetcher, "fetch", fake_fetch)
+    url = "https://example.invalid/image.png"
+    await asyncio.gather(service._load_url(url, None), service._load_url(url, None))
+    assert calls == 1
+    assert service._url_locks == {}
+    assert service._url_lock_users == {}

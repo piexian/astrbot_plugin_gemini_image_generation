@@ -799,6 +799,8 @@ class GeminiImageGenerationPlugin(Star):
                         metadata={
                             "suppress_resolution": suppress_resolution,
                             "enable_smart_retry": self.cfg.enable_smart_retry,
+                            "max_attempts_per_key": self.cfg.max_attempts_per_key,
+                            "total_timeout": self.cfg.total_timeout,
                         },
                     )
                 )

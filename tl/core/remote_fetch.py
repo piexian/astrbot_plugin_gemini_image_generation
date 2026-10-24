@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import time
 from collections.abc import Mapping
 from datetime import datetime, timezone
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import aiohttp
 from astrbot.api import logger
@@ -26,6 +27,14 @@ from .path_policy import PathPolicy
 MAX_REDIRECTS = 5
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _READ_CHUNK_BYTES = 64 * 1024
+_SENSITIVE_REDIRECT_HEADERS = frozenset(
+    {"authorization", "proxy-authorization", "cookie", "cookie2"}
+)
+
+
+def _origin(url: str) -> tuple[str, str, int | None]:
+    parsed = urlsplit(url)
+    return (parsed.scheme.lower(), (parsed.hostname or "").lower(), parsed.port)
 
 
 def _remaining(
@@ -63,6 +72,36 @@ class RemoteFetchService:
         self.connect_timeout = float(connect_timeout)
         self.max_redirects = int(max_redirects)
 
+    async def check_url(
+        self,
+        url: str,
+        deadline_at: datetime | None = None,
+        *,
+        deadline_mono: float | None = None,
+    ) -> str:
+        """校验 URL；域名解析在线程池执行并受调用时剩余 deadline 约束。"""
+
+        remaining = _remaining(deadline_at, deadline_mono)
+        if remaining is not None and remaining <= 0:
+            raise RemoteFetchTimeoutError(f"远端抓取 DNS 校验超时: {redact_url(url)}")
+        hostname = urlsplit(url).hostname or ""
+        try:
+            ipaddress.ip_address(hostname.rstrip("."))
+        except ValueError:
+            validation = asyncio.to_thread(self.policy.validate_url, url)
+            try:
+                if remaining is None:
+                    await validation
+                else:
+                    await asyncio.wait_for(validation, timeout=remaining)
+            except asyncio.TimeoutError as exc:
+                raise RemoteFetchTimeoutError(
+                    f"远端抓取 DNS 校验超时: {redact_url(url)}"
+                ) from exc
+        else:
+            self.policy.validate_url(url)
+        return url
+
     async def fetch(
         self,
         url: str,
@@ -74,6 +113,7 @@ class RemoteFetchService:
         """抓取 URL 字节；deadline_at 截断总时长，proxy 由调用方显式传入。"""
 
         current = str(url or "").strip()
+        request_headers = dict(headers or {})
         remaining = _remaining(deadline_at, None)
         deadline_mono = time.monotonic() + remaining if remaining is not None else None
         async with aiohttp.ClientSession(trust_env=False) as session:
@@ -85,7 +125,9 @@ class RemoteFetchService:
                         f"远端抓取超过 deadline: {redact_url(current)}"
                     )
                 try:
-                    self.policy.validate_url(current)
+                    await self.check_url(
+                        current, deadline_at, deadline_mono=deadline_mono
+                    )
                 except PathPolicyError as exc:
                     logger.warning(
                         "远端抓取目标被安全策略拒绝: %s", redact_url(current)
@@ -93,6 +135,12 @@ class RemoteFetchService:
                     raise RemoteFetchRejectedError(
                         f"远端抓取目标被安全策略拒绝: {redact_url(current)}"
                     ) from exc
+                remaining = _remaining(deadline_at, deadline_mono)
+                if remaining is not None and remaining <= 0:
+                    logger.error("远端抓取超过 deadline: %s", redact_url(current))
+                    raise RemoteFetchTimeoutError(
+                        f"远端抓取超过 deadline: {redact_url(current)}"
+                    )
                 timeout = aiohttp.ClientTimeout(
                     total=remaining if remaining is not None else None,
                     connect=self.connect_timeout,
@@ -103,7 +151,7 @@ class RemoteFetchService:
                         current,
                         timeout=timeout,
                         proxy=proxy,
-                        headers=headers,
+                        headers=request_headers,
                         allow_redirects=False,
                     ) as response:
                         if response.status in _REDIRECT_STATUSES:
@@ -122,7 +170,14 @@ class RemoteFetchService:
                                 raise RemoteFetchError(
                                     f"重定向缺少 Location: {redact_url(current)}"
                                 )
-                            current = urljoin(current, location)
+                            next_url = urljoin(current, location)
+                            if _origin(next_url) != _origin(current):
+                                request_headers = {
+                                    key: value
+                                    for key, value in request_headers.items()
+                                    if key.lower() not in _SENSITIVE_REDIRECT_HEADERS
+                                }
+                            current = next_url
                             continue
                         if response.status != 200:
                             logger.error(

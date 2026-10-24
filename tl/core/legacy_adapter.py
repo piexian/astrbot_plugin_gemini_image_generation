@@ -49,6 +49,14 @@ class LegacyClientAdapter:
     def name(self) -> str:
         return self._provider
 
+    @property
+    def route_provider(self) -> str:
+        return self._provider
+
+    @property
+    def route_model(self) -> str:
+        return self._model
+
     async def supports(self, request: GenerationRequest) -> bool:
         # 候选过滤由配置层完成，适配器一律支持。
         return True
@@ -59,20 +67,28 @@ class LegacyClientAdapter:
     async def build_request(
         self, request: GenerationRequest, attempt: ProviderAttempt
     ) -> tuple[str, dict[str, str], Any]:
-        # 路由固定沿用入口的真实 requested_provider/model（None 即全量轮询）；
-        # 适配器自身的 provider/model 仅作结果标注，不得写入 requested_*——
-        # legacy client 按其过滤候选，哨兵值会导致空路由。
+        # 首选候选沿用入口 requested_provider/model；Router 回退时改用候选自身值，
+        # 否则 legacy client 会再次路由到已经失败的首选项。
         metadata = request.metadata or {}
+        route_provider = attempt.context.get("candidate_provider")
+        route_model = attempt.context.get("candidate_model")
+        preferred = bool(attempt.context.get("candidate_preferred", True))
+        requested_provider = (
+            request.provider if preferred or not route_provider else str(route_provider)
+        )
+        requested_model = (
+            request.model if preferred or not route_model else str(route_model)
+        )
 
         def body_factory() -> ApiRequestConfig:
             # legacy client 自建请求，factory 仅为 contract 形状服务；
             # 每次调用构造新实例，保证重试时幂等重建。
             return ApiRequestConfig(
-                model=request.model or self._model,
+                model=requested_model or self._model,
                 prompt=request.prompt,
                 candidate_id=self._candidate_id,
-                requested_provider=request.provider,
-                requested_model=request.model,
+                requested_provider=requested_provider,
+                requested_model=requested_model,
                 resolution=request.resolution,
                 aspect_ratio=request.aspect_ratio,
                 negative_prompt=request.negative_prompt,
@@ -103,11 +119,19 @@ class LegacyClientAdapter:
     ) -> Any:
         config = body_factory()
         remaining = _remaining(attempt.deadline_at, None)
+        configured_retries = int(
+            (request.metadata or {}).get("max_attempts_per_key", _LEGACY_MAX_RETRIES)
+        )
+        max_retries = max(configured_retries, 1)
+        configured_timeout = int(
+            (request.metadata or {}).get("total_timeout", _DEFAULT_TOTAL_TIMEOUT)
+        )
+        configured_timeout = max(configured_timeout, 1)
         if remaining is None:
-            total_timeout = _DEFAULT_TOTAL_TIMEOUT
+            total_timeout = configured_timeout
         else:
             # 向下取整且至少 1 秒，已过期的尝试仍给 legacy client 一次机会。
-            total_timeout = max(int(remaining), 1)
+            total_timeout = max(min(int(remaining), configured_timeout), 1)
         logger.debug(
             "legacy 候选 %s/%s 派发（total_timeout=%s）",
             self._provider,
@@ -116,8 +140,14 @@ class LegacyClientAdapter:
         )
         response = await self._client.generate_image(
             config,
-            max_retries=_LEGACY_MAX_RETRIES,
+            max_retries=max_retries,
             total_timeout=total_timeout,
+            per_retry_timeout=configured_timeout,
+            max_total_time=(
+                max(int(remaining), 1)
+                if remaining is not None
+                else configured_timeout * 2
+            ),
         )
         # config 随返回值传出：client 在其上回写 successful_*，供 parse_response 标注。
         return response, config

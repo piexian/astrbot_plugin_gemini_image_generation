@@ -203,7 +203,15 @@ def test_command_request_accepts_requester():
 class _StatsWritingClient:
     """鸭子类型 legacy client：在收到的 config 副本上回写 legacy 统计字段。"""
 
-    async def generate_image(self, config, *, max_retries=3, total_timeout=120):
+    async def generate_image(
+        self,
+        config,
+        *,
+        max_retries=3,
+        total_timeout=120,
+        per_retry_timeout=None,
+        max_total_time=None,
+    ):
         config.retry_count = 2
         config.retry_note = "上游 429 后重试成功"
         config.token_usage = {"prompt_tokens": 10, "total_tokens": 30}

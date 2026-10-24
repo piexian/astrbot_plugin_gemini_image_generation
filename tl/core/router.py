@@ -249,6 +249,19 @@ class ProviderRouter:
                     if candidate.candidate_id is not None
                     else request.candidate_id
                 ),
+                context={
+                    "candidate_provider": getattr(provider, "route_provider", None),
+                    "candidate_model": getattr(provider, "route_model", None),
+                    "candidate_preferred": (
+                        getattr(provider, "route_provider", None) == request.provider
+                        if request.provider
+                        else (
+                            getattr(provider, "route_model", None) == request.model
+                            if request.model
+                            else True
+                        )
+                    ),
+                },
             )
             built = await _call(provider.build_request, normalized, attempt_input)
             if (
