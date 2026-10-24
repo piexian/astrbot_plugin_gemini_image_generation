@@ -7,6 +7,7 @@ import sys
 import types
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -435,6 +436,7 @@ class _FakePlugin:
         self.generated_path = generated_path
         self.event_refs = event_refs or []
         self.captured_reference_images: list[str] | None = None
+        self.captured_avatar_reference: list[str] | None = None
 
     async def _check_and_consume_limit(self, event):
         return True, None
@@ -454,6 +456,7 @@ class _FakePlugin:
         is_tool_call,
     ):
         self.captured_reference_images = list(reference_images)
+        self.captured_avatar_reference = list(avatar_reference)
         return True, ([], [str(self.generated_path)], None, None)
 
 
@@ -511,5 +514,173 @@ async def test_tool_call_rejects_out_of_whitelist_reference_image_path(tmp_path)
         for_forum=True,
     )
 
+    assert "未启动生成" in result
+    assert plugin.captured_reference_images is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["single", "forum", "batch", "legacy"])
+@pytest.mark.parametrize(
+    "case",
+    [
+        "missing_reference",
+        "missing_avatar",
+        "avatar_with_message",
+        "avatar_over_cap",
+        "zero_limit",
+    ],
+)
+async def test_required_reference_rejection_precedes_admission(
+    tmp_path, monkeypatch, route, case
+):
+    from tl import llm_tools
+
+    plugin = _FakePlugin(
+        allowed_dirs=[str(tmp_path)], generated_path=tmp_path / "unused.png"
+    )
+    plugin.cfg.batch_max_tasks = 2
+    plugin.cfg.batch_max_images_per_task = 1
+    plugin.image_generator = SimpleNamespace(
+        max_reference_images=0 if case == "zero_limit" else 1
+    )
+    plugin.background_task_manager = SimpleNamespace(create=AsyncMock(), attach=Mock())
+    plugin._check_and_consume_limit = AsyncMock(return_value=(True, None))
+    plugin._generate_image_core_internal = AsyncMock()
+    references = (
+        ["event-ref"]
+        if case in {"avatar_with_message", "avatar_over_cap", "zero_limit"}
+        else []
+    )
+    avatars = ["avatar-ref"] if case == "avatar_over_cap" else []
+    plugin._fetch_images_from_event = AsyncMock(return_value=(references, avatars))
+    create_generation = Mock()
+    monkeypatch.setattr(llm_tools, "_create_generation_task", create_generation)
+    monkeypatch.setitem(
+        sys.modules, "astrbot.api.message_components", SimpleNamespace(Image=object)
+    )
+    options = {
+        "use_reference_images": True,
+        "include_user_avatar": case not in {"missing_reference", "zero_limit"},
+    }
+    if route == "legacy":
+        result = await llm_tools.execute_image_generation_tool(
+            plugin,
+            _tool_context().context.event,
+            "edit image",
+            **{key: str(value).lower() for key, value in options.items()},
+        )
+        result = result[0]
+    else:
+        kwargs = {"prompt": "edit image", **options}
+        if route == "batch":
+            # A later invalid task must also prevent admission of earlier valid tasks.
+            kwargs = {
+                "batch_tasks": [
+                    {
+                        "name": "text",
+                        "prompt": "draw",
+                        "provider": "example",
+                        "image_count": 1,
+                    },
+                    {"name": "edit", "provider": "example", "image_count": 1, **kwargs},
+                ]
+            }
+        result = await llm_tools.GeminiImageGenerationTool(plugin=plugin).call(
+            _tool_context(), **kwargs, for_forum=route == "forum"
+        )
+    assert "未启动生成" in result
+    plugin._check_and_consume_limit.assert_not_awaited()
+    plugin._generate_image_core_internal.assert_not_awaited()
+    plugin.background_task_manager.create.assert_not_awaited()
+    plugin.background_task_manager.attach.assert_not_called()
+    create_generation.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["missing_avatar", "avatar_over_cap", "invalid_path"])
+@pytest.mark.parametrize("batch", [False, True])
+async def test_local_paths_cannot_hide_missing_required_avatar_or_overflow(
+    tmp_path, case, batch
+):
+    from tl.llm_tools import GeminiImageGenerationTool
+
+    plugin = _FakePlugin(
+        allowed_dirs=[str(tmp_path)], generated_path=tmp_path / "unused.png"
+    )
+    plugin.cfg.batch_max_tasks = 1
+    plugin.cfg.batch_max_images_per_task = 1
+    plugin.image_generator = SimpleNamespace(max_reference_images=1)
+    plugin._check_and_consume_limit = AsyncMock(return_value=(True, None))
+    plugin._fetch_images_from_event = AsyncMock(
+        return_value=([], ["avatar-ref"] if case == "avatar_over_cap" else [])
+    )
+    path = (
+        tmp_path / "missing.png"
+        if case == "invalid_path"
+        else _make_img(tmp_path, "ref.png")
+    )
+    kwargs = {
+        "prompt": "edit image",
+        "reference_image_paths": [str(path)],
+        "include_user_avatar": case != "invalid_path",
+    }
+    if batch:
+        kwargs = {
+            "batch_tasks": [
+                {"name": "edit", "provider": "example", "image_count": 1, **kwargs}
+            ]
+        }
+    result = await GeminiImageGenerationTool(plugin=plugin).call(
+        _tool_context(), **kwargs
+    )
+    assert "未启动生成" in result
+    assert plugin.captured_reference_images is None
+    plugin._check_and_consume_limit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case",
+    ["text_only", "message", "avatar", "message_and_avatar", "partial_avatar_cap"],
+)
+async def test_reference_admission_preserves_valid_single_and_batch_inputs(
+    tmp_path, case
+):
+    from tl.llm_tools import GeminiImageGenerationTool, _prepare_batch_tasks
+
+    generated = _make_img(tmp_path, "generated.png")
+    plugin = _FakePlugin(allowed_dirs=[str(tmp_path)], generated_path=generated)
+    plugin.cfg.batch_max_tasks = 1
+    plugin.cfg.batch_max_images_per_task = 1
+    plugin.image_generator = SimpleNamespace(max_reference_images=2)
+    references = (
+        ["event-ref"]
+        if case in {"message", "message_and_avatar", "partial_avatar_cap"}
+        else []
+    )
+    avatars = ["avatar-ref"] if case in {"avatar", "message_and_avatar"} else []
+    if case == "partial_avatar_cap":
+        # Preserve the existing partial truncation when at least one avatar fits.
+        avatars = ["first-avatar", "second-avatar"]
+    plugin._fetch_images_from_event = AsyncMock(return_value=(references, avatars))
+    plugin._check_and_consume_limit = AsyncMock(return_value=(True, None))
+    kwargs = {
+        "prompt": "draw image",
+        "use_reference_images": case != "text_only",
+        "include_user_avatar": bool(avatars),
+    }
+    result = await GeminiImageGenerationTool(plugin=plugin).call(
+        _tool_context(), **kwargs, for_forum=True
+    )
     assert "图像生成完成" in result
-    assert plugin.captured_reference_images == []
+    plugin._check_and_consume_limit.assert_awaited_once()
+    assert plugin.captured_reference_images == references
+    assert plugin.captured_avatar_reference == avatars
+    tasks, error = await _prepare_batch_tasks(
+        plugin,
+        _tool_context().context.event,
+        [{"name": "draw", "provider": "example", "image_count": 1, **kwargs}],
+    )
+    assert error is None
+    assert tasks[0]["reference_images"] == references
+    assert tasks[0]["avatar_reference"] == avatars

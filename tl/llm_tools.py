@@ -181,7 +181,8 @@ def _build_tool_base_properties() -> dict[str, Any]:
                 "可选。作为参考图的本地图片路径列表。"
                 "默认白名单模式下，路径必须位于插件配置的允许目录内"
                 "（默认覆盖各系统 AstrBot 数据目录，如 ~/.astrbot/data、/opt/astrbot/data）。"
-                "禁止 .. 穿越。路径不存在、越界、非图片或图片损坏将被静默丢弃并在日志记录。"
+                "禁止 .. 穿越。路径不存在、越界、非图片或图片损坏将被丢弃并在日志记录；"
+                "请求使用参考图却未取得有效图片时停止生成。"
                 "典型用途：复用上一次工具调用缓存在 data/temp/tool_images/ 的图片。"
             ),
             "default": [],
@@ -990,6 +991,34 @@ def _normalize_reference_paths(plugin: Any, values: Any) -> list[str]:
     return accepted
 
 
+def _reference_admission_error(
+    plugin: Any,
+    reference_images: list[str],
+    avatar_reference: list[str],
+    *,
+    references_required: bool,
+    avatar_required: bool,
+) -> str | None:
+    """Reject missing required inputs before charging quota or creating a task."""
+    if avatar_required and not avatar_reference:
+        return "未取得所需用户头像，未启动生成；请检查头像获取结果或减少参考图片数量。"
+    if references_required and not (reference_images or avatar_reference):
+        return (
+            "未取得所需参考图片，未启动生成；请引用、重发图片或提供有效的本地图片路径。"
+        )
+
+    max_images = getattr(
+        getattr(plugin, "image_generator", None), "max_reference_images", None
+    )
+    # 核心生成器优先保留普通参考图；本地路径合并后不能挤掉全部必需头像。
+    if max_images is not None and (
+        (references_required and max_images == 0)
+        or (avatar_required and len(reference_images) >= max_images)
+    ):
+        return "参考图片数量超过上限，无法保留所需参考图或头像，未启动生成；请减少参考图片数量或检查上限配置。"
+    return None
+
+
 async def _prepare_batch_tasks(
     plugin: Any,
     event: Any,
@@ -1067,6 +1096,19 @@ async def _prepare_batch_tasks(
         reference_images.extend(
             _normalize_reference_paths(plugin, raw_item.get("reference_image_paths"))
         )
+        reference_error = _reference_admission_error(
+            plugin,
+            reference_images,
+            avatar_reference,
+            references_required=bool(
+                raw_item.get("use_reference_images")
+                or raw_item.get("include_user_avatar")
+                or raw_item.get("reference_image_paths")
+            ),
+            avatar_required=bool(raw_item.get("include_user_avatar")),
+        )
+        if reference_error:
+            return None, f"批量任务 {name} {reference_error}"
         has_references = bool(reference_images or avatar_reference)
         preserve_size = (
             bool(raw_item.get("preserve_reference_image_size"))
@@ -1264,6 +1306,19 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
             plugin,
             kwargs.get("reference_image_paths"),
         )
+        reference_error = _reference_admission_error(
+            plugin,
+            reference_images,
+            avatar_reference,
+            references_required=bool(
+                include_ref_images
+                or include_avatar
+                or kwargs.get("reference_image_paths")
+            ),
+            avatar_required=include_avatar,
+        )
+        if reference_error:
+            return f"❌ {reference_error}"
 
         ref_count = len(reference_images)
         avatar_count = len(avatar_reference)
@@ -1613,6 +1668,16 @@ async def execute_image_generation_tool(
         reference_images = []
     if not include_avatar:
         avatar_reference = []
+
+    reference_error = _reference_admission_error(
+        plugin,
+        reference_images,
+        avatar_reference,
+        references_required=include_ref_images or include_avatar,
+        avatar_required=include_avatar,
+    )
+    if reference_error:
+        return [f"❌ {reference_error}"]
 
     logger.info(
         f"[工具调用] 收集到参考图：消息 {len(reference_images)} 张，"
