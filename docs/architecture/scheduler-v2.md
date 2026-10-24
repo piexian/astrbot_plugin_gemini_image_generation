@@ -77,6 +77,11 @@ Provider 只能报告能力、构造请求、发送和解析结果。候选选�
 3. reference lease、artifact lease、delivery lease 的释放；
 4. provider session、临时文件和输出归档 cleanup。
 
+入口拿到的内联图（data URI / 裸 base64）先经 `ingest_inline` 校验落盘并换成
+`ref:<kind>:<id>` 短句柄再放入 `GenerationRequest`；ReferenceService 内部按 kind
+分派到 ReferenceStore（`tmp` 为进程内 TTL 存储），执行时把句柄解析回落盘产物，
+句柄只允许登记的 requester 解析。
+
 ReferenceService 统一接收本地路径、file URI、HTTP URL、data URI、base64 和
 平台图片。PathPolicy/RemoteFetchService 必须阻止路径穿越、符号链接逃逸、
 loopback、私网、link-local、云元数据地址和重定向绕过，并限制响应体、像素数、

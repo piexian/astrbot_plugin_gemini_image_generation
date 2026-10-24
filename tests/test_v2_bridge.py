@@ -106,3 +106,18 @@ def test_command_request_fields_and_deadline():
         <= request.deadline_at
         <= after + timedelta(seconds=240)
     )
+
+
+def test_command_request_accepts_requester():
+    request = command_request(
+        prompt="draw a cat",
+        resolution=None,
+        aspect_ratio=None,
+        requested_provider=None,
+        requested_model=None,
+        reference_images=[],
+        deadline_seconds=30,
+        requester={"user_id": "u1", "group_id": "g1", "unknown_field": "x"},
+    )
+    # requester 归一化：只保留白名单字段；不传时保持空对象。
+    assert request.requester == {"user_id": "u1", "group_id": "g1"}

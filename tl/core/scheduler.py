@@ -312,7 +312,9 @@ class JobScheduler:
 
         async def resolve_all() -> Any:
             resolved = self.reference_store.resolve(
-                references, deadline_at=job.deadline_at
+                references,
+                deadline_at=job.deadline_at,
+                requester=job.request.requester,
             )
             resolved = await resolved if inspect.isawaitable(resolved) else resolved
             if hasattr(resolved, "__aiter__"):

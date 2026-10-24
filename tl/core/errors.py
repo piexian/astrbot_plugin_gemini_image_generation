@@ -273,6 +273,13 @@ class ReferenceResolveError(CoreError):
     retryable = False
 
 
+class ReferenceAccessDeniedError(CoreError):
+    """参考图句柄的请求者与登记时不一致（越权解析）。"""
+
+    code = "reference_access_denied"
+    retryable = False
+
+
 class ReferenceTooLargeError(CoreError):
     """参考图超过字节或像素上限。"""
 

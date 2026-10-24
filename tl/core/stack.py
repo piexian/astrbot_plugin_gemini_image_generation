@@ -32,9 +32,15 @@ class _ReferenceLeaseStore:
         return Lease(f"reference-{uuid.uuid4().hex}", LeaseKind.REFERENCE, "")
 
     async def resolve(
-        self, references: tuple[str, ...], *, deadline_at: datetime | None = None
+        self,
+        references: tuple[str, ...],
+        *,
+        deadline_at: datetime | None = None,
+        requester: Mapping[str, str] | None = None,
     ) -> list[Artifact]:
-        resolved = self._service.resolve(references, deadline_at=deadline_at)
+        resolved = self._service.resolve(
+            references, deadline_at=deadline_at, requester=requester
+        )
         return [item async for item in resolved]
 
 
@@ -122,4 +128,4 @@ def build_generation_stack(
     except BaseException:
         store.close_sync()
         raise
-    return GenerationService(scheduler)
+    return GenerationService(scheduler, reference_service)

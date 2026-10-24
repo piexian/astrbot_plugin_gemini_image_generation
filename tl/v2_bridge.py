@@ -20,6 +20,7 @@ def command_request(
     reference_images: Sequence[str],
     deadline_seconds: float,
     metadata: Mapping[str, Any] | None = None,
+    requester: Mapping[str, str] | None = None,
 ) -> GenerationRequest:
     """把命令入口参数装配为 v2 GenerationRequest；metadata 透传 legacy 专属开关。"""
 
@@ -32,6 +33,7 @@ def command_request(
         aspect_ratio=aspect_ratio,
         reference_images=tuple(reference_images),
         deadline_at=datetime.now(timezone.utc) + timedelta(seconds=deadline_seconds),
+        requester=dict(requester or {}),
         metadata=dict(metadata or {}),
     )
 

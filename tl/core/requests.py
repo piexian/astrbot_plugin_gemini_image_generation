@@ -81,6 +81,16 @@ def reference_id_from_value(value: Any) -> str:
     return str(value)
 
 
+def normalize_requester(requester: Mapping[str, Any]) -> dict[str, str]:
+    """白名单键、去 None、str 后截断 256 字符；供请求与句柄存储共用口径。"""
+
+    return {
+        str(key): str(value)[:256]
+        for key, value in requester.items()
+        if key in ALLOWED_REQUESTER_FIELDS and value is not None
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class GenerationRequest:
     """入口提交给调度器的不可变请求快照。
@@ -149,11 +159,7 @@ class GenerationRequest:
             raise InvalidRequestError("requester 必须是对象")
         if not isinstance(self.metadata, Mapping):
             raise InvalidRequestError("metadata 必须是对象")
-        requester = {
-            str(key): str(value)[:256]
-            for key, value in self.requester.items()
-            if key in ALLOWED_REQUESTER_FIELDS and value is not None
-        }
+        requester = normalize_requester(self.requester)
         metadata = copy.deepcopy(dict(self.metadata))
         try:
             bounded_json(metadata, limit=MAX_METADATA_BYTES, field_name="metadata")

@@ -11,8 +11,9 @@ from pathlib import Path
 import pytest
 from PIL import Image as PILImage
 
+from tl.core.errors import InvalidRequestError
 from tl.core.models import Artifact
-from tl.core.requests import GenerationRequest
+from tl.core.requests import MAX_REFERENCE_VALUE_CHARS, GenerationRequest
 from tl.core.stack import _ReferenceLeaseStore, build_generation_stack
 from tl.core.states import JobState
 from tl.reference_image import REFERENCE_IMAGE_CACHE_DIR
@@ -186,20 +187,107 @@ class _RecordingReferenceService:
     def __init__(self):
         self.seen = []
 
-    async def resolve(self, references, *, deadline_at=None):
-        self.seen.append((tuple(references), deadline_at))
+    async def resolve(self, references, *, deadline_at=None, requester=None):
+        self.seen.append((tuple(references), deadline_at, dict(requester or {})))
         yield Artifact(artifact_id="ref-1", kind="reference", location="/tmp/ref-1")
 
 
 @pytest.mark.asyncio
-async def test_reference_lease_store_forwards_deadline():
+async def test_reference_lease_store_forwards_deadline_and_requester():
     service = _RecordingReferenceService()
     store = _ReferenceLeaseStore(service)
     deadline = datetime.now(timezone.utc) + timedelta(seconds=5)
-    artifacts = await store.resolve(("ref://a",), deadline_at=deadline)
-    # _ReferenceLeaseStore 把 deadline_at 原样转发给 ReferenceService。
-    assert service.seen == [(("ref://a",), deadline)]
+    artifacts = await store.resolve(
+        ("ref://a",), deadline_at=deadline, requester={"user_id": "u1"}
+    )
+    # _ReferenceLeaseStore 把 deadline_at/requester 原样转发给 ReferenceService。
+    assert service.seen == [(("ref://a",), deadline, {"user_id": "u1"})]
     assert [item.location for item in artifacts] == ["/tmp/ref-1"]
-    # 未传 deadline 时透传 None，保持默认抓取超时行为。
+    # 未传 deadline/requester 时透传 None，保持默认抓取超时行为。
     assert await store.resolve(("ref://b",)) == list(artifacts)
-    assert service.seen[-1] == (("ref://b",), None)
+    assert service.seen[-1] == (("ref://b",), None, {})
+
+
+@pytest.mark.asyncio
+async def test_prepare_references_requires_reference_service():
+    from tl.core.service import GenerationService
+
+    service = GenerationService(None)
+    with pytest.raises(RuntimeError, match="ReferenceService"):
+        await service.prepare_references(
+            ("data:image/png;base64,AAA",), requester={"user_id": "u1"}
+        )
+
+
+@pytest.mark.asyncio
+async def test_stack_inline_reference_end_to_end(tmp_path):
+    """≥2MB 内联图经 prepare_references 换句柄后走完整 v2 栈。"""
+
+    import base64
+    import os
+
+    raw = os.urandom(3 * 1024 * 1024)
+    image = PILImage.frombytes("RGB", (1024, 1024), raw)
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    payload = buffer.getvalue()
+    assert len(payload) > 2 * 1024 * 1024
+    data_uri = f"data:image/png;base64,{base64.b64encode(payload).decode()}"
+    assert len(data_uri) > MAX_REFERENCE_VALUE_CHARS
+    # 未换句柄的原始 data URI 撞引用长度上限，被请求校验拒绝。
+    with pytest.raises(InvalidRequestError):
+        GenerationRequest(prompt="draw", source="test", reference_images=(data_uri,))
+
+    client = _FakeClient()
+    service = build_generation_stack(
+        client,
+        [{"provider": "gemini", "model": "gemini-x"}],
+        tmp_path / "store",
+        (),
+    )
+    try:
+        requester = {"user_id": "u1", "umo": "qq:g1"}
+        prepared = await service.prepare_references([data_uri], requester=requester)
+        assert len(prepared) == 1
+        handle = prepared[0]
+        assert handle.startswith("ref:tmp:")
+        assert len(handle) <= MAX_REFERENCE_VALUE_CHARS
+
+        request = GenerationRequest(
+            prompt="draw with inline reference",
+            source="command",
+            reference_images=prepared,
+            requester=requester,
+        )
+        assert all(
+            len(item) <= MAX_REFERENCE_VALUE_CHARS for item in request.reference_images
+        )
+        result = await service.wait((await service.submit(request)).job_id)
+        assert result.state is JobState.SUCCEEDED
+
+        # 假 client 收到的参考图是落盘路径，字节与原图一致。
+        assert len(client.configs) == 1
+        location = Path(client.configs[0].reference_images[0])
+        assert location.is_file()
+        assert location.read_bytes() == payload
+    finally:
+        await service.close()
+
+    # JobStore 持久化的请求只有句柄/描述符：无 base64、无落盘路径。
+    connection = sqlite3.connect(tmp_path / "store" / "jobs.sqlite3")
+    try:
+        rows = [row[0] for row in connection.execute("SELECT request_json FROM jobs")]
+    finally:
+        connection.close()
+    assert rows
+    for request_json in rows:
+        stored = json.loads(request_json)
+        assert "base64," not in request_json
+        assert str(location) not in request_json
+        assert data_uri[:64] not in request_json
+        # 引用一律是描述符对象：无字节、无本地路径，原始句柄可经描述符脱敏保留。
+        assert stored["reference_images"]
+        assert all(
+            isinstance(item, dict) and {"reference_id", "artifact_id"} <= set(item)
+            for item in stored["reference_images"]
+        )

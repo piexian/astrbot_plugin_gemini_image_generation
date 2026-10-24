@@ -67,7 +67,7 @@ class FakeLeaseSource:
         self.reservations.append(reservation)
         return reservation
 
-    async def resolve(self, references, *, deadline_at=None):
+    async def resolve(self, references, *, deadline_at=None, requester=None):
         return tuple(f"resolved:{item}" for item in references)
 
 
@@ -425,7 +425,7 @@ class _ReferenceStoreHarness:
     async def reserve(self, references):
         return FakeReservation()
 
-    async def resolve(self, references, *, deadline_at=None):
+    async def resolve(self, references, *, deadline_at=None, requester=None):
         artifacts = [item async for item in self.service.resolve(references)]
         self.resolved_locations.extend(item.location for item in artifacts)
         return artifacts
@@ -510,7 +510,7 @@ async def test_run_without_registration_resolves_store_descriptors(tmp_path):
         async def reserve(self, references):
             return FakeReservation()
 
-        async def resolve(self, references, *, deadline_at=None):
+        async def resolve(self, references, *, deadline_at=None, requester=None):
             self.inputs.append(tuple(references))
             return tuple(f"resolved:{item}" for item in references)
 
@@ -694,7 +694,7 @@ class DeadlineRecordingResolver:
     async def reserve(self, references):
         return FakeReservation()
 
-    async def resolve(self, references, *, deadline_at=None):
+    async def resolve(self, references, *, deadline_at=None, requester=None):
         self.deadlines.append(deadline_at)
         return tuple(f"resolved:{item}" for item in references)
 
@@ -720,6 +720,44 @@ async def test_reference_resolve_receives_job_deadline(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_reference_resolve_receives_requester(tmp_path):
+    class RequesterRecordingResolver:
+        def __init__(self):
+            self.calls = []
+
+        async def reserve(self, references):
+            return FakeReservation()
+
+        async def resolve(self, references, *, deadline_at=None, requester=None):
+            self.calls.append((deadline_at, dict(requester or {})))
+            return tuple(f"resolved:{item}" for item in references)
+
+    resolver = RequesterRecordingResolver()
+    scheduler, store = make_scheduler(
+        tmp_path, FakeProvider(), reference_store=resolver
+    )
+    try:
+        job_id = (
+            await scheduler.submit(
+                GenerationRequest(
+                    prompt="draw",
+                    source="test",
+                    reference_images=("ref-1",),
+                    deadline_at=datetime.now(timezone.utc) + timedelta(seconds=3.0),
+                    requester={"user_id": "u1", "umo": "g1"},
+                )
+            )
+        ).job_id
+        result = await scheduler.wait(job_id)
+        assert result.state is JobState.SUCCEEDED
+        stored = await store.get(job_id)
+        # scheduler 把 job.requester 与 deadline 一起透传给 reference store。
+        assert resolver.calls == [(stored.deadline_at, {"user_id": "u1", "umo": "g1"})]
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
 async def test_reference_deadline_exhaustion_fails_job(tmp_path):
     class ExhaustedDeadlineResolver:
         """模拟 ReferenceService：deadline 耗尽时抛 ReferenceTimeoutError。"""
@@ -727,7 +765,7 @@ async def test_reference_deadline_exhaustion_fails_job(tmp_path):
         async def reserve(self, references):
             return FakeReservation()
 
-        async def resolve(self, references, *, deadline_at=None):
+        async def resolve(self, references, *, deadline_at=None, requester=None):
             # 真实服务由 fetch 按 deadline 截断后抛 ReferenceTimeoutError，
             # 此处收到 deadline 即模拟耗尽场景。
             if deadline_at is not None:

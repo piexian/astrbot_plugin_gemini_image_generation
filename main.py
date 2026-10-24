@@ -768,14 +768,18 @@ class GeminiImageGenerationPlugin(Star):
 
             api_start = time.perf_counter()
             # 灰度：scheduler_v2 开启时命令入口改走 v2 调度器（生命周期/持久化/
-            # deadline 治理）；带参考图的命令暂不支持（参考图按引用长度上限
-            # 校验，消息图片等长 data URI 会被拒绝）；候选路由与限流仍由入口
+            # deadline 治理）；内联参考图先经 prepare_references 落成短句柄，
+            # 避免 base64 撞请求引用长度上限；候选路由与限流仍由入口
             # 检查和 legacy client 承担。
             deadline = self.cfg.total_timeout * 2
             service = None
             if getattr(self.cfg, "scheduler_v2", False):
                 service = self._ensure_v2_service()
             if service is not None:
+                v2_requester = requester_from_event(event)
+                prepared_refs = await service.prepare_references(
+                    all_ref_images, requester=v2_requester
+                )
                 handle = await service.submit(
                     v2_command_request(
                         prompt=enhanced_prompt,
@@ -783,7 +787,8 @@ class GeminiImageGenerationPlugin(Star):
                         aspect_ratio=effective_aspect_ratio,
                         requested_provider=requested_provider,
                         requested_model=requested_model,
-                        reference_images=all_ref_images,
+                        reference_images=prepared_refs,
+                        requester=v2_requester,
                         deadline_seconds=deadline,
                         metadata={
                             "suppress_resolution": suppress_resolution,

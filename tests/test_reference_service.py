@@ -13,6 +13,7 @@ from PIL import Image as PILImage
 import tl.core.reference_service as reference_service_module
 from tl.core.errors import (
     PathPolicyError,
+    ReferenceAccessDeniedError,
     ReferenceResolveError,
     ReferenceTimeoutError,
     ReferenceTooLargeError,
@@ -465,3 +466,136 @@ async def test_multiple_references_in_order(tmp_path) -> None:
         blue_ref.resolve().as_uri(),
         "inline",
     ]
+
+
+# ---- ingest 与 ref:tmp: 句柄 ----
+
+
+def _handle_pattern():
+    return reference_service_module._HANDLE_RE
+
+
+@pytest.mark.asyncio
+async def test_ingest_returns_tmp_handle_and_resolves(tmp_path):
+    root = tmp_path / "allowed"
+    root.mkdir()
+    service = _service(root, tmp_path / "cache")
+    payload = _png_bytes(color=(11, 22, 33))
+    requester = {"user_id": "u1", "umo": "qq:g1"}
+    data_uri = f"data:image/png;base64,{base64.b64encode(payload).decode()}"
+
+    handle = await service.ingest(data_uri, requester=requester)
+
+    assert handle.startswith("ref:tmp:")
+    assert _handle_pattern().match(handle)
+    assert len(handle) <= 2048
+    # 原始字节输入同样可 ingest。
+    handle_from_bytes = await service.ingest(payload, requester=requester)
+    assert handle_from_bytes.startswith("ref:tmp:")
+
+    artifacts = await _collect(service, (handle,), requester=requester)
+    artifact = artifacts[0]
+    assert artifact.kind == "reference"
+    assert artifact.mime_type == "image/png"
+    assert artifact.size_bytes == len(payload)
+    assert Path(artifact.location).parent == tmp_path / "cache"
+    assert Path(artifact.location).read_bytes() == payload
+    assert artifact.metadata["source"] == "inline"
+    assert artifact.metadata["handle"] == handle
+
+    # 另一个 requester 解析同一句柄被拒绝。
+    with pytest.raises(ReferenceAccessDeniedError):
+        await _collect(service, (handle,), requester={"user_id": "u2"})
+
+
+@pytest.mark.asyncio
+async def test_ingest_inline_mixed_inputs_keep_order(tmp_path):
+    root = tmp_path / "allowed"
+    root.mkdir()
+    local = root / "local.png"
+    local.write_bytes(_png_bytes(color=(1, 1, 1)))
+    service = _service(root, tmp_path / "cache")
+    url = "https://example.com/a.png"
+    data_uri = f"data:image/png;base64,{base64.b64encode(_png_bytes(color=(2, 2, 2))).decode()}"
+    bare = base64.b64encode(_png_bytes(color=(3, 3, 3))).decode()
+
+    prepared = await service.ingest_inline(
+        [url, str(local), data_uri, bare], requester={"user_id": "u"}
+    )
+
+    # 非内联形态原样保留，内联形态换句柄，顺序不变。
+    assert prepared[0] == url
+    assert prepared[1] == str(local)
+    assert prepared[2].startswith("ref:tmp:")
+    assert prepared[3].startswith("ref:tmp:")
+    assert prepared[2] != prepared[3]
+    artifacts = await _collect(service, prepared[2:], requester={"user_id": "u"})
+    assert [Path(a.location).read_bytes() for a in artifacts] == [
+        _png_bytes(color=(2, 2, 2)),
+        _png_bytes(color=(3, 3, 3)),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ingest_failures_leave_no_entries(tmp_path):
+    root = tmp_path / "allowed"
+    root.mkdir()
+    service = _service(root, tmp_path / "cache", max_pixels=64)
+    not_image = base64.b64encode(b"hello world, not an image").decode()
+
+    with pytest.raises(ReferenceResolveError):
+        await service.ingest(f"data:image/png;base64,{not_image}", requester={})
+    with pytest.raises(ReferenceResolveError):
+        await service.ingest("!!!not-base64!!!", requester={})
+    with pytest.raises(ReferenceTooLargeError):
+        await service.ingest(_png_bytes(size=(16, 16)), requester={})
+
+    assert service._stores["tmp"]._entries == {}
+
+
+@pytest.mark.asyncio
+async def test_handle_forgery_and_unknown_kind_rejected(tmp_path):
+    root = tmp_path / "allowed"
+    root.mkdir()
+    service = _service(root, tmp_path / "cache")
+    forged = [
+        "ref:tmp:../../etc/passwd",
+        f"ref:tmp:{'A' * 32}",
+        "ref:tmp:abc123",
+        "ref:unknown:" + "a" * 32,
+        "ref:tmp:" + "a" * 32,  # 合法形态但未登记
+    ]
+    for ref in forged:
+        with pytest.raises(ReferenceResolveError):
+            await _collect(service, (ref,), requester={"user_id": "u"})
+
+
+def test_reference_descriptor_not_confused_with_handle():
+    from tl.core.models import Job
+    from tl.core.reference_service import classify_reference
+    from tl.core.requests import GenerationRequest, reference_descriptor
+
+    handle = f"ref:tmp:{'a' * 32}"
+    descriptor = reference_descriptor(handle)
+    # 描述符 reference_id 只有一个冒号，不会被句柄正则命中。
+    assert descriptor["reference_id"].startswith("ref:")
+    assert len(descriptor["reference_id"].split(":")) == 2
+    assert classify_reference(handle) == "handle"
+    assert classify_reference(descriptor["reference_id"]) == "inline"
+
+    # 含句柄的请求经 to_storage_dict 后：无字节、无本地路径，句柄留在 display。
+    import json
+
+    request = GenerationRequest(
+        prompt="draw",
+        source="command",
+        reference_images=(handle,),
+        requester={"user_id": "u1"},
+    )
+    payload = Job.create(request, job_id="job-h").to_storage_dict()
+    encoded = json.dumps(payload, ensure_ascii=False)
+    refs = payload["request"]["reference_images"]
+    assert refs[0]["reference_id"].startswith("ref:")
+    assert refs[0]["display"] == handle
+    assert "base64" not in encoded
+    assert "/" not in refs[0]["display"]
