@@ -202,5 +202,7 @@ def test_domain_dns_failure_rejected(monkeypatch) -> None:
 
 def test_allow_private_networks_permits_loopback_and_private() -> None:
     policy = PathPolicy((), allow_private_networks=True)
-    assert policy.validate_url("http://127.0.0.1:8300/img.png")
-    assert policy.validate_url("http://10.0.0.5/img.png")
+    assert policy.validate_url("http://127.0.0.1:8300/img.png") == (
+        "http://127.0.0.1:8300/img.png"
+    )
+    assert policy.validate_url("http://10.0.0.5/img.png") == "http://10.0.0.5/img.png"

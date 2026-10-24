@@ -410,7 +410,9 @@ class _LegacyE2EClient:
     def __init__(self):
         self.configs = []
 
-    async def generate_image(self, config, *, max_retries=3, total_timeout=120):
+    async def generate_image(
+        self, config, *, max_retries=3, total_timeout=120, **kwargs
+    ):
         self.configs.append(config)
         return (["https://img.test/generated.png"], [], "ok", None)
 

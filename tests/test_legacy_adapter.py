@@ -19,12 +19,22 @@ class FakeClient:
         self.response = response
         self.calls: list[tuple[object, dict]] = []
 
-    async def generate_image(self, config, *, max_retries=3, total_timeout=120):
+    async def generate_image(
+        self,
+        config,
+        *,
+        max_retries=3,
+        total_timeout=120,
+        per_retry_timeout=None,
+        max_total_time=None,
+    ):
         self.calls.append(
             {
                 "config": config,
                 "max_retries": max_retries,
                 "total_timeout": total_timeout,
+                "per_retry_timeout": per_retry_timeout,
+                "max_total_time": max_total_time,
             }
         )
         return self.response
@@ -262,3 +272,37 @@ async def test_routing_pins_and_legacy_knobs_flow_from_request():
     assert config2.model == "auto"
     assert config2.suppress_resolution is False
     assert config2.enable_smart_retry is True
+
+
+@pytest.mark.asyncio
+async def test_retry_limits_and_timeout_are_transmitted():
+    client = FakeClient((["u"], [], None, None))
+    adapter = LegacyClientAdapter(client, provider="gemini", model="gemini-x")
+    request = make_request(metadata={"max_attempts_per_key": 7, "total_timeout": 9})
+    attempt = ProviderAttempt(number=1)
+    url, headers, factory = await adapter.build_request(request, attempt)
+    await adapter.send(request, attempt, url=url, headers=headers, body_factory=factory)
+
+    assert client.calls[-1]["max_retries"] == 7
+    assert client.calls[-1]["total_timeout"] == 9
+    assert client.calls[-1]["per_retry_timeout"] == 9
+
+
+@pytest.mark.asyncio
+async def test_fallback_candidate_gets_its_own_route_values():
+    client = FakeClient((["u"], [], None, None))
+    adapter = LegacyClientAdapter(client, provider="beta", model="beta-x")
+    request = make_request(provider="alpha", model="alpha-x")
+    attempt = ProviderAttempt(
+        number=1,
+        context={
+            "candidate_provider": "beta",
+            "candidate_model": "beta-x",
+            "candidate_preferred": False,
+        },
+    )
+    _, _, factory = await adapter.build_request(request, attempt)
+    config = factory()
+    assert config.requested_provider == "beta"
+    assert config.requested_model == "beta-x"
+    assert config.model == "beta-x"
