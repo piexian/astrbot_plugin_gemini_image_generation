@@ -6,17 +6,22 @@ This module is intentionally not wired into commands, tools, WebUI or SDK.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import inspect
 import uuid
 from collections import OrderedDict
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from astrbot.api import logger
+
 from .dispatch import dispatch_provider
 from .errors import (
     JobNotFoundError,
+    ProviderRouteError,
     RecoveryRequiredError,
     ServiceClosedError,
     StaleJobError,
@@ -88,6 +93,29 @@ _ROUTER_EXECUTE_GRACE_SECONDS = 1.0
 _RUNTIME_RESULT_CAPACITY = 256
 
 
+class _GuardedObserverScope:
+    """包装观察者上下文：退出异常只记日志，且不吞掉 provider 异常。"""
+
+    def __init__(self, context: Any, observer_name: str) -> None:
+        self._context = context
+        self._observer_name = observer_name
+
+    def __enter__(self) -> Any:
+        return self._context.__enter__()
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+        try:
+            self._context.__exit__(exc_type, exc, tb)
+        except Exception as error:
+            logger.warning(
+                "[v2] 观察者 %s runtime_scope 退出失败: %s",
+                self._observer_name,
+                type(error).__name__,
+            )
+        # 恒为 False：观察者不得抑制 provider 自身抛出的异常。
+        return False
+
+
 class JobScheduler:
     def __init__(
         self,
@@ -104,6 +132,8 @@ class JobScheduler:
         retry_backoff: float = 0.05,
         heartbeat_interval: float = 5.0,
         cleanup_timeout: float = 5.0,
+        observers: Sequence[Any] = (),
+        observer_timeout: float = 120.0,
     ) -> None:
         self.store = store
         self.provider = provider
@@ -117,6 +147,8 @@ class JobScheduler:
         self.retry_backoff = max(float(retry_backoff), 0.0)
         self.heartbeat_interval = max(float(heartbeat_interval), 0.001)
         self.cleanup_timeout = max(float(cleanup_timeout), 0.1)
+        self.observers = tuple(observers)
+        self.observer_timeout = float(observer_timeout)
         self._closed = False
         self._tasks: dict[str, asyncio.Task[Any]] = {}
         self._done: dict[str, asyncio.Event] = {}
@@ -149,6 +181,8 @@ class JobScheduler:
             # 持久化成功后登记原始引用，供 _run 解析回真实输入。
             if request.reference_images:
                 self._original_references[job.job_id] = request.reference_images
+            # 仍在锁内调用：保证先于该 Job 的其他钩子；失败只记日志不影响 Job。
+            await self._notify_observers("job_accepted", job)
             done = asyncio.Event()
             self._done[job.job_id] = done
             task: asyncio.Task[Any] | None = None
@@ -171,6 +205,8 @@ class JobScheduler:
                 await self._orphan(job.job_id)
                 self._original_references.pop(job.job_id, None)
                 done.set()
+                # 该 Job 已触发过 job_accepted，孤儿终态同样要通知观察者。
+                await self._notify_job_finished(job.job_id)
                 raise
             self._ensure_heartbeat()
             return JobHandle(job.job_id, job.state)
@@ -331,12 +367,15 @@ class JobScheduler:
 
     async def _run(self, job_id: str) -> None:
         leases = LeaseSet()
+        # 终态通知只覆盖真正进入运行流程的 Job；恢复时已是终态的直接返回不通知。
+        started = False
         try:
             job = await self.store.get(job_id)
             if job is None:
                 return
             if job.state in TERMINAL_STATES:
                 return
+            started = True
             job.owner_id = self.store.owner_id
             job.fencing_token = self.store.fencing_token
             job.transition(JobState.RUNNING)
@@ -411,29 +450,32 @@ class JobScheduler:
             runtime_job.request = replace(
                 runtime_job.request, reference_images=resolved
             )
-            # Router 专属入口：provider contract 无 execute 方法。
-            if callable(getattr(self.provider, "execute", None)):
-                # retry 与 deadline 截断由 Router 自身持有；包裹仅作兜底，
-                # 留出余量避免与 Router 在同一 deadline 时刻竞争。
-                net = copy.copy(runtime_job)
-                if net.deadline_at is not None:
-                    net.deadline_at = net.deadline_at + timedelta(
-                        seconds=_ROUTER_EXECUTE_GRACE_SECONDS
+            # 观察者的 runtime_scope 只包住 provider 执行这一步（artifact
+            # 落库在 scope 之外）；进入/退出失败只记日志，不影响 provider。
+            with self._provider_scope_stack(runtime_job):
+                # Router 专属入口：provider contract 无 execute 方法。
+                if callable(getattr(self.provider, "execute", None)):
+                    # retry 与 deadline 截断由 Router 自身持有；包裹仅作兜底，
+                    # 留出余量避免与 Router 在同一 deadline 时刻竞争。
+                    net = copy.copy(runtime_job)
+                    if net.deadline_at is not None:
+                        net.deadline_at = net.deadline_at + timedelta(
+                            seconds=_ROUTER_EXECUTE_GRACE_SECONDS
+                        )
+                    result = await self._deadline_call(
+                        net,
+                        lambda: self.provider.execute(
+                            runtime_job.request, deadline_at=runtime_job.deadline_at
+                        ),
+                        "provider execute",
                     )
-                result = await self._deadline_call(
-                    net,
-                    lambda: self.provider.execute(
-                        runtime_job.request, deadline_at=runtime_job.deadline_at
-                    ),
-                    "provider execute",
-                )
-            else:
-                result = await dispatch_provider(
-                    self.provider,
-                    runtime_job,
-                    max_attempts=self.max_attempts,
-                    backoff=self.retry_backoff,
-                )
+                else:
+                    result = await dispatch_provider(
+                        self.provider,
+                        runtime_job,
+                        max_attempts=self.max_attempts,
+                        backoff=self.retry_backoff,
+                    )
             if self.artifact_store is not None and hasattr(self.artifact_store, "save"):
                 method = self.artifact_store.save
                 parameters = inspect.signature(method).parameters
@@ -455,6 +497,7 @@ class JobScheduler:
             job.set_result(result)
             job.transition(JobState.RESULT_READY)
             job = await self.store.save(job)
+            await self._notify_observers("job_result", job, result)
             job.transition(JobState.PARTIAL if result.partial else JobState.SUCCEEDED)
             await self.store.save(job)
             # 终态落库成功后才登记：并发赢家、失败、取消路径不登记，
@@ -488,7 +531,17 @@ class JobScheduler:
                     )
                     # CoreError 携带公开 code，其余异常回退异常类名。
                     code = getattr(error, "code", None) or type(error).__name__
-                    job.set_error(str(code), str(error))
+                    message = str(error)
+                    # Router 聚合错误的原因链更具体（LegacyProviderError 的
+                    # code/message）；deadline_exceeded 保留聚合码。
+                    if (
+                        isinstance(error, ProviderRouteError)
+                        and code != "deadline_exceeded"
+                        and getattr(error.__cause__, "code", None)
+                    ):
+                        code = getattr(error.__cause__, "code")
+                        message = str(error.__cause__)
+                    job.set_error(str(code), message)
                     job.transition(JobState.FAILED)
                     await self.store.save(job)
                 except (StaleJobError, ValueError):
@@ -506,6 +559,76 @@ class JobScheduler:
             except BaseException:
                 # Lease records retain release_failed/active state for recovery.
                 pass
+            # lease 清理完成后再通知终态；取消路径此处 await 仍可执行，
+            # 任务只收到过一次 cancel 交付，新的 await 不会被再次打断。
+            if started:
+                await self._notify_job_finished(job_id)
+
+    async def _notify_observers(self, hook: str, *args: Any) -> None:
+        """逐观察者调用可选钩子；异常/超时只记日志，CancelledError 照常传播。"""
+
+        for observer in self.observers:
+            method = getattr(observer, hook, None)
+            if not callable(method):
+                continue
+            name = type(observer).__name__
+            try:
+                await asyncio.wait_for(
+                    _call(method, *args), timeout=self.observer_timeout
+                )
+            except asyncio.CancelledError:
+                raise
+            except BaseException as error:
+                logger.warning(
+                    "[v2] 观察者 %s 钩子 %s 调用失败: %s",
+                    name,
+                    hook,
+                    type(error).__name__,
+                )
+
+    async def _notify_job_finished(self, job_id: str) -> None:
+        """Job 处于终态时通知观察者；非终态（异常中断前）不通知。"""
+
+        try:
+            job = await self.store.get(job_id)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as error:
+            logger.warning("[v2] 终态通知读取 Job 失败: %s", type(error).__name__)
+            return
+        if job is None or job.state not in TERMINAL_STATES:
+            return
+        await self._notify_observers("job_finished", job)
+
+    def _provider_scope_stack(self, job: Job) -> contextlib.ExitStack:
+        """依次进入观察者的 runtime_scope；失败只记日志并跳过该观察者。"""
+
+        stack = contextlib.ExitStack()
+        for observer in self.observers:
+            factory = getattr(observer, "runtime_scope", None)
+            if not callable(factory):
+                continue
+            name = type(observer).__name__
+            try:
+                stack.enter_context(_GuardedObserverScope(factory(job), name))
+            except Exception as error:
+                logger.warning(
+                    "[v2] 观察者 %s runtime_scope 进入失败，跳过: %s",
+                    name,
+                    type(error).__name__,
+                )
+        return stack
+
+    def result_wait_timeout(self, deadline_seconds: float) -> float:
+        """入口等待上限：deadline 之外再容纳 job_result/job_finished 两个
+        观察者钩子（各自最长 observer_timeout）与 provider 兜底余量。"""
+
+        return (
+            deadline_seconds
+            + _ROUTER_EXECUTE_GRACE_SECONDS
+            + 2 * self.observer_timeout
+            + 10
+        )
 
     def _remember_runtime_result(self, job_id: str, result: GenerationResult) -> None:
         """登记未脱敏运行时结果供 wait() 读回；超容量按插入顺序淘汰。"""

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterable, Mapping
+from contextlib import AbstractContextManager
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
@@ -164,6 +165,25 @@ class SchedulerProtocol(Protocol):
 @runtime_checkable
 class ReservationProtocol(Protocol):
     async def release(self) -> None: ...
+
+
+class JobObserverProtocol(Protocol):
+    """调度器生命周期观察者；四个钩子均可选（getattr 探测，缺省即跳过）。
+
+    ``job_accepted`` 在 Job QUEUED 落库后、runtime task 创建前调用；
+    ``runtime_scope`` 是同步函数，返回只包住 provider 执行的同步上下文
+    管理器；``job_result`` 在 RESULT_READY 落库后、转入 SUCCEEDED/PARTIAL
+    前调用，result 为未脱敏的运行时结果；``job_finished`` 在 Job 进入终态
+    后每个 Job 调用一次。
+    """
+
+    async def job_accepted(self, job: Job) -> None: ...
+
+    def runtime_scope(self, job: Job) -> AbstractContextManager[Any]: ...
+
+    async def job_result(self, job: Job, result: GenerationResult) -> None: ...
+
+    async def job_finished(self, job: Job) -> None: ...
 
 
 @runtime_checkable

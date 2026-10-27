@@ -38,6 +38,11 @@ class GenerationService:
     async def wait(self, job_id: str, timeout: float | None = None) -> JobResult:
         return await self._scheduler.wait(job_id, timeout=timeout)
 
+    def result_wait_timeout(self, deadline_seconds: float) -> float:
+        """转发调度器的等待上限计算（含观察者钩子时间，见 JobScheduler）。"""
+
+        return self._scheduler.result_wait_timeout(deadline_seconds)
+
     async def cancel(self, job_id: str) -> JobSnapshot:
         return await self._scheduler.cancel(job_id)
 
