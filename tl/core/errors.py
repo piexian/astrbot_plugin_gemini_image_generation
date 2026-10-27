@@ -147,6 +147,13 @@ class QueueFullError(CoreError):
     retryable = True
 
 
+class QuotaExceededError(CoreError):
+    """submit 准入时额度不足（或会话/名单校验拒绝），不可重试。"""
+
+    code = "quota_exceeded"
+    retryable = False
+
+
 class ServiceClosedError(CoreError):
     code = "service_closed"
     retryable = False

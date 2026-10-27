@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Iterable, Mapping
 from contextlib import AbstractContextManager
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
@@ -151,7 +151,12 @@ class ReferenceStoreProtocol(Protocol):
 
 @runtime_checkable
 class SchedulerProtocol(Protocol):
-    async def submit(self, request: GenerationRequest) -> Job: ...
+    async def submit(
+        self,
+        request: GenerationRequest,
+        *,
+        admission: Mapping[str, Any] | None = None,
+    ) -> Job: ...
 
     async def wait(self, job_id: str, *, timeout: float | None = None) -> Job: ...
 
@@ -164,7 +169,21 @@ class SchedulerProtocol(Protocol):
 
 @runtime_checkable
 class ReservationProtocol(Protocol):
-    async def release(self) -> None: ...
+    """submit 准入预留（quota/limiter 的 ``reserve`` 返回值）。
+
+    ``release`` 必需，幂等，同步或异步均可：Job 到终态（或 task 未及运行就
+    结束）时调用；已被接受的 Job 不退款，release 不得回补额度。
+
+    其余成员可选（调度器用 getattr 探测）：
+
+    - ``refund()``：仅 submit 自身失败（后续预留被拒、落库失败、建 task
+      失败）回滚时调用，缺省退化为 ``release``；
+    - ``runtime_scope()``：不带参数，返回在 provider 执行期间进入的同步上下文
+      管理器，与观察者的 ``runtime_scope(job)`` 一起进入 ExitStack；
+    - ``token``：写入持久化 lease 记录的标识，缺省由调度器生成。
+    """
+
+    def release(self) -> Any: ...
 
 
 class JobObserverProtocol(Protocol):
@@ -197,9 +216,26 @@ class ArtifactStoreProtocol(Protocol):
 
 @runtime_checkable
 class QuotaProtocol(Protocol):
-    async def reserve(self, request: GenerationRequest) -> ReservationProtocol: ...
+    """额度准入组件：在 ``submit`` 内、落库前预留额度。
+
+    ``reserve`` 同步或异步均可；返回 ``None`` 表示本次请求不需要预留。
+    拒绝时抛出领域异常（如 ``QuotaExceededError``），调度器不创建 Job 并把
+    异常原样抛给 ``submit`` 的调用方。``admission`` 是调用方传入的、不持久化
+    的准入上下文（例如命令事件）。
+    """
+
+    def reserve(
+        self, request: GenerationRequest, admission: Mapping[str, Any] | None
+    ) -> ReservationProtocol | None | Awaitable[ReservationProtocol | None]: ...
 
 
 @runtime_checkable
 class LimiterProtocol(Protocol):
-    async def reserve(self, request: GenerationRequest) -> ReservationProtocol: ...
+    """并发/队列准入组件：契约同 ``QuotaProtocol``，在额度预留之后调用。
+
+    后续预留失败时，已拿到的额度预留由调度器回滚（优先 ``refund``）。
+    """
+
+    def reserve(
+        self, request: GenerationRequest, admission: Mapping[str, Any] | None
+    ) -> ReservationProtocol | None | Awaitable[ReservationProtocol | None]: ...

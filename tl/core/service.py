@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from typing import Any
 
 from .models import Job
 from .reference_service import ReferenceService
@@ -32,8 +33,14 @@ class GenerationService:
             references, requester=requester
         )
 
-    async def submit(self, request: GenerationRequest) -> JobHandle:
-        return await self._scheduler.submit(request)
+    async def submit(
+        self,
+        request: GenerationRequest,
+        *,
+        admission: Mapping[str, Any] | None = None,
+    ) -> JobHandle:
+        """提交 Job；admission 为不持久化的准入上下文（如命令 event）。"""
+        return await self._scheduler.submit(request, admission=admission)
 
     async def wait(self, job_id: str, timeout: float | None = None) -> JobResult:
         return await self._scheduler.wait(job_id, timeout=timeout)

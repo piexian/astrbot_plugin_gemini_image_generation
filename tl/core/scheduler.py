@@ -11,7 +11,7 @@ import copy
 import inspect
 import uuid
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -94,11 +94,11 @@ _RUNTIME_RESULT_CAPACITY = 256
 
 
 class _GuardedObserverScope:
-    """包装观察者上下文：退出异常只记日志，且不吞掉 provider 异常。"""
+    """包装观察者/准入预留的上下文：退出异常只记日志，且不吞掉 provider 异常。"""
 
-    def __init__(self, context: Any, observer_name: str) -> None:
+    def __init__(self, context: Any, owner_name: str) -> None:
         self._context = context
-        self._observer_name = observer_name
+        self._owner_name = owner_name
 
     def __enter__(self) -> Any:
         return self._context.__enter__()
@@ -108,11 +108,11 @@ class _GuardedObserverScope:
             self._context.__exit__(exc_type, exc, tb)
         except Exception as error:
             logger.warning(
-                "[v2] 观察者 %s runtime_scope 退出失败: %s",
-                self._observer_name,
+                "[v2] %s runtime_scope 退出失败: %s",
+                self._owner_name,
                 type(error).__name__,
             )
-        # 恒为 False：观察者不得抑制 provider 自身抛出的异常。
+        # 恒为 False：观察者与准入预留都不得抑制 provider 自身抛出的异常。
         return False
 
 
@@ -162,8 +162,19 @@ class JobScheduler:
         # wait() 需要读回未脱敏的运行时结果（存储/快照仍只保留脱敏形态）；
         # 与 _original_references 相同，仅在事件循环内串行访问。
         self._runtime_results: OrderedDict[str, GenerationResult] = OrderedDict()
+        # submit 时预留的准入资源，按 QUOTA、LIMITER 顺序登记；_run 取出后转成
+        # 持久化 lease，task 在 _run 取走之前就结束时由 _task_done 释放。
+        self._admissions: dict[str, tuple[tuple[LeaseKind, Any], ...]] = {}
 
-    async def submit(self, request: GenerationRequest) -> JobHandle:
+    async def submit(
+        self, request: GenerationRequest, *, admission: Mapping[str, Any] | None = None
+    ) -> JobHandle:
+        """提交 Job。
+
+        ``admission`` 是不持久化的准入上下文（如命令事件），只交给 quota 与
+        limiter 组件；任一准入组件拒绝时其异常原样抛出，且不创建 Job。
+        """
+
         async with self._lock:
             if self._closed:
                 raise ServiceClosedError("Scheduler 已关闭")
@@ -173,21 +184,40 @@ class JobScheduler:
                     deadline_at=datetime.now(timezone.utc)
                     + timedelta(seconds=self.default_timeout),
                 )
-            job = Job.create(request, job_id=f"job-{uuid.uuid4().hex}")
-            # Persistence is deliberately before create_task.
-            await self.store.create(job)
-            job.transition(JobState.QUEUED)
-            job = await self.store.save(job)
+            # 准入先于落库：预留或落库任一步失败都不留下 Job，已拿到的预留按
+            # 逆序回滚（此时 Job 从未被接受，额度退款）。
+            reserved: list[tuple[LeaseKind, Any]] = []
+            try:
+                for kind, component in (
+                    (LeaseKind.QUOTA, self.quota),
+                    (LeaseKind.LIMITER, self.limiter),
+                ):
+                    if component is None:
+                        continue
+                    reservation = await _call(component.reserve, request, admission)
+                    if reservation is not None:
+                        reserved.append((kind, reservation))
+                job = Job.create(request, job_id=f"job-{uuid.uuid4().hex}")
+                # Persistence is deliberately before create_task.
+                await self.store.create(job)
+                job.transition(JobState.QUEUED)
+                job = await self.store.save(job)
+            except BaseException:
+                await self._rollback_admissions(reserved)
+                raise
+            if reserved:
+                self._admissions[job.job_id] = tuple(reserved)
             # 持久化成功后登记原始引用，供 _run 解析回真实输入。
             if request.reference_images:
                 self._original_references[job.job_id] = request.reference_images
-            # 仍在锁内调用：保证先于该 Job 的其他钩子；失败只记日志不影响 Job。
-            await self._notify_observers("job_accepted", job)
             done = asyncio.Event()
             self._done[job.job_id] = done
             task: asyncio.Task[Any] | None = None
             runtime = self._run(job.job_id)
             try:
+                # 仍在锁内调用：保证先于该 Job 的其他钩子；失败只记日志不影响
+                # Job。放在 try 内，使其被取消时也走下面的孤儿回滚。
+                await self._notify_observers("job_accepted", job)
                 task = asyncio.create_task(runtime, name=f"job:{job.job_id}")
                 self._tasks[job.job_id] = task
                 task.add_done_callback(
@@ -196,6 +226,9 @@ class JobScheduler:
                     )
                 )
             except BaseException:
+                # 先摘下预留：task 若已创建，其 done 回调不能把它当作已接受 Job
+                # 的预留去释放（不退款）。
+                reservations = self._admissions.pop(job.job_id, ())
                 if task is None:
                     runtime.close()
                 if task is not None and not task.done():
@@ -204,12 +237,35 @@ class JobScheduler:
                 self._tasks.pop(job.job_id, None)
                 await self._orphan(job.job_id)
                 self._original_references.pop(job.job_id, None)
+                # Job 从未运行，按 submit 失败口径退款。
+                await self._rollback_admissions(reservations)
                 done.set()
                 # 该 Job 已触发过 job_accepted，孤儿终态同样要通知观察者。
                 await self._notify_job_finished(job.job_id)
                 raise
             self._ensure_heartbeat()
             return JobHandle(job.job_id, job.state)
+
+    async def _rollback_admissions(
+        self, reservations: Sequence[tuple[LeaseKind, Any]]
+    ) -> None:
+        """submit 失败回滚：按预留的逆序退款，组件没有 refund 时退化为 release。"""
+
+        for kind, reservation in reversed(reservations):
+            method = getattr(reservation, "refund", None) or getattr(
+                reservation, "release", None
+            )
+            if method is None:
+                continue
+            try:
+                await _call(method)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                # 回滚失败不能遮蔽 submit 的原始异常，仅记录。
+                logger.warning(
+                    "[v2] 准入预留 %s 回滚失败: %s", kind.value, type(error).__name__
+                )
 
     def _ensure_heartbeat(self) -> None:
         if self._heartbeat_task is None or self._heartbeat_task.done():
@@ -234,6 +290,9 @@ class JobScheduler:
     def _task_done(self, job_id: str, task: asyncio.Task[Any]) -> None:
         self._tasks.pop(job_id, None)
         self._original_references.pop(job_id, None)
+        # 泄漏防护：task 在 _run 取走准入预留之前就结束（提交即取消、close）时
+        # 在此释放；已接受的 Job 不退款。
+        self._release_admissions(job_id)
         event = self._done.get(job_id)
         if event is not None:
             event.set()
@@ -242,6 +301,36 @@ class JobScheduler:
             # The persisted failed state is the public outcome; task exceptions
             # remain observable through the event loop's normal task callback.
             return
+
+    def _release_admissions(self, job_id: str) -> None:
+        """释放仍登记在册的准入预留（不退款）；返回 awaitable 的交给清理 task。"""
+
+        for kind, reservation in self._admissions.pop(job_id, ()):
+            release = getattr(reservation, "release", None)
+            if release is None:
+                continue
+            try:
+                pending = release()
+            except Exception as error:
+                logger.warning(
+                    "[v2] 准入预留 %s 释放失败: %s", kind.value, type(error).__name__
+                )
+                continue
+            if not inspect.isawaitable(pending):
+                continue
+            cleanup = asyncio.create_task(
+                self._await_release(kind, pending), name=f"admission-release:{job_id}"
+            )
+            self._cleanup_tasks.add(cleanup)
+            cleanup.add_done_callback(self._cleanup_tasks.discard)
+
+    async def _await_release(self, kind: LeaseKind, pending: Any) -> None:
+        try:
+            await pending
+        except Exception as error:
+            logger.warning(
+                "[v2] 准入预留 %s 释放失败: %s", kind.value, type(error).__name__
+            )
 
     async def _orphan(self, job_id: str) -> None:
         job = await self.store.get(job_id)
@@ -281,6 +370,15 @@ class JobScheduler:
                 return await result if inspect.isawaitable(result) else result
 
         return Lease(token, kind, job.job_id, release)
+
+    @staticmethod
+    def _admission_lease(kind: LeaseKind, job: Job, reservation: Any) -> Lease:
+        """把 submit 预留包成 Lease；release 直接委托预留对象（幂等）。"""
+
+        token = (
+            getattr(reservation, "token", None) or f"{kind.value}-{uuid.uuid4().hex}"
+        )
+        return Lease(token, kind, job.job_id, getattr(reservation, "release", None))
 
     async def _deadline_call(self, job: Job, operation: Any, label: str) -> Any:
         if job.deadline_at is None:
@@ -380,22 +478,16 @@ class JobScheduler:
             job.fencing_token = self.store.fencing_token
             job.transition(JobState.RUNNING)
             job = await self.store.save(job)
-            for component, kind in (
-                (self.quota, LeaseKind.QUOTA),
-                (self.limiter, LeaseKind.LIMITER),
-            ):
-                leases.add(
-                    await self._persist_lease(
-                        job,
-                        await self._deadline_call(
-                            job,
-                            lambda component=component, kind=kind: self._acquire(
-                                component, kind, job
-                            ),
-                            f"{kind.value} acquire",
-                        ),
-                    )
-                )
+            # submit 时预留的准入资源在此转成持久化 lease（审计 + 终态释放）。
+            # 先全部入 LeaseSet 再逐个落库：某个落库失败时，其余预留也由
+            # finally 的 release_all 释放，不会因已摘出登记表而泄漏。
+            admissions = self._admissions.pop(job_id, ())
+            admission_leases = [
+                leases.add(self._admission_lease(kind, job, reservation))
+                for kind, reservation in admissions
+            ]
+            for lease in admission_leases:
+                await self._persist_lease(job, lease)
             original_references = self._original_references.get(job_id)
             reference_job = job
             if original_references is not None:
@@ -452,7 +544,7 @@ class JobScheduler:
             )
             # 观察者的 runtime_scope 只包住 provider 执行这一步（artifact
             # 落库在 scope 之外）；进入/退出失败只记日志，不影响 provider。
-            with self._provider_scope_stack(runtime_job):
+            with self._provider_scope_stack(runtime_job, admissions):
                 # Router 专属入口：provider contract 无 execute 方法。
                 if callable(getattr(self.provider, "execute", None)):
                     # retry 与 deadline 截断由 Router 自身持有；包裹仅作兜底，
@@ -600,20 +692,25 @@ class JobScheduler:
             return
         await self._notify_observers("job_finished", job)
 
-    def _provider_scope_stack(self, job: Job) -> contextlib.ExitStack:
-        """依次进入观察者的 runtime_scope；失败只记日志并跳过该观察者。"""
+    def _provider_scope_stack(
+        self, job: Job, admissions: Sequence[tuple[LeaseKind, Any]] = ()
+    ) -> contextlib.ExitStack:
+        """依次进入准入预留与观察者的 runtime_scope；失败只记日志并跳过。"""
 
         stack = contextlib.ExitStack()
-        for observer in self.observers:
-            factory = getattr(observer, "runtime_scope", None)
+        # 预留的 runtime_scope() 不带参数，观察者的 runtime_scope(job) 带 Job。
+        owners = [("准入预留", reservation, ()) for _kind, reservation in admissions]
+        owners.extend(("观察者", observer, (job,)) for observer in self.observers)
+        for role, owner, args in owners:
+            factory = getattr(owner, "runtime_scope", None)
             if not callable(factory):
                 continue
-            name = type(observer).__name__
+            name = f"{role} {type(owner).__name__}"
             try:
-                stack.enter_context(_GuardedObserverScope(factory(job), name))
+                stack.enter_context(_GuardedObserverScope(factory(*args), name))
             except Exception as error:
                 logger.warning(
-                    "[v2] 观察者 %s runtime_scope 进入失败，跳过: %s",
+                    "[v2] %s runtime_scope 进入失败，跳过: %s",
                     name,
                     type(error).__name__,
                 )
@@ -715,6 +812,10 @@ class JobScheduler:
                 task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        # 被取消 task 的预留已由 _task_done 释放；这里保证关闭后登记表为空，
+        # 返回 awaitable 的释放进入 _cleanup_tasks，由下面统一等待。
+        for job_id in list(self._admissions):
+            self._release_admissions(job_id)
         if self._heartbeat_task is not None:
             self._heartbeat_task.cancel()
             await asyncio.gather(self._heartbeat_task, return_exceptions=True)
