@@ -20,7 +20,6 @@ from .requests import GenerationRequest, reference_descriptor
 from .results import GenerationResult
 from .states import JobState, can_transition, coerce_state
 
-
 TMP_REFERENCES_METADATA_KEY = "has_tmp_references"
 
 
