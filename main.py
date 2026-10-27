@@ -56,8 +56,13 @@ from .tl.enhanced_prompts import (
     get_style_change_prompt,
     get_wallpaper_prompt,
 )
+from .tl.generation_errors import api_failure_message
 from .tl.generation_scheduler import GenerationScheduler
-from .tl.generation_tracker import GenerationTracker, requester_from_event
+from .tl.generation_tracker import (
+    GenerationTracker,
+    record_generation_success,
+    requester_from_event,
+)
 from .tl.llm_query_tools import BackgroundTaskStatusTool, ProviderModelQueryTool
 from .tl.llm_tools import GeminiImageGenerationTool
 from .tl.plugin_config import get_session_tool_timeout, max_configured_reference_images
@@ -83,8 +88,9 @@ from .tl.v2_bridge import (
     split_artifacts as v2_split_artifacts,
 )
 from .tl.v2_bridge import (
-    v2_failure_error,
+    v2_failure_message,
 )
+from .tl.v2_tracking import TrackerProjection
 from .tl.web_studio_service import WebStudioService
 
 
@@ -457,11 +463,8 @@ class GeminiImageGenerationPlugin(Star):
             await self.background_task_manager.close()
         except Exception as e:
             logger.debug(f"关闭后台任务管理器失败: {e}")
-        try:
-            await self.generation_tracker.close()
-        except Exception as e:
-            logger.debug(f"关闭生成历史追踪器失败: {e}")
-        # v2 栈先于 legacy client 关闭，避免关闭期间仍有任务引用会话。
+        # v2 栈在后台任务之后、生成历史之前关闭：取消 v2 Job 时投影仍要写
+        # tracker；并保持早于 legacy client，避免关闭期间仍有任务引用会话。
         v2_service = getattr(self, "_v2_service", None)
         if v2_service is not None:
             try:
@@ -469,6 +472,10 @@ class GeminiImageGenerationPlugin(Star):
             except Exception as e:
                 logger.warning(f"[v2] 关闭调度器失败: {e}")
             self._v2_service = None
+        try:
+            await self.generation_tracker.close()
+        except Exception as e:
+            logger.debug(f"关闭生成历史追踪器失败: {e}")
         if self.api_client and hasattr(self.api_client, "close"):
             try:
                 await self.api_client.close()
@@ -511,12 +518,28 @@ class GeminiImageGenerationPlugin(Star):
                 candidates=[{"provider": "legacy", "model": "auto"}],
                 data_dir=os.path.join(self._plugin_data_dir, "v2"),
                 allowed_local_roots=(REFERENCE_IMAGE_CACHE_DIR,),
+                observers=(
+                    TrackerProjection(
+                        self.generation_tracker,
+                        self.web_studio_service.archive_images,
+                    ),
+                ),
             )
         except Exception as e:
             logger.warning(f"[v2] 调度器装配失败，本次回退 legacy 路径: {e}")
             return None
         self._v2_service = service
         return service
+
+    def _v2_service_for(self, umo: str | None):
+        """会话灰度过滤后的 v2 服务；总开关关闭或会话不在名单时走旧路径。"""
+
+        if not getattr(self.cfg, "scheduler_v2", False):
+            return None
+        sessions = getattr(self.cfg, "scheduler_v2_sessions", None) or ()
+        if sessions and umo not in sessions:
+            return None
+        return self._ensure_v2_service()
 
     def _load_api_client_from_config(self, *, quiet: bool = False):
         """从插件配置读取模型/密钥并初始化客户端"""
@@ -747,28 +770,31 @@ class GeminiImageGenerationPlugin(Star):
                 requested_model=requested_model,
             )
 
-            try:
-                tracking_record = await self.generation_tracker.begin(
-                    source="command",
-                    prompt=enhanced_prompt,
-                    params={
-                        "resolution": effective_resolution,
-                        "aspect_ratio": effective_aspect_ratio,
-                        "provider": requested_provider,
-                        "model": requested_model,
-                        "image_count": 1,
-                        "quality": None,
-                    },
-                    requester=requester_from_event(event),
-                    requested_images=1,
-                )
-                tracking_job_id = tracking_record["job_id"]
-                logger.debug(
-                    f"[生成追踪] 快捷生成开始: job_id={tracking_job_id}, "
-                    f"来源=command, 目标张数=1, prompt={enhanced_prompt[:30]!r}"
-                )
-            except Exception as tracking_error:
-                logger.warning(f"[生成追踪] 快捷生成创建记录失败: {tracking_error}")
+            # v2 会话灰度在创建 tracker 记录前判定：走 v2 时历史由投影负责。
+            service = self._v2_service_for(getattr(event, "unified_msg_origin", None))
+            if service is None:
+                try:
+                    tracking_record = await self.generation_tracker.begin(
+                        source="command",
+                        prompt=enhanced_prompt,
+                        params={
+                            "resolution": effective_resolution,
+                            "aspect_ratio": effective_aspect_ratio,
+                            "provider": requested_provider,
+                            "model": requested_model,
+                            "image_count": 1,
+                            "quality": None,
+                        },
+                        requester=requester_from_event(event),
+                        requested_images=1,
+                    )
+                    tracking_job_id = tracking_record["job_id"]
+                    logger.debug(
+                        f"[生成追踪] 快捷生成开始: job_id={tracking_job_id}, "
+                        f"来源=command, 目标张数=1, prompt={enhanced_prompt[:30]!r}"
+                    )
+                except Exception as tracking_error:
+                    logger.warning(f"[生成追踪] 快捷生成创建记录失败: {tracking_error}")
 
             yield event.plain_result("🎨  生成中...")
 
@@ -778,9 +804,6 @@ class GeminiImageGenerationPlugin(Star):
             # 避免 base64 撞请求引用长度上限；候选路由与限流仍由入口
             # 检查和 legacy client 承担。
             deadline = self.cfg.total_timeout * 2
-            service = None
-            if getattr(self.cfg, "scheduler_v2", False):
-                service = self._ensure_v2_service()
             if service is not None:
                 v2_requester = requester_from_event(event)
                 prepared_refs = await service.prepare_references(
@@ -804,13 +827,37 @@ class GeminiImageGenerationPlugin(Star):
                         },
                     )
                 )
-                # wait 超时多留 10 秒，防调度器异常挂死入口。
-                job_result = await service.wait(handle.job_id, timeout=deadline + 10)
-                if job_result.state not in (JobState.SUCCEEDED, JobState.PARTIAL):
-                    raise v2_failure_error(job_result)
+                # 等待上限由调度器给出（deadline 之外还容纳观察者钩子时间）；
+                # 调用方被取消或等待超时都先取消 Job，与旧路径取消语义一致。
+                try:
+                    job_result = await service.wait(
+                        handle.job_id, timeout=service.result_wait_timeout(deadline)
+                    )
+                except asyncio.CancelledError:
+                    await asyncio.shield(service.cancel(handle.job_id))
+                    raise
+                except asyncio.TimeoutError:
+                    await asyncio.shield(service.cancel(handle.job_id))
+                    yield event.plain_result(
+                        api_failure_message(
+                            message="生成等待超时",
+                            status_code=None,
+                            error_type="timeout",
+                            total_timeout=self.cfg.total_timeout,
+                        )
+                    )
+                    return
+                if (
+                    job_result.state not in (JobState.SUCCEEDED, JobState.PARTIAL)
+                    or job_result.result is None
+                ):
+                    yield event.plain_result(
+                        v2_failure_message(
+                            job_result, total_timeout=self.cfg.total_timeout
+                        )
+                    )
+                    return
                 v2_result = job_result.result
-                if v2_result is None:
-                    raise v2_failure_error(job_result)
                 image_urls, image_paths = v2_split_artifacts(v2_result.artifacts)
                 text_content = v2_result.text
                 thought_signature = None
@@ -830,98 +877,21 @@ class GeminiImageGenerationPlugin(Star):
             api_duration = time.perf_counter() - api_start
 
             if tracking_job_id:
-                delivered = list(
-                    dict.fromkeys(
-                        str(item)
-                        for item in (image_urls or []) + (image_paths or [])
-                        if item
-                    )
+                await record_generation_success(
+                    self.generation_tracker,
+                    tracking_job_id,
+                    image_urls=image_urls,
+                    image_paths=image_paths,
+                    text_content=text_content,
+                    stats={
+                        "provider": config.successful_provider,
+                        "model": config.successful_model,
+                        "alias": config.successful_model_alias,
+                        "retry_count": config.retry_count,
+                    },
+                    archive_images_fn=self.web_studio_service.archive_images,
+                    candidate_id=config.successful_candidate_id,
                 )
-                archived: list[str] = []
-                archive_note = ""
-                try:
-                    if delivered:
-                        try:
-                            archived = await self.web_studio_service.archive_images(
-                                image_urls,
-                                image_paths,
-                                candidate_id=config.successful_candidate_id,
-                                job_id=tracking_job_id,
-                            )
-                        except Exception as archive_error:
-                            # 图片仍会按原始来源发送，归档失败只降级记录，不算生成失败。
-                            archive_note = f"{type(archive_error).__name__}: {archive_error}".strip()
-                            logger.warning(
-                                f"[生成追踪] 快捷生成归档异常: {archive_note or '无详细信息'}"
-                            )
-                    if delivered and len(archived) < len(delivered):
-                        archive_note = (
-                            f"画廊归档不完整（{len(archived)}/{len(delivered)}）"
-                            + (f"：{archive_note}" if archive_note else "")
-                        )
-                    if delivered or text_content:
-                        status = (
-                            "succeeded"
-                            if delivered and len(archived) >= len(delivered)
-                            else "partial_success"
-                        )
-                        source_urls = [
-                            item
-                            for item in delivered
-                            if item.startswith(("http://", "https://"))
-                        ]
-                        await self.generation_tracker.complete(
-                            tracking_job_id,
-                            image_files=archived,
-                            text_content=text_content,
-                            stats={
-                                "provider": config.successful_provider,
-                                "model": config.successful_model,
-                                "alias": config.successful_model_alias,
-                                "retry_count": config.retry_count,
-                            },
-                            status=status,
-                            source_urls=source_urls,
-                        )
-                        if archive_note:
-                            update = getattr(self.generation_tracker, "update", None)
-                            if update is not None:
-                                try:
-                                    await update(tracking_job_id, error=archive_note)
-                                except Exception:
-                                    pass
-                        logger.debug(
-                            f"[生成追踪] 快捷生成完成: job_id={tracking_job_id}, "
-                            f"状态={status}, 归档张数={len(archived)}/{len(delivered)}, "
-                            f"供应商={config.successful_provider or '未记录'}, "
-                            f"模型={config.successful_model or '未记录'}"
-                        )
-                    else:
-                        await self.generation_tracker.fail(
-                            tracking_job_id,
-                            error="供应商未返回图片或文本内容",
-                        )
-                        logger.debug(
-                            f"[生成追踪] 快捷生成失败: job_id={tracking_job_id}, "
-                            "原因=无图片或文本内容"
-                        )
-                except Exception as tracking_error:
-                    logger.warning(
-                        f"[生成追踪] 快捷生成结果记录失败: "
-                        f"{type(tracking_error).__name__}: {tracking_error}"
-                    )
-                    try:
-                        await self.generation_tracker.fail(
-                            tracking_job_id,
-                            error=f"结果记录失败: {tracking_error}",
-                        )
-                        logger.debug(
-                            f"[生成追踪] 快捷生成转为失败: job_id={tracking_job_id}, "
-                            f"异常类型={type(tracking_error).__name__}"
-                        )
-                    except Exception:
-                        pass
-
             send_start = time.perf_counter()
             await self.message_sender.send_results_with_stream_retry(
                 event=event,
@@ -1366,6 +1336,7 @@ class GeminiImageGenerationPlugin(Star):
                 override_aspect_ratio=sticker_aspect_ratio,
                 requested_provider=requested_provider,
                 requested_model=requested_model,
+                v2_service=self._v2_service_for(event.unified_msg_origin),
             )
             api_duration = time.perf_counter() - api_start_time
 
@@ -1926,6 +1897,7 @@ class GeminiImageGenerationPlugin(Star):
             avatar_reference=avatar_reference,
             requested_provider=requested_provider,
             requested_model=requested_model,
+            v2_service=self._v2_service_for(event.unified_msg_origin),
         )
         api_duration = time.perf_counter() - api_start
 
