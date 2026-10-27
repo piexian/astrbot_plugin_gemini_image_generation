@@ -134,6 +134,12 @@ if (document.documentElement.lang !== 'en-US') throw Error('lang not applied');
 if (t('取消') !== 'Cancel') throw Error('lookup failed: ' + t('取消'));
 if (t('张数: {v0} / {v1}', {v0: 2, v1: 4}) !== 'Count: 2 / 4') throw Error('format failed');
 if (t('不存在的串') !== '不存在的串') throw Error('fallback failed');
+// 中文用户不得落到 en-US：zh-CN 表无 strings，应直接用中文原文
+I18n.locale = 'zh-CN';
+if (t('取消') !== '取消') throw Error('zh locale fell to en-US: ' + t('取消'));
+if (t('张数: {v0} / {v1}', {v0: 2, v1: 4}) !== '张数: 2 / 4') throw Error('zh format failed');
+I18n.locale = 'zh-TW';
+if (t('取消') !== '取消') throw Error('zh-TW fell to en-US');
 I18n.locale = 'fr-FR';
 if (t('取消') !== 'Cancel') throw Error('locale fallback failed');
 I18n.sync({locale: 'ja-JP', i18n: {}});

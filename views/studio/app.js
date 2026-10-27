@@ -370,10 +370,16 @@ const I18n = {
   tables: {},
 
   t(key, vars) {
-    for (const loc of [this.locale, 'zh-CN', 'en-US']) {
+    const lookup = (loc) => {
       const hit = this.tables?.[loc]?.strings?.[key];
-      if (typeof hit === 'string') return I18n.format(hit, vars);
-    }
+      return typeof hit === 'string' ? hit : null;
+    };
+    // 中文原文即 key：zh 系 locale 表 miss 直接用原文，不落到 en-US
+    const direct = lookup(this.locale);
+    if (direct !== null) return I18n.format(direct, vars);
+    if (String(this.locale).startsWith('zh')) return I18n.format(key, vars);
+    const en = lookup('en-US');
+    if (en !== null) return I18n.format(en, vars);
     return I18n.format(key, vars);
   },
 
