@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from tl.api_types import APIError
 from tl.core.dispatch import dispatch_provider
 from tl.core.errors import LegacyProviderError
 from tl.core.legacy_adapter import LegacyClientAdapter
@@ -75,15 +76,69 @@ async def test_contract_via_dispatch_merges_urls_and_paths():
 
 
 @pytest.mark.asyncio
-async def test_error_response_raises_non_retryable_legacy_error():
-    client = FakeClient(([], [], None, "配额耗尽"))
+async def test_thought_signature_still_succeeds():
+    """legacy 4 元组的第 4 项是思维签名：非空不判失败，结果照常成功。"""
+
+    client = FakeClient((["u"], [], "好的", "signature-1"))
+    adapter = LegacyClientAdapter(client, provider="gemini", model="gemini-x")
+    result = await dispatch_provider(adapter, make_job(make_request()))
+    assert result.artifacts == ("u",)
+    assert result.text == "好的"
+
+
+@pytest.mark.asyncio
+async def test_empty_output_raises_non_retryable_legacy_error():
+    """空产出（无图且文本为空白）报 provider_empty_result，不重试。"""
+
+    client = FakeClient(([], [], None, None))
     adapter = LegacyClientAdapter(client, provider="gemini", model="gemini-x")
     with pytest.raises(LegacyProviderError) as exc_info:
         await dispatch_provider(adapter, make_job(make_request()))
     assert exc_info.value.retryable is False
-    assert exc_info.value.code == "legacy_provider_failed"
+    assert exc_info.value.code == "provider_empty_result"
     # 不可重试错误不应在 dispatch 层重复调用 legacy client。
     assert len(client.calls) == 1
+
+
+class _FailingClient:
+    """按预设异常失败的 legacy client，统计调用次数。"""
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+        self.calls = 0
+
+    async def generate_image(self, config, **kwargs):
+        self.calls += 1
+        raise self.error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("api_error", "expected_code"),
+    [
+        (APIError("上游超时", None, "timeout"), "provider_timeout"),
+        (APIError("已取消", None, "cancelled"), "provider_timeout"),
+        (APIError("网络异常", None, "network"), "provider_network"),
+        (
+            APIError("工作区不可用", None, "workspace_unavailable"),
+            "provider_workspace_unavailable",
+        ),
+        (APIError("限流", 429, None), "provider_http_429"),
+        (APIError("未知失败"), "legacy_provider_failed"),
+    ],
+)
+async def test_api_error_maps_to_non_retryable_legacy_error(api_error, expected_code):
+    """旧客户端 APIError 按类型/状态码映射 code，转不可重试并保留原因链。"""
+
+    client = _FailingClient(api_error)
+    adapter = LegacyClientAdapter(client, provider="gemini", model="gemini-x")
+    with pytest.raises(LegacyProviderError) as exc_info:
+        await dispatch_provider(adapter, make_job(make_request()))
+    assert exc_info.value.code == expected_code
+    assert exc_info.value.retryable is False
+    assert exc_info.value.__cause__ is api_error
+    # legacy client 内部已重试过，Router/dispatch 不再重复调用。
+    assert client.calls == 1
 
 
 @pytest.mark.asyncio

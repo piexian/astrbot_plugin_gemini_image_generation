@@ -11,7 +11,7 @@ from typing import Any
 
 from astrbot.api import logger
 
-from ..api_types import ApiRequestConfig
+from ..api_types import APIError, ApiRequestConfig
 from .errors import LegacyProviderError
 from .remote_fetch import _remaining
 from .requests import GenerationRequest, ProviderAttempt
@@ -138,19 +138,45 @@ class LegacyClientAdapter:
             self._model,
             total_timeout,
         )
-        response = await self._client.generate_image(
-            config,
-            max_retries=max_retries,
-            total_timeout=total_timeout,
-            per_retry_timeout=configured_timeout,
-            max_total_time=(
-                max(int(remaining), 1)
-                if remaining is not None
-                else configured_timeout * 2
-            ),
-        )
+        try:
+            response = await self._client.generate_image(
+                config,
+                max_retries=max_retries,
+                total_timeout=total_timeout,
+                per_retry_timeout=configured_timeout,
+                max_total_time=(
+                    max(int(remaining), 1)
+                    if remaining is not None
+                    else configured_timeout * 2
+                ),
+            )
+        except APIError as error:
+            # legacy client 内部已按密钥重试并做过候选回退，这里转为不可
+            # 重试错误：Router 不再重复一轮，直接 fallback 到下一候选。
+            raise self._api_error_to_legacy(error) from error
         # config 随返回值传出：client 在其上回写 successful_*，供 parse_response 标注。
         return response, config
+
+    @staticmethod
+    def _api_error_to_legacy(error: APIError) -> LegacyProviderError:
+        error_type = getattr(error, "error_type", None)
+        status_code = getattr(error, "status_code", None)
+        if error_type in ("timeout", "cancelled"):
+            code = "provider_timeout"
+        elif error_type == "network":
+            code = "provider_network"
+        elif error_type == "workspace_unavailable":
+            code = "provider_workspace_unavailable"
+        elif isinstance(status_code, int):
+            code = f"provider_http_{status_code}"
+        else:
+            code = "legacy_provider_failed"
+        return LegacyProviderError(
+            error.message,
+            code=code,
+            retryable=False,
+            details={"status_code": status_code, "error_type": error_type},
+        )
 
     async def parse_response(
         self,
@@ -160,12 +186,14 @@ class LegacyClientAdapter:
         attempt: ProviderAttempt,
     ) -> GenerationResult:
         legacy_tuple, config = response
-        urls, paths, text, error = legacy_tuple
-        if error:
-            # legacy client 内部已自重试，这里标记不可重试：
-            # Router 不再重复重试，错误直接 fallback 到下一候选。
+        # 第 4 项是思维签名（如 Gemini thoughtSignature），不是错误；
+        # 忽略不持久化，避免成功结果被误判失败。
+        urls, paths, text, _thought_signature = legacy_tuple
+        if not (urls or paths) and not (text and str(text).strip()):
             raise LegacyProviderError(
-                f"legacy provider {self._provider} 生成失败: {error}",
+                "供应商未返回图片或文本内容",
+                code="provider_empty_result",
+                retryable=False,
             )
         artifacts = tuple(sorted(set(urls or ()) | set(paths or ())))
         # 空 urls/paths 也返回（text-only 输出）；partial 语义由上游判定。
