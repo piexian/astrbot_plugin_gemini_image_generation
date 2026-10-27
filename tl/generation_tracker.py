@@ -178,6 +178,103 @@ def requester_from_event(event: Any) -> dict[str, str]:
     }
 
 
+async def record_generation_success(
+    tracker: Any,
+    job_id: str | None,
+    *,
+    image_urls: list[str] | None,
+    image_paths: list[str] | None,
+    text_content: str | None,
+    stats: dict[str, Any],
+    archive_images_fn: Any = None,
+    candidate_id: Any = None,
+) -> None:
+    """入口共享的记录完成路径：归档 → succeeded/partial_success → 失败降级。
+
+    行为与 ImageGenerator 旧实现一致：归档不完整只降级部分成功；无图且
+    无文本直接记失败；任一步异常转为 tracker.fail，不影响结果返回。
+    """
+
+    if not job_id or tracker is None:
+        return
+    delivered = list(
+        dict.fromkeys(
+            str(item) for item in (image_urls or []) + (image_paths or []) if item
+        )
+    )
+    try:
+        image_files: list[str] = []
+        archive_note = ""
+        archive_attempted = bool(delivered) and archive_images_fn is not None
+        if archive_attempted:
+            try:
+                image_files = await archive_images_fn(
+                    image_urls,
+                    image_paths,
+                    candidate_id=candidate_id,
+                    job_id=job_id,
+                )
+            except Exception as archive_error:
+                # 图片仍按原始来源发送，归档失败只降级为部分成功。
+                archive_note = (
+                    f"{type(archive_error).__name__}: {archive_error}".strip()
+                )
+                logger.warning(
+                    f"[生成追踪] 归档异常，不影响结果发送: {archive_note or '无详细信息'}"
+                )
+        if archive_attempted and len(image_files) < len(delivered):
+            archive_note = f"画廊归档不完整（{len(image_files)}/{len(delivered)}）" + (
+                f"：{archive_note}" if archive_note else ""
+            )
+        if not delivered and not text_content:
+            await tracker.fail(job_id, error="供应商未返回图片或文本内容")
+            logger.debug(f"[生成追踪] 失败: job_id={job_id}, 原因=无图片或文本内容")
+            return
+        # 有图看归档完整性（未接归档函数视为成功）；只有文本按部分成功记录，
+        # 同时保住两个入口旧路径的可观测行为。
+        if delivered and (
+            archive_images_fn is None or len(image_files) >= len(delivered)
+        ):
+            status = "succeeded"
+        else:
+            status = "partial_success"
+        source_urls = [
+            item for item in delivered if item.startswith(("http://", "https://"))
+        ]
+        await tracker.complete(
+            job_id,
+            image_files=image_files,
+            text_content=text_content,
+            stats=stats,
+            status=status,
+            source_urls=source_urls,
+        )
+        if archive_note:
+            update = getattr(tracker, "update", None)
+            if update is not None:
+                try:
+                    await update(job_id, error=archive_note)
+                except Exception:
+                    pass
+        logger.debug(
+            f"[生成追踪] 完成: job_id={job_id}, 状态={status}, "
+            f"归档张数={len(image_files)}/{len(delivered)}, "
+            f"供应商={stats.get('successful_provider') or stats.get('provider') or '未记录'}, "
+            f"模型={stats.get('successful_model') or stats.get('model') or '未记录'}"
+        )
+    except Exception as exc:
+        logger.warning(
+            f"[生成追踪] 完成记录失败，不影响结果返回: {type(exc).__name__}: {exc}"
+        )
+        try:
+            await tracker.fail(job_id, error=f"结果记录失败: {exc}")
+            logger.debug(
+                f"[生成追踪] 转为失败: job_id={job_id}, 异常类型={type(exc).__name__}"
+            )
+        except Exception:
+            pass
+
+
 class ReferenceImageUnavailableError(ValueError):
     """输入参考图已被删除或正在清理，任务尚未创建。"""
 
@@ -433,11 +530,24 @@ class GenerationTracker:
         requested_images: int = 1,
         caller: dict[str, str] | None = None,
         reference_names: list[str] | None = None,
+        job_id: str | None = None,
     ) -> dict[str, Any]:
         if self._closed:
             raise RuntimeError("生成追踪器已关闭")
+        if job_id is not None and (
+            not isinstance(job_id, str)
+            or not job_id
+            or len(job_id) > 128
+            or not _SAFE_FILE_NAME.fullmatch(job_id)
+        ):
+            raise ValueError(
+                "job_id 必须是非空字符串（字母数字与 _. - ，长度不超过 128）"
+            )
         async with self._lock:
-            job_id = f"job-{uuid.uuid4().hex[:12]}"
+            if job_id is None:
+                job_id = f"job-{uuid.uuid4().hex[:12]}"
+            elif job_id in self._jobs:
+                raise ValueError(f"job_id 已存在: {job_id}")
             record = {
                 "job_id": job_id,
                 "parent_job_id": _bounded_text(parent_job_id, 128) or None,

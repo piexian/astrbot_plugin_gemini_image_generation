@@ -716,3 +716,69 @@ async def test_image_generator_records_persistent_source_urls(monkeypatch) -> No
     kwargs = tracker.completed[1]
     assert kwargs["status"] == "partial_success"
     assert kwargs["source_urls"] == ["https://cdn.example/a.png"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("job_id", ["job-1", "a", "A-b_C.d", "0" * 128])
+async def test_begin_accepts_valid_explicit_job_id(tmp_path, job_id):
+    tracker = GenerationTracker(tmp_path, 10)
+    try:
+        record = await tracker.begin(
+            job_id=job_id,
+            source="command",
+            prompt="draw",
+            params={},
+            requester={},
+        )
+        assert record["job_id"] == job_id
+    finally:
+        await tracker.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "job_id",
+    ["", " ", "job 1", "job/1", "job:1", "job#1", "a" * 129, 123, ["job"]],
+)
+async def test_begin_rejects_invalid_explicit_job_id(tmp_path, job_id):
+    tracker = GenerationTracker(tmp_path, 10)
+    try:
+        with pytest.raises(ValueError):
+            await tracker.begin(
+                job_id=job_id,
+                source="command",
+                prompt="draw",
+                params={},
+                requester={},
+            )
+    finally:
+        await tracker.close()
+
+
+@pytest.mark.asyncio
+async def test_begin_rejects_duplicate_explicit_job_id(tmp_path):
+    tracker = GenerationTracker(tmp_path, 10)
+    try:
+        await tracker.begin(
+            job_id="job-dup",
+            source="command",
+            prompt="draw",
+            params={},
+            requester={},
+        )
+        with pytest.raises(ValueError):
+            await tracker.begin(
+                job_id="job-dup",
+                source="command",
+                prompt="again",
+                params={},
+                requester={},
+            )
+        # 不给 job_id 时仍按原方式生成，不受显式 id 影响。
+        record = await tracker.begin(
+            source="command", prompt="draw", params={}, requester={}
+        )
+        assert record["job_id"].startswith("job-")
+        assert record["job_id"] != "job-dup"
+    finally:
+        await tracker.close()

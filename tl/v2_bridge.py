@@ -8,6 +8,44 @@ from typing import Any
 
 from .core.requests import GenerationRequest
 from .core.results import GenerationResult
+from .generation_errors import api_failure_message
+
+
+def build_request(
+    *,
+    source: str,
+    prompt: str,
+    resolution: str | None,
+    aspect_ratio: str | None,
+    provider: str | None,
+    model: str | None,
+    reference_images: Sequence[str],
+    deadline_seconds: float,
+    requester: Mapping[str, str] | None = None,
+    metadata: Mapping[str, Any] | None = None,
+    negative_prompt: str | None = None,
+    quality: str | None = None,
+    watermark: bool | None = None,
+    image_count: int = 1,
+) -> GenerationRequest:
+    """把入口参数装配为 v2 GenerationRequest；metadata 透传 legacy 专属开关。"""
+
+    return GenerationRequest(
+        prompt=prompt,
+        source=source,
+        provider=provider,
+        model=model,
+        resolution=resolution,
+        aspect_ratio=aspect_ratio,
+        negative_prompt=negative_prompt,
+        quality=quality,
+        watermark=watermark,
+        image_count=image_count,
+        reference_images=tuple(reference_images),
+        deadline_at=datetime.now(timezone.utc) + timedelta(seconds=deadline_seconds),
+        requester=dict(requester or {}),
+        metadata=dict(metadata or {}),
+    )
 
 
 def command_request(
@@ -22,19 +60,19 @@ def command_request(
     metadata: Mapping[str, Any] | None = None,
     requester: Mapping[str, str] | None = None,
 ) -> GenerationRequest:
-    """把命令入口参数装配为 v2 GenerationRequest；metadata 透传 legacy 专属开关。"""
+    """命令入口参数装配（委托 build_request，source 固定 command）。"""
 
-    return GenerationRequest(
-        prompt=prompt,
+    return build_request(
         source="command",
-        provider=requested_provider,
-        model=requested_model,
+        prompt=prompt,
         resolution=resolution,
         aspect_ratio=aspect_ratio,
-        reference_images=tuple(reference_images),
-        deadline_at=datetime.now(timezone.utc) + timedelta(seconds=deadline_seconds),
-        requester=dict(requester or {}),
-        metadata=dict(metadata or {}),
+        provider=requested_provider,
+        model=requested_model,
+        reference_images=reference_images,
+        deadline_seconds=deadline_seconds,
+        metadata=metadata,
+        requester=requester,
     )
 
 
@@ -82,3 +120,45 @@ def v2_failure_error(result: Any) -> RuntimeError:
     code = result.error_code or "unknown_error"
     message = result.error_message or "未提供错误详情"
     return RuntimeError(f"v2 调度生成失败 [{code}]: {message}")
+
+
+def v2_failure_text(code: str, message: str, *, total_timeout: int) -> str:
+    """按错误码生成与旧路径 APIError 分支同措辞的用户提示。"""
+
+    code = str(code or "")
+    message = str(message or "未提供错误详情")
+
+    if code == "provider_empty_result":
+        return (
+            "❌ 图像生成失败：供应商未返回图片或文本内容\n"
+            "🧐 可能原因：上游模型本次未产出任何图像。\n"
+            "✅ 建议：稍后重试，或调整提示词/减少参考图后再试。"
+        )
+    # 错误码映射回旧分支的输入形态；未知码走"未知错误"文案。
+    error_type: str | None = None
+    status_code: int | None = None
+    if code == "provider_timeout":
+        error_type = "timeout"
+    elif code == "provider_network":
+        error_type = "network"
+    elif code == "provider_workspace_unavailable":
+        error_type = "workspace_unavailable"
+    elif code.startswith("provider_http_"):
+        suffix = code[len("provider_http_") :]
+        status_code = int(suffix) if suffix.isdigit() else None
+    return api_failure_message(
+        message=message,
+        status_code=status_code,
+        error_type=error_type,
+        total_timeout=total_timeout,
+    )
+
+
+def v2_failure_message(result: Any, *, total_timeout: int) -> str:
+    """按 Job 终态错误码生成与旧路径 APIError 分支同措辞的用户提示。"""
+
+    return v2_failure_text(
+        str(getattr(result, "error_code", None) or ""),
+        str(getattr(result, "error_message", None) or "未提供错误详情"),
+        total_timeout=total_timeout,
+    )
