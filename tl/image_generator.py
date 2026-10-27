@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from contextvars import ContextVar
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from astrbot.api import logger
 
-from .core.errors import CoreError
+from .core.errors import (
+    CoreError,
+    QueueFullError,
+    QuotaExceededError,
+    ServiceClosedError,
+)
 from .core.states import JobState
 from .generation_errors import api_failure_message
 from .generation_scheduler import generation_progress
@@ -40,6 +47,32 @@ if TYPE_CHECKING:
     from astrbot.api.star import Context
 
     from .tl_api import APIClient
+
+_API_CLIENT_UNAVAILABLE_MESSAGE = (
+    "❌ 无法生成图像：API 客户端尚未初始化。\n"
+    "🧐 可能原因：服务启动过快，提供商尚未加载或 API 配置/密钥缺失。\n"
+    "✅ 建议：先在配置文件中填写有效的 API 密钥并重启服务。"
+)
+
+
+def _avatar_prompt_note(avatar_count: int) -> str:
+    return f"""
+
+[System Note]
+The last {avatar_count} image(s) provided are User Avatars (marked as optional reference). You may use them for character consistency if needed, but they are NOT mandatory if they conflict with the requested style."""
+
+
+@dataclass(frozen=True, slots=True)
+class V2Submission:
+    """v2 第一阶段（提交）的结果。
+
+    成功时带 ``handle``；被拒或出错时 ``handle`` 为 None，``message`` 是可直接
+    展示的提示。``silent`` 为 True 表示静默拒绝（群名单不通过），不应回复。
+    """
+
+    handle: Any = None
+    message: str | None = None
+    silent: bool = False
 
 
 class ImageGenerator:
@@ -211,16 +244,71 @@ class ImageGenerator:
         event: AstrMessageEvent,
         *args,
         v2_service: Any = None,
+        v2_admission: Mapping[str, Any] | None = None,
+        v2_quota: Mapping[str, Any] | Literal[False] | None = None,
         **kwargs,
     ) -> tuple[bool, tuple[list[str], list[str], str | None, str | None] | str]:
-        """聊天会话生成图绑定工作区保存目录（框架发送白名单内）后执行生成。"""
+        """聊天会话生成图绑定工作区保存目录（框架发送白名单内）后执行生成。
+
+        传入 ``v2_service`` 时走 v2 两阶段（``submit_v2`` + ``wait_v2``）；
+        ``v2_admission`` 与 ``v2_quota`` 只在该路径生效，分别是提交时的准入
+        上下文和请求 ``metadata["quota"]``。
+        """
+        if v2_service is not None:
+            submission = await self.submit_v2(
+                event=event,
+                v2_service=v2_service,
+                admission=v2_admission,
+                quota=v2_quota,
+                **kwargs,
+            )
+            if submission.handle is None:
+                return False, submission.message or ""
+            return await self.wait_v2(
+                v2_service=v2_service,
+                handle=submission.handle,
+                requested_provider=kwargs.get("requested_provider"),
+                requested_model=kwargs.get("requested_model"),
+                image_count=kwargs.get("image_count", 1),
+            )
         token = await bind_session_image_dir(event, self.context)
         try:
-            return await self._generate_image_core_impl(
-                event, *args, v2_service=v2_service, **kwargs
-            )
+            return await self._generate_image_core_impl(event, *args, **kwargs)
         finally:
             reset_session_image_dir(token)
+
+    def _reset_request_stats(self) -> None:
+        self._set_request_stats(
+            {
+                "retry_count": 0,
+                "token_usage": None,
+                "retry_note": None,
+                "successful_candidate_id": None,
+                "successful_provider": None,
+                "successful_model": None,
+                "successful_model_alias": None,
+                "effective_image_count": 1,
+                "routing_mode": "full_polling",
+            }
+        )
+
+    def _prepare_reference_inputs(
+        self, reference_images: list[str] | None, avatar_reference: list[str] | None
+    ) -> tuple[list[str], int]:
+        """旧路径与 v2 共用的参考图过滤、数量截断；返回 (合并列表, 头像数)。"""
+        valid_msg_images = self._filter_valid_reference_images(
+            reference_images, source="消息图片"
+        )
+        valid_avatar_images = self._filter_valid_reference_images(
+            avatar_reference, source="头像"
+        )
+        max_images = self.max_reference_images
+        if len(valid_msg_images) > max_images:
+            valid_msg_images = valid_msg_images[:max_images]
+        remaining_slots = max(max_images - len(valid_msg_images), 0)
+        if len(valid_avatar_images) > remaining_slots:
+            valid_avatar_images = valid_avatar_images[:remaining_slots]
+        return valid_msg_images + valid_avatar_images, len(valid_avatar_images)
 
     async def _generate_image_core_impl(
         self,
@@ -238,7 +326,6 @@ class ImageGenerator:
         quality: str | None = None,
         image_count: int = 1,
         suppress_resolution: bool = False,
-        v2_service: Any = None,
     ) -> tuple[bool, tuple[list[str], list[str], str | None, str | None] | str]:
         """
         内部核心图像生成方法，不发送消息，只返回结果
@@ -247,79 +334,15 @@ class ImageGenerator:
             tuple[bool, tuple[list[str], list[str], str | None, str | None] | str]:
             (是否成功, (图片URL列表, 图片路径列表, 文本内容, 思维签名) 或错误消息)
         """
+        self._reset_request_stats()
         if not self.api_client:
-            self._set_request_stats(
-                {
-                    "retry_count": 0,
-                    "token_usage": None,
-                    "retry_note": None,
-                    "successful_candidate_id": None,
-                    "successful_provider": None,
-                    "successful_model": None,
-                    "successful_model_alias": None,
-                    "effective_image_count": 1,
-                    "routing_mode": "full_polling",
-                }
-            )
-            return False, (
-                "❌ 无法生成图像：API 客户端尚未初始化。\n"
-                "🧐 可能原因：服务启动过快，提供商尚未加载或 API 配置/密钥缺失。\n"
-                "✅ 建议：先在配置文件中填写有效的 API 密钥并重启服务。"
-            )
-        self._set_request_stats(
-            {
-                "retry_count": 0,
-                "token_usage": None,
-                "retry_note": None,
-                "successful_candidate_id": None,
-                "successful_provider": None,
-                "successful_model": None,
-                "successful_model_alias": None,
-                "effective_image_count": 1,
-                "routing_mode": "full_polling",
-            }
+            return False, _API_CLIENT_UNAVAILABLE_MESSAGE
+
+        all_reference_images, final_avatar_count = self._prepare_reference_inputs(
+            reference_images, avatar_reference
         )
-
-        valid_msg_images = self._filter_valid_reference_images(
-            reference_images, source="消息图片"
-        )
-        valid_avatar_images = self._filter_valid_reference_images(
-            avatar_reference, source="头像"
-        )
-        max_images = self.max_reference_images
-        if len(valid_msg_images) > max_images:
-            valid_msg_images = valid_msg_images[:max_images]
-        remaining_slots = max(max_images - len(valid_msg_images), 0)
-        if len(valid_avatar_images) > remaining_slots:
-            valid_avatar_images = valid_avatar_images[:remaining_slots]
-
-        all_reference_images = valid_msg_images + valid_avatar_images
-
-        final_avatar_count = len(valid_avatar_images)
-
         if final_avatar_count > 0:
-            prompt += f"""
-
-[System Note]
-The last {final_avatar_count} image(s) provided are User Avatars (marked as optional reference). You may use them for character consistency if needed, but they are NOT mandatory if they conflict with the requested style."""
-
-        if v2_service is not None:
-            return await self._generate_via_v2(
-                event=event,
-                v2_service=v2_service,
-                prompt=prompt,
-                all_reference_images=all_reference_images,
-                override_resolution=override_resolution,
-                override_aspect_ratio=override_aspect_ratio,
-                is_tool_call=is_tool_call,
-                requested_provider=requested_provider,
-                requested_model=requested_model,
-                negative_prompt=negative_prompt,
-                watermark=watermark,
-                quality=quality,
-                image_count=image_count,
-                suppress_resolution=suppress_resolution,
-            )
+            prompt += _avatar_prompt_note(final_avatar_count)
         request_config = ApiRequestConfig(
             model="",
             prompt=prompt,
@@ -499,84 +522,138 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
             await self._fail_tracking(tracking_job_id, e)
             return False, f"❌ 生成图像时发生错误: {str(e)}"
 
-    async def _generate_via_v2(
+    async def submit_v2(
         self,
         *,
         event: Any,
         v2_service: Any,
         prompt: str,
-        all_reference_images: list[str],
-        override_resolution: str | None,
-        override_aspect_ratio: str | None,
-        is_tool_call: bool,
-        requested_provider: str | None,
-        requested_model: str | None,
-        negative_prompt: str | None,
-        watermark: bool | None,
-        quality: str | None,
-        image_count: int,
-        suppress_resolution: bool,
-    ) -> tuple[bool, tuple[list[str], list[str], str | None, str | None] | str]:
-        """v2 调度路径：生成历史由 TrackerProjection 投影写入，本方法不碰 tracker。
+        reference_images: list[str] | None,
+        avatar_reference: list[str] | None,
+        override_resolution: str | None = None,
+        override_aspect_ratio: str | None = None,
+        is_tool_call: bool = False,
+        requested_provider: str | None = None,
+        requested_model: str | None = None,
+        negative_prompt: str | None = None,
+        watermark: bool | None = None,
+        quality: str | None = None,
+        image_count: int = 1,
+        suppress_resolution: bool = False,
+        admission: Mapping[str, Any] | None = None,
+        quota: Mapping[str, Any] | Literal[False] | None = None,
+    ) -> V2Submission:
+        """v2 第一阶段：准备输入并提交 Job，额度与队列准入由调度器在 submit 内完成。
 
-        会话图片目录由 generate_image_core 绑定；submit 发生在绑定期间，
-        runtime task 继承该 contextvar，此处不得重复绑定或提前重置。
+        ``admission`` 是不持久化的准入上下文（如命令事件）；``quota`` 写入请求
+        ``metadata["quota"]``，False 表示本次不计额度，None 按默认扣会话额度 1。
+        被拒或出错时不外抛，返回可直接展示的提示（静默拒绝带 ``silent``）；
+        生成历史由 TrackerProjection 负责，本方法不碰 tracker。整个阶段在会话
+        图片目录绑定期间执行，runtime task 继承该 contextvar。
         """
-
-        requester = requester_from_event(event)
-        context = current_tracking_context()
-        source = (
-            context.source if context else ("llm_tool" if is_tool_call else "command")
-        )
+        self._reset_request_stats()
+        if not self.api_client:
+            return V2Submission(message=_API_CLIENT_UNAVAILABLE_MESSAGE)
+        token = await bind_session_image_dir(event, self.context)
         try:
-            refs = await v2_service.prepare_references(
-                all_reference_images, requester=requester
+            all_reference_images, avatar_count = self._prepare_reference_inputs(
+                reference_images, avatar_reference
             )
-        except asyncio.CancelledError:
-            raise
-        except CoreError as error:
-            # 参考图解析失败/过大/服务关闭等：按错误码给旧路径同措辞提示。
-            error_msg = v2_failure_text(
-                str(getattr(error, "code", "") or ""),
-                getattr(error, "message", None) or str(error),
-                total_timeout=self.total_timeout,
+            if avatar_count:
+                prompt += _avatar_prompt_note(avatar_count)
+            requester = requester_from_event(event)
+            umo = getattr(event, "unified_msg_origin", None)
+            if umo:
+                # 会话额度按 UMO 独立计数，由请求者元数据带给额度组件。
+                requester["umo"] = str(umo)
+            context = current_tracking_context()
+            source = (
+                context.source
+                if context
+                else ("llm_tool" if is_tool_call else "command")
             )
-            logger.error(error_msg)
-            return False, error_msg
-        except Exception as e:
-            logger.error(f"生成图像时发生未预期的错误: {e}", exc_info=True)
-            return False, f"❌ 生成图像时发生错误: {str(e)}"
-        deadline = self.total_timeout
-        logger.info(f"v2 调度提交: 参考图片: {len(refs)} 张, 来源={source}")
-        try:
-            handle = await v2_service.submit(
-                v2_build_request(
-                    source=source,
-                    prompt=prompt,
-                    resolution=override_resolution,
-                    aspect_ratio=override_aspect_ratio,
-                    provider=requested_provider,
-                    model=requested_model,
-                    reference_images=refs,
-                    deadline_seconds=deadline,
-                    requester=requester,
-                    metadata={
-                        "suppress_resolution": suppress_resolution,
-                        "enable_smart_retry": self.enable_smart_retry,
-                        "max_attempts_per_key": self.max_attempts_per_key,
-                        "total_timeout": self.total_timeout,
-                    },
-                    negative_prompt=negative_prompt,
-                    quality=quality,
-                    watermark=watermark,
-                    image_count=max(int(image_count or 1), 1),
+            metadata: dict[str, Any] = {
+                "suppress_resolution": suppress_resolution,
+                "enable_smart_retry": self.enable_smart_retry,
+                "max_attempts_per_key": self.max_attempts_per_key,
+                "total_timeout": self.total_timeout,
+            }
+            if quota is not None:
+                metadata["quota"] = quota if quota is False else dict(quota)
+            try:
+                refs = await v2_service.prepare_references(
+                    all_reference_images, requester=requester
                 )
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.error(f"生成图像时发生未预期的错误: {e}", exc_info=True)
-            return False, f"❌ 生成图像时发生错误: {str(e)}"
+            except asyncio.CancelledError:
+                raise
+            except CoreError as error:
+                # 参考图解析失败/过大/服务关闭等：按错误码给旧路径同措辞提示。
+                error_msg = v2_failure_text(
+                    str(getattr(error, "code", "") or ""),
+                    getattr(error, "message", None) or str(error),
+                    total_timeout=self.total_timeout,
+                )
+                logger.error(error_msg)
+                return V2Submission(message=error_msg)
+            except Exception as e:
+                logger.error(f"生成图像时发生未预期的错误: {e}", exc_info=True)
+                return V2Submission(message=f"❌ 生成图像时发生错误: {str(e)}")
+            logger.info(f"v2 调度提交: 参考图片: {len(refs)} 张, 来源={source}")
+            try:
+                handle = await v2_service.submit(
+                    v2_build_request(
+                        source=source,
+                        prompt=prompt,
+                        resolution=override_resolution,
+                        aspect_ratio=override_aspect_ratio,
+                        provider=requested_provider,
+                        model=requested_model,
+                        reference_images=refs,
+                        deadline_seconds=self.total_timeout,
+                        requester=requester,
+                        metadata=metadata,
+                        negative_prompt=negative_prompt,
+                        quality=quality,
+                        watermark=watermark,
+                        image_count=max(int(image_count or 1), 1),
+                    ),
+                    admission=admission,
+                )
+            except asyncio.CancelledError:
+                raise
+            except QuotaExceededError as error:
+                # 与旧路径一致：额度提示原样回复，群名单拒绝时不回复。
+                return V2Submission(
+                    message=error.message, silent=bool(error.details.get("silent"))
+                )
+            except (QueueFullError, ServiceClosedError) as error:
+                # 与旧路径队列满/关闭同类错误同措辞（走 APIError 分支拼装）。
+                error_msg = api_failure_message(
+                    message=error.message,
+                    status_code=None,
+                    error_type=error.code,
+                    total_timeout=self.total_timeout,
+                )
+                logger.error(error_msg)
+                return V2Submission(message=error_msg)
+            except Exception as e:
+                logger.error(f"生成图像时发生未预期的错误: {e}", exc_info=True)
+                return V2Submission(message=f"❌ 生成图像时发生错误: {str(e)}")
+            return V2Submission(handle=handle)
+        finally:
+            reset_session_image_dir(token)
+
+    async def wait_v2(
+        self,
+        *,
+        v2_service: Any,
+        handle: Any,
+        requested_provider: str | None = None,
+        requested_model: str | None = None,
+        image_count: int = 1,
+    ) -> tuple[bool, tuple[list[str], list[str], str | None, str | None] | str]:
+        """v2 第二阶段：等待 Job 终态并转换为旧调用方兼容结果。"""
+        deadline = self.total_timeout
         # 等待上限由调度器给出（deadline 之外还容纳观察者钩子时间）；等待期间
         # 调用方被取消或超时都先取消 Job，与旧路径"取消入口即取消生成"一致。
         try:
