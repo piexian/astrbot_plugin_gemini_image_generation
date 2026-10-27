@@ -302,10 +302,7 @@ class Job:
             deadline_at=request.deadline_at,
             metadata=(
                 {TMP_REFERENCES_METADATA_KEY: True}
-                if any(
-                    item.startswith("ref:tmp:")
-                    for item in request.reference_images
-                )
+                if any(item.startswith("ref:tmp:") for item in request.reference_images)
                 else {}
             ),
         )

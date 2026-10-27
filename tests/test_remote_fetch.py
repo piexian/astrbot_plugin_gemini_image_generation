@@ -334,7 +334,9 @@ async def test_redirect_hops_share_deadline_for_dns_validation(monkeypatch) -> N
 
 
 @pytest.mark.asyncio
-async def test_dns_rebinding_between_validation_and_connect_rejected(monkeypatch) -> None:
+async def test_dns_rebinding_between_validation_and_connect_rejected(
+    monkeypatch,
+) -> None:
     answers = iter(("93.184.216.34", "127.0.0.1"))
     calls = []
 

@@ -362,9 +362,7 @@ class JobScheduler:
             if original_references is not None:
                 reference_job = replace(
                     job,
-                    request=replace(
-                        job.request, reference_images=original_references
-                    ),
+                    request=replace(job.request, reference_images=original_references),
                 )
             if job.request.reference_images:
                 leases.add(

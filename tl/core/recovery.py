@@ -27,7 +27,5 @@ async def recoverable_jobs(store: Any) -> list[Job]:
         }
     )
     return [
-        job
-        for job in jobs
-        if not job.metadata.get(TMP_REFERENCES_METADATA_KEY, False)
+        job for job in jobs if not job.metadata.get(TMP_REFERENCES_METADATA_KEY, False)
     ]

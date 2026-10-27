@@ -547,7 +547,9 @@ async def test_reference_lease_receives_original_references(tmp_path) -> None:
     source = Source()
     scheduler, _ = make_scheduler(tmp_path, reference_store=source)
     try:
-        await scheduler.wait((await scheduler.submit(request(references=(handle,)))).job_id)
+        await scheduler.wait(
+            (await scheduler.submit(request(references=(handle,)))).job_id
+        )
     finally:
         await scheduler.close()
 

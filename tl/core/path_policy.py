@@ -96,9 +96,7 @@ class PathPolicy:
         for address in addresses:
             parsed = (
                 address
-                if isinstance(
-                    address, (ipaddress.IPv4Address, ipaddress.IPv6Address)
-                )
+                if isinstance(address, (ipaddress.IPv4Address, ipaddress.IPv6Address))
                 else ipaddress.ip_address(address)
             )
             self._ensure_address_allowed(parsed, host)

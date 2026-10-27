@@ -42,9 +42,7 @@ class _ReferenceLeaseStore:
                 self._service.release_reference(reference)
 
         # job_id 在持久化 LeaseRecord 时由 scheduler 补齐，此处留空。
-        return Lease(
-            f"reference-{uuid.uuid4().hex}", LeaseKind.REFERENCE, "", release
-        )
+        return Lease(f"reference-{uuid.uuid4().hex}", LeaseKind.REFERENCE, "", release)
 
     async def resolve(
         self,
