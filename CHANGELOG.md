@@ -8,6 +8,18 @@
 
 - 运行环境与 CI 基线统一为 Python 3.12。
 
+## [3.2.0] - 2026-10-28
+
+### Changed
+
+- **Studio 视图全量迁移到 AstrBot 4.29 插件视图约定**：目录 `pages/` → `views/`，bridge 全局名 `AstrBotPluginPage` → `AstrBotPluginView`；视图需 AstrBot ≥4.29（4.28 及以下不再显示该页面，其余功能不受影响）。
+- **Studio 界面语言跟随 Dashboard**：新增 `.astrbot-plugin/i18n/`（zh-CN/en-US/ja-JP/ru-RU），中文原文即 key；前端经 bridge 上下文查表渲染，语言切换时整页重载，标题走 `views.studio.title`；`tests/test_studio_i18n.py` 守门覆盖、插值与回退。
+- **暗色主题亮黄降为淡黄**：`[data-theme=dark]` 的 `--pop` 改为 `#D9C87F`，脉冲光晕改为主题化 `--pop-glow`。
+
+### Fixed
+
+- 前端测试路径与沙箱跟随 views 迁移（含 `t` 桩注入），供应商配置组件在无 `t` 注入时按原文渲染并保留插值。
+
 ## [3.1.0] - 2026-10-11
 
 ### Fixed

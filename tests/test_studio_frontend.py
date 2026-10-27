@@ -1,8 +1,8 @@
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-APP_JS = (ROOT / "pages" / "studio" / "app.js").read_text(encoding="utf-8")
-INDEX_HTML = (ROOT / "pages" / "studio" / "index.html").read_text(encoding="utf-8")
+APP_JS = (ROOT / "views" / "studio" / "app.js").read_text(encoding="utf-8")
+INDEX_HTML = (ROOT / "views" / "studio" / "index.html").read_text(encoding="utf-8")
 
 
 def _image_loader_source() -> str:

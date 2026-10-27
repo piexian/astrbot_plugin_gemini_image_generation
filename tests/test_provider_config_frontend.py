@@ -7,9 +7,9 @@ from pathlib import Path
 from test_studio_limits_frontend import DOM as LIMITS_DOM
 
 ROOT = Path(__file__).resolve().parents[1]
-APP = (ROOT / "pages/studio/app.js").read_text(encoding="utf-8")
+APP = (ROOT / "views/studio/app.js").read_text(encoding="utf-8")
 SOURCE = APP[: APP.index("const ImageLoader = {")]
-SOURCE += (ROOT / "pages/studio/provider-config.js").read_text(encoding="utf-8")
+SOURCE += (ROOT / "views/studio/provider-config.js").read_text(encoding="utf-8")
 SETTINGS = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))[
     "provider_settings"
 ]["items"]

@@ -105,7 +105,7 @@ const SafeDOM = {
   previewImage(source) {
     // Preview SSE contains a server-decoded, bounded PNG thumbnail, never a URL.
     if (typeof source !== 'string' || !/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(source)) return null;
-    const image = this.el('img', {alt: '生成中的预览，非最终结果', style: {maxWidth: '100%', maxHeight: '256px', objectFit: 'contain'}});
+    const image = this.el('img', {alt: t('生成中的预览，非最终结果'), style: {maxWidth: '100%', maxHeight: '256px', objectFit: 'contain'}});
     image.src = source;
     return image;
   },
@@ -130,15 +130,15 @@ const SafeDOM = {
 
   // 来源标识 -> 中文标签
   sourceLabel(source, caller) {
-    if (source === 'plugin') return `插件调用 · ${caller?.plugin_name || caller?.plugin_id || '插件'}`;
+    if (source === 'plugin') return t('插件调用 · {v0}', { v0: caller?.plugin_name || caller?.plugin_id || t('插件') });
     const labels = {
-      command: '指令',
-      llm_tool: 'LLM 工具',
-      llm_batch: 'LLM 批量',
-      webui: '工作台',
-      legacy: '历史'
+      command: t('指令'),
+      llm_tool: t('LLM 工具'),
+      llm_batch: t('LLM 批量'),
+      webui: t('工作台'),
+      legacy: t('历史')
     };
-    return labels[source] || source || '未知';
+    return labels[source] || source || t('未知');
   },
 
   displayRoute(record) {
@@ -154,8 +154,8 @@ const SafeDOM = {
   routeMeta(record) {
     const route = this.displayRoute(record);
     const labels = [];
-    if (route.provider) labels.push(`供应商: ${route.provider}`);
-    if (route.model) labels.push(`模型: ${route.model}`);
+    if (route.provider) labels.push(t('供应商: {v0}', { v0: route.provider }));
+    if (route.model) labels.push(t('模型: {v0}', { v0: route.model }));
     return this.el('div', { className: 'job-meta-row' },
       labels.map((label) => this.el('span', { className: 'meta-pill' }, [label]))
     );
@@ -166,29 +166,29 @@ const SafeDOM = {
       ? record.reference_names.filter((name) => this.isSafeImageName(name)) : [];
     if (!names.length) return null;
     const section = this.el('div', { className: 'reference-lineage' }, [
-      this.el('span', { className: 'reference-lineage-label' }, ['参考图 → 当前结果'])
+      this.el('span', { className: 'reference-lineage-label' }, [t('参考图 → 当前结果')])
     ]);
     const images = this.el('div', { className: 'reference-lineage-images' });
     for (const name of names) {
       const button = this.el('button', { type: 'button', className: 'reference-lineage-item',
-        title: '将这张历史图片设为参考图', 'aria-label': `设为参考图：${name}`,
+        title: t('将这张历史图片设为参考图'), 'aria-label': t('设为参考图：{v0}', { v0: name }),
         onClick: async () => {
           try {
             const detail = await BridgeClient.get(`webui/history/${encodeURIComponent(record.job_id)}`);
             if (!(detail.available_reference_names || []).includes(name)) {
               button.disabled = true;
-              SafeDOM.setText(button, '参考图已清理');
-              Toast.warning('这张参考图已清理，请选择其它图片');
+              SafeDOM.setText(button, t('参考图已清理'));
+              Toast.warning(t('这张参考图已清理，请选择其它图片'));
               return;
             }
             onSelect?.(name);
           } catch (error) {
-            ErrorFeedback.show(error, '确认参考图失败');
+            ErrorFeedback.show(error, t('确认参考图失败'));
           }
         }
       });
-      const img = this.el('img', { loading: 'lazy', alt: '历史参考图' });
-      installImageFallback(img, button, '参考图加载失败或已清理');
+      const img = this.el('img', { loading: 'lazy', alt: t('历史参考图') });
+      installImageFallback(img, button, t('参考图加载失败或已清理'));
       img.addEventListener('error', () => { button.disabled = true; });
       ImageLoader.attach(img, name, { thumb: true });
       button.appendChild(img);
@@ -200,28 +200,28 @@ const SafeDOM = {
 
   requesterLabels(requester, source) {
     const { user_id: userId, user_name: userName, group_id: groupId, chat_type: chatType } = requester || {};
-    let chatLabel = '会话类型未知';
+    let chatLabel = t('会话类型未知');
     if (source === 'webui') {
-      chatLabel = '工作台提交';
+      chatLabel = t('工作台提交');
     } else if (chatType === 'private') {
-      chatLabel = '私聊';
+      chatLabel = t('私聊');
     } else if (chatType === 'group' || groupId) {
       // 旧记录没有会话类型时，已有群号仍足以确认群聊；缺少群号不能反推私聊。
-      chatLabel = groupId ? `群聊 · 群号: ${groupId}` : '群聊 · 群号未记录';
+      chatLabel = groupId ? t('群聊 · 群号: {v0}', { v0: groupId }) : t('群聊 · 群号未记录');
     }
     const labels = [chatLabel];
     if (source === 'plugin' && chatType !== 'private' && chatType !== 'group' && !groupId) labels.length = 0;
-    if (source === 'plugin' && requester?.umo) labels.push(`会话: ${requester.umo}`);
-    if (userName && userId) labels.push(`用户: ${userName}（ID: ${userId}）`);
-    else if (userId) labels.push(`用户 ID: ${userId}`);
-    else if (userName) labels.push(`用户: ${userName}`);
+    if (source === 'plugin' && requester?.umo) labels.push(t('会话: {v0}', { v0: requester.umo }));
+    if (userName && userId) labels.push(t('用户: {v0}（ID: {v1}）', { v0: userName, v1: userId }));
+    else if (userId) labels.push(t('用户 ID: {v0}', { v0: userId }));
+    else if (userName) labels.push(t('用户: {v0}', { v0: userName }));
     return labels;
   },
 
   requesterMeta(record) {
     const labels = this.requesterLabels(record.requester, record.source);
-    if (record.source === 'plugin' && record.caller?.plugin_id) labels.unshift(`插件 ID: ${record.caller.plugin_id}`);
-    const callbackLabels = { pending: '待通知', running: '通知中', removed: '已取消通知', succeeded: '已通知', failed: '通知失败', interrupted: '通知已中断' };
+    if (record.source === 'plugin' && record.caller?.plugin_id) labels.unshift(t('插件 ID: {v0}', { v0: record.caller.plugin_id }));
+    const callbackLabels = { pending: t('待通知'), running: t('通知中'), removed: t('已取消通知'), succeeded: t('已通知'), failed: t('通知失败'), interrupted: t('通知已中断') };
     if (callbackLabels[record.callback_status]) labels.push(callbackLabels[record.callback_status]);
     return this.el('div', { className: 'job-meta-row requester-meta' },
       labels.map((label) =>
@@ -277,7 +277,7 @@ const ImageLoader = {
       if (!/^image\/(?:png|jpeg|webp|gif|bmp)$/.test(mime)
           || !b64
           || !/^[A-Za-z0-9+/]*={0,2}$/.test(b64)) {
-        throw new Error('图片接口返回了无效数据');
+        throw new Error(t('图片接口返回了无效数据'));
       }
       const dataUri = `data:${mime};base64,${b64}`;
       const imageData = { dataUri, preview: payload.preview === true };
@@ -296,69 +296,133 @@ const ImageLoader = {
 };
 
 // ==========================================================================
-// 3. BridgeClient (封装 window.AstrBotPluginPage 通信 SDK)
+// 3. BridgeClient (封装 window.AstrBotPluginView 通信 SDK)
 // ==========================================================================
 class BridgeClient {
   static async init() {
-    if (!window.AstrBotPluginPage) {
-      throw new Error('未检测到 AstrBotPluginPage SDK，请在 AstrBot Dashboard 中运行');
+    if (!window.AstrBotPluginView) {
+      throw new Error(t('未检测到 AstrBotPluginView SDK，请在 AstrBot Dashboard 中运行'));
     }
-    return await window.AstrBotPluginPage.ready();
+    return await window.AstrBotPluginView.ready();
   }
 
   static isAvailable() {
-    return !!window.AstrBotPluginPage;
+    return !!window.AstrBotPluginView;
   }
 
   static getContext() {
-    return window.AstrBotPluginPage?.getContext?.() ?? null;
+    return window.AstrBotPluginView?.getContext?.() ?? null;
   }
 
   static onContext(handler) {
-    return window.AstrBotPluginPage?.onContext?.(handler);
+    return window.AstrBotPluginView?.onContext?.(handler);
   }
 
   static async get(endpoint, params = {}) {
-    if (!window.AstrBotPluginPage) {
-      throw new Error('AstrBotPluginPage SDK 未加载');
+    if (!window.AstrBotPluginView) {
+      throw new Error(t('AstrBotPluginView SDK 未加载'));
     }
-    return await window.AstrBotPluginPage.apiGet(endpoint, params);
+    return await window.AstrBotPluginView.apiGet(endpoint, params);
   }
 
   static async post(endpoint, body = {}) {
-    if (!window.AstrBotPluginPage) {
-      throw new Error('AstrBotPluginPage SDK 未加载');
+    if (!window.AstrBotPluginView) {
+      throw new Error(t('AstrBotPluginView SDK 未加载'));
     }
-    return await window.AstrBotPluginPage.apiPost(endpoint, body);
+    return await window.AstrBotPluginView.apiPost(endpoint, body);
   }
 
   static async upload(endpoint, file) {
-    if (!window.AstrBotPluginPage) {
-      throw new Error('AstrBotPluginPage SDK 未加载');
+    if (!window.AstrBotPluginView) {
+      throw new Error(t('AstrBotPluginView SDK 未加载'));
     }
-    return await window.AstrBotPluginPage.upload(endpoint, file);
+    return await window.AstrBotPluginView.upload(endpoint, file);
   }
 
   static async download(endpoint, params = {}, filename = '') {
-    if (!window.AstrBotPluginPage) {
-      throw new Error('AstrBotPluginPage SDK 未加载');
+    if (!window.AstrBotPluginView) {
+      throw new Error(t('AstrBotPluginView SDK 未加载'));
     }
-    return await window.AstrBotPluginPage.download(endpoint, params, filename);
+    return await window.AstrBotPluginView.download(endpoint, params, filename);
   }
 
   static async subscribeSSE(endpoint, handlers = {}, params = {}) {
-    if (!window.AstrBotPluginPage) {
-      throw new Error('AstrBotPluginPage SDK 未加载');
+    if (!window.AstrBotPluginView) {
+      throw new Error(t('AstrBotPluginView SDK 未加载'));
     }
-    return await window.AstrBotPluginPage.subscribeSSE(endpoint, handlers, params);
+    return await window.AstrBotPluginView.subscribeSSE(endpoint, handlers, params);
   }
 
   static async unsubscribeSSE(subscriptionId) {
-    if (subscriptionId && window.AstrBotPluginPage?.unsubscribeSSE) {
-      return await window.AstrBotPluginPage.unsubscribeSSE(subscriptionId);
+    if (subscriptionId && window.AstrBotPluginView?.unsubscribeSSE) {
+      return await window.AstrBotPluginView.unsubscribeSSE(subscriptionId);
     }
   }
 }
+
+// ==========================================================================
+// 3.5 I18n (跟随 Dashboard 语言；中文原文即 key，翻译表经 bridge 上下文下发)
+// ==========================================================================
+const I18n = {
+  locale: 'zh-CN',
+  initialLocale: null,
+  reloading: false,
+  tables: {},
+
+  t(key, vars) {
+    for (const loc of [this.locale, 'zh-CN', 'en-US']) {
+      const hit = this.tables?.[loc]?.strings?.[key];
+      if (typeof hit === 'string') return I18n.format(hit, vars);
+    }
+    return I18n.format(key, vars);
+  },
+
+  format(text, vars) {
+    if (!vars) return String(text);
+    return String(text).replace(/\{(\w+)\}/g, (m, k) => (
+      vars[k] === undefined || vars[k] === null ? m : String(vars[k])
+    ));
+  },
+
+  sync(ctx) {
+    if (!ctx) return;
+    this.tables = ctx.i18n && typeof ctx.i18n === 'object' ? ctx.i18n : {};
+    const raw = typeof ctx.locale === 'string' && ctx.locale ? ctx.locale : 'zh-CN';
+    const known = raw === 'zh-CN' || (this.tables[raw] && typeof this.tables[raw] === 'object');
+    const next = known ? raw : raw.split('-')[0];
+    if (this.initialLocale === null) {
+      this.initialLocale = next;
+      this.locale = next;
+      this.applyDom();
+      return;
+    }
+    if (next !== this.initialLocale && !this.reloading) {
+      // 语言切换：全量重载，避免逐视图重渲染的遗漏
+      this.reloading = true;
+      location.reload();
+    }
+  },
+
+  applyDom() {
+    document.documentElement.lang = this.locale;
+    document.querySelectorAll('[data-i18n]').forEach((el) => {
+      el.textContent = I18n.t(el.getAttribute('data-i18n'));
+    });
+    const attrMap = {
+      'data-i18n-placeholder': 'placeholder',
+      'data-i18n-title': 'title',
+      'data-i18n-aria-label': 'aria-label',
+      'data-i18n-alt': 'alt',
+    };
+    for (const [marker, attr] of Object.entries(attrMap)) {
+      document.querySelectorAll(`[${marker}]`).forEach((el) => {
+        el.setAttribute(attr, I18n.t(el.getAttribute(marker)));
+      });
+    }
+  },
+};
+
+const t = (key, vars) => I18n.t(key, vars);
 
 // ==========================================================================
 // 4. Toast (极简漫画风格全局浮动通知)
@@ -411,17 +475,17 @@ const ErrorFeedback = {
     return /(?:\b401\b|unauthorized|未授权|未认证|登录.*(?:失效|过期)|请.*登录)/i.test(this.message(error));
   },
 
-  show(error, fallback = '操作失败') {
+  show(error, fallback = t('操作失败')) {
     const message = this.message(error);
     let display = message ? `${fallback}：${message}` : fallback;
     if (this.isAuth(error)) {
-      display = '登录状态已失效，请刷新 Dashboard 并重新登录';
+      display = t('登录状态已失效，请刷新 Dashboard 并重新登录');
     } else if (/(?:\b429\b|并发.*(?:已满|上限)|队列已满)/i.test(message)) {
-      display = '服务器并发处理中（任务队列已满），请稍候重试';
+      display = t('服务器并发处理中（任务队列已满），请稍候重试');
     } else if (/(?:\b507\b|暂存空间已满|存储空间不足)/i.test(message)) {
-      display = '上传暂存空间已满，请等待自动清理或稍后再试';
+      display = t('上传暂存空间已满，请等待自动清理或稍后再试');
     } else if (/(?:\b503\b|正在卸载|已关闭|重新加载|尚未初始化)/i.test(message)) {
-      display = '插件正在重新加载，请稍后重试';
+      display = t('插件正在重新加载，请稍后重试');
     }
     Toast.error(display);
     return display;
@@ -435,7 +499,7 @@ const Clipboard = {
       Toast.success(successMessage);
     } catch (error) {
       console.warn('[Clipboard] 写入剪贴板失败:', error);
-      Toast.error('复制失败，请检查浏览器剪贴板权限');
+      Toast.error(t('复制失败，请检查浏览器剪贴板权限'));
     }
   }
 };
@@ -486,7 +550,7 @@ const Modal = {
     });
   },
 
-  confirm({ title = '确认操作', content = '', confirmText = '确认', cancelText = '取消', danger = false }) {
+  confirm({ title = t('确认操作'), content = '', confirmText = t('确认'), cancelText = t('取消'), danger = false }) {
     return new Promise((resolve) => {
       if (this.backdrop.style.display !== 'none') {
         this.close(false);
@@ -519,7 +583,7 @@ const Modal = {
     });
   },
 
-  openCustom({ title = '对话框', renderBody, renderFooter, onClose, variant = '' }) {
+  openCustom({ title = t('对话框'), renderBody, renderFooter, onClose, variant = '' }) {
     if (this.backdrop.style.display !== 'none') {
       this.close(false);
     }
@@ -637,9 +701,9 @@ const Lightbox = {
       if (!item) return;
       try {
         await BridgeClient.download(`webui/image/${encodeURIComponent(item.imageName)}`, { download: '1' }, item.imageName);
-        Toast.success('已发起原图下载');
+        Toast.success(t('已发起原图下载'));
       } catch (error) {
-        ErrorFeedback.show(error, '下载失败');
+        ErrorFeedback.show(error, t('下载失败'));
       }
     });
 
@@ -702,10 +766,10 @@ const Lightbox = {
     const spinner = SafeDOM.el('div', {
       className: 'comic-spinner',
       role: 'status',
-      'aria-label': '原图加载中'
+      'aria-label': t('原图加载中')
     });
     this.imgWrap?.replaceChildren(spinner, this.img);
-    installImageFallback(this.img, this.imgWrap, '图片加载失败或已清理');
+    installImageFallback(this.img, this.imgWrap, t('图片加载失败或已清理'));
     this.img.addEventListener('load', () => {
       spinner.remove();
       this.img.style.display = 'block';
@@ -716,28 +780,28 @@ const Lightbox = {
         this.previewNotice.hidden = !loaded?.preview;
       }
     });
-    SafeDOM.setText(this.promptEl, item.prompt || '无提示词记录');
+    SafeDOM.setText(this.promptEl, item.prompt || t('无提示词记录'));
 
     this.tagsEl.replaceChildren();
     if (item.provider) {
-      this.tagsEl.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [`供应商: ${item.provider}`]));
+      this.tagsEl.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [t('供应商: {v0}', { v0: item.provider })]));
     }
     if (item.model) {
-      this.tagsEl.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [`模型: ${item.model}`]));
+      this.tagsEl.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [t('模型: {v0}', { v0: item.model })]));
     }
     if (item.resolution) {
-      this.tagsEl.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [`分辨率: ${item.resolution}`]));
+      this.tagsEl.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [t('分辨率: {v0}', { v0: item.resolution })]));
     }
     if (item.aspect_ratio) {
-      this.tagsEl.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [`比例: ${item.aspect_ratio}`]));
+      this.tagsEl.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [t('比例: {v0}', { v0: item.aspect_ratio })]));
     }
     if (item.duration_ms) {
-      this.tagsEl.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [`耗时: ${(item.duration_ms / 1000).toFixed(1)}s`]));
+      this.tagsEl.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [t('耗时: {v0}s', { v0: (item.duration_ms / 1000).toFixed(1) })]));
     }
     if (item.source) {
-      this.tagsEl.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [`来源: ${SafeDOM.sourceLabel(item.source, item.caller)}`]));
+      this.tagsEl.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [t('来源: {v0}', { v0: SafeDOM.sourceLabel(item.source, item.caller) })]));
     }
-    if (item.caller?.plugin_id) this.tagsEl.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [`插件 ID: ${item.caller.plugin_id}`]));
+    if (item.caller?.plugin_id) this.tagsEl.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [t('插件 ID: {v0}', { v0: item.caller.plugin_id })]));
     for (const label of SafeDOM.requesterLabels(item.requester, item.source)) {
       this.tagsEl.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [label]));
     }
@@ -919,7 +983,7 @@ class SSEController {
       } catch (err) {
         console.warn('[SSEController] 拉取 jobs 快照失败:', err);
         if (ErrorFeedback.isAuth(err)) {
-          this.updateStatusIndicator('error', '登录状态已失效');
+          this.updateStatusIndicator('error', t('登录状态已失效'));
         }
       }
       return false;
@@ -956,7 +1020,7 @@ class SSEController {
 
     const generation = ++this.connectionGeneration;
 
-    this.updateStatusIndicator('connecting', '正在连接实时通道...');
+    this.updateStatusIndicator('connecting', t('正在连接实时通道...'));
 
     try {
       const subscriptionId = await BridgeClient.subscribeSSE('webui/jobs/stream', {
@@ -964,7 +1028,7 @@ class SSEController {
           if (this.destroyed || generation !== this.connectionGeneration) return;
           this.reconnectAttempts = 0;
           this.lastActiveTime = Date.now();
-          this.updateStatusIndicator('connected', '实时连接就绪');
+          this.updateStatusIndicator('connected', t('实时连接就绪'));
         },
         onMessage: (msg) => {
           if (this.destroyed || generation !== this.connectionGeneration) return;
@@ -973,7 +1037,7 @@ class SSEController {
         },
         onError: (error) => {
           if (this.destroyed || generation !== this.connectionGeneration) return;
-          this.updateStatusIndicator('error', '连接异常，准备重试...');
+          this.updateStatusIndicator('error', t('连接异常，准备重试...'));
           if (!ErrorFeedback.isAuth(error)) {
             this.scheduleReconnect();
           }
@@ -989,9 +1053,9 @@ class SSEController {
       console.error('[SSEController] 订阅发起失败:', err);
       if (this.destroyed || generation !== this.connectionGeneration) return;
       if (ErrorFeedback.isAuth(err)) {
-        this.updateStatusIndicator('error', '登录状态已失效');
+        this.updateStatusIndicator('error', t('登录状态已失效'));
       } else {
-        this.updateStatusIndicator('error', '连接异常，准备重试...');
+        this.updateStatusIndicator('error', t('连接异常，准备重试...'));
         this.scheduleReconnect();
       }
     }
@@ -1203,7 +1267,7 @@ class StudioPreferences {
         this.revision = value.revision;
       } catch (error) {
         console.warn('[Studio] 无法恢复浏览器参数记忆:', error);
-        this.onStatus?.('参数记忆暂不可用');
+        this.onStatus?.(t('参数记忆暂不可用'));
       }
     }
     this.ready = true;
@@ -1243,22 +1307,22 @@ class StudioPreferences {
     if (!this.ready) return;
     if (this.remote) {
       const revision = this.revision = Math.max(this.revision + 1, Date.now() * 1000);
-      this.onStatus?.('正在记忆参数…');
+      this.onStatus?.(t('正在记忆参数…'));
       void BridgeClient.post('webui/preferences', {
         revision, preferences: JSON.parse(JSON.stringify(this.data))
       }).then(() => {
-        if (revision === this.revision) this.onStatus?.('已记住当前选择');
+        if (revision === this.revision) this.onStatus?.(t('已记住当前选择'));
       }).catch((error) => {
-        if (revision === this.revision) this.onStatus?.('参数记忆暂不可用');
+        if (revision === this.revision) this.onStatus?.(t('参数记忆暂不可用'));
         console.warn('[Studio] 无法保存浏览器参数记忆:', error);
       });
       return;
     }
     try {
       this.storage?.setItem(this.key, JSON.stringify(this.data));
-      this.onStatus?.('已记住当前选择');
+      this.onStatus?.(t('已记住当前选择'));
     } catch (error) {
-      this.onStatus?.('参数记忆暂不可用');
+      this.onStatus?.(t('参数记忆暂不可用'));
       console.warn('[Studio] 无法保存浏览器参数记忆:', error);
     }
   }
@@ -1291,7 +1355,7 @@ class GenerationSettingsEditor {
     for (const [name, field] of Object.entries(this.fields)) {
       if (['resolution', 'aspect_ratio'].includes(name)) continue;
       const row = SafeDOM.el('div', { className: 'provider-parameter', dataset: { parameter: name } });
-      const enabled = SafeDOM.el('input', { type: 'checkbox', className: 'comic-checkbox', 'aria-label': `临时覆盖${field.label}` });
+      const enabled = SafeDOM.el('input', { type: 'checkbox', className: 'comic-checkbox', 'aria-label': t('临时覆盖{v0}', { v0: field.label }) });
       const label = SafeDOM.el('label', { className: 'provider-parameter-toggle' }, [enabled, field.label]);
       row.appendChild(label);
       row.appendChild(SafeDOM.el('span', { className: 'provider-parameter-key' }, [name]));
@@ -1302,7 +1366,7 @@ class GenerationSettingsEditor {
         const options = field.type === 'boolean' ? [true, false] : field.enum;
         for (const value of options) {
           input.appendChild(SafeDOM.el('option', { value: String(value) }, [
-            field.type === 'boolean' ? (value ? '开启' : '关闭') : (value === '' ? '默认' : String(value))
+            field.type === 'boolean' ? (value ? t('开启') : t('关闭')) : (value === '' ? t('默认') : String(value))
           ]));
         }
       } else if (field.multiline) {
@@ -1322,7 +1386,7 @@ class GenerationSettingsEditor {
       row.appendChild(input);
       if (field.hint) {
         row.appendChild(SafeDOM.el('details', { className: 'provider-parameter-help' }, [
-          SafeDOM.el('summary', {}, ['参数说明']), SafeDOM.el('p', {}, [field.hint])
+          SafeDOM.el('summary', {}, [t('参数说明')]), SafeDOM.el('p', {}, [field.hint])
         ]));
       }
       const changed = () => { this.updateConditions(); this.onChange?.(); };
@@ -1377,7 +1441,7 @@ class GenerationSettingsEditor {
       if (!GenerationSettingsEditor.valid(value, control.field)) {
         if (validate) {
           control.input.focus();
-          throw new Error(`请检查${control.field.label}的值与范围`);
+          throw new Error(t('请检查{v0}的值与范围', { v0: control.field.label }));
         }
         continue;
       }
@@ -1503,7 +1567,7 @@ class WorkbenchView {
       if (!limits || !['batch_total_budget', 'batch_max_tasks', 'upload_max_mb'].every(
         (key) => Number.isSafeInteger(limits[key]) && limits[key] > 0
       )) {
-        throw new Error('模型能力响应缺少有效限制');
+        throw new Error(t('模型能力响应缺少有效限制'));
       }
       this.batchBudgetLimit = limits.batch_total_budget;
       this.batchMaxTasks = limits.batch_max_tasks;
@@ -1512,7 +1576,7 @@ class WorkbenchView {
       SafeDOM.setText(this.batchMaxBudget, String(this.batchBudgetLimit));
 
       if (models.length === 0) {
-        this.showGlobalBanner('未检测到可用的图像生成供应商，请在插件配置中添加 provider_candidates 后刷新');
+        this.showGlobalBanner(t('未检测到可用的图像生成供应商，请在插件配置中添加 provider_candidates 后刷新'));
         this.setFormDisabled(true);
         return;
       }
@@ -1524,8 +1588,8 @@ class WorkbenchView {
     } catch (err) {
       console.error('[WorkbenchView] 加载 capabilities 失败:', err);
       const message = ErrorFeedback.isAuth(err)
-        ? '登录状态已失效，请刷新 Dashboard 并重新登录'
-        : '加载模型能力失败，请检查插件状态或网络连接';
+        ? t('登录状态已失效，请刷新 Dashboard 并重新登录')
+        : t('加载模型能力失败，请检查插件状态或网络连接');
       this.showGlobalBanner(message);
       this.setFormDisabled(true);
     }
@@ -1575,14 +1639,14 @@ class WorkbenchView {
     this.selectModel.replaceChildren();
     const groups = new Map();
     models.forEach((entry, index) => {
-      const groupLabel = entry.provider_display || entry.provider || '其他';
+      const groupLabel = entry.provider_display || entry.provider || t('其他');
       if (!groups.has(groupLabel)) groups.set(groupLabel, []);
       groups.get(groupLabel).push({ entry, index });
     });
     for (const [label, items] of groups) {
       const group = SafeDOM.el('optgroup', { label });
       for (const { entry, index } of items) {
-        const modelName = entry.model || '默认模型';
+        const modelName = entry.model || t('默认模型');
         const displayName = entry.model_alias ? `${modelName}（${entry.model_alias}）` : modelName;
         const text = `${displayName} · ${entry.candidate_id}`;
         group.appendChild(SafeDOM.el('option', { value: String(index) }, [text]));
@@ -1613,7 +1677,7 @@ class WorkbenchView {
       ['resolution', this.selectResolution, entry.resolutions || []],
       ['aspect_ratio', this.selectAspectRatio, entry.aspect_ratios || []]
     ]) {
-      select.replaceChildren(SafeDOM.el('option', { value: '' }, ['使用供应商配置']));
+      select.replaceChildren(SafeDOM.el('option', { value: '' }, [t('使用供应商配置')]));
       for (const value of choices) select.appendChild(SafeDOM.el('option', { value }, [value]));
       const defaultValue = fields[name]?.value ?? '';
       const desired = saved?.[name] ?? defaultValue;
@@ -1648,7 +1712,7 @@ class WorkbenchView {
       document.getElementById(name === 'resolution' ? 'item-resolution' : 'item-aspect-ratio').style.display = visible ? 'block' : 'none';
     }
     const count = Object.keys(this.settingsEditor.overrides({ validate: false })).length;
-    SafeDOM.setText(this.overrideCount, count ? `${count} 项临时覆盖` : '使用供应商配置');
+    SafeDOM.setText(this.overrideCount, count ? t('{v0} 项临时覆盖', { v0: count }) : t('使用供应商配置'));
   }
 
   syncParameterDialogButton(hasAdvancedParameters) {
@@ -1665,7 +1729,7 @@ class WorkbenchView {
     const dialog = { candidate, fields, editor: null, feedback: null };
     this.parameterDialog = dialog;
     Modal.openCustom({
-      title: `供应商生成参数 · ${candidate.model || candidate.provider}`,
+      title: t('供应商生成参数 · {v0}', { v0: candidate.model || candidate.provider }),
       variant: 'parameters',
       onClose: () => {
         if (this.parameterDialog !== dialog) return;
@@ -1674,14 +1738,14 @@ class WorkbenchView {
       },
       renderBody: (body) => {
         body.appendChild(SafeDOM.el('p', {className: 'field-hint parameter-dialog-description'}, [
-          '勾选要临时覆盖的参数，保存并应用后生效。按浏览器记忆当前模型，不修改供应商配置。'
+          t('勾选要临时覆盖的参数，保存并应用后生效。按浏览器记忆当前模型，不修改供应商配置。')
         ]));
         dialog.feedback = SafeDOM.el('p', {className: 'field-hint parameter-dialog-feedback', role: 'status', 'aria-live': 'polite'});
         const grid = SafeDOM.el('div', {id: 'provider-parameters-grid', className: 'provider-parameters-grid'});
         body.appendChild(dialog.feedback);
         body.appendChild(grid);
         dialog.editor = new GenerationSettingsEditor(grid, () => {
-          SafeDOM.setText(dialog.feedback, '修改尚未应用，请点击保存并应用。');
+          SafeDOM.setText(dialog.feedback, t('修改尚未应用，请点击保存并应用。'));
           dialog.feedback.classList.remove('parameter-dialog-feedback--error');
         });
         dialog.editor.render(fields, committed);
@@ -1691,17 +1755,17 @@ class WorkbenchView {
           type: 'button', id: 'btn-reset-provider-parameters', className: 'comic-btn comic-btn--outline parameter-dialog-reset',
           onClick: () => {
             dialog.editor.render(fields, {});
-            SafeDOM.setText(dialog.feedback, '已在草稿中恢复默认参数，保存后才会应用。');
+            SafeDOM.setText(dialog.feedback, t('已在草稿中恢复默认参数，保存后才会应用。'));
             dialog.feedback.classList.remove('parameter-dialog-feedback--error');
           }
-        }, ['恢复默认参数']));
+        }, [t('恢复默认参数')]));
         footer.appendChild(SafeDOM.el('button', {
           type: 'button', className: 'comic-btn comic-btn--outline', dataset: {dialogInitialFocus: ''}, onClick: cancel
-        }, ['取消']));
+        }, [t('取消')]));
         footer.appendChild(SafeDOM.el('button', {
           type: 'button', id: 'btn-apply-provider-parameters', className: 'comic-btn comic-btn--cta',
           onClick: () => this.applyParameterDialog(dialog, confirm)
-        }, ['保存并应用']));
+        }, [t('保存并应用')]));
       }
     });
     this.syncParameterDialogButton(true);
@@ -1711,7 +1775,7 @@ class WorkbenchView {
     if (this.destroyed || this.parameterDialog !== dialog) return;
     if (!this.formAvailable || this.activeCandidate !== dialog.candidate || this.selectedModel() !== dialog.candidate) {
       this.closeParameterDialog();
-      Toast.warning('模型已变化，请重新打开参数弹窗。');
+      Toast.warning(t('模型已变化，请重新打开参数弹窗。'));
       return;
     }
     try {
@@ -1727,7 +1791,7 @@ class WorkbenchView {
     this.updateReferenceCounter();
     this.rememberParameters();
     confirm();
-    Toast.success('已应用临时生成参数。');
+    Toast.success(t('已应用临时生成参数。'));
   }
 
   closeParameterDialog() {
@@ -1766,12 +1830,12 @@ class WorkbenchView {
 
   addBatchItem(initialName = '', initialPrompt = '', initialCount = 1) {
     if (this.store.batchItems.length >= this.batchMaxTasks) {
-      Toast.warning(`批量任务数不能超过 ${this.batchMaxTasks}`);
+      Toast.warning(t('批量任务数不能超过 {v0}', { v0: this.batchMaxTasks }));
       return;
     }
     this.batchCounter++;
     const itemId = `batch_item_${this.batchCounter}`;
-    const name = initialName || `子任务 ${this.batchCounter}`;
+    const name = initialName || t('子任务 {v0}', { v0: this.batchCounter });
     const item = {
       id: itemId,
       name,
@@ -1794,14 +1858,14 @@ class WorkbenchView {
       type: 'text',
       className: 'comic-input batch-item-name',
       value: item.name,
-      placeholder: '子任务名称',
+      placeholder: t('子任务名称'),
       maxlength: '64',
       onInput: (e) => {
         item.name = e.target.value;
       }
     });
 
-    const countWrap = SafeDOM.el('div', { className: 'batch-item-count-wrap' }, ['张数:']);
+    const countWrap = SafeDOM.el('div', { className: 'batch-item-count-wrap' }, [t('张数:')]);
     const countInput = SafeDOM.el('input', {
       type: 'number',
       className: 'comic-input batch-item-count',
@@ -1833,7 +1897,7 @@ class WorkbenchView {
       className: 'comic-input comic-textarea',
       rows: '2',
       maxlength: '2000',
-      placeholder: '子任务提示词...',
+      placeholder: t('子任务提示词...'),
       value: item.prompt,
       onInput: (e) => {
         item.prompt = e.target.value;
@@ -1863,7 +1927,7 @@ class WorkbenchView {
 
     if (total > this.batchBudgetLimit) {
       this.batchBudgetInfo.classList.add('batch-budget-indicator--danger');
-      Toast.warning(`总预算消耗 ${total} 张超出上限 ${this.batchBudgetLimit} 张`);
+      Toast.warning(t('总预算消耗 {v0} 张超出上限 {v1} 张', { v0: total, v1: this.batchBudgetLimit }));
     } else {
       this.batchBudgetInfo.classList.remove('batch-budget-indicator--danger');
     }
@@ -1914,22 +1978,22 @@ class WorkbenchView {
       const isLocalBlob = item.type === 'upload' && typeof item.previewUrl === 'string' && item.previewUrl.startsWith('blob:');
       if (!isLocalBlob && !SafeDOM.isSafeImageName(item.name)) return;
 
-      const imgEl = SafeDOM.el('img', { alt: '参考图' });
+      const imgEl = SafeDOM.el('img', { alt: t('参考图') });
       if (isLocalBlob) {
         imgEl.src = item.previewUrl;
       } else {
-        installImageFallback(imgEl, itemEl, '图片加载失败或已清理');
+        installImageFallback(imgEl, itemEl, t('图片加载失败或已清理'));
         ImageLoader.attach(imgEl, item.name, { thumb: true });
       }
 
       const badgeEl = SafeDOM.el('span', { className: 'tray-item-badge' }, [
-        item.type === 'upload' ? '本地' : '画廊'
+        item.type === 'upload' ? t('本地') : t('画廊')
       ]);
 
       const removeBtn = SafeDOM.el('button', {
         type: 'button',
         className: 'tray-item-remove',
-        'aria-label': '移除参考图',
+        'aria-label': t('移除参考图'),
         onClick: () => {
           this.removeReferenceItem(index);
         }
@@ -1967,7 +2031,7 @@ class WorkbenchView {
     const remaining = max - current;
 
     if (remaining <= 0) {
-      Toast.warning('参考图数量已达上限');
+      Toast.warning(t('参考图数量已达上限'));
       return;
     }
 
@@ -1976,26 +2040,26 @@ class WorkbenchView {
     try {
       const toUpload = files.slice(0, remaining);
       if (files.length > toUpload.length) {
-        Toast.warning(`仅上传前 ${toUpload.length} 张，参考图数量不能超过 ${max} 张`);
+        Toast.warning(t('仅上传前 {v0} 张，参考图数量不能超过 {v1} 张', { v0: toUpload.length, v1: max }));
       }
       for (const file of toUpload) {
         if (file.type && !['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/bmp'].includes(file.type)) {
-          Toast.error(`文件 ${file.name} 不是支持的图片格式`);
+          Toast.error(t('文件 {v0} 不是支持的图片格式', { v0: file.name }));
           continue;
         }
         if (file.size > this.uploadMaxMb * 1024 * 1024) {
-          Toast.error(`文件 ${file.name} 大小超过 ${this.uploadMaxMb}MB 限制`);
+          Toast.error(t('文件 {v0} 大小超过 {v1}MB 限制', { v0: file.name, v1: this.uploadMaxMb }));
           continue;
         }
 
         try {
-          Toast.info(`正在上传 ${file.name}...`);
+          Toast.info(t('正在上传 {v0}...', { v0: file.name }));
           const res = await BridgeClient.upload('webui/upload', file);
           const names = Array.isArray(res?.names)
             ? res.names.filter((name) => SafeDOM.isSafeImageName(name))
             : [];
           if (names.length === 0) {
-            throw new Error('上传接口未返回有效图片文件名');
+            throw new Error(t('上传接口未返回有效图片文件名'));
           }
           for (const name of names) {
             if (this.store.referenceTray.length >= max) break;
@@ -2010,7 +2074,7 @@ class WorkbenchView {
           }
         } catch (err) {
           console.error('[WorkbenchView] 上传参考图失败:', err);
-          ErrorFeedback.show(err, '上传失败');
+          ErrorFeedback.show(err, t('上传失败'));
         }
       }
     } finally {
@@ -2024,7 +2088,7 @@ class WorkbenchView {
     const current = this.store.referenceTray.length;
     const remaining = max - current;
     if (remaining <= 0) {
-      Toast.warning('参考图数量已达上限');
+      Toast.warning(t('参考图数量已达上限'));
       return;
     }
 
@@ -2052,14 +2116,14 @@ class WorkbenchView {
       }
 
       if (imageItems.length === 0) {
-        Toast.info('历史画廊中暂无可用图片');
+        Toast.info(t('历史画廊中暂无可用图片'));
         return;
       }
 
       const selectedNames = new Set();
 
       Modal.openCustom({
-        title: `从历史画廊拾取参考图 (最多可选 ${remaining} 张)`,
+        title: t('从历史画廊拾取参考图 (最多可选 {v0} 张)', { v0: remaining }),
         renderBody: (container) => {
           const grid = SafeDOM.el('div', {
             style: {
@@ -2076,15 +2140,15 @@ class WorkbenchView {
             const card = SafeDOM.el('button', {
               type: 'button',
               className: 'gallery-picker-item',
-              'aria-label': `选择第 ${index + 1} 张参考图`,
+              'aria-label': t('选择第 {v0} 张参考图', { v0: index + 1 }),
               'aria-pressed': 'false'
             });
 
             const img = SafeDOM.el('img', {
-              alt: '历史参考图',
+              alt: t('历史参考图'),
               style: { width: '100%', height: '100%', objectFit: 'cover' }
             });
-            installImageFallback(img, card, '图片加载失败或已清理');
+            installImageFallback(img, card, t('图片加载失败或已清理'));
             ImageLoader.attach(img, item.imageName, { thumb: true });
 
             const checkBadge = SafeDOM.el('span', {
@@ -2113,7 +2177,7 @@ class WorkbenchView {
                 card.setAttribute('aria-pressed', 'false');
               } else {
                 if (selectedNames.size >= remaining) {
-                  Toast.warning(`单次最多还能选择 ${remaining} 张参考图`);
+                  Toast.warning(t('单次最多还能选择 {v0} 张参考图', { v0: remaining }));
                   return;
                 }
                 selectedNames.add(item.imageName);
@@ -2135,7 +2199,7 @@ class WorkbenchView {
             type: 'button',
             className: 'comic-btn comic-btn--outline',
             onClick: onCancel
-          }, ['取消']);
+          }, [t('取消')]);
 
           const confirmBtn = SafeDOM.el('button', {
             type: 'button',
@@ -2152,7 +2216,7 @@ class WorkbenchView {
               this.renderReferenceTray();
               onConfirm();
             }
-          }, ['确认添加选中项']);
+          }, [t('确认添加选中项')]);
 
           footer.appendChild(cancelBtn);
           footer.appendChild(confirmBtn);
@@ -2160,27 +2224,27 @@ class WorkbenchView {
       });
     } catch (err) {
       console.error('[WorkbenchView] 获取画廊列表失败:', err);
-      ErrorFeedback.show(err, '获取画廊图片失败');
+      ErrorFeedback.show(err, t('获取画廊图片失败'));
     }
   }
 
   // 外部直接添加画廊参考图（从画廊卡片操作触发）
   addGalleryReference(imageName) {
     if (!this.formAvailable) {
-      Toast.warning('当前没有可用的图像生成供应商');
+      Toast.warning(t('当前没有可用的图像生成供应商'));
       return false;
     }
     if (!SafeDOM.isSafeImageName(imageName)) {
-      Toast.error('图片文件名无效，无法设为参考图');
+      Toast.error(t('图片文件名无效，无法设为参考图'));
       return false;
     }
     if (this.store.referenceTray.some((item) => item.type === 'gallery' && item.name === imageName)) {
-      Toast.info('该图片已在参考图托盘中');
+      Toast.info(t('该图片已在参考图托盘中'));
       return false;
     }
     const max = this.getMaxReferenceImages();
     if (this.store.referenceTray.length >= max) {
-      Toast.warning('参考图数量已达上限');
+      Toast.warning(t('参考图数量已达上限'));
       return false;
     }
     this.store.referenceTray.push({
@@ -2190,7 +2254,7 @@ class WorkbenchView {
       previewUrl: ''
     });
     this.renderReferenceTray();
-    Toast.success('已添加到参考图托盘');
+    Toast.success(t('已添加到参考图托盘'));
     return true;
   }
 
@@ -2253,8 +2317,8 @@ class WorkbenchView {
     this.updateReferenceCounter();
     this.rememberParameters();
     this.promptInput.focus();
-    if (fellBack) Toast.warning('已回填可用参数；部分历史设置已失效或不受当前模型支持');
-    else Toast.info('已回填历史任务参数');
+    if (fellBack) Toast.warning(t('已回填可用参数；部分历史设置已失效或不受当前模型支持'));
+    else Toast.info(t('已回填历史任务参数'));
   }
 
   async submit() {
@@ -2268,23 +2332,23 @@ class WorkbenchView {
 
     if (!isBatch) {
       if (!promptVal) {
-        Toast.warning('请输入提示词');
+        Toast.warning(t('请输入提示词'));
         this.promptInput.focus();
         return;
       }
     } else {
       if (this.store.batchItems.length === 0) {
-        Toast.warning('请至少添加一个批量子任务');
+        Toast.warning(t('请至少添加一个批量子任务'));
         return;
       }
       for (const item of this.store.batchItems) {
         if (!item.prompt || !item.prompt.trim()) {
-          Toast.warning(`子任务 "${item.name}" 缺少提示词`);
+          Toast.warning(t('子任务 "{v0}" 缺少提示词', { v0: item.name }));
           return;
         }
       }
       batchPayload = this.store.batchItems.map((it) => ({
-        name: it.name.trim() || '子任务',
+        name: it.name.trim() || t('子任务'),
         prompt: it.prompt.trim(),
         image_count: it.image_count || 1
       }));
@@ -2304,7 +2368,7 @@ class WorkbenchView {
     const imageCount = Number(this.inputImageCount.value);
     const maximumCount = Number(this.inputImageCount.max) || 10;
     if (!Number.isSafeInteger(imageCount) || imageCount < 1 || imageCount > maximumCount) {
-      Toast.warning(`单任务张数必须是 1 到 ${maximumCount} 的整数`);
+      Toast.warning(t('单任务张数必须是 1 到 {v0} 的整数', { v0: maximumCount }));
       this.inputImageCount.focus();
       return;
     }
@@ -2337,14 +2401,14 @@ class WorkbenchView {
 
     this.isSubmitting = true;
     this.updateReferenceCounter();
-    SafeDOM.setText(this.submitBtnText, '正在提交任务...');
+    SafeDOM.setText(this.submitBtnText, t('正在提交任务...'));
 
     try {
       const res = await BridgeClient.post('webui/generate', payload);
       if (res?.warning) {
         Toast.warning(res.warning, 5000);
       }
-      Toast.success('任务已成功提交入队');
+      Toast.success(t('任务已成功提交入队'));
 
       const newJobId = res?.job_id;
       if (newJobId) {
@@ -2356,11 +2420,11 @@ class WorkbenchView {
       }
     } catch (err) {
       console.error('[WorkbenchView] 提交生成任务失败:', err);
-      ErrorFeedback.show(err, '提交失败');
+      ErrorFeedback.show(err, t('提交失败'));
     } finally {
       this.isSubmitting = false;
       this.updateReferenceCounter();
-      SafeDOM.setText(this.submitBtnText, '立即生成图像');
+      SafeDOM.setText(this.submitBtnText, t('立即生成图像'));
     }
   }
 
@@ -2404,10 +2468,10 @@ class ProgressView {
         const records = await BridgeClient.get('webui/jobs');
         if (Array.isArray(records)) {
           this.store.applySnapshot(records);
-          Toast.success('任务状态已刷新');
+          Toast.success(t('任务状态已刷新'));
         }
       } catch (err) {
-        ErrorFeedback.show(err, '刷新任务状态失败');
+        ErrorFeedback.show(err, t('刷新任务状态失败'));
       }
     });
   }
@@ -2499,15 +2563,15 @@ class ProgressView {
     });
     const dot = SafeDOM.el('span', { className: 'status-dot' });
     const textMap = {
-      queued: '排队中',
-      running: '进行中',
-      succeeded: '已完成',
-      partial_success: '部分成功',
-      failed: '失败',
-      interrupted: '已中断'
+      queued: t('排队中'),
+      running: t('进行中'),
+      succeeded: t('已完成'),
+      partial_success: t('部分成功'),
+      failed: t('失败'),
+      interrupted: t('已中断')
     };
     pill.appendChild(dot);
-    pill.appendChild(SafeDOM.text(textMap[status] || status || '未知状态'));
+    pill.appendChild(SafeDOM.text(textMap[status] || status || t('未知状态')));
     return pill;
   }
 
@@ -2530,9 +2594,9 @@ class ProgressView {
     const idSpan = SafeDOM.el('button', {
       type: 'button',
       className: 'job-id-text',
-      'aria-label': '复制 Job ID',
+      'aria-label': t('复制 Job ID'),
       onClick: () => {
-        void Clipboard.copy(record.job_id, `已复制 Job ID: ${record.job_id}`);
+        void Clipboard.copy(record.job_id, t('已复制 Job ID: {v0}', { v0: record.job_id }));
       }
     }, [record.job_id]);
     const copyIcon = SafeDOM.el('span', { className: 'btn-icon' });
@@ -2578,18 +2642,18 @@ class ProgressView {
     // 元数据行
     const metaRow = SafeDOM.el('div', { className: 'job-meta-row' });
     const p = { ...record.params, ...SafeDOM.displayRoute(record) };
-    if (p.provider) metaRow.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [`供应商: ${p.provider}`]));
-    if (p.model) metaRow.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [`模型: ${p.model}`]));
-    if (p.resolution) metaRow.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [`分辨率: ${p.resolution}`]));
-    if (p.aspect_ratio) metaRow.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [`比例: ${p.aspect_ratio}`]));
-    metaRow.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [`张数: ${record.generated_images || 0} / ${record.requested_images || 1}`]));
+    if (p.provider) metaRow.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [t('供应商: {v0}', { v0: p.provider })]));
+    if (p.model) metaRow.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [t('模型: {v0}', { v0: p.model })]));
+    if (p.resolution) metaRow.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [t('分辨率: {v0}', { v0: p.resolution })]));
+    if (p.aspect_ratio) metaRow.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [t('比例: {v0}', { v0: p.aspect_ratio })]));
+    metaRow.appendChild(SafeDOM.el('span', { className: 'meta-pill' }, [t('张数: {v0} / {v1}', { v0: record.generated_images || 0, v1: record.requested_images || 1 })]));
     card.appendChild(metaRow);
 
     if (record.status === 'running' && record.preview) {
       const preview = SafeDOM.previewImage(record.preview);
       if (preview) {
         card.appendChild(SafeDOM.el('div', {className: 'job-preview'}, [
-          SafeDOM.el('p', {}, ['生成预览 · 正在等待完整图片']), preview
+          SafeDOM.el('p', {}, [t('生成预览 · 正在等待完整图片')]), preview
         ]));
       }
     }
@@ -2600,16 +2664,16 @@ class ProgressView {
       : [];
     if (sourceUrls.length > 0) {
       const urlBox = SafeDOM.el('div', { className: 'job-source-urls' });
-      urlBox.appendChild(SafeDOM.el('div', { className: 'job-source-urls-title' }, ['源图片链接']));
+      urlBox.appendChild(SafeDOM.el('div', { className: 'job-source-urls-title' }, [t('源图片链接')]));
       sourceUrls.forEach((url, idx) => {
         const row = SafeDOM.el('div', { className: 'job-source-url-row' });
         row.appendChild(SafeDOM.el('code', { className: 'job-source-url', title: url }, [url]));
         row.appendChild(SafeDOM.el('button', {
           type: 'button',
           className: 'comic-btn comic-btn--sm comic-btn--outline',
-          'aria-label': `复制源链接 ${idx + 1}`,
-          onClick: () => Clipboard.copy(url, '源链接已复制')
-        }, ['复制']));
+          'aria-label': t('复制源链接 {v0}', { v0: idx + 1 }),
+          onClick: () => Clipboard.copy(url, t('源链接已复制'))
+        }, [t('复制')]));
         urlBox.appendChild(row);
       });
       card.appendChild(urlBox);
@@ -2625,7 +2689,7 @@ class ProgressView {
         const thumbItem = SafeDOM.el('button', {
           type: 'button',
           className: 'job-thumb-item',
-          'aria-label': `查看生成结果 ${idx + 1}`,
+          'aria-label': t('查看生成结果 {v0}', { v0: idx + 1 }),
           onClick: () => {
             const previewItems = safeImages.map((name) => ({
               imageName: name,
@@ -2644,9 +2708,9 @@ class ProgressView {
         });
         const img = SafeDOM.el('img', {
           loading: 'lazy',
-          alt: '生成结果'
+          alt: t('生成结果')
         });
-        installImageFallback(img, thumbItem, '图片加载失败或已清理');
+        installImageFallback(img, thumbItem, t('图片加载失败或已清理'));
         ImageLoader.attach(img, imgName, { thumb: true });
         thumbItem.appendChild(img);
         thumbsGrid.appendChild(thumbItem);
@@ -2657,7 +2721,7 @@ class ProgressView {
     // 错误面板
     if (record.error) {
       const errBox = SafeDOM.el('div', { className: 'job-error-box' });
-      const errTitle = SafeDOM.el('div', { className: 'job-error-title' }, ['执行失败详情']);
+      const errTitle = SafeDOM.el('div', { className: 'job-error-title' }, [t('执行失败详情')]);
       const errText = SafeDOM.el('div', {}, [record.error]);
       errBox.appendChild(errTitle);
       errBox.appendChild(errText);
@@ -2712,13 +2776,13 @@ class ProgressView {
     const header = SafeDOM.el('div', { className: 'job-header' });
     const headerLeft = SafeDOM.el('div', { className: 'job-header-left' });
 
-    const batchTag = SafeDOM.el('span', { className: 'job-source-tag' }, ['批量聚合任务']);
+    const batchTag = SafeDOM.el('span', { className: 'job-source-tag' }, [t('批量聚合任务')]);
     const idSpan = SafeDOM.el('button', {
       type: 'button',
       className: 'job-id-text',
-      'aria-label': '复制 Job ID',
+      'aria-label': t('复制 Job ID'),
       onClick: () => {
-        void Clipboard.copy(parent.job_id, `已复制 Job ID: ${parent.job_id}`);
+        void Clipboard.copy(parent.job_id, t('已复制 Job ID: {v0}', { v0: parent.job_id }));
       }
     }, [parent.job_id]);
 
@@ -2758,8 +2822,8 @@ class ProgressView {
     const progressInfoRow = SafeDOM.el('div', {
       style: { display: 'flex', justifyContent: 'space-between', fontSize: '12px', fontWeight: 'bold' }
     }, [
-      SafeDOM.el('span', {}, [`子任务项: ${children.length} 个`]),
-      SafeDOM.el('span', {}, [`完成进度: ${totalGenerated} / ${totalRequested} 张 (${percent}%)`])
+      SafeDOM.el('span', {}, [t('子任务项: {v0} 个', { v0: children.length })]),
+      SafeDOM.el('span', {}, [t('完成进度: {v0} / {v1} 张 ({v2}%)', { v0: totalGenerated, v1: totalRequested, v2: percent })])
     ]);
     card.appendChild(progressInfoRow);
 
@@ -2780,7 +2844,7 @@ class ProgressView {
       'aria-expanded': 'false',
       'aria-controls': childrenListId
     });
-    const toggleTitle = SafeDOM.el('span', {}, [`查看 ${children.length} 个子任务详情`]);
+    const toggleTitle = SafeDOM.el('span', {}, [t('查看 {v0} 个子任务详情', { v0: children.length })]);
     const toggleIcon = SafeDOM.el('span', { className: 'btn-icon' });
     SafeDOM.setSvgIcon(toggleIcon, 'chevronDown');
     toggleHeader.appendChild(toggleTitle);
@@ -2825,7 +2889,7 @@ class ProgressView {
           const thumb = SafeDOM.el('button', {
             type: 'button',
             className: 'job-thumb-item',
-            'aria-label': `查看子任务结果 ${idx + 1}`,
+            'aria-label': t('查看子任务结果 {v0}', { v0: idx + 1 }),
             onClick: () => {
               const previewItems = safeChildImages.map((name) => ({
                 imageName: name,
@@ -2843,9 +2907,9 @@ class ProgressView {
           });
           const image = SafeDOM.el('img', {
             loading: 'lazy',
-            alt: '子任务结果'
+            alt: t('子任务结果')
           });
-          installImageFallback(image, thumb, '图片加载失败或已清理');
+          installImageFallback(image, thumb, t('图片加载失败或已清理'));
           ImageLoader.attach(image, imgName, { thumb: true });
           thumb.appendChild(image);
           cThumbs.appendChild(thumb);
@@ -2862,14 +2926,14 @@ class ProgressView {
           type: 'button',
           className: 'comic-btn comic-btn--sm comic-btn--outline',
           onClick: () => this.onSetReference?.(safeChildImages[0])
-        }, ['设为参考图']);
+        }, [t('设为参考图')]);
         childActions.appendChild(childReferenceBtn);
       }
       const childReuseBtn = SafeDOM.el('button', {
         type: 'button',
         className: 'comic-btn comic-btn--sm comic-btn--outline',
         onClick: () => this.onRefillRequest?.(child.prompt, child.params, child)
-      }, ['再次生成']);
+      }, [t('再次生成')]);
       childActions.appendChild(childReuseBtn);
       childItem.appendChild(childActions);
       childrenList.appendChild(childItem);
@@ -2973,7 +3037,7 @@ class GalleryView {
           this.store.selectedGalleryJobs.add(item.job_id);
         }
         if (reachedLimit) {
-          Toast.warning(`单次最多选择 ${this.maxSelection} 个历史任务`);
+          Toast.warning(t('单次最多选择 {v0} 个历史任务', { v0: this.maxSelection }));
         }
       } else {
         items.forEach((it) => this.store.selectedGalleryJobs.delete(it.job_id));
@@ -3029,7 +3093,7 @@ class GalleryView {
     } catch (err) {
       if (requestId !== this.fetchCounter) return;
       console.error('[GalleryView] 拉取画廊数据失败:', err);
-      ErrorFeedback.show(err, '拉取历史画廊数据失败');
+      ErrorFeedback.show(err, t('拉取历史画廊数据失败'));
     }
   }
 
@@ -3060,7 +3124,7 @@ class GalleryView {
     const { items, page, size, total } = this.store.galleryData;
     const maxPage = Math.max(1, Math.ceil(total / size));
 
-    SafeDOM.setText(this.paginationInfo, `第 ${page} 页 / 共 ${maxPage} 页 (总数 ${total})`);
+    SafeDOM.setText(this.paginationInfo, t('第 {v0} 页 / 共 {v1} 页 (总数 {v2})', { v0: page, v1: maxPage, v2: total }));
     this.btnPagePrev.disabled = page <= 1;
     this.btnPageNext.disabled = page >= maxPage;
 
@@ -3068,10 +3132,10 @@ class GalleryView {
       this.grid.replaceChildren();
       const hasFilters = Object.entries(this.store.galleryQuery)
         .some(([key, value]) => !['page', 'size'].includes(key) && Boolean(value));
-      SafeDOM.setText(this.emptyTitle, hasFilters ? '未找到匹配的生成任务' : '这里会收下你的每一次灵感');
+      SafeDOM.setText(this.emptyTitle, hasFilters ? t('未找到匹配的生成任务') : t('这里会收下你的每一次灵感'));
       SafeDOM.setText(
         this.emptyDescription,
-        hasFilters ? '请调整筛选条件或点击重置后重试。' : '还没有历史作品。在工作台生成第一幅图像，就可以在这里查看与管理。'
+        hasFilters ? t('请调整筛选条件或点击重置后重试。') : t('还没有历史作品。在工作台生成第一幅图像，就可以在这里查看与管理。')
       );
       this.emptyTip.style.display = 'flex';
       this.updateSelectionUI();
@@ -3097,13 +3161,13 @@ class GalleryView {
     const checkbox = SafeDOM.el('input', {
       type: 'checkbox',
       className: 'comic-checkbox gallery-card-checkbox',
-      'aria-label': '选择历史任务',
+      'aria-label': t('选择历史任务'),
       onChange: (e) => {
         if (e.target.checked) {
           if (this.store.selectedGalleryJobs.size >= this.maxSelection
               && !this.store.selectedGalleryJobs.has(item.job_id)) {
             e.target.checked = false;
-            Toast.warning(`单次最多选择 ${this.maxSelection} 个历史任务`);
+            Toast.warning(t('单次最多选择 {v0} 个历史任务', { v0: this.maxSelection }));
           } else {
             this.store.selectedGalleryJobs.add(item.job_id);
           }
@@ -3126,16 +3190,16 @@ class GalleryView {
       ? SafeDOM.el('button', {
           type: 'button',
           className: 'gallery-card-img-wrap',
-          'aria-label': '查看大图'
+          'aria-label': t('查看大图')
         })
       : SafeDOM.el('div', { className: 'gallery-card-img-wrap' });
 
     if (firstImgName) {
       const img = SafeDOM.el('img', {
         loading: 'lazy',
-        alt: '画廊图片'
+        alt: t('画廊图片')
       });
-      installImageFallback(img, imgWrap, '图片加载失败或已清理');
+      installImageFallback(img, imgWrap, t('图片加载失败或已清理'));
       ImageLoader.attach(img, firstImgName, { thumb: true });
 
       imgWrap.addEventListener('click', () => {
@@ -3156,7 +3220,7 @@ class GalleryView {
       imgWrap.appendChild(img);
     } else {
       const placeholder = SafeDOM.el('div', { className: 'comic-img-placeholder' });
-      const label = SafeDOM.el('span', {}, ['暂无生成图片']);
+      const label = SafeDOM.el('span', {}, [t('暂无生成图片')]);
       placeholder.appendChild(label);
       imgWrap.appendChild(placeholder);
     }
@@ -3164,7 +3228,7 @@ class GalleryView {
 
     // 信息区
     const info = SafeDOM.el('div', { className: 'gallery-card-info' });
-    const promptEl = SafeDOM.el('div', { className: 'gallery-card-prompt' }, [item.prompt || '（历史图片，无提示词记录）']);
+    const promptEl = SafeDOM.el('div', { className: 'gallery-card-prompt' }, [item.prompt || t('（历史图片，无提示词记录）')]);
 
     const meta = SafeDOM.el('div', { className: 'gallery-card-meta' });
     const sourceEl = SafeDOM.el('span', {}, [`[${SafeDOM.sourceLabel(item.source, item.caller)}]`]);
@@ -3190,15 +3254,15 @@ class GalleryView {
       const btnDownload = SafeDOM.el('button', {
         type: 'button',
         className: 'comic-btn comic-btn--outline',
-        title: '下载原图',
-        'aria-label': '下载原图',
+        title: t('下载原图'),
+        'aria-label': t('下载原图'),
         onClick: async (e) => {
           e.stopPropagation();
           try {
             await BridgeClient.download(`webui/image/${encodeURIComponent(firstImgName)}`, { download: '1' }, firstImgName);
-            Toast.success('已发起图片下载');
+            Toast.success(t('已发起图片下载'));
           } catch (err) {
-            ErrorFeedback.show(err, '下载失败');
+            ErrorFeedback.show(err, t('下载失败'));
           }
         }
       });
@@ -3212,11 +3276,11 @@ class GalleryView {
     const btnCopy = SafeDOM.el('button', {
       type: 'button',
       className: 'comic-btn comic-btn--outline',
-      title: '复制提示词',
-      'aria-label': '复制提示词',
+      title: t('复制提示词'),
+      'aria-label': t('复制提示词'),
       onClick: async (e) => {
         e.stopPropagation();
-        await Clipboard.copy(item.prompt || '', '提示词已复制到剪贴板');
+        await Clipboard.copy(item.prompt || '', t('提示词已复制到剪贴板'));
       }
     });
     const cpIcon = SafeDOM.el('span', { className: 'btn-icon' });
@@ -3228,8 +3292,8 @@ class GalleryView {
     const btnReuse = SafeDOM.el('button', {
       type: 'button',
       className: 'comic-btn comic-btn--outline',
-      title: item.prompt ? '回填参数再次生成' : '历史图片无提示词记录，无法回填',
-      'aria-label': '再次生成',
+      title: item.prompt ? t('回填参数再次生成') : t('历史图片无提示词记录，无法回填'),
+      'aria-label': t('再次生成'),
       disabled: !item.prompt,
       onClick: (e) => {
         e.stopPropagation();
@@ -3248,8 +3312,8 @@ class GalleryView {
       const btnRef = SafeDOM.el('button', {
         type: 'button',
         className: 'comic-btn comic-btn--outline',
-        title: '设为工作台参考图',
-        'aria-label': '设为工作台参考图',
+        title: t('设为工作台参考图'),
+        'aria-label': t('设为工作台参考图'),
         onClick: (e) => {
           e.stopPropagation();
           if (typeof this.onSetReference === 'function') {
@@ -3267,14 +3331,14 @@ class GalleryView {
     const btnDel = SafeDOM.el('button', {
       type: 'button',
       className: 'comic-btn comic-btn--danger',
-      title: '删除记录与图片',
-      'aria-label': '删除记录与图片',
+      title: t('删除记录与图片'),
+      'aria-label': t('删除记录与图片'),
       onClick: async (e) => {
         e.stopPropagation();
         const ok = await Modal.confirm({
-          title: '确认删除该任务记录？',
-          content: `删除后将彻底清理服务器磁盘中的原始图片（Job: ${item.job_id}），不可恢复。`,
-          confirmText: '确认删除',
+          title: t('确认删除该任务记录？'),
+          content: t('删除后将彻底清理服务器磁盘中的原始图片（Job: {v0}），不可恢复。', { v0: item.job_id }),
+          confirmText: t('确认删除'),
           danger: true
         });
         if (ok) {
@@ -3296,9 +3360,9 @@ class GalleryView {
     if (count === 0) return;
 
     const ok = await Modal.confirm({
-      title: '批量删除确认',
-      content: `您已选中 ${count} 个历史任务，删除将彻底清理服务器磁盘中的原始图片文件，且不可恢复。确认继续？`,
-      confirmText: '确认删除',
+      title: t('批量删除确认'),
+      content: t('您已选中 {v0} 个历史任务，删除将彻底清理服务器磁盘中的原始图片文件，且不可恢复。确认继续？', { v0: count }),
+      confirmText: t('确认删除'),
       danger: true
     });
 
@@ -3314,7 +3378,7 @@ class GalleryView {
     ));
     if (normalizedJobIds.length === 0) return;
     if (normalizedJobIds.length > this.maxSelection) {
-      Toast.error(`单次最多删除 ${this.maxSelection} 个历史任务`);
+      Toast.error(t('单次最多删除 {v0} 个历史任务', { v0: this.maxSelection }));
       return;
     }
     try {
@@ -3323,11 +3387,11 @@ class GalleryView {
       const failed = Array.isArray(res?.failed) ? res.failed : [];
 
       if (deleted.length > 0) {
-        Toast.success(`成功删除 ${deleted.length} 个历史任务`);
+        Toast.success(t('成功删除 {v0} 个历史任务', { v0: deleted.length }));
       }
       if (failed.length > 0) {
-        const details = failed.map((entry) => `${entry?.job_id || '未知任务'}(${entry?.error || '未知错误'})`);
-        Toast.warning(`部分删除失败: ${details.join(', ')}`);
+        const details = failed.map((entry) => t('{v0}({v1})', { v0: entry?.job_id || t('未知任务'), v1: entry?.error || t('未知错误') }));
+        Toast.warning(t('部分删除失败: {v0}', { v0: details.join(', ') }));
       }
 
       for (const id of deleted) {
@@ -3337,7 +3401,7 @@ class GalleryView {
       await this.fetchGallery();
     } catch (err) {
       console.error('[GalleryView] 删除任务失败:', err);
-      ErrorFeedback.show(err, '删除失败');
+      ErrorFeedback.show(err, t('删除失败'));
     }
   }
 
@@ -3414,9 +3478,9 @@ class LimitsView {
     this.reloadButton.disabled = this.loading || this.saving || unavailable;
     this.editor.disabled = !this.loaded || this.loading || this.saving || unavailable;
     SafeDOM.setText(this.dirtyLabel, this.dirty
-      ? '有未保存的草稿 · 切换页签会保留，关闭页面会丢失。'
-      : (this.loaded ? '与服务器配置一致' : '尚未加载可编辑配置'));
-    SafeDOM.setText(this.saveButton, this.saving ? '保存中…' : '保存限流配置');
+      ? t('有未保存的草稿 · 切换页签会保留，关闭页面会丢失。')
+      : (this.loaded ? t('与服务器配置一致') : t('尚未加载可编辑配置')));
+    SafeDOM.setText(this.saveButton, this.saving ? t('保存中…') : t('保存限流配置'));
   }
 
   accept(payload) {
@@ -3453,9 +3517,9 @@ class LimitsView {
     const migration = payload.migration || {};
     const notices = [];
     if (migration.message) notices.push(String(migration.message));
-    else if (migration.pending) notices.push('存在启用的未迁移规则，聊天请求已暂停；请完成迁移后保存。');
+    else if (migration.pending) notices.push(t('存在启用的未迁移规则，聊天请求已暂停；请完成迁移后保存。'));
     if (Number(migration.cooldown_until) > Date.now() / 1000) {
-      notices.push(`冷却至 ${new Date(migration.cooldown_until * 1000).toLocaleString()}（服务器状态，以实际请求为准）。`);
+      notices.push(t('冷却至 {v0}（服务器状态，以实际请求为准）。', { v0: new Date(migration.cooldown_until * 1000).toLocaleString() }));
     }
     SafeDOM.setText(this.migrationLabel, notices.join(' '));
     this.migrationLabel.hidden = !notices.length;
@@ -3466,25 +3530,25 @@ class LimitsView {
     if (this.destroyed || this.loading || this.saving) return;
     if (!BridgeClient.isAvailable()) {
       this.loaded = false;
-      this.notice('页面桥接不可用，请在 AstrBot Dashboard 中打开 Studio。', true);
+      this.notice(t('页面桥接不可用，请在 AstrBot Dashboard 中打开 Studio。'), true);
       this.updateState();
       return;
     }
     const id = ++this.requestId;
     this.loading = true;
     this.closePicker();
-    this.notice('正在加载服务器限流配置…');
+    this.notice(t('正在加载服务器限流配置…'));
     this.updateState();
     try {
       const payload = await BridgeClient.get('webui/limits');
       if (this.destroyed || id !== this.requestId) return;
       this.accept(payload);
-      this.notice('配置已加载。修改后请显式保存。');
+      this.notice(t('配置已加载。修改后请显式保存。'));
     } catch (error) {
       if (this.destroyed || id !== this.requestId) return;
       this.loaded = false;
       console.warn('[LimitsView] 加载失败:', error);
-      this.notice('限流配置加载失败，保存已禁用；现有草稿保留，请重新加载。', true);
+      this.notice(t('限流配置加载失败，保存已禁用；现有草稿保留，请重新加载。'), true);
     } finally {
       if (!this.destroyed && id === this.requestId) {
         this.loading = false;
@@ -3501,34 +3565,34 @@ class LimitsView {
 
   validate() {
     if (!['none', 'whitelist', 'blacklist'].includes(this.draft.group_limit_mode)) {
-      throw new Error('请选择群限制模式。');
+      throw new Error(t('请选择群限制模式。'));
     }
     if (this.draft.group_limit_list.length > 1000 || this.draft.group_limit_list.some(id =>
       typeof id !== 'string' || !id.trim() || [...id].length > 1024 || /[\x00-\x1f\x7f]/.test(id))) {
-      throw new Error('群号列表最多 1000 项，每项须为不含控制字符的非空群号，最多 1024 字符。');
+      throw new Error(t('群号列表最多 1000 项，每项须为不含控制字符的非空群号，最多 1024 字符。'));
     }
     const rules = this.draft.rate_limit_rules;
-    if (rules.length > 100) throw new Error('最多允许 100 条指定会话规则。');
-    const entries = [['全局限流', this.draft.global_rate_limit], ['默认会话限流', this.draft.default_rate_limit],
-      ...rules.map((rule, index) => [`规则 ${index + 1}`, rule])];
+    if (rules.length > 100) throw new Error(t('最多允许 100 条指定会话规则。'));
+    const entries = [[t('全局限流'), this.draft.global_rate_limit], [t('默认会话限流'), this.draft.default_rate_limit],
+      ...rules.map((rule, index) => [t('规则 {v0}', { v0: index + 1 }), rule])];
     for (const [name, rate] of entries) {
-      if (typeof rate.enabled !== 'boolean') throw new Error(`${name}：请选择启停状态。`);
-      for (const [key, max, label] of [['period_seconds', 604800, '周期'], ['max_requests', 10000, '次数']]) {
+      if (typeof rate.enabled !== 'boolean') throw new Error(t('{v0}：请选择启停状态。', { v0: name }));
+      for (const [key, max, label] of [['period_seconds', 604800, t('周期')], ['max_requests', 10000, t('次数')]]) {
         const value = Number(rate[key]);
         if (!Number.isInteger(value) || value < 1 || value > max) {
-          throw new Error(`${name}：${label}须为 1–${max} 的整数。`);
+          throw new Error(t('{v0}：{v1}须为 1–{v2} 的整数。', { v0: name, v1: label, v2: max }));
         }
       }
     }
     rules.forEach((rule, index) => {
       if (typeof rule.rule_name !== 'string' || !rule.rule_name.trim() || [...rule.rule_name].length > 100) {
-        throw new Error(`规则 ${index + 1}：名称须为 1–100 个字符。`);
+        throw new Error(t('规则 {v0}：名称须为 1–100 个字符。', { v0: index + 1 }));
       }
       if (rule.umos.length > 500 || !rule.umos.every(LimitsView.validUmo)) {
-        throw new Error(`规则 ${index + 1}：最多 500 个完整 UMO，每个不超过 1024 字符；请检查格式。`);
+        throw new Error(t('规则 {v0}：最多 500 个完整 UMO，每个不超过 1024 字符；请检查格式。', { v0: index + 1 }));
       }
       if (rule.enabled && rule.group_ids?.length) {
-        throw new Error(`规则 ${index + 1}：启用的旧群号规则尚未迁移，聊天请求将保持暂停。请选择非空 UMO 并点击“确认迁移”，或明确停用此规则后保存。`);
+        throw new Error(t('规则 {v0}：启用的旧群号规则尚未迁移，聊天请求将保持暂停。请选择非空 UMO 并点击“确认迁移”，或明确停用此规则后保存。', { v0: index + 1 }));
       }
     });
   }
@@ -3547,20 +3611,20 @@ class LimitsView {
     this.saving = true;
     this.closePicker();
     this.updateState();
-    this.notice('正在保存…');
+    this.notice(t('正在保存…'));
     try {
       const payload = await BridgeClient.post('webui/limits', {revision: this.revision, limits});
       if (this.destroyed || id !== this.requestId) return;
       this.accept(payload);
-      this.notice('限流配置已保存。');
+      this.notice(t('限流配置已保存。'));
     } catch (error) {
       if (this.destroyed || id !== this.requestId) return;
       console.warn('[LimitsView] 保存失败:', error);
       const status = Number(error?.status ?? error?.statusCode ?? error?.status_code ?? error?.code ?? error?.response?.status);
       this.conflict = status === 409 || /\b409\b|conflict|revision|配置.*(?:变更|冲突|过期|更新)/i.test(String(error?.message || ''));
       this.notice(this.conflict
-        ? '服务器配置已变更（409），草稿完整保留。请先核对草稿，再点击“重新加载服务器配置”；不会自动重试或覆盖。'
-        : '保存失败，草稿已保留。请检查规则、迁移状态与连接后重试。', true);
+        ? t('服务器配置已变更（409），草稿完整保留。请先核对草稿，再点击“重新加载服务器配置”；不会自动重试或覆盖。')
+        : t('保存失败，草稿已保留。请检查规则、迁移状态与连接后重试。'), true);
     } finally {
       if (!this.destroyed && id === this.requestId) {
         this.saving = false;
@@ -3589,46 +3653,46 @@ class LimitsView {
     const enabled = SafeDOM.el('input', {type: 'checkbox', dataset: {scope, field: 'enabled'}});
     enabled.checked = rate.enabled === true;
     return SafeDOM.el('div', {className: 'limits-rate-fields'}, [
-      SafeDOM.el('label', {className: 'limits-check'}, [enabled, '启用']),
-      ...[['period_seconds', '周期（秒）', 604800], ['max_requests', '最大次数', 10000]].map(([key, label, max]) =>
+      SafeDOM.el('label', {className: 'limits-check'}, [enabled, t('启用')]),
+      ...[['period_seconds', t('周期（秒）'), 604800], ['max_requests', t('最大次数'), 10000]].map(([key, label, max]) =>
         this.field(label, SafeDOM.el('input', {type: 'number', className: 'comic-input', min: 1, max, step: 1,
           value: rate[key], required: '', dataset: {scope, field: key}})))
     ]);
   }
 
   groupAccessCard() {
-    const mode = SafeDOM.el('select', {className: 'comic-select', 'aria-label': '群限制模式', dataset: {accessField: 'group_limit_mode'}},
-      [['none', '不限制'], ['whitelist', '白名单'], ['blacklist', '黑名单']].map(([value, label]) => SafeDOM.el('option', {value}, [label])));
+    const mode = SafeDOM.el('select', {className: 'comic-select', 'aria-label': t('群限制模式'), dataset: {accessField: 'group_limit_mode'}},
+      [['none', t('不限制')], ['whitelist', t('白名单')], ['blacklist', t('黑名单')]].map(([value, label]) => SafeDOM.el('option', {value}, [label])));
     mode.value = this.draft.group_limit_mode;
     const list = SafeDOM.el('textarea', {className: 'comic-input', rows: 4, spellcheck: 'false',
-      placeholder: '每行一个群号，不填写 UMO', dataset: {accessField: 'group_limit_list'}});
+      placeholder: t('每行一个群号，不填写 UMO'), dataset: {accessField: 'group_limit_list'}});
     list.value = this.draft.group_limit_list.join('\n');
     this.groupListTitle = SafeDOM.el('span', {className: 'form-label'});
     this.groupAccessNote = SafeDOM.el('p', {className: 'field-hint', role: 'status'});
     this.updateGroupAccessNote();
     return SafeDOM.el('section', {className: 'comic-card limits-card limits-card--access'}, [
       SafeDOM.el('div', {className: 'section-heading'}, [SafeDOM.el('span', {className: 'section-number'}, ['01']),
-        SafeDOM.el('h3', {className: 'card-title'}, ['群限制与黑白名单'])]),
+        SafeDOM.el('h3', {className: 'card-title'}, [t('群限制与黑白名单')])]),
       SafeDOM.el('div', {className: 'limits-access-fields'}, [
-        this.field('群限制模式', mode), SafeDOM.el('label', {className: 'form-item'}, [this.groupListTitle, list])]),
-      this.groupAccessNote, SafeDOM.el('p', {className: 'field-hint'}, ['按群号控制访问；私聊和 Studio 不受群名单影响，周期限流仍按 UMO 独立计数。'])
+        this.field(t('群限制模式'), mode), SafeDOM.el('label', {className: 'form-item'}, [this.groupListTitle, list])]),
+      this.groupAccessNote, SafeDOM.el('p', {className: 'field-hint'}, [t('按群号控制访问；私聊和 Studio 不受群名单影响，周期限流仍按 UMO 独立计数。')])
     ]);
   }
 
   updateGroupAccessNote() {
     const mode = this.draft.group_limit_mode;
     const count = this.draft.group_limit_list.length;
-    SafeDOM.setText(this.groupListTitle, mode === 'whitelist' ? '白名单群号' : mode === 'blacklist' ? '黑名单群号' : '群号列表（暂不生效）');
-    const hint = mode === 'none' ? '不限制群访问；切换模式会保留名单。'
-      : mode === 'whitelist' ? (count ? '仅允许名单中的群使用，其他群静默拒绝。' : '白名单为空，沿用原行为：所有群均可使用。')
-      : (count ? '禁止名单中的群使用。' : '黑名单为空，未禁止任何群。');
-    SafeDOM.setText(this.groupAccessNote, `${hint} 已填 ${count} / 1000 个群号，每行一个。`);
+    SafeDOM.setText(this.groupListTitle, mode === 'whitelist' ? t('白名单群号') : mode === 'blacklist' ? t('黑名单群号') : t('群号列表（暂不生效）'));
+    const hint = mode === 'none' ? t('不限制群访问；切换模式会保留名单。')
+      : mode === 'whitelist' ? (count ? t('仅允许名单中的群使用，其他群静默拒绝。') : t('白名单为空，沿用原行为：所有群均可使用。'))
+      : (count ? t('禁止名单中的群使用。') : t('黑名单为空，未禁止任何群。'));
+    SafeDOM.setText(this.groupAccessNote, t('{v0} 已填 {v1} / 1000 个群号，每行一个。', { v0: hint, v1: count }));
   }
 
   render(focusAction, focusIndex) {
     this.closePicker();
-    const cards = [['global_rate_limit', '02', '全局限流', '命令、LLM 与 Studio 生成共享此额度；会话规则不能绕过全局限制。'],
-      ['default_rate_limit', '03', '默认会话限流', '未命中指定规则的会话使用此额度，每个会话分别计数。']].map(([key, number, title, hint]) =>
+    const cards = [['global_rate_limit', '02', t('全局限流'), t('命令、LLM 与 Studio 生成共享此额度；会话规则不能绕过全局限制。')],
+      ['default_rate_limit', '03', t('默认会话限流'), t('未命中指定规则的会话使用此额度，每个会话分别计数。')]].map(([key, number, title, hint]) =>
       SafeDOM.el('section', {className: 'comic-card limits-card'}, [
         SafeDOM.el('div', {className: 'section-heading'}, [SafeDOM.el('span', {className: 'section-number'}, [number]),
           SafeDOM.el('h3', {className: 'card-title'}, [title])]),
@@ -3639,38 +3703,38 @@ class LimitsView {
     this.draft.rate_limit_rules.forEach((rule, index) => this.rulesList.appendChild(this.ruleRow(rule, index)));
     cards.push(SafeDOM.el('section', {className: 'comic-card limits-card limits-card--rules'}, [
       SafeDOM.el('div', {className: 'section-heading'}, [SafeDOM.el('span', {className: 'section-number'}, ['04']),
-        SafeDOM.el('h3', {className: 'card-title'}, ['指定会话规则'])]),
-      SafeDOM.el('p', {className: 'field-hint'}, ['按列表顺序匹配，首条命中的启用规则生效。最多 100 条，每条最多 500 个 UMO。']),
-      this.rulesList, this.button('添加规则', 'add-rule', null, 'plus', this.draft.rate_limit_rules.length >= 100)
+        SafeDOM.el('h3', {className: 'card-title'}, [t('指定会话规则')])]),
+      SafeDOM.el('p', {className: 'field-hint'}, [t('按列表顺序匹配，首条命中的启用规则生效。最多 100 条，每条最多 500 个 UMO。')]),
+      this.rulesList, this.button(t('添加规则'), 'add-rule', null, 'plus', this.draft.rate_limit_rules.length >= 100)
     ]));
     this.editor.replaceChildren(...cards);
     if (focusAction) this.editor.querySelector(`[data-limits-action="${focusAction}"][data-index="${focusIndex ?? ''}"]`)?.focus();
   }
 
   ruleRow(rule, index) {
-    const title = SafeDOM.el('h4', {}, [`规则 ${index + 1}`]);
-    const name = this.field('规则名称', SafeDOM.el('input', {type: 'text', className: 'comic-input', value: rule.rule_name,
+    const title = SafeDOM.el('h4', {}, [t('规则 {v0}', { v0: index + 1 })]);
+    const name = this.field(t('规则名称'), SafeDOM.el('input', {type: 'text', className: 'comic-input', value: rule.rule_name,
       dataset: {scope: String(index), field: 'rule_name'}}));
     const row = SafeDOM.el('article', {className: 'limits-rule', dataset: {ruleIndex: index}}, [
       SafeDOM.el('div', {className: 'limits-toolbar'}, [title,
         SafeDOM.el('div', {className: 'limits-actions'}, [
-          this.button('上移', 'up-rule', index, 'chevronUp', index === 0),
-          this.button('下移', 'down-rule', index, 'chevronDown', index === this.draft.rate_limit_rules.length - 1),
-          this.button('删除规则', 'delete-rule', index, 'trash')])]),
+          this.button(t('上移'), 'up-rule', index, 'chevronUp', index === 0),
+          this.button(t('下移'), 'down-rule', index, 'chevronDown', index === this.draft.rate_limit_rules.length - 1),
+          this.button(t('删除规则'), 'delete-rule', index, 'trash')])]),
       name, this.rateFields(rule, String(index))
     ]);
     if (rule.group_ids?.length) {
       row.appendChild(SafeDOM.el('div', {className: 'limits-notice limits-notice--warning'}, [
-        SafeDOM.el('p', {}, [`旧群号待迁移：${rule.group_ids.join('、')}`]),
-        SafeDOM.el('p', {}, ['旧群号不会自动转换或清除。启用的未迁移规则会暂停聊天请求，保存也会被拒绝。请选择非空完整 UMO，再明确确认迁移；停用不会清除旧群号。']),
-        this.button('确认迁移', 'migrate-rule', index, 'check', !rule.umos.length)
+        SafeDOM.el('p', {}, [t('旧群号待迁移：{v0}', { v0: rule.group_ids.join('、') })]),
+        SafeDOM.el('p', {}, [t('旧群号不会自动转换或清除。启用的未迁移规则会暂停聊天请求，保存也会被拒绝。请选择非空完整 UMO，再明确确认迁移；停用不会清除旧群号。')]),
+        this.button(t('确认迁移'), 'migrate-rule', index, 'check', !rule.umos.length)
       ]));
     }
-    row.appendChild(SafeDOM.el('p', {className: 'field-hint'}, ['UMO 留空 = 所有会话分别计数，不是全局共享额度。']));
+    row.appendChild(SafeDOM.el('p', {className: 'field-hint'}, [t('UMO 留空 = 所有会话分别计数，不是全局共享额度。')]));
     const selected = SafeDOM.el('div', {className: 'limits-selected', dataset: {selectedIndex: index}});
     this.renderSelected(selected, rule, index);
     row.appendChild(selected);
-    const choose = this.button('选择会话 / 手动粘贴 UMO', 'choose-sessions', index, 'search');
+    const choose = this.button(t('选择会话 / 手动粘贴 UMO'), 'choose-sessions', index, 'search');
     choose.setAttribute('aria-expanded', 'false');
     choose.setAttribute('aria-controls', `limits-picker-${index}`);
     row.appendChild(choose);
@@ -3679,14 +3743,14 @@ class LimitsView {
   }
 
   renderSelected(container, rule, index) {
-    container.replaceChildren(SafeDOM.el('p', {className: 'field-hint'}, [`已选 ${rule.umos.length} / 500 个会话`]));
+    container.replaceChildren(SafeDOM.el('p', {className: 'field-hint'}, [t('已选 {v0} / 500 个会话', { v0: rule.umos.length })]));
     rule.umos.forEach((umo) => {
-      const remove = this.button('移除', 'remove-umo', index, 'x');
+      const remove = this.button(t('移除'), 'remove-umo', index, 'x');
       remove.dataset.umo = umo;
-      remove.setAttribute('aria-label', `移除会话 ${umo}`);
+      remove.setAttribute('aria-label', t('移除会话 {v0}', { v0: umo }));
       container.appendChild(SafeDOM.el('div', {className: 'limits-session'}, [
         SafeDOM.el('div', {className: 'limits-session-identity'}, [
-          SafeDOM.el('span', {}, [this.sessionNames.get(umo) || '名称未知（保留完整身份）']),
+          SafeDOM.el('span', {}, [this.sessionNames.get(umo) || t('名称未知（保留完整身份）')]),
           SafeDOM.el('code', {}, [umo])]), remove]));
     });
   }
@@ -3752,9 +3816,9 @@ class LimitsView {
     if (button === this.saveButton) { await this.save(); return; }
     if (button === this.reloadButton) {
       if (this.loading || this.saving) return;
-      const confirmed = await Modal.confirm({title: '重新加载服务器配置？',
-        content: this.dirty ? '当前未保存草稿将被丢弃，以服务器配置替换。请先核对或复制需要保留的内容。' : '将重新读取服务器配置。',
-        confirmText: '确认重新加载', danger: this.dirty});
+      const confirmed = await Modal.confirm({title: t('重新加载服务器配置？'),
+        content: this.dirty ? t('当前未保存草稿将被丢弃，以服务器配置替换。请先核对或复制需要保留的内容。') : t('将重新读取服务器配置。'),
+        confirmText: t('确认重新加载'), danger: this.dirty});
       if (confirmed && !this.destroyed) await this.load();
       return;
     }
@@ -3771,7 +3835,7 @@ class LimitsView {
     }
     if (action === 'paste-umos' && this.picker) {
       const values = this.picker.manual.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-      if (!values.length) { this.pickerNotice('请每行粘贴一个完整 UMO。'); return; }
+      if (!values.length) { this.pickerNotice(t('请每行粘贴一个完整 UMO。')); return; }
       if (this.addUmos(rule, values)) this.picker.manual.value = '';
       this.refreshSelected(index);
       return;
@@ -3783,7 +3847,7 @@ class LimitsView {
       return;
     }
     if (action === 'add-rule' && rules.length < 100) {
-      rules.push({rule_name: `规则 ${rules.length + 1}`, enabled: false, period_seconds: 60, max_requests: 5, umos: []});
+      rules.push({rule_name: t('规则 {v0}', { v0: rules.length + 1 }), enabled: false, period_seconds: 60, max_requests: 5, umos: []});
       this.render('choose-sessions', rules.length - 1);
     } else if (action === 'delete-rule' && rule) {
       rules.splice(index, 1);
@@ -3795,25 +3859,25 @@ class LimitsView {
       this.render('choose-sessions', next);
     } else if (action === 'migrate-rule' && rule?.group_ids?.length && rule.umos.length) {
       if (!rule.umos.every(LimitsView.validUmo) || rule.umos.length > 500) {
-        this.notice('请先修正 UMO 格式与数量，再确认迁移。', true);
+        this.notice(t('请先修正 UMO 格式与数量，再确认迁移。'), true);
         return;
       }
       rule.group_ids = [];
       this.render('choose-sessions', index);
-      this.notice('已在草稿中确认迁移，旧群号仅在保存成功后清除。');
+      this.notice(t('已在草稿中确认迁移，旧群号仅在保存成功后清除。'));
     }
     this.updateState();
   }
 
   addUmos(rule, values) {
     if (!values.every(LimitsView.validUmo)) {
-      this.pickerNotice('UMO 格式无效：需要 Platform:GroupMessage|FriendMessage|OtherMessage:非空会话段，每个最多 1024 字符。不会按群号拼接。');
+      this.pickerNotice(t('UMO 格式无效：需要 Platform:GroupMessage|FriendMessage|OtherMessage:非空会话段，每个最多 1024 字符。不会按群号拼接。'));
       return false;
     }
     const merged = [...new Set([...rule.umos, ...values])];
-    if (merged.length > 500) { this.pickerNotice('每条规则最多选择 500 个 UMO，本次添加未生效。'); return false; }
+    if (merged.length > 500) { this.pickerNotice(t('每条规则最多选择 500 个 UMO，本次添加未生效。')); return false; }
     rule.umos = merged;
-    this.pickerNotice('已填入草稿，尚未保存。翻页或筛选不会丢失已选会话。');
+    this.pickerNotice(t('已填入草稿，尚未保存。翻页或筛选不会丢失已选会话。'));
     return true;
   }
 
@@ -3837,24 +3901,24 @@ class LimitsView {
     if (this.picker?.index === index) { this.closePicker(true); return; }
     this.closePicker();
     const host = this.editor.querySelector(`[data-picker-index="${index}"]`);
-    const search = SafeDOM.el('input', {type: 'search', className: 'comic-input', placeholder: '名称或完整 UMO', 'aria-label': '搜索会话'});
-    const type = SafeDOM.el('select', {className: 'comic-select', dataset: {sessionFilter: 'type'}, 'aria-label': '会话类型'},
-      [['all', '全部类型'], ['group', '群聊'], ['private', '私聊']].map(([value, label]) => SafeDOM.el('option', {value}, [label])));
-    const platform = SafeDOM.el('input', {type: 'text', className: 'comic-input', placeholder: '全部平台', 'aria-label': '平台标识（精确筛选）'});
+    const search = SafeDOM.el('input', {type: 'search', className: 'comic-input', placeholder: t('名称或完整 UMO'), 'aria-label': t('搜索会话')});
+    const type = SafeDOM.el('select', {className: 'comic-select', dataset: {sessionFilter: 'type'}, 'aria-label': t('会话类型')},
+      [['all', t('全部类型')], ['group', t('群聊')], ['private', t('私聊')]].map(([value, label]) => SafeDOM.el('option', {value}, [label])));
+    const platform = SafeDOM.el('input', {type: 'text', className: 'comic-input', placeholder: t('全部平台'), 'aria-label': t('平台标识（精确筛选）')});
     const results = SafeDOM.el('div', {className: 'limits-session-results'});
     const feedback = SafeDOM.el('p', {className: 'field-hint', role: 'status', 'aria-live': 'polite'});
     const resultStatus = SafeDOM.el('p', {className: 'field-hint', role: 'status', 'aria-live': 'polite'});
     const pageLabel = SafeDOM.el('span', {className: 'field-hint'});
-    const previous = this.button('上一页', 'previous-sessions', index, null, true);
-    const next = this.button('下一页', 'next-sessions', index, null, true);
+    const previous = this.button(t('上一页'), 'previous-sessions', index, null, true);
+    const next = this.button(t('下一页'), 'next-sessions', index, null, true);
     const manual = SafeDOM.el('textarea', {className: 'comic-input', rows: 3, spellcheck: 'false',
-      placeholder: '每行一个完整 UMO，例如 platform:GroupMessage:session:id', 'aria-label': '手动粘贴完整 UMO'});
+      placeholder: t('每行一个完整 UMO，例如 platform:GroupMessage:session:id'), 'aria-label': t('手动粘贴完整 UMO')});
     const form = SafeDOM.el('form', {className: 'limits-search', dataset: {limitsSearch: ''}}, [
-      search, type, platform, SafeDOM.el('button', {type: 'submit', className: 'comic-btn comic-btn--sm'}, ['搜索'])]);
-    host.appendChild(SafeDOM.el('section', {className: 'limits-picker', 'aria-label': '会话多选器'}, [
-      SafeDOM.el('div', {className: 'limits-toolbar'}, [SafeDOM.el('h4', {}, ['选择会话']), this.button('收起', 'close-picker', index, 'x')]),
+      search, type, platform, SafeDOM.el('button', {type: 'submit', className: 'comic-btn comic-btn--sm'}, [t('搜索')])]);
+    host.appendChild(SafeDOM.el('section', {className: 'limits-picker', 'aria-label': t('会话多选器')}, [
+      SafeDOM.el('div', {className: 'limits-toolbar'}, [SafeDOM.el('h4', {}, [t('选择会话')]), this.button(t('收起'), 'close-picker', index, 'x')]),
       form, resultStatus, results, SafeDOM.el('div', {className: 'limits-actions'}, [previous, pageLabel, next]),
-      this.field('手动添加完整 UMO（不接受裸群号）', manual), this.button('添加到已选会话', 'paste-umos', index, 'plus'), feedback
+      this.field(t('手动添加完整 UMO（不接受裸群号）'), manual), this.button(t('添加到已选会话'), 'paste-umos', index, 'plus'), feedback
     ]));
     this.picker = {index, host, search, type, platform, results, feedback, resultStatus, pageLabel, previous, next, manual, page: 1};
     this.editor.querySelector(`[data-limits-action="choose-sessions"][data-index="${index}"]`)?.setAttribute('aria-expanded', 'true');
@@ -3869,7 +3933,7 @@ class LimitsView {
     picker.previous.disabled = true;
     picker.next.disabled = true;
     picker.results.replaceChildren();
-    SafeDOM.setText(picker.resultStatus, '正在加载会话…');
+    SafeDOM.setText(picker.resultStatus, t('正在加载会话…'));
     const params = {page, page_size: 20, search: picker.search.value.trim(), message_type: picker.type.value || 'all', platform: picker.platform.value.trim()};
     try {
       const payload = await BridgeClient.get('webui/sessions', params);
@@ -3879,20 +3943,20 @@ class LimitsView {
       const total = Math.max(0, Number(payload.total) || 0);
       const pageSize = Math.max(1, Number(payload.page_size) || 20);
       const pages = Math.max(1, Math.ceil(total / pageSize));
-      SafeDOM.setText(picker.pageLabel, `第 ${picker.page} / ${pages} 页 · 共 ${total} 个`);
+      SafeDOM.setText(picker.pageLabel, t('第 {v0} / {v1} 页 · 共 {v2} 个', { v0: picker.page, v1: pages, v2: total }));
       SafeDOM.setText(picker.resultStatus, [payload.warning,
-        !payload.available ? '会话列表暂不可用，已选项保留；仍可手动粘贴完整 UMO。' : (!payload.sessions.length ? '没有匹配的会话。' : '勾选即填入草稿；名称仅供辨认，以完整 UMO 为准。')].filter(Boolean).join(' '));
+        !payload.available ? t('会话列表暂不可用，已选项保留；仍可手动粘贴完整 UMO。') : (!payload.sessions.length ? t('没有匹配的会话。') : t('勾选即填入草稿；名称仅供辨认，以完整 UMO 为准。'))].filter(Boolean).join(' '));
       const rule = this.draft.rate_limit_rules[picker.index];
       if (payload.available) {
         payload.sessions.forEach((session) => {
           if (!LimitsView.validUmo(session.umo)) return;
-          this.sessionNames.set(session.umo, String(session.display_name || '未命名会话'));
+          this.sessionNames.set(session.umo, String(session.display_name || t('未命名会话')));
           const input = SafeDOM.el('input', {type: 'checkbox', dataset: {sessionUmo: session.umo}});
           input.checked = rule.umos.includes(session.umo);
           picker.results.appendChild(SafeDOM.el('label', {className: 'limits-session limits-session--choice'}, [input,
             SafeDOM.el('span', {className: 'limits-session-identity'}, [
-              SafeDOM.el('strong', {}, [String(session.display_name || '未命名会话')]),
-              SafeDOM.el('span', {className: 'field-hint'}, [`${session.platform} · ${session.message_type} · 会话 ID：${session.session_id}`]),
+              SafeDOM.el('strong', {}, [String(session.display_name || t('未命名会话'))]),
+              SafeDOM.el('span', {className: 'field-hint'}, [t('{v0} · {v1} · 会话 ID：{v2}', { v0: session.platform, v1: session.message_type, v2: session.session_id })]),
               SafeDOM.el('code', {}, [session.umo])])]));
         });
         picker.previous.disabled = picker.page <= 1;
@@ -3902,7 +3966,7 @@ class LimitsView {
     } catch (error) {
       if (this.destroyed || this.picker !== picker || id !== this.pickerRequestId) return;
       console.warn('[LimitsView] 会话列表加载失败:', error);
-      SafeDOM.setText(picker.resultStatus, '会话列表加载失败，已选项保留。可重新搜索或手动粘贴完整 UMO。');
+      SafeDOM.setText(picker.resultStatus, t('会话列表加载失败，已选项保留。可重新搜索或手动粘贴完整 UMO。'));
     }
   }
 
@@ -3965,6 +4029,12 @@ class StudioApp {
     // 1. 初始化静态图标字典
     SafeDOM.renderStaticIcons(document);
 
+    // 1.5 等待 bridge 初始上下文（语言/主题）到达后再首渲染，避免语言闪变
+    try {
+      await Promise.race([BridgeClient.init(), new Promise((r) => setTimeout(r, 1500))]);
+    } catch (_) { /* bridge 不可用时按默认语言渲染 */ }
+    I18n.sync(BridgeClient.getContext());
+
     // 2. 初始化全局模态框与灯箱
     Toast.init();
     Modal.init();
@@ -4005,13 +4075,13 @@ class StudioApp {
     const providerRoot = document.getElementById('provider-config-root');
     if (providerRoot && window.StudioProviderConfigView) {
       this.providers = new window.StudioProviderConfigView({
-        root: providerRoot, bridge: BridgeClient, dom: SafeDOM, modal: Modal,
+        root: providerRoot, bridge: BridgeClient, dom: SafeDOM, modal: Modal, t: t,
         onSaved: async () => {
           if (!this.destroyed) await this.workbench.loadCapabilities();
         }
       });
     } else if (providerRoot) {
-      providerRoot.textContent = '供应商配置组件未能加载，请刷新 Studio。';
+      providerRoot.textContent = t('供应商配置组件未能加载，请刷新 Studio。');
     }
 
     // 5. 绑定 Tab 切换事件
@@ -4027,9 +4097,9 @@ class StudioApp {
       await BridgeClient.init();
     } catch (e) {
       console.error('[StudioApp] Bridge 初始化失败:', e);
-      this.workbench.showGlobalBanner('未检测到 AstrBot 页面桥接，请在 Dashboard 插件页中打开 Studio');
+      this.workbench.showGlobalBanner(t('未检测到 AstrBot 页面桥接，请在 Dashboard 插件页中打开 Studio'));
       this.workbench.setFormDisabled(true);
-      this.sse.updateStatusIndicator('error', '页面桥接不可用');
+      this.sse.updateStatusIndicator('error', t('页面桥接不可用'));
       return;
     }
 
@@ -4050,11 +4120,11 @@ class StudioApp {
       const missing = (detail.missing_reference_names || []).length;
       const excess = available.length - added;
       const notices = [];
-      if (missing) notices.push(`${missing} 张历史参考图已清理`);
-      if (excess) notices.push(`${excess} 张参考图超出当前模型上限`);
-      if (notices.length) Toast.warning(`${notices.join('；')}，已跳过`);
+      if (missing) notices.push(t('{v0} 张历史参考图已清理', { v0: missing }));
+      if (excess) notices.push(t('{v0} 张参考图超出当前模型上限', { v0: excess }));
+      if (notices.length) Toast.warning(t('{v0}，已跳过', { v0: notices.join('；') }));
     } catch (error) {
-      if (requestId === this.refillRequestId && !this.destroyed) ErrorFeedback.show(error, '读取历史任务失败');
+      if (requestId === this.refillRequestId && !this.destroyed) ErrorFeedback.show(error, t('读取历史任务失败'));
     }
   }
 
@@ -4072,6 +4142,7 @@ class StudioApp {
       if (typeof newCtx?.isDark === 'boolean') {
         applyTheme(newCtx.isDark);
       }
+      I18n.sync(newCtx);
     });
   }
 
