@@ -84,6 +84,21 @@ def _clean_api_keys(value: Any) -> list[str]:
     return [item.strip() for item in value if isinstance(item, str) and item.strip()]
 
 
+def _clean_str_tuple(value: Any) -> tuple[str, ...]:
+    """去空、去重、保序的字符串元组；标量输入视为单项。"""
+
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        return ()
+    items: list[str] = []
+    for item in value:
+        text = str(item or "").strip()
+        if text and text not in items:
+            items.append(text)
+    return tuple(items)
+
+
 def _clean_non_negative_int(value: Any, default: int = 0) -> int:
     if value is None:
         return default
@@ -245,6 +260,7 @@ class PluginConfig:
     enable_smart_retry: bool = True
     total_timeout: int = 120
     scheduler_v2: bool = False
+    scheduler_v2_sessions: tuple[str, ...] = field(default_factory=tuple)
 
     # 服务设置
     napcat_stream_threshold_mb: float = 2.0
@@ -858,6 +874,9 @@ class ConfigLoader:
         config.enable_smart_retry = retry_settings.get("enable_smart_retry", True)
         config.total_timeout = retry_settings.get("total_timeout") or 120
         config.scheduler_v2 = _clean_bool(retry_settings.get("scheduler_v2"), False)
+        config.scheduler_v2_sessions = _clean_str_tuple(
+            retry_settings.get("scheduler_v2_sessions")
+        )
 
         # 服务设置
         service_settings = self.raw_config.get("service_settings") or {}

@@ -2833,8 +2833,14 @@
       "scheduler_v2": {
         "description": "启用 v2 调度器（实验功能）",
         "type": "bool",
-        "hint": "实验功能，默认关闭。开启后命令入口生成任务改走新调度器（任务持久化、deadline 治理）；内联参考图（消息图片、头像等）会先转成临时句柄，带图命令可用",
+        "hint": "实验功能，默认关闭。开启后命令入口全部生成路径（生图/快速模式/改图/表情包/换风格）改走新调度器（任务持久化、deadline 治理）；内联参考图（消息图片、头像等）会先转成临时句柄，带图命令可用",
         "default": false
+      },
+      "scheduler_v2_sessions": {
+        "description": "v2 调度器灰度会话",
+        "type": "list",
+        "hint": "填写会话的 unified_msg_origin（可用 AstrBot /sid 指令查看）。非空时仅这些会话的聊天命令走 v2 调度器，其余会话、WebUI 与 SDK 仍走旧路径；留空时由 scheduler_v2 总开关作用于全部已接入入口",
+        "default": []
       }
     }
   },
