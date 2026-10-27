@@ -165,3 +165,41 @@ async def test_requester_normalized_on_both_sides(tmp_path):
     # user_id 不同仍判越权。
     with pytest.raises(ReferenceAccessDeniedError):
         await store.resolve(ref_id, requester={"user_id": "u2"})
+
+
+@pytest.mark.asyncio
+async def test_tmp_store_eviction_is_scoped_to_requester(tmp_path):
+    store = TmpReferenceStore(
+        _write_cache(tmp_path), max_entries=2, max_entries_per_requester=1
+    )
+    a_first = await store.put(b"a1", "image/png", requester={"user_id": "a"})
+    b_handle = await store.put(b"b1", "image/png", requester={"user_id": "b"})
+    a_second = await store.put(b"a2", "image/png", requester={"user_id": "a"})
+
+    with pytest.raises(ReferenceResolveError):
+        await store.resolve(a_first, requester={"user_id": "a"})
+    assert (await store.resolve(b_handle, requester={"user_id": "b"})).size_bytes == 2
+    assert (await store.resolve(a_second, requester={"user_id": "a"})).size_bytes == 2
+
+
+@pytest.mark.asyncio
+async def test_tmp_store_retained_handle_survives_capacity_and_ttl(tmp_path):
+    now = datetime.now(timezone.utc)
+    store = TmpReferenceStore(
+        _write_cache(tmp_path),
+        max_entries=1,
+        max_entries_per_requester=1,
+        ttl_seconds=10,
+        clock=lambda: now,
+    )
+    handle = await store.put(b"active", "image/png", requester={"user_id": "a"})
+    store.retain(handle)
+
+    with pytest.raises(ReferenceResolveError, match="容量"):
+        await store.put(b"other", "image/png", requester={"user_id": "b"})
+
+    now += timedelta(seconds=11)
+    assert (await store.resolve(handle, requester={"user_id": "a"})).size_bytes == 6
+    store.release(handle)
+    with pytest.raises(ReferenceResolveError):
+        await store.resolve(handle, requester={"user_id": "a"})

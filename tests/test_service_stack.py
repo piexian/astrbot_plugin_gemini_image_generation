@@ -212,6 +212,27 @@ async def test_reference_lease_store_forwards_deadline_and_requester():
 
 
 @pytest.mark.asyncio
+async def test_reference_lease_retains_and_releases_tmp_handle(tmp_path):
+    from tl.core.path_policy import PathPolicy
+    from tl.core.reference_service import ReferenceService
+    from tl.core.remote_fetch import RemoteFetchService
+
+    policy = PathPolicy(())
+    reference_service = ReferenceService(
+        policy, RemoteFetchService(policy), tmp_path / "cache"
+    )
+    handle = await reference_service.ingest(_png_bytes(), requester={"user_id": "u"})
+    ref_id = handle.rsplit(":", 1)[1]
+    store = _ReferenceLeaseStore(reference_service)
+
+    lease = await store.reserve((handle,))
+    assert reference_service._tmp_store._entries[ref_id].leases == 1
+    await lease.release()
+    await lease.release()
+    assert reference_service._tmp_store._entries[ref_id].leases == 0
+
+
+@pytest.mark.asyncio
 async def test_prepare_references_requires_reference_service():
     from tl.core.service import GenerationService
 

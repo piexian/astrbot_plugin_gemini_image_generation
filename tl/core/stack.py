@@ -27,9 +27,24 @@ class _ReferenceLeaseStore:
         self._service = service
 
     async def reserve(self, references: tuple[str, ...]) -> Lease:
-        # 落盘缓存由 cache 目录统一清理，租约无需额外释放动作；
+        retained: list[str] = []
+        try:
+            for reference in references:
+                if self._service.retain_reference(reference):
+                    retained.append(reference)
+        except BaseException:
+            for reference in reversed(retained):
+                self._service.release_reference(reference)
+            raise
+
+        async def release() -> None:
+            for reference in reversed(retained):
+                self._service.release_reference(reference)
+
         # job_id 在持久化 LeaseRecord 时由 scheduler 补齐，此处留空。
-        return Lease(f"reference-{uuid.uuid4().hex}", LeaseKind.REFERENCE, "")
+        return Lease(
+            f"reference-{uuid.uuid4().hex}", LeaseKind.REFERENCE, "", release
+        )
 
     async def resolve(
         self,

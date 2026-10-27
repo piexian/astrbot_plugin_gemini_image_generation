@@ -259,6 +259,22 @@ class ReferenceService:
             _decode_base64(text, "裸 base64", self.max_reference_bytes)
         )
 
+    def retain_reference(self, reference: str) -> bool:
+        """固定 tmp 句柄；非 tmp 引用返回 False。"""
+
+        match = _HANDLE_RE.match(reference)
+        if match is None or match.group(1) != TMP_REFERENCE_KIND:
+            return False
+        self._tmp_store.retain(match.group(2))
+        return True
+
+    def release_reference(self, reference: str) -> None:
+        """释放 retain_reference 固定的一个 tmp 句柄 lease。"""
+
+        match = _HANDLE_RE.match(reference)
+        if match is not None and match.group(1) == TMP_REFERENCE_KIND:
+            self._tmp_store.release(match.group(2))
+
     async def ingest_inline(
         self, references: Sequence[str], *, requester: Mapping[str, str]
     ) -> tuple[str, ...]:

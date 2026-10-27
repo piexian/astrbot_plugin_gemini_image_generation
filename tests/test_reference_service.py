@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -612,6 +613,23 @@ def test_reference_descriptor_not_confused_with_handle():
     assert refs[0]["display"] == handle
     assert "base64" not in encoded
     assert "/" not in refs[0]["display"]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "dAtA:image/png;base64,iVBORw0KGgo=",
+        "iVBORw0KGgo=",
+    ],
+)
+def test_reference_descriptor_never_persists_inline_payload(value):
+    from tl.core.requests import reference_descriptor
+
+    descriptor = reference_descriptor(value)
+
+    assert descriptor["reference_id"].startswith("ref:")
+    assert "iVBORw0KGgo=" not in json.dumps(descriptor)
+    assert "base64," not in json.dumps(descriptor)
 
 
 def test_classify_reference_is_case_insensitive(tmp_path):

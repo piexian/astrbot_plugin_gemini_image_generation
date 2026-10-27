@@ -502,6 +502,59 @@ async def test_original_references_cleared_after_jobs(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_recovery_excludes_tmp_reference_jobs() -> None:
+    from tl.core.recovery import recoverable_jobs
+
+    handle = f"ref:tmp:{'a' * 32}"
+    tmp_payload = Job.create(
+        request(references=(handle,)), job_id="tmp-job"
+    ).to_storage_dict()
+    assert tmp_payload["metadata"]["has_tmp_references"] is True
+    # 旧记录没有 metadata 标记，从描述符 display 推断，也不能进入重放列表。
+    tmp_payload["metadata"] = {}
+    tmp_job = Job.from_dict(tmp_payload)
+    durable_job = Job.from_dict(
+        Job.create(
+            request(references=("/tmp/durable.png",)), job_id="durable-job"
+        ).to_storage_dict()
+    )
+
+    class Store:
+        async def list_jobs(self, states):
+            return [tmp_job, durable_job]
+
+    recovered = await recoverable_jobs(Store())
+
+    assert recovered == [durable_job]
+    assert tmp_job.metadata["has_tmp_references"] is True
+
+
+@pytest.mark.asyncio
+async def test_reference_lease_receives_original_references(tmp_path) -> None:
+    handle = f"ref:tmp:{'b' * 32}"
+
+    class Source:
+        def __init__(self):
+            self.reserved = []
+
+        async def reserve(self, references):
+            self.reserved.append(tuple(references))
+            return FakeReservation()
+
+        async def resolve(self, references, *, deadline_at=None, requester=None):
+            return tuple(f"resolved:{item}" for item in references)
+
+    source = Source()
+    scheduler, _ = make_scheduler(tmp_path, reference_store=source)
+    try:
+        await scheduler.wait((await scheduler.submit(request(references=(handle,)))).job_id)
+    finally:
+        await scheduler.close()
+
+    assert source.reserved == [(handle,)]
+
+
+@pytest.mark.asyncio
 async def test_run_without_registration_resolves_store_descriptors(tmp_path):
     """重启恢复：无内存登记时回退 store 里的脱敏描述符。"""
 

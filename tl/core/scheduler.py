@@ -357,6 +357,15 @@ class JobScheduler:
                         ),
                     )
                 )
+            original_references = self._original_references.get(job_id)
+            reference_job = job
+            if original_references is not None:
+                reference_job = replace(
+                    job,
+                    request=replace(
+                        job.request, reference_images=original_references
+                    ),
+                )
             if job.request.reference_images:
                 leases.add(
                     await self._persist_lease(
@@ -364,7 +373,9 @@ class JobScheduler:
                         await self._deadline_call(
                             job,
                             lambda: self._acquire(
-                                self.reference_store, LeaseKind.REFERENCE, job
+                                self.reference_store,
+                                LeaseKind.REFERENCE,
+                                reference_job,
                             ),
                             "reference acquire",
                         ),
@@ -396,8 +407,7 @@ class JobScheduler:
             )
             # 登记的原始引用优先；无登记（重启恢复）回退 store 描述符。
             resolved = await self._resolve_references(
-                job,
-                self._original_references.get(job_id) or job.request.reference_images,
+                job, original_references or job.request.reference_images
             )
             runtime_job = copy.deepcopy(job)
             runtime_job.request = replace(
