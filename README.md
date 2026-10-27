@@ -27,7 +27,7 @@
 ### 前置要求
 
 - AstrBot 4.10+
-- Python 3.10+
+- Python 3.12+
 - NapCat（目前主要适配 NapCat 平台）
 - QQ 官方机器人 WebSocket（`qq_official`，头像参考已通过真实实例验证）
 
