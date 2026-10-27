@@ -6,8 +6,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-APP = (ROOT / "pages/studio/app.js").read_text(encoding="utf-8")
-HTML = (ROOT / "pages/studio/index.html").read_text(encoding="utf-8")
+APP = (ROOT / "views/studio/app.js").read_text(encoding="utf-8")
+HTML = (ROOT / "views/studio/index.html").read_text(encoding="utf-8")
 
 
 class _PageParser(HTMLParser):
@@ -145,7 +145,8 @@ const BridgeClient = {
 };
 let confirms = 0, confirmation = false;
 const Modal = {confirm: async () => { confirms++; return confirmation; }};
-const sandbox = {Node, document, window, BridgeClient, Modal, console: {warn() {}},
+const t = (key, vars) => vars ? String(key).replace(/\{(\w+)\}/g, (m, k) => (vars[k] === undefined || vars[k] === null ? m : String(vars[k]))) : key;
+const sandbox = {Node, document, window, BridgeClient, Modal, t, console: {warn() {}},
   Store: class {}, SSEController: class {}, StopwatchTimer: class {}};
 vm.createContext(sandbox);
 vm.runInContext(SOURCE + '\nthis.LimitsView = LimitsView; this.StudioApp = StudioApp;', sandbox);

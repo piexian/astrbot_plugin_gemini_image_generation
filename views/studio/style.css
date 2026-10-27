@@ -19,6 +19,7 @@
   /* 功能强调色 */
   --accent: #F18579;     /* 红色：失败态、危险操作 */
   --pop: #FFD93D;        /* 黄色：进行中状态、主 CTA */
+  --pop-glow: rgba(255, 217, 61, 0.8);
   --violet: #DDD4EC;     /* 紫色：来源标记、批量聚合 */
   --ok: #86CF9C;         /* 绿色：成功完成 */
   --warn: #FFC887;       /* 橙色：部分成功 */
@@ -55,7 +56,8 @@
   --control-border: #65616D;
 
   --accent: #FF8585;
-  --pop: #FFD93D;
+  --pop: #D9C87F;
+  --pop-glow: rgba(217, 200, 127, 0.55);
   --violet: #A78BFA;
   --ok: #4ADE80;
   --warn: #FB923C;
@@ -1011,7 +1013,7 @@ code, kbd, samp, pre, .mono {
 
 @keyframes pulse-comic {
   0% {
-    box-shadow: 0 0 0 0 rgba(255, 217, 61, 0.8);
+    box-shadow: 0 0 0 0 var(--pop-glow);
     border-color: var(--ink);
   }
   50% {

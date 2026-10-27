@@ -1,0 +1,10 @@
+{
+  "metadata": {
+    "display_name": "Gemini 图像生成"
+  },
+  "views": {
+    "studio": {
+      "title": "图像生成创作台"
+    }
+  }
+}
