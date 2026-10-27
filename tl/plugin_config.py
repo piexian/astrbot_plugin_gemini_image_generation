@@ -244,6 +244,7 @@ class PluginConfig:
     max_attempts_per_key: int = 3
     enable_smart_retry: bool = True
     total_timeout: int = 120
+    scheduler_v2: bool = False
 
     # 服务设置
     napcat_stream_threshold_mb: float = 2.0
@@ -856,6 +857,7 @@ class ConfigLoader:
         config.max_attempts_per_key = retry_settings.get("max_attempts_per_key") or 3
         config.enable_smart_retry = retry_settings.get("enable_smart_retry", True)
         config.total_timeout = retry_settings.get("total_timeout") or 120
+        config.scheduler_v2 = _clean_bool(retry_settings.get("scheduler_v2"), False)
 
         # 服务设置
         service_settings = self.raw_config.get("service_settings") or {}

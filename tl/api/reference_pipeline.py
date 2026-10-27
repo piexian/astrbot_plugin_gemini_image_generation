@@ -276,7 +276,7 @@ def transcode_to_supported_mime(
         raise APIError(
             f"参考图超过 {max_bytes // (1024 * 1024)}MB 大小限制（{error_label}）",
             None,
-            "invalid_reference_image",
+            "reference_image_too_large",
             retryable=False,
         )
     if mime in supported:
@@ -305,7 +305,7 @@ def transcode_to_supported_mime(
         raise APIError(
             f"参考图转码后超过 {max_bytes // (1024 * 1024)}MB 大小限制（{error_label}）",
             None,
-            "invalid_reference_image",
+            "reference_image_too_large",
             retryable=False,
         )
     logger.info(

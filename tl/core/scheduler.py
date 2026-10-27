@@ -9,6 +9,7 @@ import asyncio
 import copy
 import inspect
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -79,6 +80,14 @@ async def _call(value: Any, *args: Any, **kwargs: Any) -> Any:
     return await result if inspect.isawaitable(result) else result
 
 
+# Router 路径兜底余量：截断由 Router 按自身 deadline 执行，包裹超时留出余量。
+_ROUTER_EXECUTE_GRACE_SECONDS = 1.0
+
+
+# wait() 读回的运行时结果登记容量：按插入顺序淘汰最旧项，保持有界。
+_RUNTIME_RESULT_CAPACITY = 256
+
+
 class JobScheduler:
     def __init__(
         self,
@@ -114,6 +123,13 @@ class JobScheduler:
         self._lock = asyncio.Lock()
         self._heartbeat_task: asyncio.Task[Any] | None = None
         self._cleanup_tasks: set[asyncio.Task[Any]] = set()
+        # 持久化只存脱敏描述符，原始引用归调度器内存持有，随 runtime task
+        # 生命周期清理；登记/读取/清理都在事件循环内串行执行，dict 操作
+        # 原子，无需加锁。
+        self._original_references: dict[str, tuple[str, ...]] = {}
+        # wait() 需要读回未脱敏的运行时结果（存储/快照仍只保留脱敏形态）；
+        # 与 _original_references 相同，仅在事件循环内串行访问。
+        self._runtime_results: OrderedDict[str, GenerationResult] = OrderedDict()
 
     async def submit(self, request: GenerationRequest) -> JobHandle:
         async with self._lock:
@@ -130,6 +146,9 @@ class JobScheduler:
             await self.store.create(job)
             job.transition(JobState.QUEUED)
             job = await self.store.save(job)
+            # 持久化成功后登记原始引用，供 _run 解析回真实输入。
+            if request.reference_images:
+                self._original_references[job.job_id] = request.reference_images
             done = asyncio.Event()
             self._done[job.job_id] = done
             task: asyncio.Task[Any] | None = None
@@ -150,6 +169,7 @@ class JobScheduler:
                     await asyncio.gather(task, return_exceptions=True)
                 self._tasks.pop(job.job_id, None)
                 await self._orphan(job.job_id)
+                self._original_references.pop(job.job_id, None)
                 done.set()
                 raise
             self._ensure_heartbeat()
@@ -177,6 +197,7 @@ class JobScheduler:
 
     def _task_done(self, job_id: str, task: asyncio.Task[Any]) -> None:
         self._tasks.pop(job_id, None)
+        self._original_references.pop(job_id, None)
         event = self._done.get(job_id)
         if event is not None:
             event.set()
@@ -281,14 +302,18 @@ class JobScheduler:
         lease.release_callback = release_and_persist
         return lease
 
-    async def _resolve_references(self, job: Job) -> tuple[str, ...]:
-        if not job.request.reference_images:
+    async def _resolve_references(
+        self, job: Job, references: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        if not references:
             return ()
         if self.reference_store is None or not hasattr(self.reference_store, "resolve"):
             raise RuntimeError("reference resolver 不可用")
 
         async def resolve_all() -> Any:
-            resolved = self.reference_store.resolve(job.request.reference_images)
+            resolved = self.reference_store.resolve(
+                references, deadline_at=job.deadline_at
+            )
             resolved = await resolved if inspect.isawaitable(resolved) else resolved
             if hasattr(resolved, "__aiter__"):
                 return [item async for item in resolved]
@@ -297,7 +322,10 @@ class JobScheduler:
         values = await self._deadline_call(job, resolve_all, "reference resolve")
         if not values:
             raise RuntimeError("reference resolver 返回空结果")
-        return tuple(str(item) for item in values)
+        # resolver 产出 Artifact 时取落盘路径，字符串成员保持原样。
+        return tuple(
+            item.location if hasattr(item, "location") else str(item) for item in values
+        )
 
     async def _run(self, job_id: str) -> None:
         leases = LeaseSet()
@@ -364,17 +392,38 @@ class JobScheduler:
                     ),
                 )
             )
-            resolved = await self._resolve_references(job)
+            # 登记的原始引用优先；无登记（重启恢复）回退 store 描述符。
+            resolved = await self._resolve_references(
+                job,
+                self._original_references.get(job_id) or job.request.reference_images,
+            )
             runtime_job = copy.deepcopy(job)
             runtime_job.request = replace(
                 runtime_job.request, reference_images=resolved
             )
-            result = await dispatch_provider(
-                self.provider,
-                runtime_job,
-                max_attempts=self.max_attempts,
-                backoff=self.retry_backoff,
-            )
+            # Router 专属入口：provider contract 无 execute 方法。
+            if callable(getattr(self.provider, "execute", None)):
+                # retry 与 deadline 截断由 Router 自身持有；包裹仅作兜底，
+                # 留出余量避免与 Router 在同一 deadline 时刻竞争。
+                net = copy.copy(runtime_job)
+                if net.deadline_at is not None:
+                    net.deadline_at = net.deadline_at + timedelta(
+                        seconds=_ROUTER_EXECUTE_GRACE_SECONDS
+                    )
+                result = await self._deadline_call(
+                    net,
+                    lambda: self.provider.execute(
+                        runtime_job.request, deadline_at=runtime_job.deadline_at
+                    ),
+                    "provider execute",
+                )
+            else:
+                result = await dispatch_provider(
+                    self.provider,
+                    runtime_job,
+                    max_attempts=self.max_attempts,
+                    backoff=self.retry_backoff,
+                )
             if self.artifact_store is not None and hasattr(self.artifact_store, "save"):
                 method = self.artifact_store.save
                 parameters = inspect.signature(method).parameters
@@ -398,6 +447,9 @@ class JobScheduler:
             job = await self.store.save(job)
             job.transition(JobState.PARTIAL if result.partial else JobState.SUCCEEDED)
             await self.store.save(job)
+            # 终态落库成功后才登记：并发赢家、失败、取消路径不登记，
+            # 避免 wait() 读回的结果遮蔽 store 里的最终结果。
+            self._remember_runtime_result(job_id, result)
         except asyncio.CancelledError:
             job = await self.store.get(job_id)
             if job is not None and job.state not in TERMINAL_STATES:
@@ -424,7 +476,9 @@ class JobScheduler:
                             data={"error_type": type(error).__name__},
                         )
                     )
-                    job.set_error(type(error).__name__, str(error))
+                    # CoreError 携带公开 code，其余异常回退异常类名。
+                    code = getattr(error, "code", None) or type(error).__name__
+                    job.set_error(str(code), str(error))
                     job.transition(JobState.FAILED)
                     await self.store.save(job)
                 except (StaleJobError, ValueError):
@@ -443,11 +497,24 @@ class JobScheduler:
                 # Lease records retain release_failed/active state for recovery.
                 pass
 
+    def _remember_runtime_result(self, job_id: str, result: GenerationResult) -> None:
+        """登记未脱敏运行时结果供 wait() 读回；超容量按插入顺序淘汰。"""
+
+        self._runtime_results[job_id] = result
+        while len(self._runtime_results) > _RUNTIME_RESULT_CAPACITY:
+            self._runtime_results.popitem(last=False)
+
     async def wait(self, job_id: str, timeout: float | None = None) -> JobResult:
         job = await self.store.get(job_id)
         if job is None:
             raise JobNotFoundError(f"Job 不存在: {job_id}")
-        if job.state not in TERMINAL_STATES:
+        # 成功终态已提交但 runtime task 未收尾时，运行时结果登记可能尚未
+        # 发生：与非终态一样先等任务结束，避免直接返回脱敏结果。
+        pending_registration = (
+            job.state in (JobState.SUCCEEDED, JobState.PARTIAL)
+            and job_id in self._tasks
+        )
+        if job.state not in TERMINAL_STATES or pending_registration:
             if job_id not in self._tasks:
                 raise RecoveryRequiredError(
                     f"Job {job_id} 没有 runtime task，请先恢复 Scheduler"
@@ -460,10 +527,17 @@ class JobScheduler:
             job = await self.store.get(job_id)
             if job is None:
                 raise JobNotFoundError(f"Job 不存在: {job_id}")
+        result = copy.deepcopy(job.result)
+        if (
+            job.state in (JobState.SUCCEEDED, JobState.PARTIAL)
+            and job_id in self._runtime_results
+        ):
+            # 进程内登记的运行时原文优先；条目淘汰或重启恢复回退脱敏结果。
+            result = copy.deepcopy(self._runtime_results[job_id])
         return JobResult(
             job.job_id,
             job.state,
-            copy.deepcopy(job.result),
+            result,
             job.error_code,
             job.error_message,
         )
@@ -502,6 +576,8 @@ class JobScheduler:
                 return
             self._closed = True
             tasks = [task for task in self._tasks.values() if not task.done()]
+            self._original_references.clear()
+            self._runtime_results.clear()
             for task in tasks:
                 task.cancel()
         if tasks:

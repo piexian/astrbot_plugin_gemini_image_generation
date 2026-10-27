@@ -2,8 +2,8 @@
 
 按 scheduler-v2.md 的 Provider contract，对每个候选 provider 按固定顺序执行
 supports -> normalize -> build_request(attempt) -> send -> parse_response；
-Provider 保持纯适配器。本模块尚未接入旧入口，也不改变 dispatch.py 的最小
-调度路径；JobScheduler 切换到 Router 属于后续阶段。
+Provider 保持纯适配器。JobScheduler 检测到 execute 方法即走本 Router；
+尚未接入旧入口，也不改变 dispatch.py 的最小调度路径。
 """
 
 from __future__ import annotations
@@ -249,6 +249,19 @@ class ProviderRouter:
                     if candidate.candidate_id is not None
                     else request.candidate_id
                 ),
+                context={
+                    "candidate_provider": getattr(provider, "route_provider", None),
+                    "candidate_model": getattr(provider, "route_model", None),
+                    "candidate_preferred": (
+                        getattr(provider, "route_provider", None) == request.provider
+                        if request.provider
+                        else (
+                            getattr(provider, "route_model", None) == request.model
+                            if request.model
+                            else True
+                        )
+                    ),
+                },
             )
             built = await _call(provider.build_request, normalized, attempt_input)
             if (
