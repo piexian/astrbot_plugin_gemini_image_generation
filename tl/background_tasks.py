@@ -138,10 +138,26 @@ class BackgroundTaskManager:
                 "failed_items": 0,
                 "current_item": None,
                 "items": [],
+                "delivered_count": 0,
             }
             if plugin_id is not None:
                 record["plugin_id"] = plugin_id
             self._records[task_id] = record
+            await self._save()
+            return copy.deepcopy(record)
+
+    async def record_delivery(self, task_id: str) -> dict[str, Any] | None:
+        """累加一次成功交付计数，仅作查询信息，不拦截任何发送。"""
+        async with self._lock:
+            record = self._records.get(task_id)
+            if record is None:
+                return None
+            try:
+                count = int(record.get("delivered_count") or 0)
+            except (TypeError, ValueError):
+                count = 0
+            record["delivered_count"] = max(count, 0) + 1
+            record["updated_at"] = _timestamp()
             await self._save()
             return copy.deepcopy(record)
 

@@ -173,10 +173,30 @@ async def notify_llm_background_result(
         if not getattr(cron_event, "_has_send_oper", False):
             logger.warning(f"[{scene}] 后台通知 agent 未成功调用发送工具")
             return False
+        await _bump_delivery_count(plugin, task_result, scene=scene)
         return True
     except Exception as e:
         logger.warning(f"[{scene}] 后台结果回灌未送达: {e}")
         return False
+
+
+async def _bump_delivery_count(
+    plugin: Any,
+    task_result: dict[str, Any],
+    *,
+    scene: str,
+) -> None:
+    """回灌 agent 确认调用发送工具后累加交付计数；失败不影响发送结果。"""
+    manager = getattr(plugin, "background_task_manager", None)
+    if manager is None or not hasattr(manager, "record_delivery"):
+        return
+    task_id = str((task_result or {}).get("task_id") or "").strip()
+    if not task_id:
+        return
+    try:
+        await manager.record_delivery(task_id)
+    except Exception as exc:
+        logger.warning(f"[{scene}] 记录交付次数失败: {exc}")
 
 
 async def report_background_failure(

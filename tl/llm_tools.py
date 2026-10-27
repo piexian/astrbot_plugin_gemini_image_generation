@@ -685,6 +685,22 @@ def _create_generation_task(
     return asyncio.create_task(_run_generation())
 
 
+async def _bump_delivery_count(
+    plugin: Any,
+    task_id: str,
+    *,
+    scene: str,
+) -> None:
+    """累加后台任务的成功交付次数；仅记录，绝不拦截发送。"""
+    manager = getattr(plugin, "background_task_manager", None)
+    if manager is None or not hasattr(manager, "record_delivery"):
+        return
+    try:
+        await manager.record_delivery(task_id)
+    except Exception as exc:
+        logger.warning(f"[{scene}] 记录交付次数失败: {exc}")
+
+
 async def _dispatch_generation_result(
     plugin: Any,
     event: Any,
@@ -773,6 +789,8 @@ async def _dispatch_generation_result(
         except Exception as exc:
             logger.warning(f"[{scene}] 发送结果失败: {exc}")
             return False
+        if task_id:
+            await _bump_delivery_count(plugin, task_id, scene=scene)
         return True
 
     error_msg = result_data if isinstance(result_data, str) else "❌ 图像生成失败"
