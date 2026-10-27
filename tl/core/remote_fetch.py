@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import socket
 import time
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlsplit
 
 import aiohttp
+from aiohttp.resolver import ThreadedResolver
 from astrbot.api import logger
 
 from .errors import (
@@ -54,6 +56,24 @@ def _remaining(
         ).total_seconds(),
         0.0,
     )
+
+
+class _PolicyResolver(ThreadedResolver):
+    """把实际连接使用的 DNS 结果交给 PathPolicy 再次校验。"""
+
+    def __init__(self, policy: PathPolicy) -> None:
+        super().__init__()
+        self._policy = policy
+
+    async def resolve(
+        self,
+        host: str,
+        port: int = 0,
+        family: socket.AddressFamily = socket.AF_INET,
+    ):
+        hosts = await super().resolve(host, port, family)
+        self._policy.validate_addresses(host, (item["host"] for item in hosts))
+        return hosts
 
 
 class RemoteFetchService:
@@ -116,7 +136,10 @@ class RemoteFetchService:
         request_headers = dict(headers or {})
         remaining = _remaining(deadline_at, None)
         deadline_mono = time.monotonic() + remaining if remaining is not None else None
-        async with aiohttp.ClientSession(trust_env=False) as session:
+        connector = aiohttp.TCPConnector(resolver=_PolicyResolver(self.policy))
+        async with aiohttp.ClientSession(
+            connector=connector, trust_env=False
+        ) as session:
             for hop in range(self.max_redirects + 1):
                 remaining = _remaining(deadline_at, deadline_mono)
                 if remaining is not None and remaining <= 0:
@@ -190,6 +213,13 @@ class RemoteFetchService:
                                 f"{redact_url(current)}"
                             )
                         return await self._read_body(response, current)
+                except PathPolicyError as exc:
+                    logger.warning(
+                        "远端抓取连接地址被安全策略拒绝: %s", redact_url(current)
+                    )
+                    raise RemoteFetchRejectedError(
+                        f"远端抓取连接地址被安全策略拒绝: {redact_url(current)}"
+                    ) from exc
                 except asyncio.CancelledError:
                     raise
                 except asyncio.TimeoutError as exc:

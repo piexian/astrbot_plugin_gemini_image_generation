@@ -136,7 +136,7 @@ avatar / poster / wallpaper / card / mobile / figure / sticker
 | `max_attempts_per_key` | `3` | 每个密钥最大重试次数 |
 | `enable_smart_retry` | `true` | 按错误类型智能重试 |
 | `total_timeout` | `120` | 单次调用总超时，单位秒 |
-| `scheduler_v2` | `false` | 实验功能：开启后命令入口生成任务改走 v2 调度器（任务持久化、deadline 治理）；暂不支持带参考图的命令，需要带图生成请保持关闭 |
+| `scheduler_v2` | `false` | 实验功能：开启后命令入口生成任务改走 v2 调度器（任务持久化、deadline 治理）；内联参考图（消息图片、头像等）先转临时句柄，带图命令可用 |
 
 ## service_settings
 

@@ -20,6 +20,7 @@ def command_request(
     reference_images: Sequence[str],
     deadline_seconds: float,
     metadata: Mapping[str, Any] | None = None,
+    requester: Mapping[str, str] | None = None,
 ) -> GenerationRequest:
     """把命令入口参数装配为 v2 GenerationRequest；metadata 透传 legacy 专属开关。"""
 
@@ -32,6 +33,7 @@ def command_request(
         aspect_ratio=aspect_ratio,
         reference_images=tuple(reference_images),
         deadline_at=datetime.now(timezone.utc) + timedelta(seconds=deadline_seconds),
+        requester=dict(requester or {}),
         metadata=dict(metadata or {}),
     )
 
@@ -50,7 +52,7 @@ def split_artifacts(artifacts: Sequence[str]) -> tuple[list[str], list[str]]:
 
 
 def apply_result_to_config(config: Any, result: GenerationResult) -> None:
-    """把结果候选标注回写到入口 config，不覆盖已有非空值。"""
+    """把候选标注与 legacy 统计字段回写到入口 config，不覆盖已有非空值。"""
 
     if getattr(config, "successful_provider", None) is None and result.provider:
         config.successful_provider = result.provider
@@ -58,6 +60,20 @@ def apply_result_to_config(config: Any, result: GenerationResult) -> None:
         config.successful_model = result.model
     if getattr(config, "successful_candidate_id", None) is None and result.candidate_id:
         config.successful_candidate_id = result.candidate_id
+    # 统计字段经 result.stats 回写：缺键不动；retry_count 以 0、其余以空为未设置。
+    stats = result.stats or {}
+    retry_count = stats.get("retry_count")
+    if retry_count and not getattr(config, "retry_count", 0):
+        config.retry_count = retry_count
+    retry_note = stats.get("retry_note")
+    if retry_note and not getattr(config, "retry_note", None):
+        config.retry_note = retry_note
+    token_usage = stats.get("token_usage")
+    if token_usage and not getattr(config, "token_usage", None):
+        config.token_usage = dict(token_usage)
+    model_alias = stats.get("successful_model_alias")
+    if model_alias and not getattr(config, "successful_model_alias", None):
+        config.successful_model_alias = model_alias
 
 
 def v2_failure_error(result: Any) -> RuntimeError:

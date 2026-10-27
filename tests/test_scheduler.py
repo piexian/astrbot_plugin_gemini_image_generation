@@ -67,7 +67,7 @@ class FakeLeaseSource:
         self.reservations.append(reservation)
         return reservation
 
-    async def resolve(self, references, *, deadline_at=None):
+    async def resolve(self, references, *, deadline_at=None, requester=None):
         return tuple(f"resolved:{item}" for item in references)
 
 
@@ -427,7 +427,7 @@ class _ReferenceStoreHarness:
     async def reserve(self, references):
         return FakeReservation()
 
-    async def resolve(self, references, *, deadline_at=None):
+    async def resolve(self, references, *, deadline_at=None, requester=None):
         artifacts = [item async for item in self.service.resolve(references)]
         self.resolved_locations.extend(item.location for item in artifacts)
         return artifacts
@@ -502,6 +502,61 @@ async def test_original_references_cleared_after_jobs(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_recovery_excludes_tmp_reference_jobs() -> None:
+    from tl.core.recovery import recoverable_jobs
+
+    handle = f"ref:tmp:{'a' * 32}"
+    tmp_payload = Job.create(
+        request(references=(handle,)), job_id="tmp-job"
+    ).to_storage_dict()
+    assert tmp_payload["metadata"]["has_tmp_references"] is True
+    # 旧记录没有 metadata 标记，从描述符 display 推断，也不能进入重放列表。
+    tmp_payload["metadata"] = {}
+    tmp_job = Job.from_dict(tmp_payload)
+    durable_job = Job.from_dict(
+        Job.create(
+            request(references=("/tmp/durable.png",)), job_id="durable-job"
+        ).to_storage_dict()
+    )
+
+    class Store:
+        async def list_jobs(self, states):
+            return [tmp_job, durable_job]
+
+    recovered = await recoverable_jobs(Store())
+
+    assert recovered == [durable_job]
+    assert tmp_job.metadata["has_tmp_references"] is True
+
+
+@pytest.mark.asyncio
+async def test_reference_lease_receives_original_references(tmp_path) -> None:
+    handle = f"ref:tmp:{'b' * 32}"
+
+    class Source:
+        def __init__(self):
+            self.reserved = []
+
+        async def reserve(self, references):
+            self.reserved.append(tuple(references))
+            return FakeReservation()
+
+        async def resolve(self, references, *, deadline_at=None, requester=None):
+            return tuple(f"resolved:{item}" for item in references)
+
+    source = Source()
+    scheduler, _ = make_scheduler(tmp_path, reference_store=source)
+    try:
+        await scheduler.wait(
+            (await scheduler.submit(request(references=(handle,)))).job_id
+        )
+    finally:
+        await scheduler.close()
+
+    assert source.reserved == [(handle,)]
+
+
+@pytest.mark.asyncio
 async def test_run_without_registration_resolves_store_descriptors(tmp_path):
     """重启恢复：无内存登记时回退 store 里的脱敏描述符。"""
 
@@ -512,7 +567,7 @@ async def test_run_without_registration_resolves_store_descriptors(tmp_path):
         async def reserve(self, references):
             return FakeReservation()
 
-        async def resolve(self, references, *, deadline_at=None):
+        async def resolve(self, references, *, deadline_at=None, requester=None):
             self.inputs.append(tuple(references))
             return tuple(f"resolved:{item}" for item in references)
 
@@ -696,7 +751,7 @@ class DeadlineRecordingResolver:
     async def reserve(self, references):
         return FakeReservation()
 
-    async def resolve(self, references, *, deadline_at=None):
+    async def resolve(self, references, *, deadline_at=None, requester=None):
         self.deadlines.append(deadline_at)
         return tuple(f"resolved:{item}" for item in references)
 
@@ -722,6 +777,44 @@ async def test_reference_resolve_receives_job_deadline(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_reference_resolve_receives_requester(tmp_path):
+    class RequesterRecordingResolver:
+        def __init__(self):
+            self.calls = []
+
+        async def reserve(self, references):
+            return FakeReservation()
+
+        async def resolve(self, references, *, deadline_at=None, requester=None):
+            self.calls.append((deadline_at, dict(requester or {})))
+            return tuple(f"resolved:{item}" for item in references)
+
+    resolver = RequesterRecordingResolver()
+    scheduler, store = make_scheduler(
+        tmp_path, FakeProvider(), reference_store=resolver
+    )
+    try:
+        job_id = (
+            await scheduler.submit(
+                GenerationRequest(
+                    prompt="draw",
+                    source="test",
+                    reference_images=("ref-1",),
+                    deadline_at=datetime.now(timezone.utc) + timedelta(seconds=3.0),
+                    requester={"user_id": "u1", "umo": "g1"},
+                )
+            )
+        ).job_id
+        result = await scheduler.wait(job_id)
+        assert result.state is JobState.SUCCEEDED
+        stored = await store.get(job_id)
+        # scheduler 把 job.requester 与 deadline 一起透传给 reference store。
+        assert resolver.calls == [(stored.deadline_at, {"user_id": "u1", "umo": "g1"})]
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
 async def test_reference_deadline_exhaustion_fails_job(tmp_path):
     class ExhaustedDeadlineResolver:
         """模拟 ReferenceService：deadline 耗尽时抛 ReferenceTimeoutError。"""
@@ -729,7 +822,7 @@ async def test_reference_deadline_exhaustion_fails_job(tmp_path):
         async def reserve(self, references):
             return FakeReservation()
 
-        async def resolve(self, references, *, deadline_at=None):
+        async def resolve(self, references, *, deadline_at=None, requester=None):
             # 真实服务由 fetch 按 deadline 截断后抛 ReferenceTimeoutError，
             # 此处收到 deadline 即模拟耗尽场景。
             if deadline_at is not None:

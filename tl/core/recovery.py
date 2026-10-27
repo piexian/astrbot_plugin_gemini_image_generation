@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .models import Job
+from .models import TMP_REFERENCES_METADATA_KEY, Job
 from .states import JobState
 
 
@@ -15,8 +15,7 @@ async def recoverable_jobs(store: Any) -> list[Job]:
     not replay interrupted/orphaned jobs implicitly; a later policy can choose
     which snapshots to resubmit without inventing a runtime owner.
     """
-
-    return await store.list_jobs(
+    jobs = await store.list_jobs(
         states={
             JobState.ACCEPTED,
             JobState.QUEUED,
@@ -27,3 +26,6 @@ async def recoverable_jobs(store: Any) -> list[Job]:
             JobState.ORPHANED,
         }
     )
+    return [
+        job for job in jobs if not job.metadata.get(TMP_REFERENCES_METADATA_KEY, False)
+    ]

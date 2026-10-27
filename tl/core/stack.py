@@ -27,14 +27,33 @@ class _ReferenceLeaseStore:
         self._service = service
 
     async def reserve(self, references: tuple[str, ...]) -> Lease:
-        # 落盘缓存由 cache 目录统一清理，租约无需额外释放动作；
+        retained: list[str] = []
+        try:
+            for reference in references:
+                if self._service.retain_reference(reference):
+                    retained.append(reference)
+        except BaseException:
+            for reference in reversed(retained):
+                self._service.release_reference(reference)
+            raise
+
+        async def release() -> None:
+            for reference in reversed(retained):
+                self._service.release_reference(reference)
+
         # job_id 在持久化 LeaseRecord 时由 scheduler 补齐，此处留空。
-        return Lease(f"reference-{uuid.uuid4().hex}", LeaseKind.REFERENCE, "")
+        return Lease(f"reference-{uuid.uuid4().hex}", LeaseKind.REFERENCE, "", release)
 
     async def resolve(
-        self, references: tuple[str, ...], *, deadline_at: datetime | None = None
+        self,
+        references: tuple[str, ...],
+        *,
+        deadline_at: datetime | None = None,
+        requester: Mapping[str, str] | None = None,
     ) -> list[Artifact]:
-        resolved = self._service.resolve(references, deadline_at=deadline_at)
+        resolved = self._service.resolve(
+            references, deadline_at=deadline_at, requester=requester
+        )
         return [item async for item in resolved]
 
 
@@ -122,4 +141,4 @@ def build_generation_stack(
     except BaseException:
         store.close_sync()
         raise
-    return GenerationService(scheduler)
+    return GenerationService(scheduler, reference_service)

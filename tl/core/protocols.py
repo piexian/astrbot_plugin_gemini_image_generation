@@ -120,8 +120,32 @@ class ProviderProtocol(Protocol):
 @runtime_checkable
 class ReferenceServiceProtocol(Protocol):
     def resolve(
-        self, references: tuple[str, ...], *, deadline_at: datetime | None = None
+        self,
+        references: tuple[str, ...],
+        *,
+        deadline_at: datetime | None = None,
+        requester: Mapping[str, str] | None = None,
     ) -> AsyncIterator[Artifact]: ...
+
+
+@runtime_checkable
+class ReferenceStoreProtocol(Protocol):
+    """``ref:<kind>:<id>`` 句柄存储的最小协议。
+
+    注意与 scheduler 构造参数 ``reference_store``（ReferenceService 包装，
+    承担租约与整体解析）区分：本协议是其内部按 kind 分派的句柄存储，
+    只负责把单个 id 解析回产物。
+    """
+
+    kind: str
+
+    async def resolve(
+        self,
+        ref_id: str,
+        *,
+        requester: Mapping[str, str],
+        deadline_at: datetime | None,
+    ) -> Artifact: ...
 
 
 @runtime_checkable

@@ -57,10 +57,13 @@ def reference_descriptor(value: str) -> dict[str, str]:
         display = parsed.path.rsplit("/", 1)[-1] or host
     elif safe.startswith("artifact:"):
         host, display = "local", safe
-    elif safe.startswith("data:"):
+    elif safe.lower().startswith("data:"):
         host, display = "inline", "data-uri"
+    elif safe.startswith("ref:"):
+        host, display = "reference", safe
     else:
-        host, display = "reference", safe.rsplit("/", 1)[-1] or "reference"
+        # 裸 base64 与未知引用形态只保留摘要，不持久化原始 payload。
+        host, display = "reference", f"ref:{digest[:16]}"
     return {
         "reference_id": f"ref:{digest[:32]}",
         "artifact_id": f"artifact:{digest[:32]}",
@@ -79,6 +82,16 @@ def reference_id_from_value(value: Any) -> str:
             raise InvalidRequestError("reference descriptor 缺少稳定 id")
         return str(stable)
     return str(value)
+
+
+def normalize_requester(requester: Mapping[str, Any]) -> dict[str, str]:
+    """白名单键、去 None、str 后截断 256 字符；供请求与句柄存储共用口径。"""
+
+    return {
+        str(key): str(value)[:256]
+        for key, value in requester.items()
+        if key in ALLOWED_REQUESTER_FIELDS and value is not None
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,11 +162,7 @@ class GenerationRequest:
             raise InvalidRequestError("requester 必须是对象")
         if not isinstance(self.metadata, Mapping):
             raise InvalidRequestError("metadata 必须是对象")
-        requester = {
-            str(key): str(value)[:256]
-            for key, value in self.requester.items()
-            if key in ALLOWED_REQUESTER_FIELDS and value is not None
-        }
+        requester = normalize_requester(self.requester)
         metadata = copy.deepcopy(dict(self.metadata))
         try:
             bounded_json(metadata, limit=MAX_METADATA_BYTES, field_name="metadata")

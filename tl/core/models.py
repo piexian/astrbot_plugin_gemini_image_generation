@@ -20,6 +20,8 @@ from .requests import GenerationRequest, reference_descriptor
 from .results import GenerationResult
 from .states import JobState, can_transition, coerce_state
 
+TMP_REFERENCES_METADATA_KEY = "has_tmp_references"
+
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -298,6 +300,11 @@ class Job:
             created_at=timestamp,
             updated_at=timestamp,
             deadline_at=request.deadline_at,
+            metadata=(
+                {TMP_REFERENCES_METADATA_KEY: True}
+                if any(item.startswith("ref:tmp:") for item in request.reference_images)
+                else {}
+            ),
         )
 
     def transition(
@@ -435,6 +442,14 @@ class Job:
             result = GenerationResult(**result_values)
         else:
             result = None
+        metadata = dict(payload.get("metadata") or {})
+        if any(
+            isinstance(item, Mapping)
+            and str(item.get("display") or "").startswith("ref:tmp:")
+            for item in request_data.get("reference_images") or ()
+        ):
+            # 兼容引入恢复标记前已经持久化的 tmp 引用作业。
+            metadata[TMP_REFERENCES_METADATA_KEY] = True
         return cls(
             job_id=str(payload.get("job_id") or ""),
             request=request,
@@ -450,5 +465,5 @@ class Job:
             error_code=payload.get("error_code"),
             error_message=payload.get("error_message"),
             cancel_requested=bool(payload.get("cancel_requested", False)),
-            metadata=dict(payload.get("metadata") or {}),
+            metadata=metadata,
         )

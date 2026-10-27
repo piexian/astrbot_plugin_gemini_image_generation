@@ -239,6 +239,40 @@ async def test_send_returns_config_pair_and_parse_prefers_writeback():
 
 
 @pytest.mark.asyncio
+async def test_parse_response_collects_legacy_stats_writeback():
+    client = FakeClient((["u"], [], None, None))
+    adapter = LegacyClientAdapter(client, provider="gemini", model="gemini-x")
+    request = make_request()
+    attempt = ProviderAttempt(number=1)
+    url, headers, body_factory = await adapter.build_request(request, attempt)
+    response = await adapter.send(
+        request, attempt, url=url, headers=headers, body_factory=body_factory
+    )
+    # client 在 config 副本上回写 legacy 统计字段，parse_response 经 stats 带出。
+    _, config = response
+    config.retry_count = 2
+    config.retry_note = "上游 429 后重试成功"
+    config.token_usage = {"prompt_tokens": 10, "total_tokens": 30}
+    config.successful_model_alias = "别名"
+    result = await adapter.parse_response(response, request=request, attempt=attempt)
+    assert result.stats == {
+        "retry_count": 2,
+        "retry_note": "上游 429 后重试成功",
+        "token_usage": {"prompt_tokens": 10, "total_tokens": 30},
+        "successful_model_alias": "别名",
+    }
+
+
+@pytest.mark.asyncio
+async def test_parse_response_omits_default_stats_fields():
+    client = FakeClient((["u"], [], None, None))
+    adapter = LegacyClientAdapter(client, provider="gemini", model="gemini-x")
+    result = await dispatch_provider(adapter, make_job(make_request()))
+    # 字段为默认值（0/None）时省略键，无 None 占位。
+    assert result.stats == {}
+
+
+@pytest.mark.asyncio
 async def test_routing_pins_and_legacy_knobs_flow_from_request():
     """requested_* 路由与 legacy 专属开关只从请求透传，适配器哨兵不得进 config。"""
     client = FakeClient((["u"], [], None, None))

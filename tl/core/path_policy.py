@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+from collections.abc import Iterable
 from pathlib import Path
 from urllib.parse import urlsplit
 from urllib.request import url2pathname
@@ -82,9 +83,23 @@ class PathPolicy:
         hostname = parsed.hostname
         if not hostname:
             raise PathPolicyError(f"URL 缺少 host: {text}")
-        for address in _resolve_host(hostname.rstrip(".")):
-            self._ensure_address_allowed(address, hostname)
+        self.validate_addresses(hostname, _resolve_host(hostname.rstrip(".")))
         return text
+
+    def validate_addresses(
+        self,
+        host: str,
+        addresses: Iterable[str | ipaddress.IPv4Address | ipaddress.IPv6Address],
+    ) -> None:
+        """校验实际连接候选地址，供 DNS resolver 复用同一策略。"""
+
+        for address in addresses:
+            parsed = (
+                address
+                if isinstance(address, (ipaddress.IPv4Address, ipaddress.IPv6Address))
+                else ipaddress.ip_address(address)
+            )
+            self._ensure_address_allowed(parsed, host)
 
     def _path_from_file_uri(self, text: str) -> Path:
         parsed = urlsplit(text)

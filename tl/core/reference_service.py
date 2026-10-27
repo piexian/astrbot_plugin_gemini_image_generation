@@ -7,10 +7,12 @@ import base64
 import binascii
 import hashlib
 import io
+import re
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 from astrbot.api import logger
@@ -41,11 +43,16 @@ from .errors import (
 )
 from .models import Artifact
 from .path_policy import PathPolicy
+from .protocols import ReferenceStoreProtocol
+from .reference_store import TMP_REFERENCE_KIND, TmpReferenceStore
 from .remote_fetch import RemoteFetchService, _remaining
 
 # 本地路径优先判定的输入长度上限，与 tl/api/reference_pipeline 对齐。
 _LOCAL_PATH_MAX_CHARS = 1024
 _DATA_URI_PREFIX = "data:image/"
+# 句柄严格形态：与 reference_descriptor 的 ref:<32hex>（单冒号）不同，
+# 双冒号形态不会被误判为描述符。
+_HANDLE_RE = re.compile(r"^ref:([a-z]+):([0-9a-f]{32})$")
 
 # 透传白名单：这些魔数格式原样落盘，HEIC/HEIF 的像素校验豁免见 _check_pixels。
 _PASSTHROUGH_MIMES = frozenset(
@@ -87,10 +94,30 @@ def _looks_like_local_file(text: str) -> bool:
 
     return (
         "://" not in text
-        and not text.startswith("data:")
+        and not text.lower().startswith("data:")
         and len(text) <= _LOCAL_PATH_MAX_CHARS
         and Path(text).is_file()
     )
+
+
+def classify_reference(
+    text: str,
+) -> Literal["handle", "inline", "file", "url", "local"]:
+    """判定参考图输入形态；解析与 ingest 共用，避免两处判定漂移。"""
+
+    lowered = text.lower()
+    if _HANDLE_RE.match(text):
+        return "handle"
+    if lowered.startswith("data:"):
+        return "inline"
+    if lowered.startswith("file:"):
+        return "file"
+    if lowered.startswith(("http://", "https://")):
+        return "url"
+    if _looks_like_local_file(text):
+        return "local"
+    # 歧义输入与共享管道一致：非本地文件时按裸 base64 处理。
+    return "inline"
 
 
 def _detect_transcodable_mime(raw: bytes) -> str | None:
@@ -112,12 +139,27 @@ class ReferenceService:
         *,
         max_pixels: int = 4096 * 4096,
         max_reference_bytes: int = 16 * 1024 * 1024,
+        stores: Sequence[ReferenceStoreProtocol] = (),
     ) -> None:
         self.policy = policy
         self.fetcher = fetcher
         self.cache_dir = Path(cache_dir)
         self.max_pixels = int(max_pixels)
         self.max_reference_bytes = int(max_reference_bytes)
+        registry: dict[str, ReferenceStoreProtocol] = {}
+        for store in stores:
+            if store.kind in registry:
+                raise ValueError(f"重复的参考图句柄存储 kind: {store.kind}")
+            registry[store.kind] = store
+        tmp_store = registry.get(TMP_REFERENCE_KIND)
+        if tmp_store is None:
+            tmp_store = TmpReferenceStore(self._write_cache)
+            registry[TMP_REFERENCE_KIND] = tmp_store
+        if not isinstance(tmp_store, TmpReferenceStore):
+            # ingest 依赖 TmpReferenceStore.put 登记句柄，替换实现须另行扩展协议。
+            raise ValueError("tmp 句柄存储必须是 TmpReferenceStore 实例")
+        self._tmp_store = tmp_store
+        self._stores = registry
         self._url_locks: dict[str, asyncio.Lock] = {}
         self._url_lock_users: dict[str, int] = {}
 
@@ -126,6 +168,7 @@ class ReferenceService:
         references: tuple[str, ...],
         *,
         deadline_at: datetime | None = None,
+        requester: Mapping[str, str] | None = None,
     ) -> AsyncIterator[Artifact]:
         """按输入顺序逐个解析；任一 reference 失败立即抛错。"""
 
@@ -134,35 +177,120 @@ class ReferenceService:
             text = str(item or "").strip()
             if not text:
                 raise ReferenceResolveError("参考图输入为空")
-            yield await self._resolve_one(text, deadline_at)
+            yield await self._resolve_one(text, deadline_at, requester)
 
-    async def _resolve_one(self, text: str, deadline_at: datetime | None) -> Artifact:
+    async def _resolve_one(
+        self,
+        text: str,
+        deadline_at: datetime | None,
+        requester: Mapping[str, str] | None = None,
+    ) -> Artifact:
+        shape = classify_reference(text)
+        if shape == "handle":
+            # classify 已按严格正则校验，split 恰得 ref/kind/id 三段。
+            _, kind, ref_id = text.split(":")
+            store = self._stores.get(kind)
+            if store is None:
+                raise ReferenceResolveError(f"未知参考图句柄类型: {kind}")
+            return await store.resolve(
+                ref_id,
+                requester=dict(requester or {}),
+                deadline_at=deadline_at,
+            )
+        if shape == "inline":
+            lowered = text.lower()
+            if lowered.startswith("data:"):
+                marker = ";base64,"
+                if not (lowered.startswith(_DATA_URI_PREFIX) and marker in lowered):
+                    logger.warning("不支持的参考图 data URI 形态")
+                    raise ReferenceResolveError(
+                        "参考图 data URI 仅支持 data:image/*;base64 形态"
+                    )
+                raw = _decode_base64(
+                    text[lowered.index(marker) + len(marker) :],
+                    "data URI",
+                    self.max_reference_bytes,
+                )
+                return self._materialize(raw, source="inline")
+            return self._materialize(
+                _decode_base64(text, "裸 base64", self.max_reference_bytes),
+                source="inline",
+            )
+        if shape == "file":
+            raw, source = self._load_local(text)
+            return self._materialize(raw, source=source)
+        if shape == "url":
+            return await self._load_url(text, deadline_at)
+        raw, source = self._load_local(text)
+        return self._materialize(raw, source=source)
+
+    async def ingest(self, data: str | bytes, *, requester: Mapping[str, str]) -> str:
+        """把内联图（data URI / 裸 base64 / 原始字节）校验落盘，返回 tmp 句柄。"""
+
+        if isinstance(data, str) and not data.strip():
+            raise ReferenceResolveError("参考图输入为空")
+        if not isinstance(data, (str, bytes)):
+            raise ReferenceResolveError("参考图输入必须是 data URI、base64 文本或字节")
+        # 解码与 Pillow 校验/转码是同步 CPU 工作，放线程避免卡事件循环。
+        payload, mime_type = await asyncio.to_thread(self._prepare_ingest, data)
+        ref_id = await self._tmp_store.put(payload, mime_type, requester=requester)
+        return f"ref:{self._tmp_store.kind}:{ref_id}"
+
+    def _prepare_ingest(self, data: str | bytes) -> tuple[bytes, str]:
+        if isinstance(data, bytes):
+            return self._check_bytes(data)
+        text = data.strip()
         lowered = text.lower()
         if lowered.startswith("data:"):
-            if not (lowered.startswith(_DATA_URI_PREFIX) and ";base64," in lowered):
+            marker = ";base64,"
+            if not (lowered.startswith(_DATA_URI_PREFIX) and marker in lowered):
                 logger.warning("不支持的参考图 data URI 形态")
                 raise ReferenceResolveError(
                     "参考图 data URI 仅支持 data:image/*;base64 形态"
                 )
-            marker = ";base64,"
-            raw = _decode_base64(
-                text[lowered.index(marker) + len(marker) :],
-                "data URI",
-                self.max_reference_bytes,
+            return self._check_bytes(
+                _decode_base64(
+                    text[lowered.index(marker) + len(marker) :],
+                    "data URI",
+                    self.max_reference_bytes,
+                )
             )
-            return self._materialize(raw, source="inline")
-        if lowered.startswith("file:"):
-            raw, source = self._load_local(text)
-            return self._materialize(raw, source=source)
-        if lowered.startswith(("http://", "https://")):
-            return await self._load_url(text, deadline_at)
-        # 歧义判定与共享管道一致：先按本地文件尝试，失败再走 base64。
-        if _looks_like_local_file(text):
-            raw, source = self._load_local(text)
-            return self._materialize(raw, source=source)
-        return self._materialize(
-            _decode_base64(text, "裸 base64", self.max_reference_bytes), source="inline"
+        return self._check_bytes(
+            _decode_base64(text, "裸 base64", self.max_reference_bytes)
         )
+
+    def retain_reference(self, reference: str) -> bool:
+        """固定 tmp 句柄；非 tmp 引用返回 False。"""
+
+        match = _HANDLE_RE.match(reference)
+        if match is None or match.group(1) != TMP_REFERENCE_KIND:
+            return False
+        self._tmp_store.retain(match.group(2))
+        return True
+
+    def release_reference(self, reference: str) -> None:
+        """释放 retain_reference 固定的一个 tmp 句柄 lease。"""
+
+        match = _HANDLE_RE.match(reference)
+        if match is not None and match.group(1) == TMP_REFERENCE_KIND:
+            self._tmp_store.release(match.group(2))
+
+    async def ingest_inline(
+        self, references: Sequence[str], *, requester: Mapping[str, str]
+    ) -> tuple[str, ...]:
+        """内联形态转句柄、其余原样保留并保持顺序；失败立即抛出。
+
+        已落盘的前几张句柄不回滚，留给 tmp store 的 TTL/容量清理。
+        """
+
+        prepared: list[str] = []
+        for item in references:
+            text = str(item or "").strip()
+            if classify_reference(text) == "inline":
+                prepared.append(await self.ingest(text, requester=requester))
+            else:
+                prepared.append(text)
+        return tuple(prepared)
 
     def _load_local(self, text: str) -> tuple[bytes, str]:
         try:

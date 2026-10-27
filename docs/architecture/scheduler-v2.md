@@ -77,12 +77,21 @@ Provider 只能报告能力、构造请求、发送和解析结果。候选选�
 3. reference lease、artifact lease、delivery lease 的释放；
 4. provider session、临时文件和输出归档 cleanup。
 
+入口拿到的内联图（data URI / 裸 base64）先经 `ingest_inline` 校验落盘并换成
+`ref:<kind>:<id>` 短句柄再放入 `GenerationRequest`；ReferenceService 内部按 kind
+分派到 ReferenceStore（`tmp` 为进程内 TTL 存储），执行时把句柄解析回落盘产物，
+句柄只允许登记的 requester 解析。
+tmp 句柄按 requester 限制容量，活动 reference lease 内不受 TTL/容量淘汰；
+容量不足时拒绝新句柄，不跨 requester 驱逐。
+
 ReferenceService 统一接收本地路径、file URI、HTTP URL、data URI、base64 和
 平台图片。PathPolicy/RemoteFetchService 必须阻止路径穿越、符号链接逃逸、
 loopback、私网、link-local、云元数据地址和重定向绕过，并限制响应体、像素数、
 连接时间和总时间。候选 provider 的 proxy 由 service 传入。source URL 在写入
 history、响应和日志前必须脱敏；WebUI 只能看到 masked secret 以及 keep/replace/
 clear 状态。
+DNS resolver 对实际连接 IP 再执行同一网络策略，防止校验与连接之间的
+DNS rebinding。
 
 ## 持久化与恢复
 
@@ -92,9 +101,10 @@ clear 状态。
 `background_tasks.json` 和 `generation_history.json`；单个损坏 JSON 只备份并
 记录 orphan/interrupted 状态，不能阻止插件启动。
 
-恢复只会重新排队可安全恢复的 accepted/queued Job；无法确认 runtime ownership
-或 lease 的记录标记为 `orphaned`，并执行一次幂等 cleanup。历史 API 在迁移期间
-继续输出旧字段和 `partial_success` 等兼容值，由 facade 做状态映射。
+`recover()` 只返回可恢复快照，不自动重放；带 tmp 引用的 Job 以 `has_tmp_references`
+标记并排除。无法确认 runtime ownership 或 lease 的记录标记为 `orphaned`，并执行
+幂等 cleanup。历史 API 在迁移期间继续输出旧字段和 `partial_success` 等兼容值，
+由 facade 做状态映射。
 
 ## 分阶段接入顺序
 

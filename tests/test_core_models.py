@@ -12,7 +12,11 @@ from tl.core.errors import (
 )
 from tl.core.leases import Lease, LeaseKind, LeaseSet, LeaseStatus
 from tl.core.models import Job
-from tl.core.requests import GenerationRequest, ProviderAttempt
+from tl.core.requests import (
+    GenerationRequest,
+    ProviderAttempt,
+    normalize_requester,
+)
 from tl.core.results import GenerationResult
 from tl.core.states import JobState, can_transition, coerce_state
 
@@ -41,6 +45,23 @@ def test_generation_request_normalizes_legacy_reference_lists() -> None:
 def test_generation_request_rejects_invalid_values(values) -> None:
     with pytest.raises(InvalidRequestError):
         GenerationRequest.from_values(**values)
+
+
+def test_normalize_requester_matches_generation_request() -> None:
+    raw = {
+        "user_id": "u1",
+        "umo": "qq:g1",
+        "group_id": None,
+        "secret_token": "leak",
+        "user_name": "N" * 300,
+    }
+    request = GenerationRequest(prompt="draw", source="command", requester=raw)
+    assert normalize_requester(raw) == request.requester
+    assert normalize_requester(raw) == {
+        "user_id": "u1",
+        "umo": "qq:g1",
+        "user_name": "N" * 256,
+    }
 
 
 def test_job_lifecycle_serializes_and_restores_without_losing_state() -> None:

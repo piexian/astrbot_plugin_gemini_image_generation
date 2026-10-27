@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+
 from .models import Job
+from .reference_service import ReferenceService
 from .requests import GenerationRequest
 from .scheduler import JobHandle, JobResult, JobScheduler, JobSnapshot
 
@@ -10,8 +13,24 @@ from .scheduler import JobHandle, JobResult, JobScheduler, JobSnapshot
 class GenerationService:
     """组合一个 JobScheduler 并透传提交/等待/取消/状态/恢复/关闭。"""
 
-    def __init__(self, scheduler: JobScheduler) -> None:
+    def __init__(
+        self, scheduler: JobScheduler, reference_service: ReferenceService | None = None
+    ) -> None:
         self._scheduler = scheduler
+        self._reference_service = reference_service
+
+    async def prepare_references(
+        self, references: Sequence[str], *, requester: Mapping[str, str]
+    ) -> tuple[str, ...]:
+        """内联参考图换成短句柄；未注入 ReferenceService 说明装配缺失。"""
+
+        if self._reference_service is None:
+            raise RuntimeError(
+                "GenerationService 未注入 ReferenceService，无法预处理参考图"
+            )
+        return await self._reference_service.ingest_inline(
+            references, requester=requester
+        )
 
     async def submit(self, request: GenerationRequest) -> JobHandle:
         return await self._scheduler.submit(request)

@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.12"]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -53,7 +53,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
           cache: pip
 
       - name: Install tools
@@ -61,14 +61,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install ruff
 
+      # py312 新增的现代化改写另行分批处理，本次只提升运行基线。
       - name: Ruff lint
         run: |
           ruff check . \
             --line-length 88 \
-            --target-version py310 \
+            --target-version py312 \
             --extend-exclude plans,docs,templates \
             --select F,W,E,ASYNC,C4,Q,I,UP \
-            --ignore F403,F405,E501,ASYNC230,ASYNC240 \
+            --ignore F403,F405,E501,ASYNC230,ASYNC240,UP017,UP041,UP042,UP047,ASYNC109 \
             --per-file-ignores "__init__.py:F401"
 
       - name: Ruff format check
@@ -84,7 +85,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Compile all Python files
         run: python -m compileall -q .
@@ -99,7 +100,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install PyYAML
         run: pip install pyyaml

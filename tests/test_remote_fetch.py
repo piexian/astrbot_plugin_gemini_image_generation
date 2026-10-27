@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -330,3 +331,32 @@ async def test_redirect_hops_share_deadline_for_dns_validation(monkeypatch) -> N
         "https://example.invalid/start.png",
         "https://example.invalid/hop-2.png",
     ]
+
+
+@pytest.mark.asyncio
+async def test_dns_rebinding_between_validation_and_connect_rejected(
+    monkeypatch,
+) -> None:
+    answers = iter(("93.184.216.34", "127.0.0.1"))
+    calls = []
+
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        calls.append(host)
+        address = next(answers, "127.0.0.1")
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                (address, port),
+            )
+        ]
+
+    monkeypatch.setattr("tl.core.path_policy.socket.getaddrinfo", fake_getaddrinfo)
+
+    with pytest.raises(RemoteFetchRejectedError):
+        await RemoteFetchService(PathPolicy(())).fetch(
+            "http://rebind.invalid:9/image.png"
+        )
+    assert len(calls) >= 2
