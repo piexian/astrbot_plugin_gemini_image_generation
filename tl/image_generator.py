@@ -17,6 +17,7 @@ from .core.errors import (
     QuotaExceededError,
     ServiceClosedError,
 )
+from .core.requests import GenerationRequest
 from .core.states import JobState
 from .generation_errors import IMAGE_FILE_MISSING_MESSAGE, api_failure_message
 from .generation_scheduler import generation_progress
@@ -518,6 +519,78 @@ class ImageGenerator:
             await self._fail_tracking(tracking_job_id, e)
             return False, f"❌ 生成图像时发生错误: {str(e)}"
 
+    async def prepare_v2_request(
+        self,
+        *,
+        event: Any,
+        v2_service: Any,
+        prompt: str,
+        reference_images: list[str] | None,
+        avatar_reference: list[str] | None,
+        override_resolution: str | None = None,
+        override_aspect_ratio: str | None = None,
+        is_tool_call: bool = False,
+        requested_provider: str | None = None,
+        requested_model: str | None = None,
+        negative_prompt: str | None = None,
+        watermark: bool | None = None,
+        quality: str | None = None,
+        image_count: int = 1,
+        suppress_resolution: bool = False,
+        deadline_seconds: float | None,
+        source: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        quota: Mapping[str, Any] | Literal[False] | None = None,
+        trusted_local: bool = False,
+    ) -> GenerationRequest:
+        """准备单图与批量共用的 v2 请求，不提交 Job、不写生成历史。"""
+
+        all_reference_images, avatar_count = self._prepare_reference_inputs(
+            reference_images, avatar_reference
+        )
+        if avatar_count:
+            prompt += _avatar_prompt_note(avatar_count)
+        requester = requester_from_event(event)
+        umo = getattr(event, "unified_msg_origin", None)
+        if umo:
+            requester["umo"] = str(umo)
+        context = current_tracking_context()
+        resolved_source = source or (
+            context.source if context else ("llm_tool" if is_tool_call else "command")
+        )
+        request_metadata: dict[str, Any] = {
+            "suppress_resolution": suppress_resolution,
+            "enable_smart_retry": self.enable_smart_retry,
+            "max_attempts_per_key": self.max_attempts_per_key,
+            "total_timeout": self.total_timeout,
+            # 与旧核心路径一致：没有任何图片的结果按失败处理，哪怕带了文本。
+            "require_images": True,
+        }
+        request_metadata.update(dict(metadata or {}))
+        if quota is not None:
+            request_metadata["quota"] = quota if quota is False else dict(quota)
+        prepare_options = {"trusted_local": True} if trusted_local else {}
+        refs = await v2_service.prepare_references(
+            all_reference_images, requester=requester, **prepare_options
+        )
+        logger.info(f"v2 调度提交: 参考图片: {len(refs)} 张, 来源={resolved_source}")
+        return v2_build_request(
+            source=resolved_source,
+            prompt=prompt,
+            resolution=override_resolution,
+            aspect_ratio=override_aspect_ratio,
+            provider=requested_provider,
+            model=requested_model,
+            reference_images=refs,
+            deadline_seconds=deadline_seconds,
+            requester=requester,
+            metadata=request_metadata,
+            negative_prompt=negative_prompt,
+            quality=quality,
+            watermark=watermark,
+            image_count=max(int(image_count or 1), 1),
+        )
+
     async def submit_v2(
         self,
         *,
@@ -557,37 +630,26 @@ class ImageGenerator:
             return V2Submission(message=_API_CLIENT_UNAVAILABLE_MESSAGE)
         token = await bind_session_image_dir(event, self.context)
         try:
-            all_reference_images, avatar_count = self._prepare_reference_inputs(
-                reference_images, avatar_reference
-            )
-            if avatar_count:
-                prompt += _avatar_prompt_note(avatar_count)
-            requester = requester_from_event(event)
-            umo = getattr(event, "unified_msg_origin", None)
-            if umo:
-                # 会话额度按 UMO 独立计数，由请求者元数据带给额度组件。
-                requester["umo"] = str(umo)
-            context = current_tracking_context()
-            source = (
-                context.source
-                if context
-                else ("llm_tool" if is_tool_call else "command")
-            )
-            metadata: dict[str, Any] = {
-                "suppress_resolution": suppress_resolution,
-                "enable_smart_retry": self.enable_smart_retry,
-                "max_attempts_per_key": self.max_attempts_per_key,
-                "total_timeout": self.total_timeout,
-                # 与旧核心路径一致：没有任何图片的结果按失败处理，哪怕带了文本。
-                "require_images": True,
-            }
-            if quota is not None:
-                metadata["quota"] = quota if quota is False else dict(quota)
-            # 仅在需要时传参，不带该参数的服务实现不受影响。
-            prepare_options = {"trusted_local": True} if trusted_local else {}
             try:
-                refs = await v2_service.prepare_references(
-                    all_reference_images, requester=requester, **prepare_options
+                request = await self.prepare_v2_request(
+                    event=event,
+                    v2_service=v2_service,
+                    prompt=prompt,
+                    reference_images=reference_images,
+                    avatar_reference=avatar_reference,
+                    override_resolution=override_resolution,
+                    override_aspect_ratio=override_aspect_ratio,
+                    is_tool_call=is_tool_call,
+                    requested_provider=requested_provider,
+                    requested_model=requested_model,
+                    negative_prompt=negative_prompt,
+                    watermark=watermark,
+                    quality=quality,
+                    image_count=image_count,
+                    suppress_resolution=suppress_resolution,
+                    deadline_seconds=self.total_timeout,
+                    quota=quota,
+                    trusted_local=trusted_local,
                 )
             except asyncio.CancelledError:
                 raise
@@ -603,27 +665,8 @@ class ImageGenerator:
             except Exception as e:
                 logger.error(f"生成图像时发生未预期的错误: {e}", exc_info=True)
                 return V2Submission(message=f"❌ 生成图像时发生错误: {str(e)}")
-            logger.info(f"v2 调度提交: 参考图片: {len(refs)} 张, 来源={source}")
             try:
-                handle = await v2_service.submit(
-                    v2_build_request(
-                        source=source,
-                        prompt=prompt,
-                        resolution=override_resolution,
-                        aspect_ratio=override_aspect_ratio,
-                        provider=requested_provider,
-                        model=requested_model,
-                        reference_images=refs,
-                        deadline_seconds=self.total_timeout,
-                        requester=requester,
-                        metadata=metadata,
-                        negative_prompt=negative_prompt,
-                        quality=quality,
-                        watermark=watermark,
-                        image_count=max(int(image_count or 1), 1),
-                    ),
-                    admission=admission,
-                )
+                handle = await v2_service.submit(request, admission=admission)
             except asyncio.CancelledError:
                 raise
             except QuotaExceededError as error:

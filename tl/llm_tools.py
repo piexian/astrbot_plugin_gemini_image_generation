@@ -28,6 +28,12 @@ from .background_dispatch import (
 from .background_dispatch import single_task_record_changes
 from .background_notify import report_background_failure
 from .batch_generation import run_batch_job
+from .core.errors import (
+    CoreError,
+    QueueFullError,
+    QuotaExceededError,
+    ServiceClosedError,
+)
 from .core.states import JobState
 from .file_uri import file_uri_to_path
 from .generation_call import invoke_generation_core
@@ -52,11 +58,13 @@ from .provider_settings import (
 from .provider_settings import (
     first_provider_candidate as _first_candidate_from_config,
 )
+from .session_image_dir import bind_session_image_dir, reset_session_image_dir
 from .thought_signature import log_thought_signature_debug
 from .tl_utils import encode_file_to_base64, format_error_message
 from .tool_path_guard import filter_reference_paths
-from .v2_bridge import split_artifacts, v2_failure_message
-from .v2_tool_delivery import ToolBackgroundDelivery
+from .v2_bridge import build_request as v2_build_request
+from .v2_bridge import split_artifacts, v2_failure_message, v2_failure_text
+from .v2_tool_delivery import ToolBackgroundDelivery, ToolBatchDelivery
 
 if TYPE_CHECKING:
     from ..main import GeminiImageGenerationPlugin
@@ -1325,6 +1333,121 @@ async def _run_single_v2(
         return f"❌ 图片生成过程中出错：{str(e)}"
 
 
+async def _run_batch_v2(
+    plugin: Any, event: Any, service: Any, prepared_items: list[dict[str, Any]]
+) -> str:
+    """批量 v2：父子 Job 由调度器持有，工具只准备请求并创建后台记录。"""
+
+    generator = plugin.image_generator
+    modes = {item["routing_mode"] for item in prepared_items}
+    batch_mode = next(iter(modes)) if len(modes) == 1 else "mixed"
+    message = routing_description(batch_mode)
+    delivery = ToolBatchDelivery(plugin, event)
+    token = None
+    try:
+        token = await bind_session_image_dir(event, generator.context)
+        children = []
+        for item in prepared_items:
+            image_count = int(item["image_count"])
+            children.append(
+                await generator.prepare_v2_request(
+                    event=event,
+                    v2_service=service,
+                    prompt=item["prompt"],
+                    reference_images=item.get("reference_images") or [],
+                    avatar_reference=item.get("avatar_reference") or [],
+                    override_resolution=item.get("resolution"),
+                    override_aspect_ratio=item.get("aspect_ratio"),
+                    is_tool_call=True,
+                    requested_provider=item.get("provider"),
+                    requested_model=item.get("model"),
+                    negative_prompt=item.get("negative_prompt"),
+                    watermark=item.get("watermark"),
+                    quality=item.get("quality"),
+                    image_count=image_count,
+                    suppress_resolution=bool(item.get("suppress_resolution", False)),
+                    deadline_seconds=None,
+                    source="llm_batch",
+                    metadata={
+                        "item_name": item["name"],
+                        "fill_image_count": True,
+                        "quota": False,
+                        "deadline_seconds": generator.total_timeout * image_count,
+                    },
+                    trusted_local=True,
+                )
+            )
+        requester = requester_from_event(event)
+        umo = getattr(event, "unified_msg_origin", None)
+        if umo:
+            requester["umo"] = str(umo)
+        parent_prompt = (
+            "批量生图：" + "、".join(item["name"] for item in prepared_items)
+        )[:500]
+        parent = v2_build_request(
+            source="llm_batch",
+            prompt=parent_prompt,
+            resolution=None,
+            aspect_ratio=None,
+            provider=None,
+            model=None,
+            reference_images=(),
+            deadline_seconds=None,
+            requester=requester,
+            metadata={
+                "batch_parent": True,
+                "quota": {"cost": len(prepared_items)},
+            },
+            image_count=sum(int(item["image_count"]) for item in prepared_items),
+        )
+        handle = await service.submit_batch(
+            parent,
+            children,
+            concurrency=max(int(plugin.cfg.batch_concurrency), 1),
+            admission={"event": event},
+            delivery=delivery,
+        )
+    except asyncio.CancelledError:
+        raise
+    except QuotaExceededError as error:
+        return error.message or "请求过于频繁，请稍后再试"
+    except (QueueFullError, ServiceClosedError) as error:
+        return api_failure_message(
+            message=error.message,
+            status_code=None,
+            error_type=error.code,
+            total_timeout=generator.total_timeout,
+        )
+    except CoreError as error:
+        return v2_failure_text(
+            str(getattr(error, "code", "") or ""),
+            getattr(error, "message", None) or str(error),
+            total_timeout=generator.total_timeout,
+        )
+    except Exception as exc:
+        logger.error(f"[批量任务] v2 提交异常: {exc}", exc_info=True)
+        return f"❌ 批量生成任务启动失败：{exc}"
+    finally:
+        if token is not None:
+            reset_session_image_dir(token)
+
+    try:
+        record = await plugin.background_task_manager.create(
+            session_id=_event_session_id(event),
+            kind="batch",
+            routing_mode=batch_mode,
+            message=message,
+            total_items=len(prepared_items),
+        )
+    except BaseException:
+        delivery.bind_record(None)
+        await asyncio.shield(service.cancel(handle.job_id))
+        raise
+    task_id = record["task_id"]
+    delivery.bind_record(task_id)
+    return _background_json(task_id, batch_mode, message)
+
+
 @dataclass
 class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
     """
@@ -1385,6 +1508,11 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
             )
             if error or not prepared_items:
                 return f"❌ 批量任务参数错误：{error or '没有有效任务'}"
+            v2_service = plugin._v2_service_for(
+                getattr(event, "unified_msg_origin", None)
+            )
+            if v2_service is not None:
+                return await _run_batch_v2(plugin, event, v2_service, prepared_items)
             allowed, limit_message = await plugin._check_and_consume_limit(
                 event, cost=len(prepared_items)
             )
