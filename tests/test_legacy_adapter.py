@@ -446,3 +446,98 @@ async def test_fallback_candidate_gets_its_own_route_values():
     assert config.requested_provider == "beta"
     assert config.requested_model == "beta-x"
     assert config.model == "beta-x"
+
+
+class SequenceClient:
+    """按轮次返回不同结果，记录每轮请求张数。"""
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.counts = []
+
+    async def generate_image(self, config, **kwargs):
+        self.counts.append(config.image_count)
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+async def run_fill(client, target=3, enabled=True):
+    adapter = LegacyClientAdapter(client, provider="gemini", model="gemini-x")
+    metadata = {"fill_image_count": enabled, "require_images": True}
+    return await dispatch_provider(
+        adapter, make_job(make_request(image_count=target, metadata=metadata))
+    )
+
+
+@pytest.mark.asyncio
+async def test_fill_image_count_accumulates_until_target():
+    client = SequenceClient(
+        [(["a"], [], "第一轮", None), (["b", "c"], [], "第二轮", None)]
+    )
+
+    result = await run_fill(client)
+
+    assert result.artifacts == ("a", "b", "c")
+    assert result.text == "第一轮\n第二轮"
+    assert result.partial is False
+    assert client.counts == [3, 2]
+
+
+@pytest.mark.asyncio
+async def test_fill_image_count_stops_when_no_new_image():
+    client = SequenceClient([(["a"], [], None, None), (["a"], [], None, None)])
+
+    result = await run_fill(client)
+
+    assert result.artifacts == ("a",)
+    assert result.partial is True
+    assert result.stats["fill_error"] == "供应商未返回新的图片"
+    assert client.counts == [3, 2]
+
+
+@pytest.mark.asyncio
+async def test_fill_image_count_preserves_output_after_later_error():
+    client = SequenceClient(
+        [(["a"], [], None, None), APIError("后续限流", 429, "rate_limit")]
+    )
+
+    result = await run_fill(client)
+
+    assert result.artifacts == ("a",)
+    assert result.partial is True
+    assert "后续限流" in result.stats["fill_error"]
+    assert client.counts == [3, 2]
+
+
+@pytest.mark.asyncio
+async def test_fill_image_count_first_error_is_not_downgraded():
+    client = SequenceClient([APIError("首次失败", 500, "server")])
+
+    with pytest.raises(LegacyProviderError, match="首次失败"):
+        await run_fill(client)
+
+    assert client.counts == [3]
+
+
+@pytest.mark.asyncio
+async def test_fill_image_count_disabled_keeps_single_call():
+    client = SequenceClient([(["a"], [], None, None)])
+
+    result = await run_fill(client, enabled=False)
+
+    assert result.artifacts == ("a",)
+    assert result.partial is False
+    assert client.counts == [3]
+
+
+@pytest.mark.asyncio
+async def test_fill_image_count_deduplicates_and_truncates():
+    client = SequenceClient([(["a", "a", "b", "c"], [], None, None)])
+
+    result = await run_fill(client, target=2)
+
+    assert result.artifacts == ("a", "b")
+    assert result.partial is False
+    assert client.counts == [2]
