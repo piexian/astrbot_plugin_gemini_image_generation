@@ -11,9 +11,11 @@ import secrets
 from collections.abc import Callable
 from contextlib import contextmanager
 from typing import Any
+from urllib.parse import urlsplit
 
 from astrbot.api import logger
 
+from .core.errors import redact_url
 from .generation_tracker import GenerationTracker
 from .studio_parameters import clean_browser_preferences
 from .web_studio_service import StudioServiceError, WebStudioService
@@ -42,6 +44,17 @@ _SAFE_FILE_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 _JSON_MAX_BYTES = 2 * 1024 * 1024
 _PREFERENCES_COOKIE = "gemini_studio_browser"
 _BROWSER_ID = re.compile(r"^[0-9a-f]{32}$")
+
+_PANEL_ONLY_METHODS = {
+    "/providers": frozenset({"GET", "POST"}),
+    "/providers/models": frozenset({"POST"}),
+    "/vision-providers": frozenset({"GET"}),
+    "/history/delete": frozenset({"POST"}),
+    "/limits": frozenset({"GET", "POST"}),
+    "/sessions": frozenset({"GET"}),
+    "/upload": frozenset({"POST"}),
+    "/preferences": frozenset({"POST"}),
+}
 
 
 @contextmanager
@@ -97,6 +110,21 @@ def _valid_json_value(value: Any, depth: int = 0) -> bool:
     return True
 
 
+def _redact_source_urls(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: (
+                [redact_url(str(item)) for item in item_value]
+                if key == "source_urls" and isinstance(item_value, list)
+                else _redact_source_urls(item_value)
+            )
+            for key, item_value in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_source_urls(item) for item in value]
+    return value
+
+
 class WebStudioAPI:
     """将 tracker/service 映射为 AstrBot 标准信封和流式响应。"""
 
@@ -137,6 +165,38 @@ class WebStudioAPI:
         self._registered_entries: list[tuple[Any, ...]] = []
         self._upload_request_lock = asyncio.Lock()
 
+    def _guarded(self, handler: Callable, suffix: str) -> Callable:
+        async def call(*args, **kwargs):
+            if denied := self._access_guard(suffix):
+                return denied
+            return await handler(*args, **kwargs)
+
+        return call
+
+    @staticmethod
+    def _access_guard(suffix: str):
+        username = str(getattr(request, "username", "") or "")
+        if not username:
+            return error_response("请登录 AstrBot Dashboard 后操作", status_code=401)
+        if username.startswith("api_key:") and request.method.upper() in (
+            _PANEL_ONLY_METHODS.get(suffix) or ()
+        ):
+            return error_response("API Key 无权执行此操作", status_code=403)
+        if request.method.upper() == "POST":
+            headers = request.headers
+            origin = headers.get("Origin")
+            if origin:
+                origin_host = urlsplit(origin).netloc
+                if (
+                    not origin_host
+                    or origin_host.lower() != headers.get("Host", "").lower()
+                ):
+                    return error_response("跨站请求来源不一致", status_code=403)
+            if headers.get("Sec-Fetch-Site", "").strip().lower() == "cross-site":
+                return error_response("拒绝跨站请求", status_code=403)
+        # 单用户面板可操作全部记录；历史读取对宿主已鉴权的面板与 API Key 开放。
+        return None
+
     def register(self, context: Any) -> list[tuple[Any, ...]]:
         if not WEB_API_AVAILABLE:
             return []
@@ -144,7 +204,7 @@ class WebStudioAPI:
         registered = getattr(context, "registered_web_apis", [])
         for suffix, method_name, methods, description in self.ROUTES:
             route = f"{WEBUI_PREFIX}{suffix}"
-            handler = getattr(self, method_name)
+            handler = self._guarded(getattr(self, method_name), suffix)
             context.register_web_api(route, handler, methods, description)
             entry = next(
                 (
@@ -195,7 +255,7 @@ class WebStudioAPI:
     def _limits_guard(self):
         if closed := self._closed_response():
             return closed
-        # 路由由宿主鉴权；同时拒绝没有宿主身份的调用，不读取或转发凭据。
+        # 身份、授权与 CSRF 由注册时的统一守卫处理。
         if not getattr(request, "username", None):
             return error_response("请登录 AstrBot Dashboard 后操作", status_code=401)
         if self.limits_service is None:
@@ -244,13 +304,13 @@ class WebStudioAPI:
     async def jobs(self):
         if closed := self._closed_response():
             return closed
-        return self._ok(self.tracker.active_and_recent())
+        return self._ok(_redact_source_urls(self.tracker.active_and_recent()))
 
     async def jobs_stream(self):
         if closed := self._closed_response():
             return closed
         queue = self.tracker.subscribe()
-        snapshot = self.tracker.active_and_recent()
+        snapshot = _redact_source_urls(self.tracker.active_and_recent())
 
         async def events():
             try:
@@ -268,7 +328,7 @@ class WebStudioAPI:
                         continue
                     if self._is_closed() or self._web_closed:
                         break
-                    yield self._sse(event)
+                    yield self._sse(_redact_source_urls(event))
             finally:
                 self.tracker.unsubscribe(queue)
 
@@ -299,14 +359,16 @@ class WebStudioAPI:
         except StudioServiceError as exc:
             return self._service_error(exc)
         return self._ok(
-            self.tracker.query_history(
-                page=page,
-                size=size,
-                keyword=keyword,
-                source=source,
-                group_id=group_id,
-                user_id=user_id,
-                **({"plugin_id": plugin_id} if plugin_id else {}),
+            _redact_source_urls(
+                self.tracker.query_history(
+                    page=page,
+                    size=size,
+                    keyword=keyword,
+                    source=source,
+                    group_id=group_id,
+                    user_id=user_id,
+                    **({"plugin_id": plugin_id} if plugin_id else {}),
+                )
             )
         )
 
@@ -337,7 +399,7 @@ class WebStudioAPI:
         references = await asyncio.to_thread(
             self.service.reference_status, record.get("reference_names") or []
         )
-        return self._ok({**record, **references})
+        return self._ok(_redact_source_urls({**record, **references}))
 
     async def delete_history(self):
         if closed := self._closed_response():
