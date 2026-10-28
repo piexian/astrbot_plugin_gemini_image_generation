@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from contextlib import AbstractContextManager
+import inspect
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import AbstractContextManager, ExitStack, contextmanager
 from typing import TYPE_CHECKING, Any
 
 from .api_types import APIError
@@ -12,6 +13,7 @@ from .core.errors import (
     QueueFullError,
     QuotaExceededError,
     ServiceClosedError,
+    StudioBusyError,
 )
 from .generation_scheduler import generation_reservation
 
@@ -128,3 +130,94 @@ class LegacyFifoLimiter:
                 raise ServiceClosedError(error.message) from error
             raise
         return _FifoReservation(ticket)
+
+
+class _StudioReservation:
+    def __init__(self, owner: StudioAdmissionLimiter) -> None:
+        self._owner = owner
+        self._released = False
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        self._owner._active = max(self._owner._active - 1, 0)
+
+
+class StudioAdmissionLimiter:
+    """WebUI 入口级并发闸门；每个单图或批量父任务占一个名额。"""
+
+    def __init__(self, get_maximum: Callable[[], int]) -> None:
+        self._get_maximum = get_maximum
+        self._active = 0
+
+    def reserve(
+        self, request: GenerationRequest, admission: Mapping[str, Any] | None = None
+    ) -> _StudioReservation | None:
+        if not request.metadata.get("studio_admission"):
+            return None
+        maximum = max(int(self._get_maximum()), 1)
+        if self._active >= maximum:
+            raise StudioBusyError("工作台生成任务已达到并发上限，请稍后重试")
+        self._active += 1
+        return _StudioReservation(self)
+
+
+class _CompositeReservation:
+    def __init__(self, reservations: Sequence[Any]) -> None:
+        self._reservations = tuple(reservations)
+        self._released = False
+
+    @contextmanager
+    def runtime_scope(self):
+        with ExitStack() as stack:
+            for reservation in self._reservations:
+                factory = getattr(reservation, "runtime_scope", None)
+                if callable(factory):
+                    stack.enter_context(factory())
+            yield
+
+    async def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        first_error: Exception | None = None
+        for reservation in self._reservations:
+            release = getattr(reservation, "release", None)
+            if not callable(release):
+                continue
+            try:
+                result = release()
+                if inspect.isawaitable(result):
+                    await result
+            except Exception as error:
+                if first_error is None:
+                    first_error = error
+        if first_error is not None:
+            raise first_error
+
+
+class CompositeAdmissionLimiter:
+    """按声明顺序组合多个准入组件，任一失败时释放已预留部分。"""
+
+    def __init__(self, *components: Any) -> None:
+        self._components = tuple(components)
+
+    async def reserve(
+        self, request: GenerationRequest, admission: Mapping[str, Any] | None = None
+    ) -> _CompositeReservation | None:
+        reservations: list[Any] = []
+        try:
+            for component in self._components:
+                result = component.reserve(request, admission)
+                reservation = await result if inspect.isawaitable(result) else result
+                if reservation is not None:
+                    reservations.append(reservation)
+        except BaseException:
+            if reservations:
+                try:
+                    await _CompositeReservation(reservations).release()
+                except Exception:
+                    pass
+            raise
+        return _CompositeReservation(reservations) if reservations else None
