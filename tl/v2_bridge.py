@@ -20,7 +20,7 @@ def build_request(
     provider: str | None,
     model: str | None,
     reference_images: Sequence[str],
-    deadline_seconds: float,
+    deadline_seconds: float | None,
     requester: Mapping[str, str] | None = None,
     metadata: Mapping[str, Any] | None = None,
     negative_prompt: str | None = None,
@@ -28,7 +28,11 @@ def build_request(
     watermark: bool | None = None,
     image_count: int = 1,
 ) -> GenerationRequest:
-    """把入口参数装配为 v2 GenerationRequest；metadata 透传 legacy 专属开关。"""
+    """把入口参数装配为 v2 GenerationRequest；metadata 透传 legacy 专属开关。
+
+    ``deadline_seconds`` 为 None 时不设 deadline：批量的父/子请求由调度器在
+    各自启动时才确定时限（见 ``JobScheduler.submit_batch``）。
+    """
 
     return GenerationRequest(
         prompt=prompt,
@@ -42,7 +46,11 @@ def build_request(
         watermark=watermark,
         image_count=image_count,
         reference_images=tuple(reference_images),
-        deadline_at=datetime.now(timezone.utc) + timedelta(seconds=deadline_seconds),
+        deadline_at=(
+            None
+            if deadline_seconds is None
+            else datetime.now(timezone.utc) + timedelta(seconds=deadline_seconds)
+        ),
         requester=dict(requester or {}),
         metadata=dict(metadata or {}),
     )

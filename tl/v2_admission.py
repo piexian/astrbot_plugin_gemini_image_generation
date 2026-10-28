@@ -102,7 +102,11 @@ class _FifoReservation:
 
 
 class LegacyFifoLimiter:
-    """把旧 GenerationScheduler 的 FIFO 队列适配为 submit 准入的并发组件。"""
+    """把旧 GenerationScheduler 的 FIFO 队列适配为 submit 准入的并发组件。
+
+    批量父 Job（``metadata["batch_parent"]`` 为真）不调用供应商，不占生成队列；
+    它的子 Job 各自在启动时按普通请求预留。
+    """
 
     def __init__(self, get_generation_scheduler: Callable[[], Any]) -> None:
         self._get_generation_scheduler = get_generation_scheduler
@@ -110,6 +114,8 @@ class LegacyFifoLimiter:
     def reserve(
         self, request: GenerationRequest, admission: Mapping[str, Any] | None = None
     ) -> _FifoReservation | None:
+        if request.metadata.get("batch_parent"):
+            return None
         scheduler = self._get_generation_scheduler()
         if scheduler is None:
             return None

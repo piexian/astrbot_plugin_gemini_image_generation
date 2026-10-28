@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Awaitable, Iterable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Iterable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from datetime import datetime
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from .models import Artifact, Attempt, Job, JobEvent, LeaseRecord
 from .requests import BodyFactory, GenerationRequest, ProviderAttempt
 from .results import GenerationResult
 from .states import JobState
+
+if TYPE_CHECKING:
+    from .scheduler import BatchHandle
 
 
 @runtime_checkable
@@ -159,6 +162,18 @@ class SchedulerProtocol(Protocol):
         delivery: DeliveryProtocol | None = None,
     ) -> Job: ...
 
+    async def submit_batch(
+        self,
+        parent: GenerationRequest,
+        children: Sequence[GenerationRequest],
+        *,
+        concurrency: int,
+        admission: Mapping[str, Any] | None = None,
+        delivery: BatchDeliveryProtocol | None = None,
+    ) -> BatchHandle:
+        """提交批量父子 Job，提交时就创建并落库全部子 Job。"""
+        ...
+
     def attach_delivery(self, job_id: str, delivery: DeliveryProtocol) -> bool: ...
 
     async def wait(self, job_id: str, *, timeout: float | None = None) -> Job: ...
@@ -190,13 +205,18 @@ class ReservationProtocol(Protocol):
 
 
 class JobObserverProtocol(Protocol):
-    """调度器生命周期观察者；四个钩子均可选（getattr 探测，缺省即跳过）。
+    """调度器生命周期观察者；所有钩子均可选（getattr 探测，缺省即跳过）。
 
     ``job_accepted`` 在 Job QUEUED 落库后、runtime task 创建前调用；
     ``runtime_scope`` 是同步函数，返回只包住 provider 执行的同步上下文
     管理器；``job_result`` 在 RESULT_READY 落库后、转入 SUCCEEDED/PARTIAL
     前调用，result 为未脱敏的运行时结果；``job_finished`` 在 Job 进入终态
     后每个 Job 调用一次。
+
+    批量父 Job（``submit_batch``）的子 Job 另有 ``child_started`` /
+    ``child_finished``：子 Job 被启动、进入终态（含从未启动就被取消）时各调用
+    一次，``child_finished`` 晚于该子 Job 自己的 ``job_finished``；``result``
+    是进程内未脱敏的子结果，子 Job 没有结果时为 None。
     """
 
     async def job_accepted(self, job: Job) -> None: ...
@@ -206,6 +226,12 @@ class JobObserverProtocol(Protocol):
     async def job_result(self, job: Job, result: GenerationResult) -> None: ...
 
     async def job_finished(self, job: Job) -> None: ...
+
+    async def child_started(self, parent_job: Job, child_job: Job) -> None: ...
+
+    async def child_finished(
+        self, parent_job: Job, child_job: Job, result: GenerationResult | None
+    ) -> None: ...
 
 
 class DeliveryProtocol(Protocol):
@@ -230,6 +256,21 @@ class DeliveryProtocol(Protocol):
     async def deliver(self, job: Job, result: GenerationResult) -> None: ...
 
     async def deliver_failure(self, job: Job) -> None: ...
+
+
+class BatchDeliveryProtocol(DeliveryProtocol, Protocol):
+    """批量父 Job 的投递方：在 ``DeliveryProtocol`` 之外可选实现子 Job 进度钩子。
+
+    ``child_started`` / ``child_finished`` 的调用时机与参数同观察者的同名钩子
+    （见 ``JobObserverProtocol``），都用 getattr 探测，缺省即跳过；它们在父 Job
+    运行期间由父 runtime task 依次调用，异常与超时只记日志。
+    """
+
+    async def child_started(self, parent_job: Job, child_job: Job) -> None: ...
+
+    async def child_finished(
+        self, parent_job: Job, child_job: Job, result: GenerationResult | None
+    ) -> None: ...
 
 
 @runtime_checkable
