@@ -35,7 +35,12 @@ from tl.llm_tools import GeminiImageGenerationTool
 from tl.provider_capabilities import select_candidates
 from tl.rate_limiter import RateLimiter
 from tl.reference_image import REFERENCE_IMAGE_CACHE_DIR
-from tl.v2_admission import LegacyFifoLimiter, RateLimiterQuota
+from tl.v2_admission import (
+    CompositeAdmissionLimiter,
+    LegacyFifoLimiter,
+    RateLimiterQuota,
+    StudioAdmissionLimiter,
+)
 from tl.v2_bridge import (
     apply_result_to_config as v2_apply_result_to_config,
 )
@@ -509,6 +514,8 @@ def _command_class():
         "REFERENCE_IMAGE_CACHE_DIR": REFERENCE_IMAGE_CACHE_DIR,
         "RateLimiterQuota": RateLimiterQuota,
         "LegacyFifoLimiter": LegacyFifoLimiter,
+        "CompositeAdmissionLimiter": CompositeAdmissionLimiter,
+        "StudioAdmissionLimiter": StudioAdmissionLimiter,
         "TrackerProjection": TrackerProjection,
     }
     exec(

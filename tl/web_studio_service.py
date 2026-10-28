@@ -13,6 +13,7 @@ import re
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,14 @@ from astrbot.api import logger
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from .api_types import ApiRequestConfig
+from .core.errors import (
+    CoreError,
+    QueueFullError,
+    QuotaExceededError,
+    ReferenceResolveError,
+    ServiceClosedError,
+    StudioBusyError,
+)
 from .file_uri import file_uri_to_path
 from .generation_scheduler import generation_progress
 from .generation_tracker import (
@@ -45,6 +54,7 @@ from .studio_parameters import (
     validate_generation_settings,
 )
 from .studio_preferences import StudioPreferencesStore
+from .v2_bridge import build_request as v2_build_request
 
 _SAFE_FILE_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 _REMOTE_IMAGE_MAX_BYTES = 20 * 1024 * 1024
@@ -131,9 +141,11 @@ class WebStudioService:
         data_dir: str | Path,
         *,
         rate_limiter: Any = None,
+        v2_service_provider: Callable[[], Any] | None = None,
     ) -> None:
         self.api_client = api_client
         self.rate_limiter = rate_limiter
+        self._v2_service_provider = v2_service_provider
         self.tracker = tracker
         self.config = config
         self.data_dir = Path(data_dir)
@@ -228,40 +240,54 @@ class WebStudioService:
             normalized, warning = self.validate_payload(payload)
             if self.api_client is None:
                 raise StudioServiceError("API 客户端尚未初始化", status_code=503)
-            self._admit()
-            leased: frozenset[str] = frozenset()
-            limit_token: str | None = None
-            attachment_count = self._attachment_count
-            try:
+            v2_service = (
+                self._v2_service_provider() if self._v2_service_provider else None
+            )
+            if v2_service is not None:
                 leased = self._acquire_uploads(normalized["upload_names"])
-                if self.rate_limiter is not None:
-                    decision = await self.rate_limiter.acquire(
-                        None, cost=len(normalized.get("batch") or []) or 1
+                try:
+                    response = await self._start_v2(
+                        v2_service, normalized, requester or {}
                     )
-                    if not decision.allowed:
-                        raise StudioServiceError(
-                            decision.message or "请求过于频繁，请稍后再试",
-                            status_code=429,
-                            data={
-                                "scope": decision.scope,
-                                "retry_after": decision.retry_after,
-                            },
-                        )
-                    limit_token = decision.token
-                if normalized.get("batch") is not None:
-                    response = await self._start_batch(normalized, requester or {})
-                else:
-                    response = await self._start_single(normalized, requester or {})
-            except BaseException as exc:
-                # 挂入后的资源由任务完成回调释放，供应商失败不退额度。
-                if self._attachment_count == attachment_count:
+                except (CoreError, ReferenceImageUnavailableError) as exc:
+                    raise self._map_v2_error(exc) from exc
+                finally:
                     self._release_uploads(leased)
-                    self._admitted_jobs = max(self._admitted_jobs - 1, 0)
-                    if self.rate_limiter is not None and limit_token is not None:
-                        await self.rate_limiter.refund(limit_token)
-                if isinstance(exc, ReferenceImageUnavailableError):
-                    raise StudioServiceError(str(exc), status_code=404) from exc
-                raise
+            else:
+                self._admit()
+                leased = frozenset()
+                limit_token: str | None = None
+                attachment_count = self._attachment_count
+                try:
+                    leased = self._acquire_uploads(normalized["upload_names"])
+                    if self.rate_limiter is not None:
+                        decision = await self.rate_limiter.acquire(
+                            None, cost=len(normalized.get("batch") or []) or 1
+                        )
+                        if not decision.allowed:
+                            raise StudioServiceError(
+                                decision.message or "请求过于频繁，请稍后再试",
+                                status_code=429,
+                                data={
+                                    "scope": decision.scope,
+                                    "retry_after": decision.retry_after,
+                                },
+                            )
+                        limit_token = decision.token
+                    if normalized.get("batch") is not None:
+                        response = await self._start_batch(normalized, requester or {})
+                    else:
+                        response = await self._start_single(normalized, requester or {})
+                except BaseException as exc:
+                    # 挂入后的资源由任务完成回调释放，供应商失败不退额度。
+                    if self._attachment_count == attachment_count:
+                        self._release_uploads(leased)
+                        self._admitted_jobs = max(self._admitted_jobs - 1, 0)
+                        if self.rate_limiter is not None and limit_token is not None:
+                            await self.rate_limiter.refund(limit_token)
+                    if isinstance(exc, ReferenceImageUnavailableError):
+                        raise StudioServiceError(str(exc), status_code=404) from exc
+                    raise
         if warning:
             response["warning"] = warning
         batch_items = normalized.get("batch") or []
@@ -275,6 +301,140 @@ class WebStudioService:
             f"来源=webui, 目标张数={target_count}, 批量条目数={len(batch_items)}"
         )
         return response
+
+    def _v2_common_metadata(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "requested_candidate_id": payload.get("candidate_id"),
+            "route_all_candidates": True,
+            "seed": payload.get("seed"),
+            "generation_settings": payload.get("generation_settings") or {},
+            "reference_names": payload["reference_names"],
+            "enable_smart_retry": bool(
+                getattr(self.config, "enable_smart_retry", True)
+            ),
+            "max_attempts_per_key": _positive_int(
+                getattr(self.config, "max_attempts_per_key", 3), 3
+            ),
+            "total_timeout": _positive_int(
+                getattr(self.config, "total_timeout", 120), 120
+            ),
+        }
+
+    async def _start_v2(
+        self,
+        service: Any,
+        payload: dict[str, Any],
+        requester: dict[str, Any],
+    ) -> dict[str, Any]:
+        references = await service.prepare_references(
+            payload["reference_images"], requester=requester, trusted_local=True
+        )
+        common = self._v2_common_metadata(payload)
+        total_timeout = common["total_timeout"]
+        items = payload.get("batch")
+        if items is not None:
+            children = []
+            for item in items:
+                children.append(
+                    v2_build_request(
+                        source="webui",
+                        prompt=item["prompt"],
+                        resolution=payload.get("resolution"),
+                        aspect_ratio=payload.get("aspect_ratio"),
+                        provider=payload.get("provider"),
+                        model=payload.get("model"),
+                        reference_images=references,
+                        deadline_seconds=None,
+                        requester=requester,
+                        negative_prompt=payload.get("negative_prompt"),
+                        quality=payload.get("quality"),
+                        image_count=item["image_count"],
+                        metadata={
+                            **common,
+                            "item_name": item["name"],
+                            "fill_image_count": True,
+                            "completion_policy": "studio",
+                            "quota": False,
+                            "deadline_seconds": total_timeout * item["image_count"],
+                        },
+                    )
+                )
+            parent = v2_build_request(
+                source="webui",
+                prompt="批量生图：" + "、".join(item["name"] for item in items),
+                resolution=payload.get("resolution"),
+                aspect_ratio=payload.get("aspect_ratio"),
+                provider=payload.get("provider"),
+                model=payload.get("model"),
+                reference_images=(),
+                deadline_seconds=None,
+                requester=requester,
+                image_count=sum(item["image_count"] for item in items),
+                metadata={
+                    **common,
+                    "batch_parent": True,
+                    "studio_admission": True,
+                    "completion_policy": "studio",
+                    "quota": {"cost": len(items), "scope": "global"},
+                },
+            )
+            handle = await service.submit_batch(
+                parent,
+                children,
+                concurrency=_positive_int(
+                    getattr(self.config, "batch_concurrency", 3), 3
+                ),
+            )
+            return {"job_id": handle.job_id, "item_job_ids": list(handle.child_job_ids)}
+
+        request = v2_build_request(
+            source="webui",
+            prompt=payload["prompt"],
+            resolution=payload.get("resolution"),
+            aspect_ratio=payload.get("aspect_ratio"),
+            provider=payload.get("provider"),
+            model=payload.get("model"),
+            reference_images=references,
+            deadline_seconds=total_timeout * payload["image_count"],
+            requester=requester,
+            negative_prompt=payload.get("negative_prompt"),
+            quality=payload.get("quality"),
+            image_count=payload["image_count"],
+            metadata={
+                **common,
+                "fill_image_count": True,
+                "studio_admission": True,
+                "completion_policy": "studio",
+                "quota": {"cost": 1, "scope": "global"},
+            },
+        )
+        handle = await service.submit(request)
+        return {"job_id": handle.job_id}
+
+    @staticmethod
+    def _map_v2_error(error: CoreError | ReferenceImageUnavailableError):
+        if isinstance(error, ReferenceImageUnavailableError):
+            return StudioServiceError(str(error), status_code=404)
+        if isinstance(error, ReferenceResolveError) and error.message.startswith(
+            "读取本地参考图失败:"
+        ):
+            return StudioServiceError(
+                "参考图片不存在或正在清理，请重新选择", status_code=404
+            )
+        if isinstance(error, QuotaExceededError):
+            return StudioServiceError(
+                error.message or "请求过于频繁，请稍后再试",
+                status_code=429,
+                data={
+                    "scope": error.details.get("scope"),
+                    "retry_after": error.details.get("retry_after"),
+                },
+            )
+        if isinstance(error, (StudioBusyError, QueueFullError)):
+            return StudioServiceError(error.message, status_code=429)
+        if isinstance(error, ServiceClosedError):
+            return StudioServiceError(error.message, status_code=503)
+        return StudioServiceError(error.message or "生成任务提交失败", status_code=400)
 
     async def _start_single(
         self,

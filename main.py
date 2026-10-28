@@ -79,7 +79,12 @@ from .tl.tl_utils import (
     set_image_cache_max_size_mb,
 )
 from .tl.tool_permission import ensure_admin_default_tool_permission
-from .tl.v2_admission import LegacyFifoLimiter, RateLimiterQuota
+from .tl.v2_admission import (
+    CompositeAdmissionLimiter,
+    LegacyFifoLimiter,
+    RateLimiterQuota,
+    StudioAdmissionLimiter,
+)
 from .tl.v2_bridge import (
     apply_result_to_config as v2_apply_result_to_config,
 )
@@ -156,6 +161,7 @@ class GeminiImageGenerationPlugin(Star):
             self.generation_tracker,
             self.cfg,
             self._plugin_data_dir,
+            v2_service_provider=lambda: self._v2_service_for(None),
         )
         try:
             self.web_studio_service.import_legacy_images()
@@ -520,9 +526,14 @@ class GeminiImageGenerationPlugin(Star):
                 candidates=[{"provider": "legacy", "model": "auto"}],
                 data_dir=os.path.join(self._plugin_data_dir, "v2"),
                 allowed_local_roots=(REFERENCE_IMAGE_CACHE_DIR,),
-                # submit 准入：共享额度与旧 FIFO 生成队列由调度器统一预留。
+                # submit 准入：共享额度、WebUI 名额与旧 FIFO 生成队列由调度器统一预留。
                 quota=RateLimiterQuota(lambda: self.rate_limiter),
-                limiter=LegacyFifoLimiter(lambda: self.generation_scheduler),
+                limiter=CompositeAdmissionLimiter(
+                    StudioAdmissionLimiter(
+                        lambda: getattr(self.cfg, "webui_max_concurrent_jobs", 2)
+                    ),
+                    LegacyFifoLimiter(lambda: self.generation_scheduler),
+                ),
                 observers=(
                     TrackerProjection(
                         self.generation_tracker,
