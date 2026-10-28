@@ -8,7 +8,7 @@ from typing import Any
 
 from .core.requests import GenerationRequest
 from .core.results import GenerationResult
-from .generation_errors import api_failure_message
+from .generation_errors import IMAGE_FILE_MISSING_MESSAGE, api_failure_message
 
 
 def build_request(
@@ -128,6 +128,8 @@ def v2_failure_text(code: str, message: str, *, total_timeout: int) -> str:
     code = str(code or "")
     message = str(message or "未提供错误详情")
 
+    if code == "provider_no_image":
+        return IMAGE_FILE_MISSING_MESSAGE
     if code == "provider_empty_result":
         return (
             "❌ 图像生成失败：供应商未返回图片或文本内容\n"

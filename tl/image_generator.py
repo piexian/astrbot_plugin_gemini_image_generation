@@ -18,7 +18,7 @@ from .core.errors import (
     ServiceClosedError,
 )
 from .core.states import JobState
-from .generation_errors import api_failure_message
+from .generation_errors import IMAGE_FILE_MISSING_MESSAGE, api_failure_message
 from .generation_scheduler import generation_progress
 from .generation_tracker import (
     current_tracking_context,
@@ -459,11 +459,7 @@ class ImageGenerator:
                     thought_signature,
                 )
 
-            error_msg = (
-                "❌ 图像文件未找到，无法返回结果。\n"
-                "🧐 可能原因：生成后保存文件失败，或远程传输路径无效。\n"
-                "✅ 建议：检查临时目录写入权限与磁盘空间，必要时重试。"
-            )
+            error_msg = IMAGE_FILE_MISSING_MESSAGE
             logger.error(error_msg)
             await self._fail_tracking(tracking_job_id, error_msg)
             return False, error_msg
@@ -542,11 +538,16 @@ class ImageGenerator:
         suppress_resolution: bool = False,
         admission: Mapping[str, Any] | None = None,
         quota: Mapping[str, Any] | Literal[False] | None = None,
+        trusted_local: bool = False,
     ) -> V2Submission:
         """v2 第一阶段：准备输入并提交 Job，额度与队列准入由调度器在 submit 内完成。
 
         ``admission`` 是不持久化的准入上下文（如命令事件）；``quota`` 写入请求
         ``metadata["quota"]``，False 表示本次不计额度，None 按默认扣会话额度 1。
+        ``trusted_local`` 表示调用方已校验过本地路径参考图（LLM 工具的
+        tool_path_guard），它们会随内联图一起换成临时句柄。请求带
+        ``require_images``：供应商没有返回任何图片时按失败处理（只有文本也算），
+        与旧核心路径一致。
         被拒或出错时不外抛，返回可直接展示的提示（静默拒绝带 ``silent``）；
         生成历史由 TrackerProjection 负责，本方法不碰 tracker。整个阶段在会话
         图片目录绑定期间执行，runtime task 继承该 contextvar。
@@ -577,12 +578,16 @@ class ImageGenerator:
                 "enable_smart_retry": self.enable_smart_retry,
                 "max_attempts_per_key": self.max_attempts_per_key,
                 "total_timeout": self.total_timeout,
+                # 与旧核心路径一致：没有任何图片的结果按失败处理，哪怕带了文本。
+                "require_images": True,
             }
             if quota is not None:
                 metadata["quota"] = quota if quota is False else dict(quota)
+            # 仅在需要时传参，不带该参数的服务实现不受影响。
+            prepare_options = {"trusted_local": True} if trusted_local else {}
             try:
                 refs = await v2_service.prepare_references(
-                    all_reference_images, requester=requester
+                    all_reference_images, requester=requester, **prepare_options
                 )
             except asyncio.CancelledError:
                 raise

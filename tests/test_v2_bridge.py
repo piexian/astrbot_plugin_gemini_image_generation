@@ -11,7 +11,7 @@ from tl.core.results import GenerationResult
 from tl.core.scheduler import JobResult
 from tl.core.stack import build_generation_stack
 from tl.core.states import JobState
-from tl.generation_errors import api_failure_message
+from tl.generation_errors import IMAGE_FILE_MISSING_MESSAGE, api_failure_message
 from tl.v2_bridge import (
     apply_result_to_config,
     build_request,
@@ -19,6 +19,7 @@ from tl.v2_bridge import (
     split_artifacts,
     v2_failure_error,
     v2_failure_message,
+    v2_failure_text,
 )
 
 
@@ -378,3 +379,27 @@ def test_v2_failure_message_empty_result_is_concise():
     message = v2_failure_message(job_result, total_timeout=120)
     assert "供应商未返回图片或文本内容" in message
     assert "图像文件未找到" not in message
+
+
+def test_v2_failure_message_no_image_is_the_legacy_missing_file_text():
+    job_result = JobResult(
+        job_id="job-1",
+        state=JobState.FAILED,
+        result=None,
+        error_code="provider_no_image",
+        error_message="供应商未返回图片",
+    )
+
+    assert (
+        v2_failure_message(job_result, total_timeout=120) == IMAGE_FILE_MISSING_MESSAGE
+    )
+    assert (
+        v2_failure_text("provider_no_image", "任意消息", total_timeout=1)
+        == IMAGE_FILE_MISSING_MESSAGE
+    )
+    # 旧路径原文：与 _generate_image_core_impl 的无图提示逐字一致。
+    assert IMAGE_FILE_MISSING_MESSAGE == (
+        "❌ 图像文件未找到，无法返回结果。\n"
+        "🧐 可能原因：生成后保存文件失败，或远程传输路径无效。\n"
+        "✅ 建议：检查临时目录写入权限与磁盘空间，必要时重试。"
+    )

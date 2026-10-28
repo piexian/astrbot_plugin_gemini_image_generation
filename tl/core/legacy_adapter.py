@@ -189,6 +189,13 @@ class LegacyClientAdapter:
         # 第 4 项是思维签名（如 Gemini thoughtSignature），不是错误；
         # 忽略不持久化，避免成功结果被误判失败。
         urls, paths, text, _thought_signature = legacy_tuple
+        if (request.metadata or {}).get("require_images") and not any(
+            (*(urls or ()), *(paths or ()))
+        ):
+            # 入口要求必须有图（生成核心路径）：只有文本也算失败，与旧路径一致。
+            raise LegacyProviderError(
+                "供应商未返回图片", code="provider_no_image", retryable=False
+            )
         if not (urls or paths) and not (text and str(text).strip()):
             raise LegacyProviderError(
                 "供应商未返回图片或文本内容",
