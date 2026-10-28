@@ -17,6 +17,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin
 
 import aiohttp
 import cv2
@@ -32,6 +33,7 @@ from .core.errors import (
     ReferenceResolveError,
     ServiceClosedError,
     StudioBusyError,
+    redact_url,
 )
 from .file_uri import file_uri_to_path
 from .generation_scheduler import generation_progress
@@ -41,6 +43,7 @@ from .generation_tracker import (
     ReferenceImageUnavailableError,
     _timestamp,
 )
+from .outbound_policy import check_outbound_url
 from .provider_capabilities import (
     candidate_capability,
     candidate_reference_limit,
@@ -1111,7 +1114,7 @@ class WebStudioService:
         if not archived:
             await self.tracker.fail(job_id, error=error or "生成结果归档失败")
             if source_urls:
-                # 投递失败也保留源链接，便于从任务详情手动取回图片。
+                # 投递失败保留脱敏源链接供追溯；签名参数在记录前移除。
                 await self.tracker.update(job_id, source_urls=source_urls)
             self._log_job_outcome(job_id)
             return
@@ -1312,6 +1315,15 @@ class WebStudioService:
         )
         return archived
 
+    def _saved_api_bases(self) -> list[str]:
+        values = [getattr(self.config, "api_base", None)]
+        for candidate in self._all_candidates():
+            settings = getattr(candidate, "settings", None) or {}
+            values.extend(
+                (getattr(candidate, "api_base", None), settings.get("api_base"))
+            )
+        return [value for value in values if isinstance(value, str) and value.strip()]
+
     async def _download_remote_image(
         self, url: str, *, candidate_id: str | None = None
     ) -> bytes:
@@ -1341,19 +1353,40 @@ class WebStudioService:
 
             connector = ProxyConnector.from_url(proxy)
             http_proxy = None
-        async with aiohttp.ClientSession(
-            timeout=timeout, connector=connector
-        ) as session:
-            async with session.get(url, proxy=http_proxy) as response:
-                response.raise_for_status()
-                content_length = response.content_length
-                if content_length and content_length > _REMOTE_IMAGE_MAX_BYTES:
-                    raise StudioServiceError("远程图片超过 20MB")
-                async for chunk in response.content.iter_chunked(_CHUNK_SIZE):
-                    data.extend(chunk)
-                    if len(data) > _REMOTE_IMAGE_MAX_BYTES:
-                        raise StudioServiceError("远程图片超过 20MB")
-        return bytes(data)
+        current = url
+        try:
+            async with aiohttp.ClientSession(
+                timeout=timeout, connector=connector
+            ) as session:
+                for hop in range(4):
+                    await check_outbound_url(
+                        current, saved_api_bases=self._saved_api_bases()
+                    )
+                    async with session.get(
+                        current, proxy=http_proxy, allow_redirects=False
+                    ) as response:
+                        if response.status in {301, 302, 303, 307, 308}:
+                            if hop >= 3:
+                                raise StudioServiceError("远程图片重定向超过 3 次")
+                            location = response.headers.get("Location", "")
+                            if not location:
+                                raise StudioServiceError("远程图片重定向缺少目标地址")
+                            current = urljoin(current, location)
+                            continue
+                        response.raise_for_status()
+                        content_length = response.content_length
+                        if content_length and content_length > _REMOTE_IMAGE_MAX_BYTES:
+                            raise StudioServiceError("远程图片超过 20MB")
+                        async for chunk in response.content.iter_chunked(_CHUNK_SIZE):
+                            data.extend(chunk)
+                            if len(data) > _REMOTE_IMAGE_MAX_BYTES:
+                                raise StudioServiceError("远程图片超过 20MB")
+                        return bytes(data)
+        except (aiohttp.ClientError, OSError):
+            raise StudioServiceError(
+                f"远程图片下载失败: {redact_url(current)}"
+            ) from None
+        raise StudioServiceError("远程图片下载失败")
 
     @staticmethod
     def _validate_image_bytes(data: bytes) -> str:
