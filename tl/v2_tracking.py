@@ -39,6 +39,9 @@ class TrackerProjection:
     def __init__(self, tracker: Any, archive_images_fn: Any = None) -> None:
         self._tracker = tracker
         self._archive_images_fn = archive_images_fn
+        # 批量父记录的 generated_images 累计：{父 job_id: {子 job_id: 张数}}，
+        # 父 Job 收尾时清理。
+        self._batch_images: dict[str, dict[str, int]] = {}
 
     async def job_accepted(self, job: Any) -> None:
         request = job.request
@@ -78,8 +81,16 @@ class TrackerProjection:
 
         return generation_progress(progress, preview=preview)
 
+    @staticmethod
+    def _is_batch_parent(job: Any) -> bool:
+        request = getattr(job, "request", None)
+        return bool((getattr(request, "metadata", None) or {}).get("batch_parent"))
+
     async def job_result(self, job: Any, result: GenerationResult) -> None:
         if result is None:
+            return
+        if self._is_batch_parent(job):
+            await self._record_batch_parent(job, result)
             return
         stats_source = result.stats or {}
         image_urls, image_paths = split_artifacts(result.artifacts)
@@ -102,6 +113,42 @@ class TrackerProjection:
             candidate_id=result.candidate_id,
         )
 
+    async def _record_batch_parent(self, job: Any, result: GenerationResult) -> None:
+        """父记录只收尾状态与累计张数：图片已由各子 Job 的记录各自归档。"""
+
+        counts = self._batch_images.pop(job.job_id, None)
+        generated_images = (
+            sum(counts.values()) if counts is not None else len(result.artifacts)
+        )
+        try:
+            await self._tracker.update(
+                job.job_id,
+                status="partial_success" if result.partial else "succeeded",
+                generated_images=generated_images,
+            )
+        except Exception as exc:
+            logger.warning(
+                f"[生成追踪] v2 批量父记录写入失败: job_id={job.job_id}, "
+                f"异常类型={type(exc).__name__}"
+            )
+
+    async def child_finished(
+        self, parent_job: Any, child_job: Any, result: Any
+    ) -> None:
+        """子 Job 收尾时把父记录的 generated_images 更新为各子 Job 产出的累计值。"""
+
+        counts = self._batch_images.setdefault(parent_job.job_id, {})
+        counts[child_job.job_id] = len(result.artifacts) if result is not None else 0
+        try:
+            await self._tracker.update(
+                parent_job.job_id, generated_images=sum(counts.values())
+            )
+        except Exception as exc:
+            logger.warning(
+                f"[生成追踪] v2 批量父记录进度写入失败: job_id={parent_job.job_id}, "
+                f"异常类型={type(exc).__name__}"
+            )
+
     def _finished_with_result(self, job: Any) -> bool:
         """Job 带着结果结束，且生成历史记录已被 job_result 收尾。
 
@@ -115,6 +162,7 @@ class TrackerProjection:
         return record is not None and record.get("status") in TERMINAL_STATUSES
 
     async def job_finished(self, job: Any) -> None:
+        self._batch_images.pop(job.job_id, None)
         if job.state not in _ABORTED_STATES:
             return
         try:

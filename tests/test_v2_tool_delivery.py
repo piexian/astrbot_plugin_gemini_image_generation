@@ -17,7 +17,7 @@ from tl.core.requests import GenerationRequest
 from tl.core.results import GenerationResult
 from tl.core.states import JobState
 from tl.v2_bridge import v2_failure_message
-from tl.v2_tool_delivery import ToolBackgroundDelivery
+from tl.v2_tool_delivery import ToolBackgroundDelivery, ToolBatchDelivery
 
 SCENE = "后台任务"
 TOTAL_TIMEOUT = 120
@@ -68,6 +68,12 @@ def notifier(monkeypatch):
     )
     monkeypatch.setattr(
         "tl.v2_tool_delivery.report_background_failure", recorder.report
+    )
+    monkeypatch.setattr(
+        "tl.batch_generation.notify_llm_background_result", recorder.notify
+    )
+    monkeypatch.setattr(
+        "tl.batch_generation.report_background_failure", recorder.report
     )
     return recorder
 
@@ -404,3 +410,150 @@ async def test_bind_none_releases_waiting_delivery_immediately(plugin, notifier)
     await asyncio.wait_for(adapter.deliver(make_job(), RESULT), 2)
 
     assert notifier.results[0][0]["task_id"] == ""
+
+
+# ===== 批量进度与汇总 =====
+
+
+def batch_child(job_id, name, count=1, state=JobState.RUNNING, **fields):
+    return Job(
+        job_id=job_id,
+        request=GenerationRequest(
+            prompt=name,
+            source="llm_batch",
+            image_count=count,
+            metadata={"item_name": name},
+        ),
+        state=state,
+        **fields,
+    )
+
+
+async def new_batch_record(plugin, event, total=2):
+    record = await plugin.background_task_manager.create(
+        session_id=event.unified_msg_origin,
+        kind="batch",
+        routing_mode="full_polling",
+        message="running",
+        total_items=total,
+    )
+    return record["task_id"]
+
+
+@pytest.mark.asyncio
+async def test_batch_delivery_tracks_children_and_sends_legacy_summary(
+    plugin, notifier
+):
+    event = _Event()
+    task_id = await new_batch_record(plugin, event)
+    adapter = ToolBatchDelivery(plugin, event)
+    adapter.bind_record(task_id)
+    parent = make_job()
+    first = batch_child("child-1", "第一张", 2)
+    second = batch_child(
+        "child-2", "第二张", state=JobState.FAILED, error_message="上游失败"
+    )
+
+    await adapter.child_started(parent, first)
+    assert (await read_record(plugin, event, task_id))["current_item"] == "第一张"
+    await adapter.child_finished(parent, first, RESULT)
+    await adapter.child_finished(parent, second, None)
+    await adapter.deliver(
+        parent, GenerationResult(artifacts=RESULT.artifacts, partial=True)
+    )
+
+    payload, notice, scene = notifier.results[0]
+    assert payload["task_id"] == task_id
+    assert payload["result"] == notice
+    assert "第一张: 2/2 张" in notice
+    assert "第二张: 失败或未完成，0/1 张，上游失败" in notice
+    assert scene == f"批量任务/{task_id}"
+    assert [item["name"] for item in payload["items"]] == ["第一张", "第二张"]
+    record = await read_record(plugin, event, task_id)
+    assert record["status"] == "partial_success"
+    assert record["completed_items"] == 2
+    assert record["succeeded_items"] == 1
+    assert record["failed_items"] == 1
+    assert record["current_item"] is None
+    assert record["items"][0]["provider"] == "legacy"
+    assert record["items"][0]["alias"] == "别名"
+    assert record["items"][1]["error"] == "上游失败"
+
+
+@pytest.mark.asyncio
+async def test_batch_delivery_not_delivered_marks_partial_and_raises(plugin, notifier):
+    notifier.ok = False
+    event = _Event()
+    task_id = await new_batch_record(plugin, event, total=1)
+    adapter = ToolBatchDelivery(plugin, event)
+    adapter.bind_record(task_id)
+    parent = make_job()
+    child = batch_child("child-1", "唯一", 2)
+    await adapter.child_finished(parent, child, RESULT)
+
+    with pytest.raises(RuntimeError, match="未送达"):
+        await adapter.deliver(parent, GenerationResult(artifacts=RESULT.artifacts))
+
+    record = await read_record(plugin, event, task_id)
+    assert record["status"] == "partial_success"
+    assert record["succeeded_items"] == 1
+    assert record["message"] == (
+        "批量生成已完成，但结果发送未成功；可查询任务获取图片 URL/路径"
+    )
+
+
+@pytest.mark.asyncio
+async def test_batch_delivery_failure_reports_summary_and_marks_failed(
+    plugin, notifier
+):
+    event = _Event()
+    task_id = await new_batch_record(plugin, event, total=1)
+    adapter = ToolBatchDelivery(plugin, event)
+    adapter.bind_record(task_id)
+    parent = make_job(JobState.FAILED, error_code="batch_all_failed")
+    child = batch_child(
+        "child-1", "失败项", state=JobState.FAILED, error_message="没有图片"
+    )
+    await adapter.child_finished(parent, child, None)
+
+    await adapter.deliver_failure(parent)
+
+    assert notifier.results == []
+    summary, scene, notified_task = notifier.failures[0]
+    assert "失败项: 失败或未完成，0/1 张，没有图片" in summary
+    assert scene == f"批量任务/{task_id}" and notified_task == task_id
+    record = await read_record(plugin, event, task_id)
+    assert record["status"] == "failed"
+    assert record["failed_items"] == 1
+
+
+@pytest.mark.asyncio
+async def test_batch_parent_failure_with_output_still_reports_failure(plugin, notifier):
+    event = _Event()
+    task_id = await new_batch_record(plugin, event, total=1)
+    adapter = ToolBatchDelivery(plugin, event)
+    adapter.bind_record(task_id)
+    parent = make_job(JobState.FAILED, error_code="store_failed")
+    await adapter.child_finished(parent, batch_child("child-1", "已产出", 2), RESULT)
+
+    await adapter.deliver_failure(parent)
+
+    assert notifier.results == []
+    assert len(notifier.failures) == 1
+    assert (await read_record(plugin, event, task_id))["status"] == "failed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", [JobState.CANCELLED, JobState.INTERRUPTED])
+async def test_batch_delivery_interruption_does_not_notify(plugin, notifier, state):
+    event = _Event()
+    task_id = await new_batch_record(plugin, event, total=1)
+    adapter = ToolBatchDelivery(plugin, event)
+    adapter.bind_record(task_id)
+
+    await adapter.deliver_failure(make_job(state))
+
+    assert notifier.results == [] and notifier.failures == []
+    record = await read_record(plugin, event, task_id)
+    assert record["status"] == "interrupted"
+    assert record["message"] == "批量生成已中断"
