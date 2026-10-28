@@ -12,16 +12,18 @@ from .api_types import APIError
 
 _PROGRESS = ContextVar("generation_progress", default=None)
 _PREVIEW = ContextVar("generation_preview", default=None)
+_COUNT = ContextVar("generation_count", default=None)
 _RESERVATION = ContextVar("generation_reservation", default=None)
 
 
 @contextmanager
-def generation_progress(callback, *, preview=None):
-    if callback is None and preview is None:
+def generation_progress(callback, *, preview=None, count=None):
+    if callback is None and preview is None and count is None:
         yield
         return
     token = _PROGRESS.set(callback) if callback is not None else None
     preview_token = _PREVIEW.set(preview) if preview is not None else None
+    count_token = _COUNT.set(count) if count is not None else None
     try:
         yield
     finally:
@@ -29,12 +31,20 @@ def generation_progress(callback, *, preview=None):
             _PROGRESS.reset(token)
         if preview_token is not None:
             _PREVIEW.reset(preview_token)
+        if count_token is not None:
+            _COUNT.reset(count_token)
 
 
 async def emit_generation_preview(image_base64, output_format="png"):
     callback = _PREVIEW.get()
     if callback is not None:
         await callback(image_base64, output_format)
+
+
+async def emit_generation_count(count, stats):
+    callback = _COUNT.get()
+    if callback is not None:
+        await callback(count, stats)
 
 
 @contextmanager
