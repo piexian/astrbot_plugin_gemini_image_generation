@@ -334,6 +334,7 @@ class ImageGenerator:
         Returns:
             tuple[bool, tuple[list[str], list[str], str | None, str | None] | str]:
             (是否成功, (图片URL列表, 图片路径列表, 文本内容, 思维签名) 或错误消息)
+        旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。
         """
         self._reset_request_stats()
         if not self.api_client:

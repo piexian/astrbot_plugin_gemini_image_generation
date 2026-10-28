@@ -545,6 +545,7 @@ class ImageGenerationService:
         return removed
 
     async def _run(self, task_id, request, ticket):
+        """旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
         self._started[task_id].set()
         manager = self.plugin.background_task_manager
         tracker = self.plugin.generation_tracker
@@ -647,6 +648,7 @@ class ImageGenerationService:
             await finish
 
     async def _finish(self, task_id, job_id, images, texts, stats, status, error):
+        """旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
         manager = self.plugin.background_task_manager
         tracker = self.plugin.generation_tracker
         urls = [value for value in images if value.startswith(("http://", "https://"))]

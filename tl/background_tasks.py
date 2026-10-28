@@ -214,6 +214,7 @@ class BackgroundTaskManager:
         coroutine: Coroutine[Any, Any, Any],
     ) -> asyncio.Task[Any]:
         task = asyncio.create_task(coroutine)
+        """旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
         self._runtime_tasks[task_id] = task
 
         def _done(done_task: asyncio.Task[Any]) -> None:

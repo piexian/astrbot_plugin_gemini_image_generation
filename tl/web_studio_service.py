@@ -202,6 +202,7 @@ class WebStudioService:
         self._admitted_jobs += 1
 
     def _attach(self, job_id: str, coroutine: Any, upload_names: list[str]) -> None:
+        """旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
         leased = frozenset(upload_names)
         try:
             if self._closed:
@@ -913,6 +914,7 @@ class WebStudioService:
         payload["candidate_id"] = str(accepted[0].id)
 
     async def _run_single(self, job_id: str, payload: dict[str, Any]) -> None:
+        """旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
         try:
             await self._execute_generation(job_id, payload)
         except asyncio.CancelledError:
@@ -926,6 +928,7 @@ class WebStudioService:
         parent_job_id: str,
         child_jobs: list[tuple[str, dict[str, Any]]],
     ) -> None:
+        """旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
         semaphore = asyncio.Semaphore(
             max(int(getattr(self.config, "batch_concurrency", 3)), 1)
         )
@@ -1006,6 +1009,7 @@ class WebStudioService:
         job_id: str,
         payload: dict[str, Any],
     ) -> None:
+        """旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
         target = payload["image_count"]
         collected: list[str] = []
         text_parts: list[str] = []

@@ -678,6 +678,8 @@ def _create_generation_task(
     image_count: int = 1,
     suppress_resolution: bool = False,
 ) -> asyncio.Task:
+    """旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
+
     async def _run_generation():
         success, result_data = await invoke_generation_core(
             plugin,
@@ -710,6 +712,7 @@ async def _await_generation_task_and_send(
     task_id: str | None = None,
     notify_llm: bool = False,
 ) -> None:
+    """旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
     try:
         success, result_data, stats = await generation_task
         delivered = await _dispatch_generation_result(
@@ -765,6 +768,7 @@ def _schedule_generation_delivery(
     task_id: str | None = None,
     notify_llm: bool = False,
 ) -> asyncio.Task:
+    """旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
     coroutine = _await_generation_task_and_send(
         plugin=plugin,
         event=event,

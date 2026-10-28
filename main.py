@@ -710,7 +710,7 @@ class GeminiImageGenerationPlugin(Star):
         requested_provider: str | None = None,
         requested_model: str | None = None,
     ):
-        """快捷图像生成"""
+        """快捷图像生成。旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
         if not str(prompt or "").strip():
             yield event.plain_result("❌ 图像描述不能为空")
             return
