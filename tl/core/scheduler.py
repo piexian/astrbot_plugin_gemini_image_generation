@@ -92,6 +92,28 @@ _ROUTER_EXECUTE_GRACE_SECONDS = 1.0
 # wait() 读回的运行时结果登记容量：按插入顺序淘汰最旧项，保持有界。
 _RUNTIME_RESULT_CAPACITY = 256
 
+# 以这些终态结束的 Job 没有可投递的结果，登记的投递方改走 deliver_failure。
+_NO_RESULT_STATES = frozenset(
+    {
+        JobState.FAILED,
+        JobState.CANCELLED,
+        JobState.INTERRUPTED,
+        JobState.ORPHANED,
+    }
+)
+# Job.error_message 里投递失败原因的长度上限。
+_DELIVERY_ERROR_MAX_CHARS = 200
+
+
+def _delivery_error_text(error: Exception, timeout: float) -> str:
+    """投递失败原因的简短文本（落库时还会整体脱敏）。"""
+
+    if isinstance(error, TimeoutError):
+        return f"投递超时（{timeout:g} 秒）"
+    detail = str(error).strip()
+    text = f"{type(error).__name__}: {detail}" if detail else type(error).__name__
+    return text[:_DELIVERY_ERROR_MAX_CHARS]
+
 
 class _GuardedObserverScope:
     """包装观察者/准入预留的上下文：退出异常只记日志，且不吞掉 provider 异常。"""
@@ -134,6 +156,7 @@ class JobScheduler:
         cleanup_timeout: float = 5.0,
         observers: Sequence[Any] = (),
         observer_timeout: float = 120.0,
+        delivery_timeout: float = 600.0,
     ) -> None:
         self.store = store
         self.provider = provider
@@ -149,6 +172,7 @@ class JobScheduler:
         self.cleanup_timeout = max(float(cleanup_timeout), 0.1)
         self.observers = tuple(observers)
         self.observer_timeout = float(observer_timeout)
+        self.delivery_timeout = float(delivery_timeout)
         self._closed = False
         self._tasks: dict[str, asyncio.Task[Any]] = {}
         self._done: dict[str, asyncio.Event] = {}
@@ -165,14 +189,23 @@ class JobScheduler:
         # submit 时预留的准入资源，按 QUOTA、LIMITER 顺序登记；_run 取出后转成
         # 持久化 lease，task 在 _run 取走之前就结束时由 _task_done 释放。
         self._admissions: dict[str, tuple[tuple[LeaseKind, Any], ...]] = {}
+        # 已登记、尚未交接的结果投递方；仅在事件循环内串行访问（见 attach_delivery）。
+        self._deliveries: dict[str, Any] = {}
+        # 已越过投递判定点（或已进入收尾）的 Job：不再接受新的投递登记。
+        self._delivery_decided: set[str] = set()
 
     async def submit(
-        self, request: GenerationRequest, *, admission: Mapping[str, Any] | None = None
+        self,
+        request: GenerationRequest,
+        *,
+        admission: Mapping[str, Any] | None = None,
+        delivery: Any = None,
     ) -> JobHandle:
         """提交 Job。
 
         ``admission`` 是不持久化的准入上下文（如命令事件），只交给 quota 与
         limiter 组件；任一准入组件拒绝时其异常原样抛出，且不创建 Job。
+        ``delivery`` 在 Job 被接受后登记，等价于提交后立即 attach_delivery。
         """
 
         async with self._lock:
@@ -207,6 +240,8 @@ class JobScheduler:
                 raise
             if reserved:
                 self._admissions[job.job_id] = tuple(reserved)
+            if delivery is not None:
+                self._deliveries[job.job_id] = delivery
             # 持久化成功后登记原始引用，供 _run 解析回真实输入。
             if request.reference_images:
                 self._original_references[job.job_id] = request.reference_images
@@ -241,6 +276,9 @@ class JobScheduler:
                 await self._rollback_admissions(reservations)
                 done.set()
                 # 该 Job 已触发过 job_accepted，孤儿终态同样要通知观察者。
+                await self._deliver_failure(
+                    job.job_id, self._deliveries.pop(job.job_id, None)
+                )
                 await self._notify_job_finished(job.job_id)
                 raise
             self._ensure_heartbeat()
@@ -287,9 +325,31 @@ class JobScheduler:
             # has been revoked; never create a replacement loop from the loop.
             return
 
+    def attach_delivery(self, job_id: str, delivery: Any) -> bool:
+        """给运行中的 Job 登记结果投递方；返回 False 表示未登记，结果由调用方自行处理。
+
+        必须保持同步（不得 await）：_run 在投递判定点同样同步地读取登记表，
+        两者之间不会交错，所以 True 保证 Job 结束时 deliver（有结果）或
+        deliver_failure（无结果的终态）二者之一被调用一次，False 保证两者都不会被调用。
+        Job 未知或已无 runtime task、已登记过、已越过判定点、调度器已关闭时返回 False。
+        """
+
+        if (
+            self._closed
+            or job_id not in self._tasks
+            or job_id in self._deliveries
+            or job_id in self._delivery_decided
+        ):
+            return False
+        self._deliveries[job_id] = delivery
+        return True
+
     def _task_done(self, job_id: str, task: asyncio.Task[Any]) -> None:
         self._tasks.pop(job_id, None)
         self._original_references.pop(job_id, None)
+        # 登记在 task 结束后不会再有人取用；已越过判定点的标记同样随之清理。
+        self._deliveries.pop(job_id, None)
+        self._delivery_decided.discard(job_id)
         # 泄漏防护：task 在 _run 取走准入预留之前就结束（提交即取消、close）时
         # 在此释放；已接受的 Job 不退款。
         self._release_admissions(job_id)
@@ -590,8 +650,22 @@ class JobScheduler:
             job.transition(JobState.RESULT_READY)
             job = await self.store.save(job)
             await self._notify_observers("job_result", job, result)
-            job.transition(JobState.PARTIAL if result.partial else JobState.SUCCEEDED)
-            await self.store.save(job)
+            # 投递判定点：读取登记表与标记已判定之间没有 await，和同步的
+            # attach_delivery 不会交错；此后的登记一律被拒绝。
+            delivery = self._deliveries.get(job_id)
+            self._delivery_decided.add(job_id)
+            if delivery is None:
+                job.transition(
+                    JobState.PARTIAL if result.partial else JobState.SUCCEEDED
+                )
+                await self.store.save(job)
+            else:
+                job.transition(JobState.DELIVERY_PENDING)
+                job = await self.store.save(job)
+                # 交给 deliver 之后的失败由它自己负责，不再走 deliver_failure 兜底；
+                # 落库 DELIVERY_PENDING 期间被取消则仍留在登记表里由兜底通知。
+                self._deliveries.pop(job_id, None)
+                await self._deliver_result(job, result, delivery)
             # 终态落库成功后才登记：并发赢家、失败、取消路径不登记，
             # 避免 wait() 读回的结果遮蔽 store 里的最终结果。
             self._remember_runtime_result(job_id, result)
@@ -639,6 +713,9 @@ class JobScheduler:
                 except (StaleJobError, ValueError):
                     pass
         finally:
+            # 进入收尾后不再接受投递登记；仍在册的投递方此刻取出，稍后兜底通知。
+            pending_delivery = self._deliveries.pop(job_id, None)
+            self._delivery_decided.add(job_id)
             cleanup = asyncio.create_task(
                 leases.release_all(), name=f"cleanup:{job_id}"
             )
@@ -651,10 +728,59 @@ class JobScheduler:
             except BaseException:
                 # Lease records retain release_failed/active state for recovery.
                 pass
-            # lease 清理完成后再通知终态；取消路径此处 await 仍可执行，
-            # 任务只收到过一次 cancel 交付，新的 await 不会被再次打断。
-            if started:
-                await self._notify_job_finished(job_id)
+            # lease 清理完成后先通知投递方、再通知终态；取消路径此处 await 仍可
+            # 执行，任务只收到过一次 cancel 交付，新的 await 不会被再次打断。
+            try:
+                await self._deliver_failure(job_id, pending_delivery)
+            finally:
+                if started:
+                    await self._notify_job_finished(job_id)
+
+    async def _deliver_result(
+        self, job: Job, result: GenerationResult, delivery: Any
+    ) -> None:
+        """投递阶段：Job 此时是 DELIVERY_PENDING，结果在任何出口都保留。
+
+        deliver 成功按 result.partial 收尾；抛出普通异常或超时则以 PARTIAL +
+        delivery_failed 收尾。CancelledError 照常传播，由 _run 的取消分支收尾。
+        """
+
+        try:
+            await asyncio.wait_for(
+                _call(delivery.deliver, job, result), timeout=self.delivery_timeout
+            )
+        except Exception as error:
+            logger.warning("[v2] Job %s 投递失败: %s", job.job_id, type(error).__name__)
+            job.set_error(
+                "delivery_failed", _delivery_error_text(error, self.delivery_timeout)
+            )
+            job.transition(JobState.PARTIAL)
+        else:
+            job.transition(JobState.PARTIAL if result.partial else JobState.SUCCEEDED)
+        await self.store.save(job)
+
+    async def _deliver_failure(self, job_id: str, delivery: Any) -> None:
+        """Job 无结果结束且投递方尚未交接时通知其失败；异常/超时只记日志。"""
+
+        if delivery is None:
+            return
+        try:
+            job = await self.store.get(job_id)
+        except Exception as error:
+            logger.warning("[v2] 投递失败通知读取 Job 失败: %s", type(error).__name__)
+            return
+        if job is None or job.state not in _NO_RESULT_STATES:
+            return
+        try:
+            await asyncio.wait_for(
+                _call(delivery.deliver_failure, job), timeout=self.delivery_timeout
+            )
+        except Exception as error:
+            logger.warning(
+                "[v2] 投递方 %s 的 deliver_failure 调用失败: %s",
+                type(delivery).__name__,
+                type(error).__name__,
+            )
 
     async def _notify_observers(self, hook: str, *args: Any) -> None:
         """逐观察者调用可选钩子；异常/超时只记日志，CancelledError 照常传播。"""
@@ -812,6 +938,9 @@ class JobScheduler:
                 task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        # 被取消 task 的投递登记已由 _task_done 清理，这里兜住没有 task 的残留。
+        self._deliveries.clear()
+        self._delivery_decided.clear()
         # 被取消 task 的预留已由 _task_done 释放；这里保证关闭后登记表为空，
         # 返回 awaitable 的释放进入 _cleanup_tasks，由下面统一等待。
         for job_id in list(self._admissions):

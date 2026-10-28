@@ -21,16 +21,24 @@ class GenerationService:
         self._reference_service = reference_service
 
     async def prepare_references(
-        self, references: Sequence[str], *, requester: Mapping[str, str]
+        self,
+        references: Sequence[str],
+        *,
+        requester: Mapping[str, str],
+        trusted_local: bool = False,
     ) -> tuple[str, ...]:
-        """内联参考图换成短句柄；未注入 ReferenceService 说明装配缺失。"""
+        """内联参考图换成短句柄；未注入 ReferenceService 说明装配缺失。
+
+        ``trusted_local`` 表示调用方已按自己的规则校验过本地路径（如 LLM 工具
+        的 tool_path_guard），local / file: 形态的参考图也会读取并换成句柄。
+        """
 
         if self._reference_service is None:
             raise RuntimeError(
                 "GenerationService 未注入 ReferenceService，无法预处理参考图"
             )
         return await self._reference_service.ingest_inline(
-            references, requester=requester
+            references, requester=requester, trusted_local=trusted_local
         )
 
     async def submit(
@@ -38,9 +46,22 @@ class GenerationService:
         request: GenerationRequest,
         *,
         admission: Mapping[str, Any] | None = None,
+        delivery: Any = None,
     ) -> JobHandle:
-        """提交 Job；admission 为不持久化的准入上下文（如命令 event）。"""
-        return await self._scheduler.submit(request, admission=admission)
+        """提交 Job；admission 为不持久化的准入上下文（如命令 event）。
+
+        ``delivery`` 是结果投递方（见 DeliveryProtocol），Job 被接受后登记。
+        """
+        return await self._scheduler.submit(
+            request, admission=admission, delivery=delivery
+        )
+
+    def attach_delivery(self, job_id: str, delivery: Any) -> bool:
+        """给运行中的 Job 登记结果投递方；False 表示未登记，结果由调用方处理。
+
+        同步方法：与调度器的投递判定点不会交错，语义见 JobScheduler.attach_delivery。
+        """
+        return self._scheduler.attach_delivery(job_id, delivery)
 
     async def wait(self, job_id: str, timeout: float | None = None) -> JobResult:
         return await self._scheduler.wait(job_id, timeout=timeout)

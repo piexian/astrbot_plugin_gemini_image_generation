@@ -9,8 +9,22 @@ from astrbot.api import logger
 from .core.results import GenerationResult
 from .core.states import JobState
 from .generation_scheduler import generation_progress
-from .generation_tracker import _KNOWN_SOURCES, record_generation_success
+from .generation_tracker import (
+    _KNOWN_SOURCES,
+    TERMINAL_STATUSES,
+    record_generation_success,
+)
 from .v2_bridge import split_artifacts
+
+# 这些终态没有（或不再有）可记入历史的产出，job_finished 才需要改写记录。
+_ABORTED_STATES = frozenset(
+    {
+        JobState.FAILED,
+        JobState.CANCELLED,
+        JobState.INTERRUPTED,
+        JobState.ORPHANED,
+    }
+)
 
 
 class TrackerProjection:
@@ -18,7 +32,8 @@ class TrackerProjection:
 
     记录创建失败只记日志，不影响生成（与旧入口口径一致）；job_finished
     覆盖 FAILED/CANCELLED/INTERRUPTED/ORPHANED，SUCCEEDED/PARTIAL 由
-    job_result 完成记录。
+    job_result 完成记录。Job 已有结果且 job_result 已把记录收尾时（之后才在
+    投递阶段被取消或失败），记录保持原样，不被改写成 interrupted/failed。
     """
 
     def __init__(self, tracker: Any, archive_images_fn: Any = None) -> None:
@@ -87,8 +102,24 @@ class TrackerProjection:
             candidate_id=result.candidate_id,
         )
 
+    def _finished_with_result(self, job: Any) -> bool:
+        """Job 带着结果结束，且生成历史记录已被 job_result 收尾。
+
+        只看 job.result 不够：结果在 job_result 观察者运行之前就已落库，观察者
+        中途被取消时记录仍在运行态，仍需按终态改写。
+        """
+
+        if getattr(job, "result", None) is None:
+            return False
+        record = self._tracker.get(job.job_id)
+        return record is not None and record.get("status") in TERMINAL_STATUSES
+
     async def job_finished(self, job: Any) -> None:
+        if job.state not in _ABORTED_STATES:
+            return
         try:
+            if self._finished_with_result(job):
+                return
             if job.state == JobState.FAILED:
                 error = job.error_message or job.error_code or "生成失败"
                 await self._tracker.fail(job.job_id, error=error)

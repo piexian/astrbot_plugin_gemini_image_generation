@@ -156,7 +156,10 @@ class SchedulerProtocol(Protocol):
         request: GenerationRequest,
         *,
         admission: Mapping[str, Any] | None = None,
+        delivery: DeliveryProtocol | None = None,
     ) -> Job: ...
+
+    def attach_delivery(self, job_id: str, delivery: DeliveryProtocol) -> bool: ...
 
     async def wait(self, job_id: str, *, timeout: float | None = None) -> Job: ...
 
@@ -203,6 +206,30 @@ class JobObserverProtocol(Protocol):
     async def job_result(self, job: Job, result: GenerationResult) -> None: ...
 
     async def job_finished(self, job: Job) -> None: ...
+
+
+class DeliveryProtocol(Protocol):
+    """Job 结果的投递方：由入口经 ``attach_delivery`` / ``submit(delivery=...)`` 登记。
+
+    登记成功后调度器保证二选一（均用 ``delivery_timeout`` 包住，异常只记日志）：
+
+    - ``deliver``：Job 产出结果后在投递判定点（``job_result`` 观察者之后）接手，
+      Job 转 ``DELIVERY_PENDING``；正常返回按 ``result.partial`` 收尾为
+      ``SUCCEEDED`` / ``PARTIAL``；抛普通异常或超时则收尾为 ``PARTIAL`` 且
+      ``error_code="delivery_failed"``，结果仍保留。``deliver`` 执行期间 Job 被
+      取消时 CancelledError 照常传播，Job 收尾为 ``CANCELLED``，不再调用
+      ``deliver_failure``。
+    - ``deliver_failure``：Job 以无结果的终态（``FAILED`` / ``CANCELLED`` /
+      ``INTERRUPTED`` / ``ORPHANED``）结束，且 ``deliver`` 尚未接手（未越过
+      判定点，或越过后在 ``deliver`` 开始前就失败、被取消）时调用，早于
+      ``job_finished`` 观察者；``job`` 带终态与错误信息。
+
+    例外：runtime task 在首次运行前就被取消、进程崩溃，两者都不会被调用。
+    """
+
+    async def deliver(self, job: Job, result: GenerationResult) -> None: ...
+
+    async def deliver_failure(self, job: Job) -> None: ...
 
 
 @runtime_checkable
