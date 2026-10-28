@@ -14,6 +14,12 @@ from urllib.parse import urlsplit
 from astrbot.api import logger
 
 from .background_tasks import TERMINAL_STATUSES
+from .core.errors import (
+    CoreError,
+    QueueFullError,
+    QuotaExceededError,
+    ServiceClosedError,
+)
 from .file_uri import file_uri_to_path
 from .generation_scheduler import generation_progress, generation_reservation
 from .generation_tracker import tracking_context
@@ -24,6 +30,8 @@ from .provider_capabilities import (
     routing_mode,
     select_candidates,
 )
+from .v2_bridge import build_request as v2_build_request
+from .v2_sdk_delivery import SdkDelivery
 
 
 class PluginServiceError(RuntimeError):
@@ -76,6 +84,7 @@ class ImageGenerationService:
         self._events = {}
         self._tasks = {}
         self._started = {}
+        self._v2_jobs = {}
         self._submissions = set()
 
     def initialized(self):
@@ -244,6 +253,23 @@ class ImageGenerationService:
             raise PluginServiceError(
                 "invalid_request", "没有符合供应商、模型和参数要求的候选"
             )
+        get_v2_service = getattr(self.plugin, "_v2_service_for", None)
+        v2_service = get_v2_service(umo) if callable(get_v2_service) else None
+        if v2_service is not None:
+            return await self._submit_v2(
+                v2_service,
+                plugin_id=plugin_id,
+                plugin_name=plugin_name,
+                umo=umo,
+                requester=requester,
+                use_rate_limit=use_rate_limit,
+                refs=refs,
+                parameters=parameters,
+                prompt=prompt,
+                image_count=image_count,
+                watermark=watermark,
+                on_complete=on_complete,
+            )
         self._admit()
         ticket = self.plugin.generation_scheduler.reserve()
         token = None
@@ -317,6 +343,128 @@ class ImageGenerationService:
                 )
             raise
 
+    async def _submit_v2(
+        self,
+        v2_service: Any,
+        *,
+        plugin_id: str,
+        plugin_name: str,
+        umo: str | None,
+        requester: dict[str, Any],
+        use_rate_limit: bool,
+        refs: list[str],
+        parameters: dict[str, Any],
+        prompt: str,
+        image_count: int,
+        watermark: bool | None,
+        on_complete: Any,
+    ) -> dict[str, Any]:
+        delivery = SdkDelivery(self)
+        total_timeout = max(int(getattr(self.plugin.cfg, "total_timeout", 120)), 1)
+        quota = False
+        if use_rate_limit:
+            quota = (
+                {"cost": 1, "scope": "session"}
+                if umo
+                else {"cost": 1, "scope": "plugin", "plugin_id": plugin_id}
+            )
+        try:
+            references = await v2_service.prepare_references(
+                refs, requester=requester, trusted_local=True
+            )
+            request = v2_build_request(
+                source="plugin",
+                prompt=prompt,
+                resolution=parameters["resolution"],
+                aspect_ratio=parameters["aspect_ratio"],
+                provider=parameters["provider"],
+                model=parameters["model"],
+                reference_images=references,
+                deadline_seconds=total_timeout * image_count,
+                requester=requester,
+                negative_prompt=parameters["negative_prompt"],
+                quality=parameters["quality"],
+                watermark=watermark,
+                image_count=image_count,
+                metadata={
+                    "caller": {"plugin_id": plugin_id, "plugin_name": plugin_name},
+                    "fill_image_count": True,
+                    "require_images": True,
+                    "enable_smart_retry": bool(
+                        getattr(self.plugin.cfg, "enable_smart_retry", True)
+                    ),
+                    "max_attempts_per_key": max(
+                        int(getattr(self.plugin.cfg, "max_attempts_per_key", 3)), 1
+                    ),
+                    "total_timeout": total_timeout,
+                    "quota": quota,
+                },
+            )
+            handle = await v2_service.submit(request, delivery=delivery)
+        except CoreError as error:
+            if isinstance(error, QuotaExceededError):
+                raise PluginServiceError(
+                    "rate_limited", error.message or "请求超过限流额度"
+                ) from error
+            if isinstance(error, QueueFullError):
+                raise PluginServiceError("queue_full", error.message) from error
+            if isinstance(error, ServiceClosedError):
+                raise PluginServiceError("service_closed", error.message) from error
+            raise PluginServiceError("invalid_request", error.message) from error
+
+        record = None
+        task_id = None
+        try:
+            if self._state != "ready" or self.plugin.provider_runtime.closed:
+                raise PluginServiceError("service_closed", "服务正在关闭")
+            manager = self.plugin.background_task_manager
+            record = await manager.create(
+                session_id=umo or "",
+                kind="plugin",
+                plugin_id=plugin_id,
+                routing_mode=routing_mode(parameters["provider"], parameters["model"]),
+                message="任务已接收",
+            )
+            task_id = record["task_id"]
+            await manager.update(
+                task_id,
+                status="queued",
+                job_id=handle.job_id,
+                caller={"plugin_id": plugin_id, "plugin_name": plugin_name},
+                requester=requester,
+                requested_images=image_count,
+                generated_images=0,
+                image_urls=[],
+                image_paths=[],
+                callback_status="pending" if on_complete else "none",
+            )
+            if on_complete:
+                self._callbacks[task_id] = on_complete
+            self._v2_jobs[task_id] = (v2_service, handle.job_id)
+            delivery.bind_record(task_id)
+            return {
+                "task_id": task_id,
+                "status": "queued",
+                "instance_id": self.instance_id,
+            }
+        except BaseException:
+            delivery.bind_record(None)
+            try:
+                await asyncio.shield(v2_service.cancel(handle.job_id))
+            except Exception:
+                logger.warning("[插件接入] 回滚 v2 任务失败", exc_info=True)
+            if task_id:
+                self._v2_jobs.pop(task_id, None)
+                self._callbacks.pop(task_id, None)
+            if record:
+                await manager.update(
+                    record["task_id"],
+                    best_effort=True,
+                    status="interrupted",
+                    message="任务提交未完成",
+                )
+            raise
+
     async def _references(self, refs):
         if refs is None:
             return []
@@ -371,11 +519,16 @@ class ImageGenerationService:
     async def cancel_task(self, task_id: str, *, plugin_id: str):
         record = await self.get_task(task_id, plugin_id=plugin_id)
         if record["status"] not in TERMINAL_STATUSES:
-            task = self._tasks.get(task_id)
-            if task:
-                await self._started[task_id].wait()
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
+            v2_job = self._v2_jobs.get(task_id)
+            if v2_job:
+                service, _ = v2_job
+                await service.cancel(record.get("job_id") or v2_job[1])
+            else:
+                task = self._tasks.get(task_id)
+                if task:
+                    await self._started[task_id].wait()
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
         return await self.get_task(task_id, plugin_id=plugin_id)
 
     async def remove_callback(self, task_id: str, *, plugin_id: str):
@@ -586,6 +739,16 @@ class ImageGenerationService:
         await asyncio.gather(*(event.wait() for event in list(self._submissions)))
         await asyncio.gather(*(event.wait() for event in list(self._started.values())))
         tasks = list(self._tasks.values())
+        pending_v2 = list(self._v2_jobs.values())
+        if pending_v2:
+            results = await asyncio.gather(
+                *(service.cancel(job_id) for service, job_id in pending_v2),
+                return_exceptions=True,
+            )
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.warning(f"[插件接入] 关闭 v2 任务失败: {result}")
+        self._v2_jobs.clear()
         for task in tasks:
             task.cancel()
         if tasks:
