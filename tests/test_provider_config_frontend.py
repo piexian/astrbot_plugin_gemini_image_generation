@@ -168,5 +168,34 @@ action('reload').click(); await tick(); assert.equal(confirms, 1); assert.equal(
 confirmation = true; server.revision = 'r9'; action('reload').click(); await tick();
 assert.equal(confirms, 2); assert.equal(view.draft.revision, 'r9'); assert.equal(view.dirty, false);
 assert.equal(view.conflict, false); assert.equal(saved, 0); view.destroy();
+
+
+"""
+    )
+
+
+def test_masked_keys_use_secret_actions_without_exposing_originals():
+    _run(
+        r"""
+for (const actionMode of ['keep', 'replace', 'append', 'clear']) {
+  calls.length = 0;
+  server = response();
+  server.key_values_visible = false;
+  const entry = server.entries[0];
+  delete entry.values.api_keys;
+  entry.secrets.api_keys = {present: true, count: 2, previews: ['••••one', '••••two']};
+  const view = create(); await view.open(); edit(0);
+  assert.equal(body.textContent.includes('fake-old-one'), false);
+  assert.equal(body.textContent.includes('••••one'), true);
+  if (actionMode !== 'keep') change(mode('api_keys'), actionMode);
+  if (['replace', 'append'].includes(actionMode)) input(field('api_keys'), `new-${actionMode}-key`);
+  apply(); action('save').click(); await tick();
+  const payload = posts().at(-1).payload.entries[0];
+  assert.equal(payload.values.api_keys, undefined);
+  assert.equal(payload.secret_actions.api_keys.mode, actionMode);
+  if (['replace', 'append'].includes(actionMode)) assert.deepEqual(plain(payload.secret_actions.api_keys.value), [`new-${actionMode}-key`]);
+  else assert.equal(payload.secret_actions.api_keys.value, undefined);
+  view.destroy();
+}
 """
     )

@@ -30,6 +30,13 @@ MODEL_RESULT = {
 }
 
 
+def _previews(*keys):
+    return [
+        "•" * len(key) if len(key) < 8 else f"{'•' * (len(key) - 4)}{key[-4:]}"
+        for key in keys
+    ]
+
+
 @pytest.fixture(autouse=True)
 def isolated_network_and_proxy(monkeypatch):
     for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
@@ -125,27 +132,34 @@ async def test_get_config_exposes_editable_plugin_keys_without_host_credentials(
     svc.vision_directory = VisionProviderDirectory(host_context())
     before = copy.deepcopy(dict(svc.raw_config))
     snapshot = await svc.get_config()
-    assert snapshot["key_values_visible"] is True
-    assert snapshot["entries"][0]["values"]["api_keys"] == [FAKE_OLD_KEY]
+    assert snapshot["key_values_visible"] is False
+    assert "api_keys" not in snapshot["entries"][0]["values"]
     assert snapshot["entries"][0]["secrets"]["api_keys"] == {
         "present": True,
         "count": 1,
+        "previews": _previews(FAKE_OLD_KEY),
     }
+    assert FAKE_OLD_KEY not in json.dumps(snapshot)
     assert "fake-host" not in json.dumps(snapshot)
     assert dict(svc.raw_config) == before and svc.raw_config.calls == []
-    snapshot["entries"][0]["values"]["api_keys"].append("fake-local-edit")
+    snapshot["entries"][0]["values"]["api_keys"] = ["fake-local-edit"]
     assert dict(svc.raw_config) == before
     body = await payload(svc)
-    body["entries"][0]["values"]["api_keys"] = [f" {FAKE_NEW_KEY} ", "", FAKE_NEW_KEY]
+    body["entries"][0]["secret_actions"]["api_keys"] = {
+        "mode": "replace",
+        "value": [f" {FAKE_NEW_KEY} ", "", FAKE_NEW_KEY],
+    }
     saved = await svc.save_config(body)
-    assert saved["entries"][0]["values"]["api_keys"] == [FAKE_NEW_KEY]
+    assert saved["entries"][0]["secrets"]["api_keys"]["previews"] == _previews(
+        FAKE_NEW_KEY
+    )
     assert svc.raw_config["provider_settings"]["provider_overrides"][0]["api_keys"] == [
         FAKE_NEW_KEY
     ]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("edit_mode", ["append", "plaintext"])
+@pytest.mark.parametrize("edit_mode", ["append", "replace"])
 async def test_key_edit_through_provider_application_preserves_real_usage(
     plugin_factory, edit_mode
 ):
@@ -163,14 +177,14 @@ async def test_key_edit_through_provider_application_preserves_real_usage(
             "value": [f" {FAKE_OLD_KEY} ", FAKE_NEW_KEY, " ", FAKE_NEW_KEY],
         }
     else:
-        target["values"]["api_keys"] = [
-            FAKE_OLD_KEY,
-            f" {FAKE_NEW_KEY} ",
-            FAKE_NEW_KEY,
-            "",
-        ]
+        target["secret_actions"]["api_keys"] = {
+            "mode": "replace",
+            "value": [FAKE_OLD_KEY, f" {FAKE_NEW_KEY} ", FAKE_NEW_KEY, ""],
+        }
     result = await svc.save_config(body)
-    assert result["entries"][0]["values"]["api_keys"] == [FAKE_OLD_KEY, FAKE_NEW_KEY]
+    assert result["entries"][0]["secrets"]["api_keys"]["previews"] == _previews(
+        FAKE_OLD_KEY, FAKE_NEW_KEY
+    )
     assert plugin.cfg.provider_candidates[0].api_keys == [FAKE_OLD_KEY, FAKE_NEW_KEY]
     assert plugin.key_manager is not old_manager
     assert usage(plugin.key_manager, "google#1", 0) == 2

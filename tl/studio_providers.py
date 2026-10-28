@@ -202,13 +202,18 @@ class ProviderConfigService:
                     pass
             if key == "api_keys":
                 keys = _clean_api_keys(value)
-                secrets[key] = {"present": bool(keys), "count": len(keys)}
-                if key in raw:
-                    if isinstance(value, list):
-                        values[key] = keys
-                    elif isinstance(value, str):
-                        # string 型 api_keys（如 vertex 单凭证）按原文透传
-                        values[key] = value.strip()
+                secrets[key] = {
+                    "present": bool(keys),
+                    "count": len(keys),
+                    "previews": [
+                        (
+                            "•" * len(item)
+                            if len(item) < 8
+                            else f"{'•' * (len(item) - 4)}{item[-4:]}"
+                        )
+                        for item in keys
+                    ],
+                }
             elif key in {"api_base", "proxy"} and _protected_url(value):
                 secrets[key] = {"present": True, "preview": "已配置"}
             elif _valid_type(value, field["type"]):
@@ -289,7 +294,7 @@ class ProviderConfigService:
                 for name, template in self.templates.items()
             ],
             **self.vision_directory.snapshot(),
-            "key_values_visible": True,
+            "key_values_visible": False,
             "model_catalog": catalog_capabilities(),
             "busy": bool(self.runtime.busy),
             "requires_reload": bool(self.runtime.failed or self.runtime.closed),

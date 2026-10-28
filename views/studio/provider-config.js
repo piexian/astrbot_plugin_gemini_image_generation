@@ -264,7 +264,7 @@
         field.appendChild(this.el('label', {for: id}, [label]));
         // string 型 api_keys（单凭证渠道）走普通文本输入，不进列表 Key 管理器
         const keyList = name === 'api_keys' && schema.type !== 'string';
-        const secret = keyList || (name !== 'api_keys' && !!this.secrets(entry, common)[name]?.present);
+        const secret = keyList || !!this.secrets(entry, common)[name]?.present;
         if (keyList) this.renderKeys(field, entry, schema, id);
         else if (common && name === 'vision_provider_id') this.renderVisionProvider(field, entry, schema, id);
         else if (secret) this.renderSecret(field, entry, name, schema, common, id);
@@ -333,6 +333,17 @@
     renderKeys(container, entry, schema, id) {
       const visible = this.keysVisible(entry), keys = entry.values.api_keys || [];
       const row = this.el('div', {className: 'pc-key-summary', 'data-pc-key-summary': ''});
+      if (!visible) {
+        const meta = this.secrets(entry).api_keys || {}, previews = meta.previews || [];
+        if (previews.length) {
+          row.appendChild(this.el('span', {className: 'pc-key-chip'}, [previews[0]]));
+          if (previews.length > 1) row.appendChild(this.el('span', {className: 'pc-key-count'}, [`+${previews.length - 1}`]));
+        } else row.appendChild(this.el('span', {className: 'pc-key-chip'}, [this.t('{v0} 个 Key', { v0: meta.count || 0 })]));
+        container.appendChild(row);
+        if (!own(entry.secret_actions, 'api_keys')) entry.secret_actions.api_keys = {mode: 'keep'};
+        this.renderSecret(container, entry, 'api_keys', schema, false, id);
+        return;
+      }
       const toggle = this.button(this.keysHidden ? this.t('显示') : this.t('隐藏'), 'toggle-keys', {
         className: 'comic-btn comic-btn--outline pc-key-toggle', 'aria-label': this.keysHidden ? this.t('显示完整 API Key') : this.t('隐藏 API Key'), 'aria-pressed': String(!this.keysHidden)});
       if (keys.length <= 1) {
@@ -348,10 +359,7 @@
       row.appendChild(this.button(keys.length <= 1 ? this.t('添加更多') : this.t('管理 Key'), 'manage-keys', {
         id: keys.length > 1 ? id : undefined, disabled: !visible, 'aria-label': this.t('管理 API Key')}));
       container.appendChild(row);
-      if (!visible) container.appendChild(this.el('p', {className: 'pc-note'}, [
-        this.t('旧后台未返回已有 Key，请更新后台并重新加载；当前保存仍保留原值。')]));
     }
-
     keyInput(name, value, attrs = {}) {
       const input = this.el(name === 'batchValue' ? 'textarea' : 'input', {
         type: name === 'batchValue' ? undefined : 'text', className: 'comic-input',
@@ -658,6 +666,7 @@
     }
 
     renderSecret(container, entry, name, schema, common, id) {
+      // 已保存 Key 只显示掩码，所有变更都通过 secret_actions 提交。
       const meta = this.secrets(entry, common)[name];
       const action = entry.secret_actions[name] || {mode: 'keep'};
       const label = schema.description || name;
@@ -665,9 +674,10 @@
         'data-pc-secret-mode': name, 'data-pc-scope': common ? 'common' : 'edit'}, [
         this.el('option', {value: 'keep'}, [meta?.present ? this.t('保持原值{v0}', { v0: name === 'api_keys' ? this.t('（{v0} 个）', { v0: meta.count || 0 }) : this.t('（已配置）') }) : this.t('保持（未配置）')]),
         this.el('option', {value: 'replace'}, [this.t('替换')]), this.el('option', {value: 'clear'}, [this.t('清空')])]);
+      if (name === 'api_keys' && schema.type !== 'string') mode.appendChild(this.el('option', {value: 'append'}, [this.t('追加')]));
       mode.value = action.mode;
       container.appendChild(mode);
-      if (action.mode === 'replace') {
+      if (action.mode === 'replace' || action.mode === 'append') {
         container.appendChild(this.control(action.value ?? (schema.type === 'list' ? [] : ''), schema, name, common, `${id}-replacement`, true));
         container.appendChild(this.el('p', {className: 'pc-note'}, [name === 'api_keys' ? this.t('每行一个 Key；新值仅保存在当前页面内存中。') : this.t('新地址仅保存在当前页面内存中。')]));
       } else if (action.mode === 'clear') container.appendChild(this.el('p', {className: 'pc-note'}, [this.t('将在主保存后清空此字段。')]));
@@ -715,9 +725,9 @@
       if (modeField && event.type === 'change') {
         if (!SECRET_FIELDS.has(modeField) || !own(fields, modeField)) return;
         const mode = node.value;
-        if (!['keep', 'replace', 'clear'].includes(mode)) return;
+        if (!['keep', 'replace', 'append', 'clear'].includes(mode)) return;
         const previous = entry.secret_actions[modeField];
-        entry.secret_actions[modeField] = mode === 'replace'
+        entry.secret_actions[modeField] = ['replace', 'append'].includes(mode)
           ? {mode, value: previous?.mode === 'replace' ? previous.value : fields[modeField].type === 'list' ? [] : ''} : {mode};
         delete entry.values[modeField];
         this.invalidateCatalog(scope);
@@ -737,13 +747,14 @@
       const next = keyList ? [...new Set(value)] : value;
       // Text inputs also emit change on blur; do not replace a button mid-click.
       if (JSON.stringify(current) === JSON.stringify(next)) return;
-      if (keyList) {
+      if (node.dataset.pcSecret === 'true') {
+        entry.secret_actions[name] = {mode: entry.secret_actions[name]?.mode || 'replace', value};
+      } else if (keyList) {
         // 省略显示的占位值不是真实 Key，忽略对其的程序化编辑。
         if (!this.keysVisible(entry) || (this.keysHidden && (entry.values.api_keys || []).length > 0 && value === '••••••••')) return;
         entry.values.api_keys = [...new Set(value)];
         delete entry.secret_actions.api_keys;
-      } else if (node.dataset.pcSecret === 'true') entry.secret_actions[name] = {mode: 'replace', value};
-      else entry.values[name] = value;
+      } else entry.values[name] = value;
       if (['api_keys', 'api_base', 'proxy', 'vision_provider_id'].includes(name)) {
         this.invalidateCatalog(scope);
         if (common && name === 'proxy') this.invalidateCatalog('edit');
@@ -877,7 +888,11 @@
       const secret_actions = {};
       for (const [name, schema] of Object.entries(fields || {})) {
         if (name === 'api_keys') {
-          if (own(entry.values, name)) {
+          const action = entry.secret_actions[name];
+          if (action) {
+            secret_actions[name] = copy(action);
+            if (['replace', 'append'].includes(action.mode)) this.validate(action.value, schema, name);
+          } else if (own(entry.values, name)) {
             if (schema.type === 'string') {
               // 单凭证渠道（如 vertex）：api_keys 为字符串
               const key = String(entry.values[name] ?? '').trim();
