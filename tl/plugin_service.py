@@ -338,7 +338,7 @@ class ImageGenerationService:
                     raise PluginServiceError(
                         "invalid_request", "参考图必须是存在的本地绝对路径或 HTTP URL"
                     )
-                ref = str(path)
+                ref = path.as_uri()
             result.append(ref)
         return list(dict.fromkeys(result))
 
@@ -409,9 +409,10 @@ class ImageGenerationService:
                     caller=request["caller"],
                     requested_images=request["image_count"],
                     reference_names=[
-                        Path(ref).name
+                        Path(file_uri_to_path(ref) or ref).name
                         for ref in request["reference_images"]
-                        if Path(ref).parent == tracker.gallery_dir
+                        if Path(file_uri_to_path(ref) or ref).parent
+                        == tracker.gallery_dir
                     ],
                 )
                 job_id = history["job_id"]
