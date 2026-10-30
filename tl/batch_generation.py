@@ -176,7 +176,7 @@ async def run_batch_job(
     *,
     parent_job_id: str | None = None,
 ) -> None:
-    """Generate named items with flat configured concurrency and one final delivery."""
+    """旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
     manager = plugin.background_task_manager
     semaphore = asyncio.Semaphore(max(int(plugin.cfg.batch_concurrency), 1))
     progress_lock = asyncio.Lock()

@@ -10,7 +10,7 @@
 
 ## 核心对象
 
-`tl/core/` 的第一阶段领域模型定义了以下边界：
+`tl/core/` 的领域模型定义了以下边界：
 
 - `GenerationRequest`：不可变、可持久化的请求快照；参考图只保存引用标识。
 - `Job`：状态、父子关系、deadline、结果和错误的聚合；创建后先持久化，
@@ -86,6 +86,12 @@ backoff；每次 retry 按剩余时间截断。
 Provider 只能报告能力、构造请求、发送和解析结果。候选选择、fallback、错误
 分类、retry 和 polling 顺序由 Router/Scheduler 统一决定。
 
+
+## 父子 Job 与生成历史投影
+
+`submit_batch(parent, children, concurrency=...)` 在返回前持久化父 Job 与全部子 Job。父 Job 不执行 provider，也不占用生成执行槽；子 Job 按并发上限启动，deadline 从各自实际启动时刻计算。父取消会级联取消子 Job，全部子任务失败时父任务以 `batch_all_failed` 收尾。
+
+带 `fill_image_count` 的请求在单次返回不足目标张数时继续生成，保留去重后的已有图片；后续无新增或失败时以部分结果收尾。生成历史由 `TrackerProjection` 根据 `job_accepted`、`job_result`、`child_finished` 和 `job_finished` 写入，批量父记录只汇总子记录状态与张数，图片归档在子记录上。
 ## 资源与安全边界
 
 每个 Job 都要有明确的：
@@ -121,14 +127,14 @@ ReferenceService 统一接收本地路径、file URI、HTTP URL、data URI、bas
 平台图片。PathPolicy/RemoteFetchService 必须阻止路径穿越、符号链接逃逸、
 loopback、私网、link-local、云元数据地址和重定向绕过，并限制响应体、像素数、
 连接时间和总时间。候选 provider 的 proxy 由 service 传入。source URL 在写入
-history、响应和日志前必须脱敏；WebUI 只能看到 masked secret 以及 keep/replace/
-clear 状态。
+history、响应和日志前必须脱敏；WebUI 只能看到 masked secret 以及
+keep/replace/append/clear 状态。
 DNS resolver 对实际连接 IP 再执行同一网络策略，防止校验与连接之间的
 DNS rebinding。
 
 ## 持久化与恢复
 
-第二阶段的 JobStore 使用 sqlite3 + WAL 和版本化 schema migration，至少包含
+持久化层的 JobStore 使用 sqlite3 + WAL 和版本化 schema migration，包含
 `jobs`、`attempts`、`artifacts`、`leases`、`job_events`。所有保存由串行 writer
 完成，使用每次唯一的临时文件/事务，不让旧线程覆盖新状态。启动时兼容导入
 `background_tasks.json` 和 `generation_history.json`；单个损坏 JSON 只备份并
@@ -139,9 +145,8 @@ DNS rebinding。
 幂等 cleanup。历史 API 在迁移期间继续输出旧字段和 `partial_success` 等兼容值，
 由 facade 做状态映射。
 
-## 分阶段接入顺序
+## 接入状态
 
-领域模型、协议、JobStore、JobScheduler 与 ProviderRouter 已落地。后续按
-ReferenceService → 命令 → LLM Tool →
-WebUI Studio → SDK 的顺序迁移；每次迁移都运行项目测试、ruff、compileall，
-并停在可审查提交，不自动跨入下一高风险阶段。
+领域模型、协议、JobStore、JobScheduler、ProviderRouter、ReferenceService 与投递适配器均已落地。命令、LLM 工具单图/批量、WebUI 创作台和公开 SDK 已接入灰度：由默认关闭的 `scheduler_v2` 与 `scheduler_v2_sessions` 控制；WebUI 及无 `umo` 的 SDK 调用仅在名单为空时接入。WebUI 路由守卫、masked secret、出站策略和历史源链接脱敏已统一。
+
+旧路径仍保留为默认执行与回滚路径。后续工作是全量灰度验证、默认值切换评估，以及满足迁移文档条件后删除重复逻辑；每次变更继续运行完整 pytest、ruff 和 compileall。
