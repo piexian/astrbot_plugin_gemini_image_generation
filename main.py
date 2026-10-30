@@ -41,7 +41,12 @@ from .tl import (
     split_image,
 )
 from .tl.background_tasks import BackgroundTaskManager
-from .tl.core.errors import QueueFullError, QuotaExceededError, ServiceClosedError
+from .tl.core.errors import (
+    CoreError,
+    QueueFullError,
+    QuotaExceededError,
+    ServiceClosedError,
+)
 from .tl.core.stack import build_generation_stack
 from .tl.core.states import JobState
 from .tl.enhanced_prompts import (
@@ -96,6 +101,7 @@ from .tl.v2_bridge import (
 )
 from .tl.v2_bridge import (
     v2_failure_message,
+    v2_failure_text,
 )
 from .tl.v2_tracking import TrackerProjection
 from .tl.web_studio_service import WebStudioService
@@ -807,9 +813,19 @@ class GeminiImageGenerationPlugin(Star):
                 umo = getattr(event, "unified_msg_origin", None)
                 if umo:
                     v2_requester["umo"] = umo
-                prepared_refs = await service.prepare_references(
-                    all_ref_images, requester=v2_requester
-                )
+                try:
+                    prepared_refs = await service.prepare_references(
+                        all_ref_images, requester=v2_requester
+                    )
+                except CoreError as error:
+                    yield event.plain_result(
+                        v2_failure_text(
+                            str(error.code),
+                            error.message,
+                            total_timeout=self.cfg.total_timeout,
+                        )
+                    )
+                    return
                 try:
                     handle = await service.submit(
                         v2_command_request(

@@ -452,6 +452,26 @@ async def test_job_finished_still_closes_record_when_job_result_never_finished(
         await tracker.close()
 
 
+@pytest.mark.asyncio
+async def test_successful_job_finished_retries_timed_out_result_projection(tmp_path):
+    tracker = GenerationTracker(tmp_path, 30)
+    projection = TrackerProjection(tracker, _archive_ok)
+    try:
+        await projection.job_accepted(_accepted_job("job-success-open"))
+        await projection.job_finished(
+            _fake_job(
+                "job-success-open",
+                JobState.SUCCEEDED,
+                result=GenerationResult(artifacts=("https://img.test/a.png",)),
+            )
+        )
+        record = tracker.get("job-success-open")
+        assert record["status"] == "succeeded"
+        assert record["images"] == ["gallery-0.png"]
+    finally:
+        await tracker.close()
+
+
 def _studio_job(job_id: str, count: int = 2):
     job = _accepted_job(job_id)
     job.request.source = "webui"

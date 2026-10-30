@@ -226,6 +226,18 @@ class TrackerProjection:
         return record is not None and record.get("status") in TERMINAL_STATUSES
 
     async def job_finished(self, job: Any) -> None:
+        if job.state in (JobState.SUCCEEDED, JobState.PARTIAL):
+            # job_result observers are best-effort and may time out while archiving.
+            # Retry the projection at the terminal hook so a successful Job does not
+            # leave its history permanently in the running state.
+            if getattr(
+                job, "result", None
+            ) is not None and not self._finished_with_result(job):
+                await self.job_result(job, job.result)
+            self._batch_images.pop(job.job_id, None)
+            self._batch_statuses.pop(job.job_id, None)
+            self._batch_source_urls.pop(job.job_id, None)
+            return
         self._batch_images.pop(job.job_id, None)
         self._batch_statuses.pop(job.job_id, None)
         self._batch_source_urls.pop(job.job_id, None)
