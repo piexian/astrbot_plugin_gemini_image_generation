@@ -22,6 +22,7 @@ from .model_catalog import (
     make_catalog_request,
     safe_target,
 )
+from .outbound_policy import check_outbound_url
 from .plugin_config import _clean_api_keys
 from .provider_hooks import materialize_service_account_json
 from .provider_runtime import ProviderRuntimeBusy
@@ -121,7 +122,7 @@ class ProviderConfigService:
         self.prepare = prepare
         self.apply = apply
         self.restore = restore
-        self.catalog = ModelCatalogService()
+        self.catalog = ModelCatalogService(url_checker=self._check_outbound_url)
         self.vision_directory = VisionProviderDirectory(context)
         schema_path = Path(__file__).resolve().parents[1] / "_conf_schema.json"
         schema = json.loads(schema_path.read_text(encoding="utf-8"))[
@@ -202,13 +203,18 @@ class ProviderConfigService:
                     pass
             if key == "api_keys":
                 keys = _clean_api_keys(value)
-                secrets[key] = {"present": bool(keys), "count": len(keys)}
-                if key in raw:
-                    if isinstance(value, list):
-                        values[key] = keys
-                    elif isinstance(value, str):
-                        # string 型 api_keys（如 vertex 单凭证）按原文透传
-                        values[key] = value.strip()
+                secrets[key] = {
+                    "present": bool(keys),
+                    "count": len(keys),
+                    "previews": [
+                        (
+                            "•" * len(item)
+                            if len(item) < 8
+                            else f"{'•' * (len(item) - 4)}{item[-4:]}"
+                        )
+                        for item in keys
+                    ],
+                }
             elif key in {"api_base", "proxy"} and _protected_url(value):
                 secrets[key] = {"present": True, "preview": "已配置"}
             elif _valid_type(value, field["type"]):
@@ -289,7 +295,7 @@ class ProviderConfigService:
                 for name, template in self.templates.items()
             ],
             **self.vision_directory.snapshot(),
-            "key_values_visible": True,
+            "key_values_visible": False,
             "model_catalog": catalog_capabilities(),
             "busy": bool(self.runtime.busy),
             "requires_reload": bool(self.runtime.failed or self.runtime.closed),
@@ -309,6 +315,19 @@ class ProviderConfigService:
             or os.getenv("http_proxy")
             or None
         )
+
+    def _saved_api_bases(self) -> list[str]:
+        settings = self._settings()
+        values = [settings.get("api_base")]
+        values.extend(
+            entry.get("api_base")
+            for entry in settings.get("provider_overrides", [])
+            if isinstance(entry, dict)
+        )
+        return [value for value in values if isinstance(value, str) and value.strip()]
+
+    async def _check_outbound_url(self, url: str) -> str:
+        return await check_outbound_url(url, saved_api_bases=self._saved_api_bases())
 
     def _catalog_request(self, api_type: str, entry: dict, common: dict, key: str):
         default_base = self.templates[api_type]["fields"]["api_base"].get("default", "")

@@ -22,6 +22,7 @@ from typing import Any
 from astrbot.api import logger
 
 from .api.reference_pipeline import select_persistent_source_urls
+from .core.errors import redact_url
 from .studio_parameters import clean_history_settings
 
 TERMINAL_STATUSES = {
@@ -532,7 +533,7 @@ class GenerationTracker:
     @staticmethod
     def _clean_source_urls(value: Any) -> list[str]:
         """只保留可能长期有效的 http(s) 源链接，委托共享管道过滤。"""
-        return select_persistent_source_urls(value)
+        return [redact_url(item) for item in select_persistent_source_urls(value)]
 
     async def begin(
         self,

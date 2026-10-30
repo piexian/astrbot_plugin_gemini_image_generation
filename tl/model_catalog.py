@@ -12,6 +12,7 @@ from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 import aiohttp
 
+from .core.errors import PathPolicyError
 from .provider_metadata import get_provider_spec, iter_provider_specs
 
 _MAX_BYTES = 2 * 1024 * 1024
@@ -282,7 +283,8 @@ class _ModelResults:
 class ModelCatalogService:
     """Own workers/sessions only; queue time is part of the total deadline."""
 
-    def __init__(self):
+    def __init__(self, url_checker=None):
+        self._url_checker = url_checker
         self._semaphore = asyncio.Semaphore(2)
         self._workers: set[asyncio.Task] = set()
         self._closed = False
@@ -365,6 +367,13 @@ class ModelCatalogService:
         if request.protocol not in {"google", "openai", "xai", "siliconflow", "ark"}:
             raise _invalid("不支持的模型目录协议。")
         _parse_url(request.url)
+        if self._url_checker is not None:
+            try:
+                await self._url_checker(request.url)
+            except PathPolicyError as exc:
+                raise ModelCatalogError(
+                    str(exc), reason="url_rejected", status_code=400
+                ) from None
         connector = None
         proxy = request.proxy
         if proxy:
