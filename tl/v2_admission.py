@@ -95,8 +95,10 @@ class _FifoReservation:
     def __init__(self, ticket: Any) -> None:
         self._ticket = ticket
 
-    def runtime_scope(self) -> AbstractContextManager[None]:
-        return generation_reservation(self._ticket)
+    def runtime_scope(
+        self, *, persistent: bool = False
+    ) -> AbstractContextManager[None]:
+        return generation_reservation(self._ticket, persistent=persistent)
 
     def release(self) -> None:
         # 幂等：被装饰的调用用完票据后自己也会 release。
@@ -169,12 +171,16 @@ class _CompositeReservation:
         self._released = False
 
     @contextmanager
-    def runtime_scope(self):
+    def runtime_scope(self, *, persistent: bool = False):
         with ExitStack() as stack:
             for reservation in self._reservations:
                 factory = getattr(reservation, "runtime_scope", None)
                 if callable(factory):
-                    stack.enter_context(factory())
+                    try:
+                        context = factory(persistent=persistent)
+                    except TypeError:
+                        context = factory()
+                    stack.enter_context(context)
             yield
 
     async def release(self) -> None:

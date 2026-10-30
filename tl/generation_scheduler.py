@@ -14,6 +14,7 @@ _PROGRESS = ContextVar("generation_progress", default=None)
 _PREVIEW = ContextVar("generation_preview", default=None)
 _COUNT = ContextVar("generation_count", default=None)
 _RESERVATION = ContextVar("generation_reservation", default=None)
+_RESERVATION_PERSISTENT = ContextVar("generation_reservation_persistent", default=False)
 
 
 @contextmanager
@@ -48,12 +49,14 @@ async def emit_generation_count(count, stats):
 
 
 @contextmanager
-def generation_reservation(ticket):
+def generation_reservation(ticket, *, persistent: bool = False):
     token = _RESERVATION.set(ticket)
+    persistent_token = _RESERVATION_PERSISTENT.set(persistent)
     try:
         yield
     finally:
         _RESERVATION.reset(token)
+        _RESERVATION_PERSISTENT.reset(persistent_token)
 
 
 class GenerationTicket:
@@ -136,7 +139,8 @@ def scheduled_generation(function):
         if scheduler is None:
             return await function(owner, *args, **kwargs)
         ticket = _RESERVATION.get()
-        if ticket is None or ticket.claimed:
+        persistent = _RESERVATION_PERSISTENT.get()
+        if ticket is None or ticket.released or (ticket.claimed and not persistent):
             ticket = scheduler.reserve()
         ticket.claimed = True
         task = asyncio.current_task()
@@ -154,6 +158,7 @@ def scheduled_generation(function):
             return await function(owner, *args, **kwargs)
         finally:
             scheduler.running.discard(task)
-            ticket.release()
+            if not persistent:
+                ticket.release()
 
     return call

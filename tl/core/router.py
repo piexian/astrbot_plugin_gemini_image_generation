@@ -193,9 +193,10 @@ class ProviderRouter:
         outcomes: list[CandidateOutcome] = []
         attempts_total = 0
         last_error: BaseException | None = None
+        single_candidate = len(selected) == 1
         for candidate in selected:
             outcome, result, error = await self._run_candidate(
-                candidate, request, deadline
+                candidate, request, deadline, single_candidate=single_candidate
             )
             outcomes.append(outcome)
             attempts_total += outcome.attempts
@@ -221,6 +222,8 @@ class ProviderRouter:
         candidate: ProviderCandidate,
         request: GenerationRequest,
         deadline: datetime | None,
+        *,
+        single_candidate: bool = False,
     ) -> tuple[CandidateOutcome, GenerationResult | None, BaseException | None]:
         provider = candidate.provider
         normalized = request
@@ -253,12 +256,16 @@ class ProviderRouter:
                     "candidate_provider": getattr(provider, "route_provider", None),
                     "candidate_model": getattr(provider, "route_model", None),
                     "candidate_preferred": (
-                        getattr(provider, "route_provider", None) == request.provider
-                        if request.provider
-                        else (
-                            getattr(provider, "route_model", None) == request.model
-                            if request.model
-                            else True
+                        single_candidate
+                        or (
+                            getattr(provider, "route_provider", None)
+                            == request.provider
+                            if request.provider
+                            else (
+                                getattr(provider, "route_model", None) == request.model
+                                if request.model
+                                else True
+                            )
                         )
                     ),
                 },

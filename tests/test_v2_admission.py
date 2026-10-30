@@ -225,6 +225,28 @@ async def test_reserved_ticket_is_consumed_by_first_decorated_call():
 
 
 @pytest.mark.asyncio
+async def test_reserved_ticket_survives_multiple_provider_attempts():
+    scheduler = GenerationScheduler(concurrency=1, queue_size=5)
+    reservation = fifo_limiter(scheduler).reserve(quota_request(), None)
+    client = DecoratedClient(scheduler)
+    reserve_calls = 0
+    original_reserve = scheduler.reserve
+
+    def counting_reserve():
+        nonlocal reserve_calls
+        reserve_calls += 1
+        return original_reserve()
+
+    scheduler.reserve = counting_reserve
+    with reservation.runtime_scope(persistent=True):
+        await client.generate_image()
+        await client.generate_image()
+    reservation.release()
+    assert reserve_calls == 0
+    assert (scheduler.active, len(scheduler.waiters)) == (0, 0)
+
+
+@pytest.mark.asyncio
 async def test_failed_decorated_call_still_frees_slot_once():
     scheduler = GenerationScheduler(concurrency=1, queue_size=1)
     reservation = fifo_limiter(scheduler).reserve(quota_request(), None)
