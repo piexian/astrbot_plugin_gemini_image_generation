@@ -22,10 +22,16 @@ from astrbot.core.astr_agent_context import AstrAgentContext
 from pydantic import Field
 from pydantic.dataclasses import dataclass
 
-from .background_notify import notify_llm_background_result, report_background_failure
+from .background_dispatch import (
+    dispatch_generation_result as _dispatch_generation_result,
+)
+from .background_dispatch import single_task_record_changes
+from .background_notify import report_background_failure
 from .batch_generation import run_batch_job
+from .core.states import JobState
 from .file_uri import file_uri_to_path
 from .generation_call import invoke_generation_core
+from .generation_errors import api_failure_message
 from .generation_tracker import requester_from_event
 from .openai_image_size import (
     CUSTOM_SIZE_DEFAULT,
@@ -49,6 +55,8 @@ from .provider_settings import (
 from .thought_signature import log_thought_signature_debug
 from .tl_utils import encode_file_to_base64, format_error_message
 from .tool_path_guard import filter_reference_paths
+from .v2_bridge import split_artifacts, v2_failure_message
+from .v2_tool_delivery import ToolBackgroundDelivery
 
 if TYPE_CHECKING:
     from ..main import GeminiImageGenerationPlugin
@@ -685,131 +693,6 @@ def _create_generation_task(
     return asyncio.create_task(_run_generation())
 
 
-async def _bump_delivery_count(
-    plugin: Any,
-    task_id: str,
-    *,
-    scene: str,
-) -> None:
-    """累加后台任务的成功交付次数；仅记录，绝不拦截发送。"""
-    manager = getattr(plugin, "background_task_manager", None)
-    if manager is None or not hasattr(manager, "record_delivery"):
-        return
-    try:
-        await manager.record_delivery(task_id)
-    except Exception as exc:
-        logger.warning(f"[{scene}] 记录交付次数失败: {exc}")
-
-
-async def _dispatch_generation_result(
-    plugin: Any,
-    event: Any,
-    success: bool,
-    result_data: Any,
-    *,
-    scene: str,
-    fallback_text: str | None = None,
-    force_text_response: bool = False,
-    notify_llm: bool = False,
-    task_id: str | None = None,
-) -> bool:
-    if success and isinstance(result_data, tuple):
-        image_urls, image_paths, text_content, thought_signature = result_data
-
-        # 代理全链路：后台发送前，将需要代理的远程 URL 下载为本地文件
-        # 避免 NapCat 等平台无法访问代理依赖的 URL
-        api_client = getattr(plugin, "api_client", None)
-        has_proxy = bool(api_client and getattr(api_client, "proxy", None))
-        if has_proxy and image_urls:
-            downloaded_paths: list[str] = []
-            remaining_urls: list[str] = []
-            try:
-                session = await api_client._get_session()
-                for url in image_urls:
-                    if not url.startswith(("http://", "https://")):
-                        remaining_urls.append(url)
-                        continue
-                    try:
-                        _, local_path = await api_client._download_image(
-                            url, session, use_cache=False
-                        )
-                        if local_path:
-                            downloaded_paths.append(local_path)
-                        else:
-                            remaining_urls.append(url)
-                    except Exception as e:
-                        logger.warning(
-                            f"[{scene}] 代理下载图片失败，保留原 URL: {url[:80]} {e}"
-                        )
-                        remaining_urls.append(url)
-            except Exception as e:
-                logger.warning(f"[{scene}] 获取代理下载会话失败: {e}")
-                remaining_urls = list(image_urls)
-            image_urls = remaining_urls
-            image_paths = list(image_paths or []) + downloaded_paths
-
-        available_images = plugin.message_sender.merge_available_images(
-            image_urls,
-            image_paths,
-        )
-        prepared_text = plugin.message_sender.prepare_text_content(
-            text_content,
-            available_images,
-        )
-        content_text = prepared_text or fallback_text
-        if notify_llm:
-            return await notify_llm_background_result(
-                plugin,
-                event,
-                {
-                    "task_id": task_id or "",
-                    "status": "succeeded",
-                    "image_urls": list(image_urls or []),
-                    "image_paths": list(image_paths or []),
-                    "text_content": content_text,
-                },
-                notice=f"后台图片生成任务 {task_id or '-'} 已完成，请调用主动发送工具发送图片。",
-                scene=scene,
-            )
-        if text_content and not prepared_text and fallback_text:
-            logger.info(
-                f"[{scene}] Text content only contained image references; using fallback text."
-            )
-        try:
-            await plugin.message_sender.send_results_with_stream_retry(
-                event=event,
-                image_urls=image_urls,
-                image_paths=image_paths,
-                text_content=content_text,
-                thought_signature=thought_signature,
-                scene=scene,
-                force_text_response=force_text_response,
-                text_content_prepared=True,
-            )
-        except Exception as exc:
-            logger.warning(f"[{scene}] 发送结果失败: {exc}")
-            return False
-        if task_id:
-            await _bump_delivery_count(plugin, task_id, scene=scene)
-        return True
-
-    error_msg = result_data if isinstance(result_data, str) else "❌ 图像生成失败"
-    if notify_llm:
-        return await report_background_failure(
-            plugin,
-            event,
-            error_msg,
-            scene=scene,
-            task_id=task_id,
-        )
-    try:
-        await event.send(event.plain_result(error_msg))
-    except Exception as exc:
-        logger.warning(f"[{scene}] 发送错误消息失败: {exc}")
-        return False
-    return True
-
-
 async def _await_generation_task_and_send(
     plugin: Any,
     event: Any,
@@ -831,37 +714,14 @@ async def _await_generation_task_and_send(
             task_id=task_id,
         )
         if task_id:
-            item = {
-                "name": "single",
-                "success": bool(success),
-                "provider": stats.get("successful_provider"),
-                "model": stats.get("successful_model"),
-                "alias": stats.get("successful_model_alias"),
-                "candidate_id": stats.get("successful_candidate_id"),
-                "delivery_success": delivered,
-            }
-            if success and isinstance(result_data, tuple):
-                item["image_urls"] = list(result_data[0] or [])
-                item["image_paths"] = list(result_data[1] or [])
-            if success and delivered:
-                final_status = "succeeded"
-                final_message = "图片生成已完成并发送"
-            elif success:
-                final_status = "partial_success"
-                final_message = (
-                    "图片生成已完成，但结果发送未成功；可查询任务获取图片 URL/路径"
-                )
-            else:
-                final_status = "failed"
-                final_message = str(result_data)
             await plugin.background_task_manager.update(
                 task_id,
-                status=final_status,
-                message=final_message,
-                completed_items=1,
-                succeeded_items=1 if success else 0,
-                failed_items=0 if success else 1,
-                items=[item],
+                **single_task_record_changes(
+                    success=success,
+                    delivered=delivered,
+                    result_data=result_data,
+                    stats=stats,
+                ),
             )
     except Exception as exc:
         logger.error(f"[{scene}] 后台图像生成异常: {exc}", exc_info=True)
@@ -1180,6 +1040,291 @@ async def _prepare_batch_tasks(
     return prepared, None
 
 
+def _format_forum_result(
+    success: bool, result_data: Any, config_value_notice: str | None
+) -> str:
+    """for_forum 模式的生成结果文本（旧路径与 v2 共用）。"""
+    if not success:
+        error_msg = result_data if isinstance(result_data, str) else "图像生成失败"
+        return f"❌ 图片生成失败：{error_msg}"
+
+    if not isinstance(result_data, tuple):
+        return "❌ 图片生成返回格式异常"
+
+    image_urls, image_paths, text_content, thought_signature = result_data
+
+    # 优先使用 URL，其次使用本地路径
+    available_images = []
+
+    # 先添加 URL（优先级更高）
+    if image_urls:
+        for url in image_urls:
+            if url and url.strip():
+                available_images.append(("url", url.strip()))
+
+    # 再添加本地路径
+    if image_paths:
+        from pathlib import Path
+
+        for path in image_paths:
+            if path and Path(path).exists():
+                available_images.append(("path", path))
+
+    if not available_images:
+        return "❌ 图片生成完成，但未获取到有效的图片路径或URL"
+
+    # 构建返回信息
+    result_lines = [
+        "[图像生成完成 - 论坛发帖模式]",
+        "",
+        "图片已生成成功！以下是图片信息：",
+        "",
+    ]
+
+    for idx, (img_type, img_value) in enumerate(available_images, 1):
+        if img_type == "url":
+            result_lines.append(f"图片{idx} (URL): {img_value}")
+        else:
+            result_lines.append(f"图片{idx} (本地路径): {img_value}")
+
+    result_lines.extend(
+        [
+            "",
+            "【下一步操作】",
+            "1. 使用 upload_image 工具上传图片到论坛图床",
+            "   - 如果有 URL，可以直接使用 URL",
+            "   - 如果只有本地路径，使用本地路径",
+            "2. 获取图床返回的永久 URL",
+            "3. 在发帖或回复时使用 Markdown 格式插入图片：![图片描述](图床URL)",
+        ]
+    )
+
+    if text_content:
+        result_lines.extend(["", f"【AI 生成的图片描述】{text_content[:200]}..."])
+
+    if config_value_notice:
+        result_lines.extend(["", config_value_notice])
+
+    logger.info(f"[后台任务] 图片生成成功，返回 {len(available_images)} 张图片")
+    return "\n".join(result_lines)
+
+
+def _build_image_location_notice(
+    images: list[str], llm_notice: str | None = None
+) -> str:
+    """前台结果构建超时时直接列出图片位置，让 Agent 自行发送（Job 已结束，无法转后台）。"""
+    lines = [
+        "图片已生成，但前台结果处理超时；请调用 send_message_to_user 的 image 组件"
+        "发送这些图片："
+    ]
+    for idx, image in enumerate(images, 1):
+        label = "URL" if image.startswith(("http://", "https://")) else "本地路径"
+        lines.append(f"图片{idx} ({label}): {image}")
+    if llm_notice:
+        lines.append(llm_notice)
+    return "\n".join(lines)
+
+
+async def _start_background_record_v2(
+    plugin: Any,
+    event: Any,
+    delivery: ToolBackgroundDelivery,
+    mode: str,
+    notice: str,
+) -> str:
+    """投递方登记成功后建单图后台记录并绑定给它，返回后台 JSON。"""
+    message = f"{routing_description(mode)}。{notice}"
+    try:
+        record = await plugin.background_task_manager.create(
+            session_id=_event_session_id(event),
+            kind="single",
+            routing_mode=mode,
+            message=message,
+        )
+    except BaseException:
+        # 记录没建成：别让投递方白等绑定超时，结果仍会经它送达。
+        delivery.bind_record(None)
+        raise
+    task_id = record["task_id"]
+    delivery.bind_record(task_id)
+    return _background_json(task_id, mode, message)
+
+
+async def _finish_foreground_v2(
+    plugin: Any,
+    job_result: Any,
+    *,
+    config_value_notice: str | None,
+) -> Any:
+    """前台拿到已结束的 Job：成功构建 CallToolResult，失败返回与旧路径同措辞的提示。"""
+    if (
+        job_result.state not in (JobState.SUCCEEDED, JobState.PARTIAL)
+        or job_result.result is None
+    ):
+        return v2_failure_message(
+            job_result, total_timeout=plugin.image_generator.total_timeout
+        )
+    result = job_result.result
+    image_urls, image_paths = split_artifacts(result.artifacts)
+    images = plugin.message_sender.merge_available_images(image_urls, image_paths)
+    logger.info(f"[前台等待] 生成完成，通过 CallToolResult 返回 {len(images)} 张图片")
+    try:
+        return await asyncio.wait_for(
+            _build_call_tool_result(
+                image_urls=image_urls,
+                image_paths=image_paths,
+                text_content=result.text,
+                message_sender=plugin.message_sender,
+                api_client=plugin.api_client,
+                llm_notice=config_value_notice,
+            ),
+            timeout=30,  # 下载最多给 30 秒
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "[前台等待] 构建 CallToolResult 超时（代理下载慢），返回图片位置文本"
+        )
+        return _build_image_location_notice(images, config_value_notice)
+
+
+async def _run_single_v2(
+    plugin: Any,
+    event: Any,
+    service: Any,
+    *,
+    prompt: str,
+    reference_images: list[str],
+    avatar_reference: list[str],
+    resolution: str | None,
+    aspect_ratio: str | None,
+    provider: str | None,
+    model: str | None,
+    negative_prompt: str | None,
+    watermark: bool | None,
+    quality: str | None,
+    suppress_resolution: bool,
+    for_forum: bool,
+    config_value_notice: str | None,
+) -> Any:
+    """单图 v2：生成与后台投递都由调度器执行，工具侧不创建任何 task、不扣额度。"""
+    ref_count = len(reference_images)
+    avatar_count = len(avatar_reference)
+    request_routing_mode = routing_mode(provider, model)
+    generator = plugin.image_generator
+
+    # 日志记录（仅记录长度和参数摘要，避免记录用户原始内容）
+    logger.info(
+        f"[工具调用] 启动图像生成任务（v2）："
+        f"提示词长度={len(prompt)} 参考图={ref_count} 张 头像={avatar_count} 张 "
+        f"尺寸/分辨率={resolution} 比例={aspect_ratio} 发帖模式={for_forum}"
+    )
+    submission = await generator.submit_v2(
+        event=event,
+        v2_service=service,
+        prompt=prompt,
+        reference_images=reference_images,
+        avatar_reference=avatar_reference,
+        override_resolution=resolution,
+        override_aspect_ratio=aspect_ratio,
+        is_tool_call=True,
+        requested_provider=provider,
+        requested_model=model,
+        negative_prompt=negative_prompt,
+        watermark=watermark,
+        quality=quality,
+        image_count=1,
+        suppress_resolution=suppress_resolution,
+        admission={"event": event},
+        quota={"cost": 1},
+        trusted_local=True,
+    )
+    handle = submission.handle
+    if handle is None:
+        # 额度拒绝与其他提交失败都带提示；群名单静默拒绝没有提示，沿用旧路径文案。
+        return submission.message or "请求过于频繁，请稍后再试"
+    job_id = handle.job_id
+
+    # ========== for_forum 模式：同步等待生成完成 ==========
+    if for_forum:
+        logger.info("[后台任务] 论坛模式：同步等待图片生成完成……")
+        try:
+            success, result_data = await generator.wait_v2(
+                v2_service=service,
+                handle=handle,
+                requested_provider=provider,
+                requested_model=model,
+                image_count=1,
+            )
+            return _format_forum_result(success, result_data, config_value_notice)
+        except Exception as e:
+            logger.error(f"[后台任务] 图片生成异常：{e}", exc_info=True)
+            return f"❌ 图片生成过程中出错：{str(e)}"
+
+    foreground_wait_seconds = _resolve_foreground_wait_seconds(plugin, event)
+    delivery = ToolBackgroundDelivery(plugin, event, scene="后台任务")
+    result_wait = service.result_wait_timeout(generator.total_timeout)
+    job_result = None
+    background_notice: str | None = None
+    try:
+        if foreground_wait_seconds <= 0:
+            if service.attach_delivery(job_id, delivery):
+                background_notice = _build_background_start_notice(
+                    ref_count=ref_count,
+                    avatar_count=avatar_count,
+                    resolution=resolution,
+                    aspect_ratio=aspect_ratio,
+                    llm_notice=config_value_notice,
+                )
+            else:
+                job_result = await service.wait(job_id, timeout=result_wait)
+        else:
+            logger.debug(f"[前台等待] 最多等待 {foreground_wait_seconds} 秒。")
+            try:
+                job_result = await service.wait(job_id, timeout=foreground_wait_seconds)
+            except asyncio.TimeoutError:
+                logger.debug("[前台等待] 等待超时，切换为后台继续生成。")
+                if service.attach_delivery(job_id, delivery):
+                    background_notice = _build_background_fallback_notice(
+                        ref_count=ref_count,
+                        avatar_count=avatar_count,
+                        resolution=resolution,
+                        aspect_ratio=aspect_ratio,
+                        waited_seconds=foreground_wait_seconds,
+                        llm_notice=config_value_notice,
+                    )
+                else:
+                    # 超时的瞬间 Job 已越过投递判定点，结果就绪在即：按前台完成处理。
+                    job_result = await service.wait(job_id, timeout=result_wait)
+    except asyncio.CancelledError:
+        # 取消入口即取消生成：不留下无人投递的后台 Job。
+        await asyncio.shield(service.cancel(job_id))
+        raise
+    except asyncio.TimeoutError:
+        await asyncio.shield(service.cancel(job_id))
+        return api_failure_message(
+            message="生成等待超时",
+            status_code=None,
+            error_type="timeout",
+            total_timeout=generator.total_timeout,
+        )
+    except Exception as e:
+        logger.error(f"[前台等待] 图像生成异常：{e}", exc_info=True)
+        await asyncio.shield(service.cancel(job_id))
+        return f"❌ 图片生成过程中出错：{str(e)}"
+
+    try:
+        if background_notice is not None:
+            return await _start_background_record_v2(
+                plugin, event, delivery, request_routing_mode, background_notice
+            )
+        return await _finish_foreground_v2(
+            plugin, job_result, config_value_notice=config_value_notice
+        )
+    except Exception as e:
+        logger.error(f"[前台等待] 图像生成异常：{e}", exc_info=True)
+        return f"❌ 图片生成过程中出错：{str(e)}"
+
+
 @dataclass
 class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
     """
@@ -1371,6 +1516,27 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         )
         if not candidates:
             return "❌ 没有匹配所选供应商、模型、生成模式和参数能力的候选模型"
+        # v2 灰度：额度、生成与后台投递都归调度器；以下 legacy 流程保持原样。
+        v2_service = plugin._v2_service_for(getattr(event, "unified_msg_origin", None))
+        if v2_service is not None:
+            return await _run_single_v2(
+                plugin,
+                event,
+                v2_service,
+                prompt=prompt,
+                reference_images=reference_images,
+                avatar_reference=avatar_reference,
+                resolution=resolution,
+                aspect_ratio=aspect_ratio,
+                provider=provider,
+                model=model,
+                negative_prompt=negative_prompt,
+                watermark=watermark,
+                quality=quality,
+                suppress_resolution=suppress_resolution,
+                for_forum=for_forum,
+                config_value_notice=config_value_notice,
+            )
         allowed, limit_message = await plugin._check_and_consume_limit(event)
         if not allowed:
             return limit_message or "请求过于频繁，请稍后再试"
@@ -1407,76 +1573,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                     image_count=1,
                     suppress_resolution=suppress_resolution,
                 )
-
-                if not success:
-                    error_msg = (
-                        result_data if isinstance(result_data, str) else "图像生成失败"
-                    )
-                    return f"❌ 图片生成失败：{error_msg}"
-
-                if not isinstance(result_data, tuple):
-                    return "❌ 图片生成返回格式异常"
-
-                image_urls, image_paths, text_content, thought_signature = result_data
-
-                # 优先使用 URL，其次使用本地路径
-                available_images = []
-
-                # 先添加 URL（优先级更高）
-                if image_urls:
-                    for url in image_urls:
-                        if url and url.strip():
-                            available_images.append(("url", url.strip()))
-
-                # 再添加本地路径
-                if image_paths:
-                    from pathlib import Path
-
-                    for path in image_paths:
-                        if path and Path(path).exists():
-                            available_images.append(("path", path))
-
-                if not available_images:
-                    return "❌ 图片生成完成，但未获取到有效的图片路径或URL"
-
-                # 构建返回信息
-                result_lines = [
-                    "[图像生成完成 - 论坛发帖模式]",
-                    "",
-                    "图片已生成成功！以下是图片信息：",
-                    "",
-                ]
-
-                for idx, (img_type, img_value) in enumerate(available_images, 1):
-                    if img_type == "url":
-                        result_lines.append(f"图片{idx} (URL): {img_value}")
-                    else:
-                        result_lines.append(f"图片{idx} (本地路径): {img_value}")
-
-                result_lines.extend(
-                    [
-                        "",
-                        "【下一步操作】",
-                        "1. 使用 upload_image 工具上传图片到论坛图床",
-                        "   - 如果有 URL，可以直接使用 URL",
-                        "   - 如果只有本地路径，使用本地路径",
-                        "2. 获取图床返回的永久 URL",
-                        "3. 在发帖或回复时使用 Markdown 格式插入图片：![图片描述](图床URL)",
-                    ]
-                )
-
-                if text_content:
-                    result_lines.extend(
-                        ["", f"【AI 生成的图片描述】{text_content[:200]}..."]
-                    )
-
-                if config_value_notice:
-                    result_lines.extend(["", config_value_notice])
-
-                logger.info(
-                    f"[后台任务] 图片生成成功，返回 {len(available_images)} 张图片"
-                )
-                return "\n".join(result_lines)
+                return _format_forum_result(success, result_data, config_value_notice)
 
             except asyncio.TimeoutError:
                 return "❌ 图片生成超时，请稍后重试"

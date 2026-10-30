@@ -441,6 +441,9 @@ class _FakePlugin:
     async def _check_and_consume_limit(self, event):
         return True, None
 
+    def _v2_service_for(self, umo):
+        return None
+
     async def _fetch_images_from_event(self, event, include_at_avatars=False):
         return list(self.event_refs), []
 

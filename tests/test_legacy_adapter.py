@@ -100,6 +100,57 @@ async def test_empty_output_raises_non_retryable_legacy_error():
     assert len(client.calls) == 1
 
 
+@pytest.mark.asyncio
+async def test_text_only_result_succeeds_without_require_images():
+    """未声明 require_images（命令快捷路径）：只有文本仍按成功返回。"""
+
+    client = FakeClient(([], [], "只有文本", None))
+    adapter = LegacyClientAdapter(client, provider="gemini", model="gemini-x")
+
+    for metadata in ({}, {"require_images": False}):
+        result = await dispatch_provider(
+            adapter, make_job(make_request(metadata=metadata))
+        )
+        assert result.artifacts == ()
+        assert result.text == "只有文本"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", ["只有文本", None])
+async def test_require_images_rejects_results_without_any_image(text):
+    """require_images（生成核心路径）：没有图片就失败，哪怕带了文本；不重试。"""
+
+    client = FakeClient(([], [], text, None))
+    adapter = LegacyClientAdapter(client, provider="gemini", model="gemini-x")
+    request = make_request(metadata={"require_images": True})
+
+    with pytest.raises(LegacyProviderError) as exc_info:
+        await dispatch_provider(adapter, make_job(request))
+
+    assert exc_info.value.code == "provider_no_image"
+    assert exc_info.value.retryable is False
+    assert exc_info.value.message == "供应商未返回图片"
+    assert len(client.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response",
+    [
+        (["https://img.test/a.png"], [], None, None),
+        ([], ["/tmp/out/a.png"], "带文本", None),
+    ],
+)
+async def test_require_images_accepts_results_with_an_image(response):
+    client = FakeClient(response)
+    adapter = LegacyClientAdapter(client, provider="gemini", model="gemini-x")
+    request = make_request(metadata={"require_images": True})
+
+    result = await dispatch_provider(adapter, make_job(request))
+
+    assert result.artifacts == tuple(sorted({*response[0], *response[1]}))
+
+
 class _FailingClient:
     """按预设异常失败的 legacy client，统计调用次数。"""
 

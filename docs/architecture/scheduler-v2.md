@@ -40,6 +40,24 @@ accepted -> queued -> running -> result_ready -> delivery_pending -> succeeded
 `accepted` 的持久化时点早于 runtime task 创建。submit 与 close 并发时，无法
 附加 runtime task 的 accepted Job 必须转为 `orphaned` 并释放已经获得的 lease。
 
+## 结果投递阶段
+
+入口可以在 Job 运行期间用 `GenerationService.attach_delivery(job_id, delivery)`
+（或提交时 `submit(..., delivery=...)`）登记结果投递方（`DeliveryProtocol`：
+`deliver(job, result)` 与 `deliver_failure(job)`）。`attach_delivery` 是同步方法，
+与调度器的投递判定点（`result_ready` 落库、`job_result` 观察者通知之后）不会交错：
+返回 `True` 时，Job 结束会调用 `deliver`（有结果）或 `deliver_failure`（`failed`、
+`cancelled`、`interrupted`、`orphaned`，且 `deliver` 尚未接手；早于 `job_finished`
+观察者）之一；返回 `False`（Job 未知或已无 runtime task、已登记过、已越过判定点、
+调度器已关闭）时结果由入口自行处理。
+
+有投递方时 Job 先转 `delivery_pending`，`deliver` 须在 `delivery_timeout`（默认
+600 秒）内完成：正常返回按 `result.partial` 收尾为 `succeeded` / `partial`；抛出普通
+异常或超时则收尾为 `partial` 且 `error_code="delivery_failed"`，结果仍保留；
+`deliver` 执行期间 Job 被取消则照常以 `cancelled` 收尾。没有投递方时流程不变。
+生成历史由 `TrackerProjection` 投影：Job 已有结果且 `job_result` 已把记录收尾时，
+投递阶段的取消或失败不再改写该记录。
+
 ## 运行时分层
 
 ```text
@@ -94,6 +112,10 @@ task 在取走预留之前就结束（提交即取消、close）时由调度器�
 句柄只允许登记的 requester 解析。
 tmp 句柄按 requester 限制容量，活动 reference lease 内不受 TTL/容量淘汰；
 容量不足时拒绝新句柄，不跨 requester 驱逐。
+入口已按自己的规则校验过本地路径（LLM 工具的 `tool_path_guard`）时，
+`prepare_references(..., trusted_local=True)` 会把 `local` / `file:` 形态也读入并换成
+句柄：先 `stat` 判大小、读取量以上限封顶，只套用大小、格式与像素边界，PathPolicy
+的本地根不因此放宽；默认 `False`，本地路径仍原样保留并在执行阶段按 PathPolicy 校验。
 
 ReferenceService 统一接收本地路径、file URI、HTTP URL、data URI、base64 和
 平台图片。PathPolicy/RemoteFetchService 必须阻止路径穿越、符号链接逃逸、

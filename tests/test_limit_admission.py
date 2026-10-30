@@ -297,6 +297,7 @@ def _tool_plugin(tmp_path):
         rate_limiter=limiter,
         background_task_manager=manager,
         _check_and_consume_limit=limiter.check_and_consume,
+        _v2_service_for=lambda umo: None,
         _fetch_images_from_event=AsyncMock(return_value=([], [])),
         get_tool_timeout=lambda event: 1,
         image_generator=SimpleNamespace(get_request_stats=lambda: {}),
