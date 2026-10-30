@@ -136,8 +136,8 @@ avatar / poster / wallpaper / card / mobile / figure / sticker
 | `max_attempts_per_key` | `3` | 每个密钥最大重试次数 |
 | `enable_smart_retry` | `true` | 按错误类型智能重试 |
 | `total_timeout` | `120` | 单次调用总超时，单位秒 |
-| `scheduler_v2` | `false` | 实验功能：开启后命令入口全部生成路径（含表情包、换风格）和 LLM 工具单图、批量生成（含 `for_forum`、`batch_tasks`）改走 v2 调度器（任务持久化、deadline 治理、父子批量任务）；内联参考图（消息图片、头像等）先转临时句柄，带图命令可用 |
-| `scheduler_v2_sessions` | `[]` | v2 调度器灰度会话：填会话的 unified_msg_origin（可用 AstrBot `/sid` 查看）；非空时仅这些会话的聊天命令与 LLM 工具走 v2，其余会话、WebUI 与 SDK 保持旧路径；为空时总开关作用于全部已接入入口 |
+| `scheduler_v2` | `false` | 实验功能：开启后命令入口、LLM 工具单图/批量生成及 WebUI 创作台改走 v2 调度器；WebUI 在灰度名单为空时随总开关接入，名单非空时保持旧路径；内联参考图先转临时句柄 |
+| `scheduler_v2_sessions` | `[]` | v2 调度器灰度会话：填会话的 unified_msg_origin（可用 AstrBot `/sid` 查看）；非空时仅这些会话的聊天命令与 LLM 工具走 v2，WebUI 与 SDK 保持旧路径；为空时总开关作用于全部已接入入口（含 WebUI） |
 
 ## service_settings
 

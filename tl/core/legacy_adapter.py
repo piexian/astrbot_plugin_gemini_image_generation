@@ -13,6 +13,7 @@ from typing import Any
 from astrbot.api import logger
 
 from ..api_types import APIError, ApiRequestConfig
+from ..generation_scheduler import emit_generation_count
 from .errors import LegacyProviderError, redact_text
 from .remote_fetch import _remaining
 from .requests import GenerationRequest, ProviderAttempt
@@ -94,10 +95,14 @@ class LegacyClientAdapter:
                 candidate_id=self._candidate_id,
                 requested_provider=requested_provider,
                 requested_model=requested_model,
+                requested_candidate_id=metadata.get("requested_candidate_id"),
+                route_all_candidates=bool(metadata.get("route_all_candidates", False)),
                 resolution=request.resolution,
                 aspect_ratio=request.aspect_ratio,
                 negative_prompt=request.negative_prompt,
                 quality=request.quality,
+                seed=metadata.get("seed"),
+                generation_settings=metadata.get("generation_settings") or None,
                 watermark=request.watermark,
                 reference_images=list(request.reference_images),
                 proxy=self._proxy,
@@ -231,6 +236,9 @@ class LegacyClientAdapter:
             if round_text:
                 texts.append(str(round_text))
             config = round_config
+            await emit_generation_count(
+                len(collected), self._progress_stats(round_config)
+            )
         if fill_error:
             logger.info(
                 "legacy 候选 %s/%s 补足提前结束（%s/%s 张）: %s",
@@ -241,6 +249,14 @@ class LegacyClientAdapter:
                 fill_error,
             )
         return (urls, paths, "\n".join(texts) or None, None), config, fill_error
+
+    def _progress_stats(self, config: Any) -> dict[str, Any]:
+        return {
+            "provider": getattr(config, "successful_provider", None) or self._provider,
+            "model": getattr(config, "successful_model", None) or self._model,
+            "alias": getattr(config, "successful_model_alias", None),
+            "retry_count": getattr(config, "retry_count", 0),
+        }
 
     @staticmethod
     def _fill_error_text(error: Exception) -> str:

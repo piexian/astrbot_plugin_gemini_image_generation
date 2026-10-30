@@ -188,6 +188,9 @@ async def record_generation_success(
     stats: dict[str, Any],
     archive_images_fn: Any = None,
     candidate_id: Any = None,
+    completion_policy: str | None = None,
+    requested_images: int | None = None,
+    generation_error: str | None = None,
 ) -> None:
     """入口共享的记录完成路径：归档 → succeeded/partial_success → 失败降级。
 
@@ -226,21 +229,34 @@ async def record_generation_success(
             archive_note = f"画廊归档不完整（{len(image_files)}/{len(delivered)}）" + (
                 f"：{archive_note}" if archive_note else ""
             )
-        if not delivered and not text_content:
-            await tracker.fail(job_id, error="供应商未返回图片或文本内容")
-            logger.debug(f"[生成追踪] 失败: job_id={job_id}, 原因=无图片或文本内容")
-            return
-        # 有图看归档完整性（未接归档函数视为成功）；只有文本按部分成功记录，
-        # 同时保住两个入口旧路径的可观测行为。
-        if delivered and (
-            archive_images_fn is None or len(image_files) >= len(delivered)
-        ):
-            status = "succeeded"
-        else:
-            status = "partial_success"
         source_urls = [
             item for item in delivered if item.startswith(("http://", "https://"))
         ]
+        if completion_policy == "studio":
+            target = max(int(requested_images or len(delivered) or 1), 1)
+            if not image_files:
+                await tracker.fail(
+                    job_id,
+                    error=generation_error or "生成结果归档失败",
+                )
+                if source_urls:
+                    await tracker.update(job_id, source_urls=source_urls)
+                return
+            status = "succeeded" if len(image_files) >= target else "partial_success"
+            image_files = image_files[:target]
+        else:
+            if not delivered and not text_content:
+                await tracker.fail(job_id, error="供应商未返回图片或文本内容")
+                logger.debug(f"[生成追踪] 失败: job_id={job_id}, 原因=无图片或文本内容")
+                return
+            # 有图看归档完整性（未接归档函数视为成功）；只有文本按部分成功记录，
+            # 同时保住两个入口旧路径的可观测行为。
+            if delivered and (
+                archive_images_fn is None or len(image_files) >= len(delivered)
+            ):
+                status = "succeeded"
+            else:
+                status = "partial_success"
         await tracker.complete(
             job_id,
             image_files=image_files,
@@ -249,11 +265,11 @@ async def record_generation_success(
             status=status,
             source_urls=source_urls,
         )
-        if archive_note:
+        if generation_error or archive_note:
             update = getattr(tracker, "update", None)
             if update is not None:
                 try:
-                    await update(job_id, error=archive_note)
+                    await update(job_id, error=generation_error or archive_note)
                 except Exception:
                     pass
         logger.debug(

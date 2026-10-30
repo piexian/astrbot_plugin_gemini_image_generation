@@ -541,3 +541,58 @@ async def test_fill_image_count_deduplicates_and_truncates():
     assert result.artifacts == ("a", "b")
     assert result.partial is False
     assert client.counts == [2]
+
+
+@pytest.mark.asyncio
+async def test_studio_route_fields_flow_without_candidate_filtering():
+    client = FakeClient((["u"], [], None, None))
+    adapter = LegacyClientAdapter(client, provider="legacy", model="auto")
+    settings = {"size": "1024x1024"}
+    request = make_request(
+        candidate_id="studio#1",
+        metadata={
+            "requested_candidate_id": "studio#1",
+            "route_all_candidates": True,
+            "seed": 42,
+            "generation_settings": settings,
+        },
+    )
+
+    result = await dispatch_provider(adapter, make_job(request))
+
+    assert result.artifacts == ("u",)
+    config = client.calls[-1]["config"]
+    assert config.candidate_id is None
+    assert config.requested_candidate_id == "studio#1"
+    assert config.route_all_candidates is True
+    assert config.seed == 42
+    assert config.generation_settings == settings
+
+
+@pytest.mark.asyncio
+async def test_fill_reports_generated_count_and_legacy_stats(monkeypatch):
+    client = SequenceClient([(["a"], [], None, None), (["b"], [], None, None)])
+    calls = []
+
+    async def emit(count, stats):
+        calls.append((count, stats))
+
+    monkeypatch.setattr("tl.core.legacy_adapter.emit_generation_count", emit)
+
+    result = await run_fill(client, target=2)
+
+    assert result.artifacts == ("a", "b")
+    assert [count for count, _ in calls] == [1, 2]
+    assert calls[-1][1] == {
+        "provider": "gemini",
+        "model": "gemini-x",
+        "alias": None,
+        "retry_count": 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_emit_generation_count_without_scope_is_noop():
+    from tl.generation_scheduler import emit_generation_count
+
+    await emit_generation_count(1, {})

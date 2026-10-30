@@ -142,6 +142,11 @@ class InvalidRequestError(CoreError):
     retryable = False
 
 
+class StudioBusyError(CoreError):
+    code = "studio_busy"
+    retryable = False
+
+
 class QueueFullError(CoreError):
     code = "queue_full"
     retryable = True

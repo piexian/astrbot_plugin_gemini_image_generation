@@ -450,3 +450,148 @@ async def test_job_finished_still_closes_record_when_job_result_never_finished(
         assert tracker.get("job-open")["status"] == aborted_status
     finally:
         await tracker.close()
+
+
+def _studio_job(job_id: str, count: int = 2):
+    job = _accepted_job(job_id)
+    job.request.source = "webui"
+    job.request.image_count = count
+    job.request.metadata = {"completion_policy": "studio"}
+    return job
+
+
+@pytest.mark.asyncio
+async def test_projection_reports_fill_progress(tmp_path):
+    from tl.generation_scheduler import emit_generation_count
+
+    tracker = GenerationTracker(tmp_path, 30)
+    projection = TrackerProjection(tracker)
+    job = _accepted_job("job-progress")
+    try:
+        await projection.job_accepted(job)
+        with projection.runtime_scope(job):
+            await emit_generation_count(2, {"provider": "legacy", "retry_count": 1})
+        record = tracker.get(job.job_id)
+        assert record["generated_images"] == 2
+        assert record["stats"]["provider"] == "legacy"
+        assert record["stats"]["retry_count"] == 1
+    finally:
+        await tracker.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("archived", "expected"),
+    [
+        ([], "failed"),
+        (["one.png"], "partial_success"),
+        (["one.png", "two.png"], "succeeded"),
+    ],
+)
+async def test_studio_completion_policy(tmp_path, archived, expected):
+    tracker = GenerationTracker(tmp_path, 30)
+
+    async def archive(*args, **kwargs):
+        return list(archived)
+
+    projection = TrackerProjection(tracker, archive)
+    job = _studio_job("job-studio")
+    result = GenerationResult(
+        artifacts=("https://img.test/a.png",),
+        text="文本",
+        provider="legacy",
+        model="auto",
+    )
+    try:
+        await projection.job_accepted(job)
+        await projection.job_result(job, result)
+        record = tracker.get(job.job_id)
+        assert record["status"] == expected
+        assert record["source_urls"] == ["https://img.test/a.png"]
+        assert record["generated_images"] == len(archived)
+        if expected == "failed":
+            assert record["error"] == "生成结果归档失败"
+        else:
+            assert record["stats"]["provider"] == "legacy"
+    finally:
+        await tracker.close()
+
+
+@pytest.mark.asyncio
+async def test_studio_completion_truncates_to_requested_count(tmp_path):
+    tracker = GenerationTracker(tmp_path, 30)
+
+    async def archive(*args, **kwargs):
+        return ["one.png", "two.png", "three.png"]
+
+    projection = TrackerProjection(tracker, archive)
+    job = _studio_job("job-studio-limit", 2)
+    try:
+        await projection.job_accepted(job)
+        await projection.job_result(
+            job, GenerationResult(artifacts=("https://img.test/a.png",))
+        )
+        record = tracker.get(job.job_id)
+        assert record["status"] == "succeeded"
+        assert record["images"] == ["one.png", "two.png"]
+        assert record["generated_images"] == 2
+    finally:
+        await tracker.close()
+
+
+@pytest.mark.asyncio
+async def test_missing_gallery_lease_retries_without_reference_names(tmp_path):
+    tracker = GenerationTracker(tmp_path, 30)
+    projection = TrackerProjection(tracker)
+    job = _studio_job("job-missing-reference", 1)
+    job.request.metadata["reference_names"] = ["missing.png"]
+    try:
+        await projection.job_accepted(job)
+        record = tracker.get(job.job_id)
+        assert record is not None
+        assert record["reference_names"] == []
+    finally:
+        await tracker.close()
+
+
+@pytest.mark.asyncio
+async def test_studio_batch_parent_uses_child_archive_status_and_sources(tmp_path):
+    tracker = GenerationTracker(tmp_path, 30)
+
+    async def archive(*args, **kwargs):
+        return []
+
+    projection = TrackerProjection(tracker, archive)
+    parent = _studio_job("studio-parent", 1)
+    parent.request.metadata["batch_parent"] = True
+    child = _studio_job("studio-child", 1)
+    child.parent_job_id = parent.job_id
+    result = GenerationResult(artifacts=("https://img.test/a.png",))
+    parent_result = GenerationResult(
+        artifacts=result.artifacts,
+        stats={
+            "children": [
+                {
+                    "job_id": child.job_id,
+                    "state": "succeeded",
+                    "requested_images": 1,
+                    "generated_images": 1,
+                    "error_code": None,
+                }
+            ]
+        },
+    )
+    try:
+        await projection.job_accepted(parent)
+        await projection.job_accepted(child)
+        await projection.job_result(child, result)
+        await projection.child_finished(parent, child, result)
+        await projection.job_result(parent, parent_result)
+
+        assert tracker.get(child.job_id)["status"] == "failed"
+        parent_record = tracker.get(parent.job_id)
+        assert parent_record["status"] == "partial_success"
+        assert parent_record["generated_images"] == 1
+        assert parent_record["source_urls"] == ["https://img.test/a.png"]
+    finally:
+        await tracker.close()
