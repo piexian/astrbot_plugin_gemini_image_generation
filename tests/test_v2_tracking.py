@@ -220,6 +220,67 @@ async def test_projection_job_result_uses_split_artifacts_and_stats(tmp_path):
         await tracker.close()
 
 
+@pytest.mark.asyncio
+async def test_batch_projection_archives_children_but_not_parent(tmp_path):
+    tracker = GenerationTracker(tmp_path, 30)
+    archives = []
+
+    async def archive(urls, paths, **kwargs):
+        archives.append((list(urls), list(paths)))
+        return ["gallery-child.png"]
+
+    projection = TrackerProjection(tracker, archive)
+
+    def request(metadata, count):
+        return SimpleNamespace(
+            prompt="batch",
+            source="llm_batch",
+            image_count=count,
+            resolution=None,
+            aspect_ratio=None,
+            provider=None,
+            model=None,
+            quality=None,
+            negative_prompt=None,
+            requester={},
+            metadata=metadata,
+        )
+
+    parent = _fake_job(
+        "parent-1",
+        JobState.QUEUED,
+        request=request({"batch_parent": True}, 2),
+        parent_job_id=None,
+    )
+    child = _fake_job(
+        "child-1",
+        JobState.QUEUED,
+        request=request({"item_name": "条目一"}, 2),
+        parent_job_id="parent-1",
+    )
+    result = GenerationResult(artifacts=("https://img.test/a.png", "/tmp/b.png"))
+    try:
+        await projection.job_accepted(parent)
+        await projection.job_accepted(child)
+        await projection.job_result(child, result)
+        await projection.child_finished(parent, child, result)
+        assert tracker.get("parent-1")["generated_images"] == 2
+
+        await projection.job_result(parent, result)
+
+        assert len(archives) == 1
+        parent_record = tracker.get("parent-1")
+        assert parent_record["status"] == "succeeded"
+        assert parent_record["generated_images"] == 2
+        assert parent_record["images"] == []
+        child_record = tracker.get("child-1")
+        assert child_record["parent_job_id"] == "parent-1"
+        assert child_record["item_name"] == "条目一"
+        assert child_record["images"] == ["gallery-child.png"]
+    finally:
+        await tracker.close()
+
+
 # ===== 已完成的记录不被投递阶段的取消/失败改写 =====
 
 

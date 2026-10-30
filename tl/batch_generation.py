@@ -132,12 +132,7 @@ def _public_item(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def _send_batch_results(
-    plugin: Any,
-    event: Any,
-    task_id: str,
-    results: list[dict[str, Any]],
-) -> bool:
+def _batch_summary(task_id: str, results: list[dict[str, Any]]) -> str:
     summary_lines = [f"批量生图任务 {task_id} 已完成："]
     for result in results:
         if result["success"]:
@@ -150,7 +145,16 @@ async def _send_batch_results(
                 f"{result['generated_images']}/{result['requested_images']} 张，"
                 f"{result.get('error') or '未知错误'}"
             )
-    summary = "\n".join(summary_lines)
+    return "\n".join(summary_lines)
+
+
+async def _send_batch_results(
+    plugin: Any,
+    event: Any,
+    task_id: str,
+    results: list[dict[str, Any]],
+) -> bool:
+    summary = _batch_summary(task_id, results)
     if not any(result["image_urls"] or result["image_paths"] for result in results):
         return await report_background_failure(
             plugin, event, summary, scene=f"批量任务/{task_id}", task_id=task_id

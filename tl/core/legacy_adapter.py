@@ -6,13 +6,14 @@ import 任何旧层实现，供配置层把现有候选逐个桥接到 Provider 
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from typing import Any
 
 from astrbot.api import logger
 
 from ..api_types import APIError, ApiRequestConfig
-from .errors import LegacyProviderError
+from .errors import LegacyProviderError, redact_text
 from .remote_fetch import _remaining
 from .requests import GenerationRequest, ProviderAttempt
 from .results import GenerationResult
@@ -21,6 +22,10 @@ from .results import GenerationResult
 _DEFAULT_TOTAL_TIMEOUT = 120
 # legacy client 内部已自重试，桥接层沿用其默认重试次数。
 _LEGACY_MAX_RETRIES = 3
+# 补足张数时，后续轮次比 Router 的整体 deadline 提前这么久自行收敛为部分结果；
+# 否则 Router 的外层超时会连同已累积的产出一起取消。
+_FILL_DEADLINE_MARGIN_SECONDS = 1.0
+_FILL_ERROR_MAX_CHARS = 200
 
 
 class LegacyClientAdapter:
@@ -117,8 +122,20 @@ class LegacyClientAdapter:
         headers: Mapping[str, str],
         body_factory: Any,
     ) -> Any:
+        metadata = request.metadata or {}
+        if metadata.get("fill_image_count") and request.image_count > 1:
+            return await self._send_filling(request, attempt, body_factory)
         config = body_factory()
         remaining = _remaining(attempt.deadline_at, None)
+        response = await self._generate(request, config, remaining)
+        # config 随返回值传出：client 在其上回写 successful_*，供 parse_response 标注。
+        return response, config
+
+    async def _generate(
+        self, request: GenerationRequest, config: Any, remaining: float | None
+    ) -> Any:
+        """按剩余 deadline 换算超时后调用 legacy client 一次；APIError 转不可重试错误。"""
+
         configured_retries = int(
             (request.metadata or {}).get("max_attempts_per_key", _LEGACY_MAX_RETRIES)
         )
@@ -139,7 +156,7 @@ class LegacyClientAdapter:
             total_timeout,
         )
         try:
-            response = await self._client.generate_image(
+            return await self._client.generate_image(
                 config,
                 max_retries=max_retries,
                 total_timeout=total_timeout,
@@ -154,8 +171,83 @@ class LegacyClientAdapter:
             # legacy client 内部已按密钥重试并做过候选回退，这里转为不可
             # 重试错误：Router 不再重复一轮，直接 fallback 到下一候选。
             raise self._api_error_to_legacy(error) from error
-        # config 随返回值传出：client 在其上回写 successful_*，供 parse_response 标注。
-        return response, config
+
+    async def _send_filling(
+        self, request: GenerationRequest, attempt: ProviderAttempt, body_factory: Any
+    ) -> Any:
+        """逐轮请求剩余张数，累积去重后的图片与文本，直到满额、没有新图或出错。
+
+        首轮出错照常抛出；之后的轮次出错、没有新图或来不及（临近 deadline）都
+        停下并带着已有产出返回，原因随响应交给 parse_response 记入 stats。
+        """
+
+        target = request.image_count
+        urls: list[str] = []
+        paths: list[str] = []
+        texts: list[str] = []
+        collected: set[str] = set()
+        config: Any = None
+        fill_error: str | None = None
+        while len(collected) < target:
+            first_round = config is None
+            round_config = body_factory()
+            round_config.image_count = target - len(collected)
+            remaining = _remaining(attempt.deadline_at, None)
+            if first_round:
+                response = await self._generate(request, round_config, remaining)
+            else:
+                if remaining is not None:
+                    remaining -= _FILL_DEADLINE_MARGIN_SECONDS
+                    if remaining <= 0:
+                        fill_error = "已临近总时限，未能补足张数"
+                        break
+                try:
+                    response = await asyncio.wait_for(
+                        self._generate(request, round_config, remaining),
+                        timeout=remaining,
+                    )
+                except Exception as error:
+                    fill_error = self._fill_error_text(error)
+                    break
+            round_urls, round_paths, round_text, _signature = response
+            returned = dict.fromkeys(
+                str(item)
+                for item in (*(round_urls or ()), *(round_paths or ()))
+                if item
+            )
+            fresh = [item for item in returned if item not in collected][
+                : target - len(collected)
+            ]
+            if not fresh:
+                if first_round:
+                    # 首轮就没有图：交回原始响应，由 parse_response 按单次调用判定。
+                    return response, round_config
+                fill_error = "供应商未返回新的图片"
+                break
+            url_items = {str(item) for item in round_urls or ()}
+            for item in fresh:
+                (urls if item in url_items else paths).append(item)
+                collected.add(item)
+            if round_text:
+                texts.append(str(round_text))
+            config = round_config
+        if fill_error:
+            logger.info(
+                "legacy 候选 %s/%s 补足提前结束（%s/%s 张）: %s",
+                self._provider,
+                self._model,
+                len(collected),
+                target,
+                fill_error,
+            )
+        return (urls, paths, "\n".join(texts) or None, None), config, fill_error
+
+    @staticmethod
+    def _fill_error_text(error: Exception) -> str:
+        if isinstance(error, asyncio.TimeoutError):
+            return "补足轮次超时"
+        detail = getattr(error, "message", None) or str(error) or type(error).__name__
+        return redact_text(detail)[:_FILL_ERROR_MAX_CHARS]
 
     @staticmethod
     def _api_error_to_legacy(error: APIError) -> LegacyProviderError:
@@ -185,7 +277,9 @@ class LegacyClientAdapter:
         request: GenerationRequest,
         attempt: ProviderAttempt,
     ) -> GenerationResult:
-        legacy_tuple, config = response
+        # 补足张数的响应多带一项：提前停止补足的原因（满额时为 None）。
+        legacy_tuple, config, *extra = response
+        fill_error = extra[0] if extra else None
         # 第 4 项是思维签名（如 Gemini thoughtSignature），不是错误；
         # 忽略不持久化，避免成功结果被误判失败。
         urls, paths, text, _thought_signature = legacy_tuple
@@ -225,6 +319,8 @@ class LegacyClientAdapter:
         model_alias = getattr(config, "successful_model_alias", None)
         if model_alias:
             stats["successful_model_alias"] = model_alias
+        if fill_error:
+            stats["fill_error"] = fill_error
         return GenerationResult(
             artifacts=artifacts,
             text=text,
@@ -232,5 +328,6 @@ class LegacyClientAdapter:
             model=model,
             candidate_id=candidate_id,
             attempt_count=attempt.number,
+            partial=bool(fill_error),
             stats=stats,
         )

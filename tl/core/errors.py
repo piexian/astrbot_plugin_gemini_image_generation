@@ -159,6 +159,13 @@ class ServiceClosedError(CoreError):
     retryable = False
 
 
+class BatchAllFailedError(CoreError):
+    """批量父 Job 的全部子 Job 都没有产出。"""
+
+    code = "batch_all_failed"
+    retryable = False
+
+
 class JobStoreWriteCancelledError(asyncio.CancelledError):
     """Cancellation delivered after a database operation has finished.
 

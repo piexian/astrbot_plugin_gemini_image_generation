@@ -8,7 +8,7 @@ from typing import Any
 from .models import Job
 from .reference_service import ReferenceService
 from .requests import GenerationRequest
-from .scheduler import JobHandle, JobResult, JobScheduler, JobSnapshot
+from .scheduler import BatchHandle, JobHandle, JobResult, JobScheduler, JobSnapshot
 
 
 class GenerationService:
@@ -54,6 +54,28 @@ class GenerationService:
         """
         return await self._scheduler.submit(
             request, admission=admission, delivery=delivery
+        )
+
+    async def submit_batch(
+        self,
+        parent: GenerationRequest,
+        children: Sequence[GenerationRequest],
+        *,
+        concurrency: int,
+        admission: Mapping[str, Any] | None = None,
+        delivery: Any = None,
+    ) -> BatchHandle:
+        """提交批量父子 Job；提交时就创建全部子 Job，语义见 JobScheduler.submit_batch。
+
+        等待批量结束用 ``wait(handle.job_id)``（父 Job）；``result_wait_timeout``
+        不适用于批量，各子 Job 的执行时限由子请求自己的 ``deadline_seconds`` 决定。
+        """
+        return await self._scheduler.submit_batch(
+            parent,
+            children,
+            concurrency=concurrency,
+            admission=admission,
+            delivery=delivery,
         )
 
     def attach_delivery(self, job_id: str, delivery: Any) -> bool:

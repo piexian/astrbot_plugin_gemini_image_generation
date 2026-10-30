@@ -149,6 +149,9 @@ def make_plugin(tmp_path, service, client, *, allowed_dirs=(), candidates=()):
             llm_tool_reference_path_mode="whitelist",
             llm_tool_reference_allowed_dirs=[str(path) for path in allowed_dirs],
             llm_tool_timeout_reserve_percent=50,
+            batch_max_tasks=5,
+            batch_max_images_per_task=4,
+            batch_concurrency=2,
         ),
         image_generator=ImageGenerator(
             context=None,
@@ -178,6 +181,12 @@ def notifier(monkeypatch):
     )
     monkeypatch.setattr(
         "tl.v2_tool_delivery.report_background_failure", recorder.report
+    )
+    monkeypatch.setattr(
+        "tl.batch_generation.notify_llm_background_result", recorder.notify
+    )
+    monkeypatch.setattr(
+        "tl.batch_generation.report_background_failure", recorder.report
     )
     return recorder
 
@@ -1013,3 +1022,120 @@ def test_forbid_guard_detects_create_task(monkeypatch):
     with pytest.raises(AssertionError, match="create_task"):
         getattr(view, "create_task")
     assert view.wait_for is asyncio.wait_for
+
+
+# ===== 批量入口 =====
+
+
+class BatchClient:
+    """每轮最多返回一张新图，让多项与补足轮次都可核对。"""
+
+    def __init__(self):
+        self.configs = []
+
+    async def generate_image(self, config, **kwargs):
+        self.configs.append(config)
+        serial = sum(item.prompt == config.prompt for item in self.configs)
+        return [f"https://img.test/{config.prompt}-{serial}.png"], [], "ok", None
+
+
+def batch_candidates():
+    return [
+        ProviderCandidate(
+            id="legacy#1",
+            api_type="legacy",
+            settings={"api_keys": ["key"], "model": "auto"},
+            supports_image_edit=True,
+        )
+    ]
+
+
+def batch_tasks():
+    return [
+        {"name": "a", "prompt": "a", "image_count": 1, "provider": "legacy"},
+        {"name": "b", "prompt": "b", "image_count": 2, "provider": "legacy"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_batch_v2_uses_parent_children_and_delivers_without_legacy_task(
+    make_env, notifier, monkeypatch
+):
+    quota = RecordingQuota()
+    client = BatchClient()
+    env = await make_env(
+        client,
+        service_options={"quota": quota},
+        candidates=batch_candidates(),
+    )
+    monkeypatch.setattr(
+        llm_tools, "run_batch_job", Mock(side_effect=AssertionError("legacy batch"))
+    )
+
+    event = _Event()
+    payload = json.loads(await call(env, event, batch_tasks=batch_tasks()))
+
+    assert payload["status"] == "running"
+    task_id = payload["task_id"]
+    assert env.manager._runtime_tasks == {}
+
+    async def delivered():
+        return bool(notifier.results)
+
+    await eventually(delivered)
+    record = await record_of(env, task_id)
+    assert record["kind"] == "batch"
+    assert record["status"] == "succeeded"
+    assert (record["completed_items"], record["succeeded_items"]) == (2, 2)
+    assert record["failed_items"] == 0
+    assert record["job_id"]
+    assert notifier.results[0]["task_id"] == task_id
+    assert [item["name"] for item in notifier.results[0]["items"]] == ["a", "b"]
+
+    jobs = await stored_jobs(env)
+    assert len(jobs) == 3
+    parent = next(job for job in jobs if job.request.metadata.get("batch_parent"))
+    children = [job for job in jobs if job.parent_job_id == parent.job_id]
+    assert len(children) == 2
+    assert parent.job_id == record["job_id"]
+    assert parent.state is JobState.SUCCEEDED
+    assert parent.deadline_at is None
+    assert parent.request.metadata["quota"] == {"cost": 2}
+    assert parent.request.prompt == "批量生图：a、b"
+    assert [child.request.source for child in children] == ["llm_batch"] * 2
+    assert all(child.request.metadata["quota"] is False for child in children)
+    assert all(child.request.metadata["fill_image_count"] is True for child in children)
+    assert all(child.deadline_at is not None for child in children)
+    assert {child.request.metadata["deadline_seconds"] for child in children} == {
+        120,
+        240,
+    }
+
+    ((quota_option, requester, admission),) = quota.calls
+    assert quota_option == {"cost": 2}
+    assert requester["umo"] == UMO
+    assert admission == {"event": event}
+    assert [
+        config.image_count for config in client.configs if config.prompt == "b"
+    ] == [2, 1]
+    env.plugin._check_and_consume_limit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_batch_v2_quota_denial_creates_no_job_or_record(make_env):
+    limiter = RateLimiter(limiter_config(session_max=1))
+    client = BatchClient()
+    env = await make_env(
+        client,
+        service_options={"quota": RateLimiterQuota(lambda: limiter)},
+        candidates=batch_candidates(),
+    )
+    event = _Event()
+    event.unified_msg_origin = FULL_UMO
+
+    result = await call(env, event, batch_tasks=batch_tasks())
+
+    assert "超过当前会话单周期额度 1" in result
+    assert await stored_jobs(env) == []
+    assert env.manager._records == {}
+    assert client.configs == []
