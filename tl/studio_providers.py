@@ -326,8 +326,10 @@ class ProviderConfigService:
         )
         return [value for value in values if isinstance(value, str) and value.strip()]
 
-    async def _check_outbound_url(self, url: str) -> str:
-        return await check_outbound_url(url, saved_api_bases=self._saved_api_bases())
+    async def _check_outbound_url(self, url: str, *, pin=None) -> str:
+        return await check_outbound_url(
+            url, saved_api_bases=self._saved_api_bases(), pin=pin
+        )
 
     def _catalog_request(self, api_type: str, entry: dict, common: dict, key: str):
         default_base = self.templates[api_type]["fields"]["api_base"].get("default", "")

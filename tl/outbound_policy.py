@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import socket
 from collections.abc import Callable, Iterable
 from urllib.parse import urlsplit
 
@@ -16,6 +17,42 @@ _METADATA_ADDRESSES = frozenset(
     for value in ("169.254.169.254", "fd00:ec2::254", "100.100.100.200")
 )
 _SHARED_NETWORK = ipaddress.ip_network("100.64.0.0/10")
+
+
+class PinnedResolver:
+    """aiohttp resolver that only returns addresses approved before connecting."""
+
+    def __init__(self) -> None:
+        self._pins: dict[str, tuple[ipaddress._BaseAddress, ...]] = {}
+
+    def pin(self, host: str, addresses: Iterable[ipaddress._BaseAddress]) -> None:
+        self._pins[host.lower().rstrip(".")] = tuple(addresses)
+
+    async def resolve(self, host: str, port: int = 0, family: int = 0):
+        addresses = self._pins.get(host.lower().rstrip("."))
+        if not addresses:
+            raise OSError(f"未验证的出站地址: {host}")
+        result = []
+        for address in addresses:
+            address_family = socket.AF_INET6 if address.version == 6 else socket.AF_INET
+            if family not in (0, address_family):
+                continue
+            result.append(
+                {
+                    "hostname": host,
+                    "host": str(address),
+                    "port": port,
+                    "family": address_family,
+                    "proto": 0,
+                    "flags": 0,
+                }
+            )
+        if not result:
+            raise OSError(f"未验证的出站地址: {host}")
+        return result
+
+    async def close(self) -> None:
+        return None
 
 
 def _origin(parsed) -> tuple[str, str, int] | None:
@@ -46,6 +83,7 @@ async def check_outbound_url(
     *,
     saved_api_bases: Iterable[str] = (),
     resolver: Callable = _resolve_host,
+    pin: PinnedResolver | None = None,
 ) -> str:
     """检查目标及全部 DNS 结果；私网仅放行已保存供应商 origin。"""
 
@@ -57,6 +95,8 @@ async def check_outbound_url(
     allow_saved_private = origin in _saved_origins(saved_api_bases)
     host = parsed.hostname.rstrip(".")
     addresses = await asyncio.to_thread(resolver, host)
+    if pin is not None:
+        pin.pin(host, addresses)
     policy = PathPolicy((), allow_private_networks=False)
     for address in addresses:
         if address.is_link_local or address in _METADATA_ADDRESSES:

@@ -43,7 +43,7 @@ from .generation_tracker import (
     ReferenceImageUnavailableError,
     _timestamp,
 )
-from .outbound_policy import check_outbound_url
+from .outbound_policy import PinnedResolver, check_outbound_url
 from .provider_capabilities import (
     candidate_capability,
     candidate_reference_limit,
@@ -1352,11 +1352,14 @@ class WebStudioService:
         )
         connector = None
         http_proxy = proxy
+        pinned_resolver = PinnedResolver()
         if proxy and proxy.lower().startswith("socks"):
             from aiohttp_socks import ProxyConnector
 
             connector = ProxyConnector.from_url(proxy)
             http_proxy = None
+        elif not proxy:
+            connector = aiohttp.TCPConnector(resolver=pinned_resolver, ttl_dns_cache=0)
         current = url
         try:
             async with aiohttp.ClientSession(
@@ -1364,7 +1367,9 @@ class WebStudioService:
             ) as session:
                 for hop in range(4):
                     await check_outbound_url(
-                        current, saved_api_bases=self._saved_api_bases()
+                        current,
+                        saved_api_bases=self._saved_api_bases(),
+                        pin=pinned_resolver,
                     )
                     async with session.get(
                         current, proxy=http_proxy, allow_redirects=False

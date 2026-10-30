@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import re
 from collections.abc import Awaitable, Callable
@@ -13,6 +14,7 @@ from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 import aiohttp
 
 from .core.errors import PathPolicyError
+from .outbound_policy import PinnedResolver
 from .provider_metadata import get_provider_spec, iter_provider_specs
 
 _MAX_BYTES = 2 * 1024 * 1024
@@ -376,6 +378,7 @@ class ModelCatalogService:
                 ) from None
         connector = None
         proxy = request.proxy
+        pinned_resolver = PinnedResolver()
         if proxy:
             parsed_proxy = _parse_url(proxy, proxy=True)
             if parsed_proxy.scheme.startswith("socks"):
@@ -393,15 +396,21 @@ class ModelCatalogService:
                     urlunsplit(parsed_proxy._replace(scheme=scheme)), rdns=True
                 )
                 proxy = None
+        else:
+            connector = aiohttp.TCPConnector(resolver=pinned_resolver, ttl_dns_cache=0)
         async with aiohttp.ClientSession(
             connector=connector,
             timeout=aiohttp.ClientTimeout(total=_TIMEOUT),
             trust_env=False,
         ) as session:
-            return await self._fetch_pages(session, request, proxy)
+            return await self._fetch_pages(session, request, proxy, pinned_resolver)
 
     async def _fetch_pages(
-        self, session: aiohttp.ClientSession, request: CatalogRequest, proxy: str | None
+        self,
+        session: aiohttp.ClientSession,
+        request: CatalogRequest,
+        proxy: str | None,
+        pinned_resolver: PinnedResolver | None = None,
     ) -> dict[str, Any]:
         results = _ModelResults(_secrets(request))
         url = request.url
@@ -417,6 +426,12 @@ class ModelCatalogService:
             seen_tokens.add(params["pageToken"])
         fallback = False
         while True:
+            if self._url_checker is not None:
+                parameters = inspect.signature(self._url_checker).parameters
+                if "pin" in parameters:
+                    await self._url_checker(request.url, pin=pinned_resolver)
+                else:
+                    await self._url_checker(request.url)
             async with session.get(
                 url,
                 headers=request.headers,
