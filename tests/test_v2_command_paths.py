@@ -25,7 +25,7 @@ from tl.core.results import GenerationResult
 from tl.core.stack import build_generation_stack
 from tl.core.states import JobState
 from tl.generation_errors import api_failure_message
-from tl.image_generator import ImageGenerator
+from tl.image_generator import ImageGenerator, V2Submission
 from tl.reference_image import REFERENCE_IMAGE_CACHE_DIR
 from tl.v2_bridge import v2_failure_text
 
@@ -82,10 +82,10 @@ class _FakeV2Service:
         self.calls.append(("prepare", tuple(references)))
         return tuple(references)
 
-    async def submit(self, request):
+    async def submit(self, request, *, admission=None):
         if self.submit_error is not None:
             raise self.submit_error
-        self.calls.append(("submit", request.prompt))
+        self.calls.append(("submit", request.prompt, dict(admission or {})))
         return SimpleNamespace(job_id="job-v2-1")
 
     async def wait(self, job_id, timeout=None):
@@ -182,20 +182,66 @@ async def test_quick_generate_v2_failure_message_matches_legacy_wording(
     assert expected in outputs
 
 
+def _two_phase_generator(handle=None, **submission):
+    """submit_v2 / wait_v2 / generate_image_core 的探针；wait 总是失败以截断后续流程。"""
+
+    return SimpleNamespace(
+        submit_v2=AsyncMock(return_value=V2Submission(handle=handle, **submission)),
+        wait_v2=AsyncMock(return_value=(False, "wait failed")),
+        generate_image_core=AsyncMock(return_value=(False, "legacy failed")),
+        get_request_stats=lambda: {},
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("name", "args"), [("quick_sticker", ("draw",)), ("change_style", ("ink",))]
 )
-async def test_sticker_and_style_pass_v2_service(command_plugin, name, args):
+async def test_sticker_and_style_submit_then_wait_through_v2(
+    command_plugin, name, args
+):
     plugin = command_plugin
     plugin.cfg.enable_sticker_split = True
     sentinel = object()
+    handle = SimpleNamespace(job_id="job-v2-1")
     plugin._v2_service_for = lambda umo: sentinel
+    plugin.image_generator = _two_phase_generator(handle=handle)
+    event = _Event()
+    event.message_str = ""
+    outputs = [result async for result in getattr(plugin, name)(event, *args)]
+    generator = plugin.image_generator
+    kwargs = generator.submit_v2.await_args.kwargs
+    assert kwargs["v2_service"] is sentinel
+    # 额度由调度器在 submit 内扣：入口只传准入上下文和 quota 元数据。
+    assert kwargs["admission"] == {"event": event}
+    assert kwargs["quota"] == {"cost": 1}
+    wait_kwargs = generator.wait_v2.await_args.kwargs
+    assert wait_kwargs["v2_service"] is sentinel
+    assert wait_kwargs["handle"] is handle
+    generator.generate_image_core.assert_not_awaited()
+    assert "wait failed" in outputs
+    assert plugin.rate_limiter.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "args"), [("quick_sticker", ("draw",)), ("change_style", ("ink",))]
+)
+async def test_sticker_and_style_legacy_path_skips_v2_api(command_plugin, name, args):
+    plugin = command_plugin
+    plugin.cfg.enable_sticker_split = True
+    plugin._v2_service_for = lambda umo: None
+    plugin.image_generator = _two_phase_generator()
     event = _Event()
     event.message_str = ""
     _ = [result async for result in getattr(plugin, name)(event, *args)]
-    kwargs = plugin.image_generator.generate_image_core.await_args.kwargs
-    assert kwargs["v2_service"] is sentinel
+    generator = plugin.image_generator
+    kwargs = generator.generate_image_core.await_args.kwargs
+    assert "v2_service" not in kwargs
+    generator.submit_v2.assert_not_awaited()
+    generator.wait_v2.assert_not_awaited()
+    # 旧路径仍由入口扣一次额度。
+    assert plugin.rate_limiter.calls == [(event.unified_msg_origin, 1)]
 
 
 # ===== ImageGenerator v2 分支 =====

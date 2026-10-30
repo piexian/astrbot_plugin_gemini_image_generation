@@ -77,6 +77,17 @@ Provider 只能报告能力、构造请求、发送和解析结果。候选选�
 3. reference lease、artifact lease、delivery lease 的释放；
 4. provider session、临时文件和输出归档 cleanup。
 
+quota 与 limiter 在 `JobScheduler.submit()` 内、落库之前依次预留（先 quota 后
+limiter）：组件的 `reserve(request, admission)` 同步或异步均可，返回 `None`（无需
+预留）或带幂等 `release()` 的预留对象，可选 `refund()` 与 `runtime_scope()`；
+`admission` 是调用方传入、不持久化的准入上下文（命令入口传事件）。任一步拒绝
+（`QuotaExceededError`、`QueueFullError`、`ServiceClosedError` 等）都不创建 Job，
+异常原样抛给调用方，已拿到的预留按逆序 `refund()`（没有则退化为 `release()`），
+落库或建 task 失败同样回滚。Job 被接受后预留在运行时转成持久化的 QUOTA/LIMITER
+lease，`runtime_scope()` 在 provider 执行期间生效，终态只 `release()`，不退款。
+task 在取走预留之前就结束（提交即取消、close）时由调度器兜底释放，`close()`
+结束时登记表必为空。
+
 入口拿到的内联图（data URI / 裸 base64）先经 `ingest_inline` 校验落盘并换成
 `ref:<kind>:<id>` 短句柄再放入 `GenerationRequest`；ReferenceService 内部按 kind
 分派到 ReferenceStore（`tmp` 为进程内 TTL 存储），执行时把句柄解析回落盘产物，

@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import json
+import os
 import shlex
 import sys
 import time
@@ -20,7 +21,10 @@ from tests.test_web_studio_service import _config, _png, _SequenceClient
 from tl import enhanced_prompts, llm_tools
 from tl.api_types import ApiRequestConfig
 from tl.background_tasks import BackgroundTaskManager
+from tl.core.errors import QueueFullError, QuotaExceededError, ServiceClosedError
+from tl.core.stack import build_generation_stack
 from tl.core.states import JobState
+from tl.format_error import format_error_message
 from tl.generation_errors import api_failure_message
 from tl.generation_tracker import (
     GenerationTracker,
@@ -30,6 +34,8 @@ from tl.generation_tracker import (
 from tl.llm_tools import GeminiImageGenerationTool
 from tl.provider_capabilities import select_candidates
 from tl.rate_limiter import RateLimiter
+from tl.reference_image import REFERENCE_IMAGE_CACHE_DIR
+from tl.v2_admission import LegacyFifoLimiter, RateLimiterQuota
 from tl.v2_bridge import (
     apply_result_to_config as v2_apply_result_to_config,
 )
@@ -42,6 +48,7 @@ from tl.v2_bridge import (
 from tl.v2_bridge import (
     v2_failure_message,
 )
+from tl.v2_tracking import TrackerProjection
 from tl.web_studio_service import StudioServiceError, WebStudioService
 
 
@@ -481,9 +488,12 @@ def _command_class():
         "time": time,
         "logger": logger,
         "ApiRequestConfig": ApiRequestConfig,
+        "QuotaExceededError": QuotaExceededError,
+        "QueueFullError": QueueFullError,
+        "ServiceClosedError": ServiceClosedError,
+        "format_error_message": format_error_message,
         "select_candidates": select_candidates,
         "requester_from_event": lambda event: {},
-        "format_error_message": str,
         "_build_no_ref_msg": lambda mode, suggestion: f"{mode}: {suggestion}",
         "JobState": JobState,
         "record_generation_success": staticmethod(record_generation_success),
@@ -492,6 +502,13 @@ def _command_class():
         "v2_command_request": v2_command_request,
         "v2_split_artifacts": v2_split_artifacts,
         "v2_apply_result_to_config": v2_apply_result_to_config,
+        # _ensure_v2_service 装配 v2 栈所需。
+        "os": os,
+        "build_generation_stack": build_generation_stack,
+        "REFERENCE_IMAGE_CACHE_DIR": REFERENCE_IMAGE_CACHE_DIR,
+        "RateLimiterQuota": RateLimiterQuota,
+        "LegacyFifoLimiter": LegacyFifoLimiter,
+        "TrackerProjection": TrackerProjection,
     }
     exec(
         compile(ast.fix_missing_locations(source), str(source_path), "exec"), namespace
