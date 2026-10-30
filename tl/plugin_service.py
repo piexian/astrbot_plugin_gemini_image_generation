@@ -508,9 +508,13 @@ class ImageGenerationService:
     async def wait_task(
         self, task_id: str, *, plugin_id: str, timeout: float | None = None
     ):
-        if timeout is None:
-            timeout = self.plugin.cfg.total_timeout
         record = await self.get_task(task_id, plugin_id=plugin_id)
+        if timeout is None:
+            try:
+                requested_images = max(int(record.get("requested_images") or 1), 1)
+            except (TypeError, ValueError):
+                requested_images = 1
+            timeout = self.plugin.cfg.total_timeout * requested_images
         if record["status"] not in TERMINAL_STATUSES:
             event = self._events.setdefault(task_id, asyncio.Event())
             await asyncio.wait_for(event.wait(), timeout)

@@ -745,6 +745,7 @@ class JobScheduler:
             job.fencing_token = self.store.fencing_token
             job.transition(JobState.RUNNING)
             job = await self.store.save(job)
+            await self._notify_delivery_started(job)
             # submit 时预留的准入资源在此转成持久化 lease（审计 + 终态释放）。
             # 先全部入 LeaseSet 再逐个落库：某个落库失败时，其余预留也由
             # finally 的 release_all 释放，不会因已摘出登记表而泄漏。
@@ -1269,6 +1270,20 @@ class JobScheduler:
             job.transition(JobState.PARTIAL if result.partial else JobState.SUCCEEDED)
         await self.store.save(job)
 
+    async def _notify_delivery_started(self, job: Job) -> None:
+        """通知投递适配器进入运行态；旧适配器没有此可选钩子。"""
+
+        delivery = self._deliveries.get(job.job_id)
+        method = getattr(delivery, "job_started", None)
+        if not callable(method):
+            return
+        try:
+            await asyncio.wait_for(_call(method, job), timeout=self.delivery_timeout)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            logger.warning("[v2] 投递方 job_started 调用失败: %s", type(error).__name__)
+
     async def _deliver_failure(self, job_id: str, delivery: Any) -> None:
         """Job 无结果结束且投递方尚未交接时通知其失败；异常/超时只记日志。"""
 
@@ -1334,16 +1349,26 @@ class JobScheduler:
         """依次进入准入预留与观察者的 runtime_scope；失败只记日志并跳过。"""
 
         stack = contextlib.ExitStack()
-        # 预留的 runtime_scope() 不带参数，观察者的 runtime_scope(job) 带 Job。
-        owners = [("准入预留", reservation, ()) for _kind, reservation in admissions]
-        owners.extend(("观察者", observer, (job,)) for observer in self.observers)
-        for role, owner, args in owners:
+        owners = [
+            ("准入预留", reservation, (), True) for _kind, reservation in admissions
+        ]
+        owners.extend(
+            ("观察者", observer, (job,), False) for observer in self.observers
+        )
+        for role, owner, args, persistent in owners:
             factory = getattr(owner, "runtime_scope", None)
             if not callable(factory):
                 continue
             name = f"{role} {type(owner).__name__}"
             try:
-                stack.enter_context(_GuardedObserverScope(factory(*args), name))
+                if persistent:
+                    try:
+                        context = factory(*args, persistent=True)
+                    except TypeError:
+                        context = factory(*args)
+                else:
+                    context = factory(*args)
+                stack.enter_context(_GuardedObserverScope(context, name))
             except Exception as error:
                 logger.warning(
                     "[v2] %s runtime_scope 进入失败，跳过: %s",
