@@ -9,11 +9,29 @@ from typing import TYPE_CHECKING, Any
 
 from astrbot.api import logger
 
+from .core.errors import CoreError
+from .core.states import JobState
+from .generation_errors import api_failure_message
 from .generation_scheduler import generation_progress
-from .generation_tracker import current_tracking_context, requester_from_event
+from .generation_tracker import (
+    current_tracking_context,
+    record_generation_success,
+    requester_from_event,
+)
+from .provider_capabilities import routing_mode
 from .session_image_dir import bind_session_image_dir, reset_session_image_dir
 from .thought_signature import log_thought_signature_debug
 from .tl_api import APIError, ApiRequestConfig
+from .v2_bridge import (
+    build_request as v2_build_request,
+)
+from .v2_bridge import (
+    split_artifacts as v2_split_artifacts,
+)
+from .v2_bridge import (
+    v2_failure_message,
+    v2_failure_text,
+)
 
 DEFAULT_MAX_REFERENCE_IMAGES = 6
 
@@ -165,78 +183,17 @@ class ImageGenerator:
     ) -> None:
         if not job_id or self.tracker is None:
             return
-        delivered = list(
-            dict.fromkeys(
-                str(item) for item in (image_urls or []) + (image_paths or []) if item
-            )
+        stats = self.get_request_stats()
+        await record_generation_success(
+            self.tracker,
+            job_id,
+            image_urls=image_urls,
+            image_paths=image_paths,
+            text_content=text_content,
+            stats=stats,
+            archive_images_fn=self._archive_images_fn,
+            candidate_id=stats.get("successful_candidate_id"),
         )
-        try:
-            image_files: list[str] = []
-            stats = self.get_request_stats()
-            archive_note = ""
-            archive_attempted = bool(delivered) and self._archive_images_fn is not None
-            if archive_attempted:
-                try:
-                    image_files = await self._archive_images_fn(
-                        image_urls,
-                        image_paths,
-                        candidate_id=stats.get("successful_candidate_id"),
-                        job_id=job_id,
-                    )
-                except Exception as archive_error:
-                    # 图片仍按原始来源发送，归档失败只降级为部分成功。
-                    archive_note = (
-                        f"{type(archive_error).__name__}: {archive_error}".strip()
-                    )
-                    logger.warning(
-                        f"[生成追踪] 归档异常，不影响结果发送: {archive_note or '无详细信息'}"
-                    )
-            if archive_attempted and len(image_files) < len(delivered):
-                archive_note = (
-                    f"画廊归档不完整（{len(image_files)}/{len(delivered)}）"
-                    + (f"：{archive_note}" if archive_note else "")
-                )
-            status = (
-                "succeeded"
-                if not archive_attempted or len(image_files) >= len(delivered)
-                else "partial_success"
-            )
-            source_urls = [
-                item for item in delivered if item.startswith(("http://", "https://"))
-            ]
-            await self.tracker.complete(
-                job_id,
-                image_files=image_files,
-                text_content=text_content,
-                stats=stats,
-                status=status,
-                source_urls=source_urls,
-            )
-            if archive_note:
-                update = getattr(self.tracker, "update", None)
-                if update is not None:
-                    try:
-                        await update(job_id, error=archive_note)
-                    except Exception:
-                        pass
-            logger.debug(
-                f"[生成追踪] 完成: job_id={job_id}, 状态={status}, "
-                f"归档张数={len(image_files)}/{len(delivered)}, "
-                f"供应商={stats.get('successful_provider') or '未记录'}, "
-                f"模型={stats.get('successful_model') or '未记录'}"
-            )
-        except Exception as exc:
-            logger.warning(
-                f"[生成追踪] 完成记录失败，不影响结果返回: {type(exc).__name__}: {exc}"
-            )
-            try:
-                await self.tracker.fail(job_id, error=f"结果记录失败: {exc}")
-                logger.debug(
-                    f"[生成追踪] 转为失败: job_id={job_id}, "
-                    f"异常类型={type(exc).__name__}"
-                )
-            except Exception:
-                pass
 
     async def _fail_tracking(self, job_id: str | None, error: Any) -> None:
         if not job_id or self.tracker is None:
@@ -253,12 +210,15 @@ class ImageGenerator:
         self,
         event: AstrMessageEvent,
         *args,
+        v2_service: Any = None,
         **kwargs,
     ) -> tuple[bool, tuple[list[str], list[str], str | None, str | None] | str]:
         """聊天会话生成图绑定工作区保存目录（框架发送白名单内）后执行生成。"""
         token = await bind_session_image_dir(event, self.context)
         try:
-            return await self._generate_image_core_impl(event, *args, **kwargs)
+            return await self._generate_image_core_impl(
+                event, *args, v2_service=v2_service, **kwargs
+            )
         finally:
             reset_session_image_dir(token)
 
@@ -278,6 +238,7 @@ class ImageGenerator:
         quality: str | None = None,
         image_count: int = 1,
         suppress_resolution: bool = False,
+        v2_service: Any = None,
     ) -> tuple[bool, tuple[list[str], list[str], str | None, str | None] | str]:
         """
         内部核心图像生成方法，不发送消息，只返回结果
@@ -342,6 +303,23 @@ class ImageGenerator:
 [System Note]
 The last {final_avatar_count} image(s) provided are User Avatars (marked as optional reference). You may use them for character consistency if needed, but they are NOT mandatory if they conflict with the requested style."""
 
+        if v2_service is not None:
+            return await self._generate_via_v2(
+                event=event,
+                v2_service=v2_service,
+                prompt=prompt,
+                all_reference_images=all_reference_images,
+                override_resolution=override_resolution,
+                override_aspect_ratio=override_aspect_ratio,
+                is_tool_call=is_tool_call,
+                requested_provider=requested_provider,
+                requested_model=requested_model,
+                negative_prompt=negative_prompt,
+                watermark=watermark,
+                quality=quality,
+                image_count=image_count,
+                suppress_resolution=suppress_resolution,
+            )
         request_config = ApiRequestConfig(
             model="",
             prompt=prompt,
@@ -520,3 +498,134 @@ The last {final_avatar_count} image(s) provided are User Avatars (marked as opti
             logger.error(f"生成图像时发生未预期的错误: {e}", exc_info=True)
             await self._fail_tracking(tracking_job_id, e)
             return False, f"❌ 生成图像时发生错误: {str(e)}"
+
+    async def _generate_via_v2(
+        self,
+        *,
+        event: Any,
+        v2_service: Any,
+        prompt: str,
+        all_reference_images: list[str],
+        override_resolution: str | None,
+        override_aspect_ratio: str | None,
+        is_tool_call: bool,
+        requested_provider: str | None,
+        requested_model: str | None,
+        negative_prompt: str | None,
+        watermark: bool | None,
+        quality: str | None,
+        image_count: int,
+        suppress_resolution: bool,
+    ) -> tuple[bool, tuple[list[str], list[str], str | None, str | None] | str]:
+        """v2 调度路径：生成历史由 TrackerProjection 投影写入，本方法不碰 tracker。
+
+        会话图片目录由 generate_image_core 绑定；submit 发生在绑定期间，
+        runtime task 继承该 contextvar，此处不得重复绑定或提前重置。
+        """
+
+        requester = requester_from_event(event)
+        context = current_tracking_context()
+        source = (
+            context.source if context else ("llm_tool" if is_tool_call else "command")
+        )
+        try:
+            refs = await v2_service.prepare_references(
+                all_reference_images, requester=requester
+            )
+        except asyncio.CancelledError:
+            raise
+        except CoreError as error:
+            # 参考图解析失败/过大/服务关闭等：按错误码给旧路径同措辞提示。
+            error_msg = v2_failure_text(
+                str(getattr(error, "code", "") or ""),
+                getattr(error, "message", None) or str(error),
+                total_timeout=self.total_timeout,
+            )
+            logger.error(error_msg)
+            return False, error_msg
+        except Exception as e:
+            logger.error(f"生成图像时发生未预期的错误: {e}", exc_info=True)
+            return False, f"❌ 生成图像时发生错误: {str(e)}"
+        deadline = self.total_timeout
+        logger.info(f"v2 调度提交: 参考图片: {len(refs)} 张, 来源={source}")
+        try:
+            handle = await v2_service.submit(
+                v2_build_request(
+                    source=source,
+                    prompt=prompt,
+                    resolution=override_resolution,
+                    aspect_ratio=override_aspect_ratio,
+                    provider=requested_provider,
+                    model=requested_model,
+                    reference_images=refs,
+                    deadline_seconds=deadline,
+                    requester=requester,
+                    metadata={
+                        "suppress_resolution": suppress_resolution,
+                        "enable_smart_retry": self.enable_smart_retry,
+                        "max_attempts_per_key": self.max_attempts_per_key,
+                        "total_timeout": self.total_timeout,
+                    },
+                    negative_prompt=negative_prompt,
+                    quality=quality,
+                    watermark=watermark,
+                    image_count=max(int(image_count or 1), 1),
+                )
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"生成图像时发生未预期的错误: {e}", exc_info=True)
+            return False, f"❌ 生成图像时发生错误: {str(e)}"
+        # 等待上限由调度器给出（deadline 之外还容纳观察者钩子时间）；等待期间
+        # 调用方被取消或超时都先取消 Job，与旧路径"取消入口即取消生成"一致。
+        try:
+            job_result = await v2_service.wait(
+                handle.job_id, timeout=v2_service.result_wait_timeout(deadline)
+            )
+        except asyncio.CancelledError:
+            await asyncio.shield(v2_service.cancel(handle.job_id))
+            raise
+        except asyncio.TimeoutError:
+            await asyncio.shield(v2_service.cancel(handle.job_id))
+            error_msg = api_failure_message(
+                message="生成等待超时",
+                status_code=None,
+                error_type="timeout",
+                total_timeout=self.total_timeout,
+            )
+            logger.error(error_msg)
+            return False, error_msg
+        except Exception as e:
+            # wait 自身异常：Job 可能仍在运行，先取消再按旧路径措辞返回。
+            logger.error(f"生成图像时发生未预期的错误: {e}", exc_info=True)
+            await asyncio.shield(v2_service.cancel(handle.job_id))
+            return False, f"❌ 生成图像时发生错误: {str(e)}"
+        if (
+            job_result.state not in (JobState.SUCCEEDED, JobState.PARTIAL)
+            or job_result.result is None
+        ):
+            error_msg = v2_failure_message(job_result, total_timeout=self.total_timeout)
+            logger.error(error_msg)
+            return False, error_msg
+        result = job_result.result
+        image_urls, image_paths = v2_split_artifacts(result.artifacts)
+        stats = result.stats or {}
+        self._set_request_stats(
+            {
+                "retry_count": stats.get("retry_count", 0),
+                "token_usage": stats.get("token_usage"),
+                "retry_note": stats.get("retry_note"),
+                "successful_candidate_id": result.candidate_id,
+                "successful_provider": result.provider,
+                "successful_model": result.model,
+                "successful_model_alias": stats.get("successful_model_alias"),
+                # v2 结果不含供应商实际生效张数，保留请求张数。
+                "effective_image_count": max(int(image_count or 1), 1),
+                "routing_mode": routing_mode(requested_provider, requested_model),
+            }
+        )
+        logger.info(
+            f"🖼️ v2 返回图片数量: {len(image_paths)}, URL 数量: {len(image_urls)}"
+        )
+        return True, (image_urls, image_paths, result.text, None)

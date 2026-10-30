@@ -1,18 +1,28 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from tl.core.dispatch import ProviderDispatchError
-from tl.core.errors import ReferenceTimeoutError
+from tl.core.errors import (
+    LegacyProviderError,
+    ProviderRouteError,
+    ReferenceTimeoutError,
+)
 from tl.core.job_store import SQLiteJobStore
 from tl.core.models import Job
 from tl.core.requests import GenerationRequest
 from tl.core.results import GenerationResult
 from tl.core.router import ProviderCandidate, ProviderRouter
-from tl.core.scheduler import JobScheduler
+from tl.core.scheduler import (
+    _ROUTER_EXECUTE_GRACE_SECONDS,
+    JobScheduler,
+)
+from tl.core.service import GenerationService
 from tl.core.states import JobState
 
 
@@ -843,3 +853,213 @@ async def test_reference_deadline_exhaustion_fails_job(tmp_path):
         assert provider.attempts == 0
     finally:
         await scheduler.close()
+
+
+class RecordingObserver:
+    """记录钩子事件；可按钩子名抛错或挂起。"""
+
+    def __init__(self, name="obs", *, raise_in=None, hang_in=None):
+        self.name = name
+        self.events: list[tuple] = []
+        self._raise_in = raise_in
+        self._hang_in = hang_in
+
+    async def _maybe_break(self, hook, *args):
+        if hook == self._raise_in:
+            raise RuntimeError(f"{hook} broken")
+        if hook == self._hang_in:
+            await asyncio.sleep(5)
+
+    async def job_accepted(self, job):
+        self.events.append(("accepted", job.job_id, job.state))
+        await self._maybe_break("job_accepted", job)
+
+    async def job_result(self, job, result):
+        self.events.append(("result", job.job_id, len(result.artifacts)))
+        await self._maybe_break("job_result", job, result)
+
+    async def job_finished(self, job):
+        self.events.append(("finished", job.job_id, job.state))
+        await self._maybe_break("job_finished", job)
+
+
+_SCOPE_VAR: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "observer_scope_test", default=None
+)
+
+
+class ScopeObserver:
+    """runtime_scope 设置 contextvar；provider 执行期间读取，退出后复原。"""
+
+    def __init__(self):
+        self.seen_in_provider: list[str | None] = []
+
+    def runtime_scope(self, job):
+        @contextlib.contextmanager
+        def scope():
+            token = _SCOPE_VAR.set("scoped")
+            try:
+                yield
+            finally:
+                _SCOPE_VAR.reset(token)
+
+        return scope()
+
+
+class ScopeReadingProvider(FakeProvider):
+    def __init__(self, observer: ScopeObserver):
+        super().__init__()
+        self._observer = observer
+
+    async def build_request(self, request, attempt):
+        self._observer.seen_in_provider.append(_SCOPE_VAR.get())
+        return await super().build_request(request, attempt)
+
+
+@pytest.mark.asyncio
+async def test_observer_hooks_run_in_accepted_result_finished_order(tmp_path):
+    observer = RecordingObserver()
+    scheduler, _ = make_scheduler(tmp_path, FakeProvider(), observers=[observer])
+    try:
+        handle = await scheduler.submit(request())
+        result = await scheduler.wait(handle.job_id)
+        assert result.state is JobState.SUCCEEDED
+        assert observer.events == [
+            ("accepted", handle.job_id, JobState.QUEUED),
+            ("result", handle.job_id, 1),
+            ("finished", handle.job_id, JobState.SUCCEEDED),
+        ]
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_observer_runtime_scope_wraps_provider_execution(tmp_path):
+    observer = ScopeObserver()
+    provider = ScopeReadingProvider(observer)
+    scheduler, _ = make_scheduler(tmp_path, provider, observers=[observer])
+    try:
+        handle = await scheduler.submit(request())
+        await scheduler.wait(handle.job_id)
+        # provider 执行期间 contextvar 可见，退出后复原。
+        assert observer.seen_in_provider == ["scoped"]
+        assert _SCOPE_VAR.get() is None
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["raise", "hang"])
+async def test_observer_failure_does_not_affect_job_or_other_observers(tmp_path, mode):
+    broken = RecordingObserver(
+        "broken",
+        raise_in="job_result" if mode == "raise" else None,
+        hang_in="job_result" if mode == "hang" else None,
+    )
+    healthy = RecordingObserver("healthy")
+    scheduler, _ = make_scheduler(
+        tmp_path, FakeProvider(), observers=[broken, healthy], observer_timeout=0.05
+    )
+    try:
+        handle = await scheduler.submit(request())
+        result = await scheduler.wait(handle.job_id)
+        # 异常/超时的观察者不影响 Job 状态，也不影响其他观察者。
+        assert result.state is JobState.SUCCEEDED
+        assert broken.events[0][0] == "accepted"
+        assert healthy.events == [
+            ("accepted", handle.job_id, JobState.QUEUED),
+            ("result", handle.job_id, 1),
+            ("finished", handle.job_id, JobState.SUCCEEDED),
+        ]
+    finally:
+        await scheduler.close()
+
+
+class _RouteErrorProvider:
+    """Router 路径：execute 抛 ProviderRouteError，cause 带具体 code。"""
+
+    async def execute(self, request, *, deadline_at=None):
+        cause = LegacyProviderError("boom", code="provider_http_429", retryable=False)
+        raise ProviderRouteError("所有候选 provider 均失败", retryable=False) from cause
+
+
+@pytest.mark.asyncio
+async def test_observer_failed_error_code_taken_from_route_cause(tmp_path):
+    observer = RecordingObserver()
+    scheduler, _ = make_scheduler(tmp_path, _RouteErrorProvider(), observers=[observer])
+    try:
+        handle = await scheduler.submit(request())
+        result = await scheduler.wait(handle.job_id)
+        assert result.state is JobState.FAILED
+        assert result.error_code == "provider_http_429"
+        assert observer.events[-1] == ("finished", handle.job_id, JobState.FAILED)
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_observer_receives_cancelled_terminal_state(tmp_path):
+    observer = RecordingObserver()
+    block = asyncio.Event()
+    provider = FakeProvider(block=block)
+    scheduler, _ = make_scheduler(tmp_path, provider, observers=[observer])
+    try:
+        handle = await scheduler.submit(request(timeout=30.0))
+        await provider.started.wait()
+        await scheduler.cancel(handle.job_id)
+        block.set()
+        assert observer.events[-1] == (
+            "finished",
+            handle.job_id,
+            JobState.CANCELLED,
+        )
+    finally:
+        block.set()
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_observer_receives_orphaned_when_attach_fails(tmp_path, monkeypatch):
+    observer = RecordingObserver()
+    scheduler, _ = make_scheduler(tmp_path, FakeProvider(), observers=[observer])
+    module, original = scheduler_module_create_task()
+
+    def failing_create_task(coro, **kwargs):
+        if name := kwargs.get("name", ""):
+            if str(name).startswith("job:"):
+                raise RuntimeError("create_task failed")
+        return original(coro, **kwargs)
+
+    try:
+        monkeypatch.setattr(module, "create_task", failing_create_task)
+        with pytest.raises(RuntimeError):
+            await scheduler.submit(request())
+        # 建 task 失败的 Job 已触发 job_accepted，孤儿终态也要通知。
+        assert observer.events[0][0] == "accepted"
+        assert observer.events[-1][2] is JobState.ORPHANED
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_close_notifies_observers_with_cancelled(tmp_path):
+    observer = RecordingObserver()
+    block = asyncio.Event()
+    provider = FakeProvider(block=block)
+    scheduler, _ = make_scheduler(tmp_path, provider, observers=[observer])
+    await scheduler.submit(request(timeout=30.0))
+    await provider.started.wait()
+    await scheduler.close()
+    block.set()
+    assert observer.events[-1][2] is JobState.CANCELLED
+
+
+def test_result_wait_timeout_includes_observer_hook_time(tmp_path):
+    """等待上限 = deadline + provider 兜底 + 两个观察者钩子 + 固定余量。"""
+
+    scheduler, _ = make_scheduler(tmp_path, FakeProvider(), observer_timeout=7.0)
+    assert scheduler.result_wait_timeout(100) == pytest.approx(
+        100 + _ROUTER_EXECUTE_GRACE_SECONDS + 2 * 7.0 + 10
+    )
+    service = GenerationService(scheduler)
+    assert service.result_wait_timeout(100) == scheduler.result_wait_timeout(100)

@@ -101,6 +101,7 @@ def build_generation_stack(
     limiter: Any = None,
     artifact_store: Any = None,
     delivery_store: Any = None,
+    observers: Sequence[Any] = (),
 ) -> GenerationService:
     """装配 PathPolicy→Fetch→Reference→JobStore→Router→Scheduler→Service。"""
 
@@ -137,6 +138,7 @@ def build_generation_stack(
             limiter=limiter,
             artifact_store=artifact_store,
             delivery_store=delivery_store,
+            observers=observers,
         )
     except BaseException:
         store.close_sync()
