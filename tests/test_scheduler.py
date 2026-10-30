@@ -1,18 +1,31 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from tl.core.dispatch import ProviderDispatchError
-from tl.core.errors import ReferenceTimeoutError
+from tl.core.errors import (
+    LegacyProviderError,
+    ProviderRouteError,
+    QueueFullError,
+    QuotaExceededError,
+    ReferenceTimeoutError,
+)
 from tl.core.job_store import SQLiteJobStore
+from tl.core.leases import LeaseKind
 from tl.core.models import Job
 from tl.core.requests import GenerationRequest
 from tl.core.results import GenerationResult
 from tl.core.router import ProviderCandidate, ProviderRouter
-from tl.core.scheduler import JobScheduler
+from tl.core.scheduler import (
+    _ROUTER_EXECUTE_GRACE_SECONDS,
+    JobScheduler,
+)
+from tl.core.service import GenerationService
 from tl.core.states import JobState
 
 
@@ -62,7 +75,9 @@ class FakeLeaseSource:
         self.reservations: list[FakeReservation] = []
         self.release_gate = release_gate
 
-    async def reserve(self, request):
+    async def reserve(self, request, admission=None):
+        # quota/limiter 以 (request, admission) 调用；reference/artifact/delivery
+        # 仍只传一个参数，admission 缺省。
         reservation = FakeReservation(release_gate=self.release_gate)
         self.reservations.append(reservation)
         return reservation
@@ -841,5 +856,839 @@ async def test_reference_deadline_exhaustion_fails_job(tmp_path):
         assert result.error_code == "reference_timeout"
         # 参考图解析失败在 provider 分发之前终止。
         assert provider.attempts == 0
+    finally:
+        await scheduler.close()
+
+
+class RecordingObserver:
+    """记录钩子事件；可按钩子名抛错或挂起。"""
+
+    def __init__(self, name="obs", *, raise_in=None, hang_in=None):
+        self.name = name
+        self.events: list[tuple] = []
+        self._raise_in = raise_in
+        self._hang_in = hang_in
+
+    async def _maybe_break(self, hook, *args):
+        if hook == self._raise_in:
+            raise RuntimeError(f"{hook} broken")
+        if hook == self._hang_in:
+            await asyncio.sleep(5)
+
+    async def job_accepted(self, job):
+        self.events.append(("accepted", job.job_id, job.state))
+        await self._maybe_break("job_accepted", job)
+
+    async def job_result(self, job, result):
+        self.events.append(("result", job.job_id, len(result.artifacts)))
+        await self._maybe_break("job_result", job, result)
+
+    async def job_finished(self, job):
+        self.events.append(("finished", job.job_id, job.state))
+        await self._maybe_break("job_finished", job)
+
+
+_SCOPE_VAR: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "observer_scope_test", default=None
+)
+
+
+class ScopeObserver:
+    """runtime_scope 设置 contextvar；provider 执行期间读取，退出后复原。"""
+
+    def __init__(self):
+        self.seen_in_provider: list[str | None] = []
+
+    def runtime_scope(self, job):
+        @contextlib.contextmanager
+        def scope():
+            token = _SCOPE_VAR.set("scoped")
+            try:
+                yield
+            finally:
+                _SCOPE_VAR.reset(token)
+
+        return scope()
+
+
+class ScopeReadingProvider(FakeProvider):
+    def __init__(self, observer: ScopeObserver):
+        super().__init__()
+        self._observer = observer
+
+    async def build_request(self, request, attempt):
+        self._observer.seen_in_provider.append(_SCOPE_VAR.get())
+        return await super().build_request(request, attempt)
+
+
+@pytest.mark.asyncio
+async def test_observer_hooks_run_in_accepted_result_finished_order(tmp_path):
+    observer = RecordingObserver()
+    scheduler, _ = make_scheduler(tmp_path, FakeProvider(), observers=[observer])
+    try:
+        handle = await scheduler.submit(request())
+        result = await scheduler.wait(handle.job_id)
+        assert result.state is JobState.SUCCEEDED
+        assert observer.events == [
+            ("accepted", handle.job_id, JobState.QUEUED),
+            ("result", handle.job_id, 1),
+            ("finished", handle.job_id, JobState.SUCCEEDED),
+        ]
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_observer_runtime_scope_wraps_provider_execution(tmp_path):
+    observer = ScopeObserver()
+    provider = ScopeReadingProvider(observer)
+    scheduler, _ = make_scheduler(tmp_path, provider, observers=[observer])
+    try:
+        handle = await scheduler.submit(request())
+        await scheduler.wait(handle.job_id)
+        # provider 执行期间 contextvar 可见，退出后复原。
+        assert observer.seen_in_provider == ["scoped"]
+        assert _SCOPE_VAR.get() is None
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["raise", "hang"])
+async def test_observer_failure_does_not_affect_job_or_other_observers(tmp_path, mode):
+    broken = RecordingObserver(
+        "broken",
+        raise_in="job_result" if mode == "raise" else None,
+        hang_in="job_result" if mode == "hang" else None,
+    )
+    healthy = RecordingObserver("healthy")
+    scheduler, _ = make_scheduler(
+        tmp_path, FakeProvider(), observers=[broken, healthy], observer_timeout=0.05
+    )
+    try:
+        handle = await scheduler.submit(request())
+        result = await scheduler.wait(handle.job_id)
+        # 异常/超时的观察者不影响 Job 状态，也不影响其他观察者。
+        assert result.state is JobState.SUCCEEDED
+        assert broken.events[0][0] == "accepted"
+        assert healthy.events == [
+            ("accepted", handle.job_id, JobState.QUEUED),
+            ("result", handle.job_id, 1),
+            ("finished", handle.job_id, JobState.SUCCEEDED),
+        ]
+    finally:
+        await scheduler.close()
+
+
+class _RouteErrorProvider:
+    """Router 路径：execute 抛 ProviderRouteError，cause 带具体 code。"""
+
+    async def execute(self, request, *, deadline_at=None):
+        cause = LegacyProviderError("boom", code="provider_http_429", retryable=False)
+        raise ProviderRouteError("所有候选 provider 均失败", retryable=False) from cause
+
+
+@pytest.mark.asyncio
+async def test_observer_failed_error_code_taken_from_route_cause(tmp_path):
+    observer = RecordingObserver()
+    scheduler, _ = make_scheduler(tmp_path, _RouteErrorProvider(), observers=[observer])
+    try:
+        handle = await scheduler.submit(request())
+        result = await scheduler.wait(handle.job_id)
+        assert result.state is JobState.FAILED
+        assert result.error_code == "provider_http_429"
+        assert observer.events[-1] == ("finished", handle.job_id, JobState.FAILED)
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_observer_receives_cancelled_terminal_state(tmp_path):
+    observer = RecordingObserver()
+    block = asyncio.Event()
+    provider = FakeProvider(block=block)
+    scheduler, _ = make_scheduler(tmp_path, provider, observers=[observer])
+    try:
+        handle = await scheduler.submit(request(timeout=30.0))
+        await provider.started.wait()
+        await scheduler.cancel(handle.job_id)
+        block.set()
+        assert observer.events[-1] == (
+            "finished",
+            handle.job_id,
+            JobState.CANCELLED,
+        )
+    finally:
+        block.set()
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_observer_receives_orphaned_when_attach_fails(tmp_path, monkeypatch):
+    observer = RecordingObserver()
+    scheduler, _ = make_scheduler(tmp_path, FakeProvider(), observers=[observer])
+    module, original = scheduler_module_create_task()
+
+    def failing_create_task(coro, **kwargs):
+        if name := kwargs.get("name", ""):
+            if str(name).startswith("job:"):
+                raise RuntimeError("create_task failed")
+        return original(coro, **kwargs)
+
+    try:
+        monkeypatch.setattr(module, "create_task", failing_create_task)
+        with pytest.raises(RuntimeError):
+            await scheduler.submit(request())
+        # 建 task 失败的 Job 已触发 job_accepted，孤儿终态也要通知。
+        assert observer.events[0][0] == "accepted"
+        assert observer.events[-1][2] is JobState.ORPHANED
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_close_notifies_observers_with_cancelled(tmp_path):
+    observer = RecordingObserver()
+    block = asyncio.Event()
+    provider = FakeProvider(block=block)
+    scheduler, _ = make_scheduler(tmp_path, provider, observers=[observer])
+    await scheduler.submit(request(timeout=30.0))
+    await provider.started.wait()
+    await scheduler.close()
+    block.set()
+    assert observer.events[-1][2] is JobState.CANCELLED
+
+
+def test_result_wait_timeout_includes_observer_hook_time(tmp_path):
+    """等待上限 = deadline + provider 兜底 + 两个观察者钩子 + 固定余量。"""
+
+    scheduler, _ = make_scheduler(tmp_path, FakeProvider(), observer_timeout=7.0)
+    assert scheduler.result_wait_timeout(100) == pytest.approx(
+        100 + _ROUTER_EXECUTE_GRACE_SECONDS + 2 * 7.0 + 10
+    )
+    service = GenerationService(scheduler)
+    assert service.result_wait_timeout(100) == scheduler.result_wait_timeout(100)
+
+
+# ===== submit 准入：额度 / 并发预留 =====
+
+
+class AdmissionReservation:
+    """准入预留 fake：把 release / refund 按名字记入共享日志。"""
+
+    def __init__(self, name, log, *, token=None, async_release=False):
+        self.name = name
+        self.log = log
+        self.token = token
+        self.async_release = async_release
+        self.releases = 0
+        self.refunds = 0
+
+    def release(self):
+        if self.async_release:
+            return self._release_later()
+        self.releases += 1
+        self.log.append(("release", self.name))
+
+    async def _release_later(self):
+        await asyncio.sleep(0)
+        self.releases += 1
+        self.log.append(("release", self.name))
+
+    def refund(self):
+        self.refunds += 1
+        self.log.append(("refund", self.name))
+
+
+class LeanReservation:
+    """只有 release 的最小预留：回滚时没有 refund 可调。"""
+
+    def __init__(self, log):
+        self.log = log
+        self.releases = 0
+
+    def release(self):
+        self.releases += 1
+        self.log.append(("release", "lean"))
+
+
+class AdmissionComponent:
+    """quota / limiter 组件 fake：记录 reserve 入参，可拒绝、可返回 None。"""
+
+    def __init__(
+        self,
+        name,
+        log,
+        *,
+        error=None,
+        reservation=True,
+        async_reserve=False,
+        factory=None,
+        **reservation_options,
+    ):
+        self.name = name
+        self.log = log
+        self.error = error
+        self.reservation = reservation
+        self.async_reserve = async_reserve
+        self.factory = factory or (
+            lambda: AdmissionReservation(name, log, **reservation_options)
+        )
+        self.calls = []
+        self.reservations = []
+
+    def _build(self):
+        if self.error is not None:
+            raise self.error
+        if not self.reservation:
+            return None
+        reservation = self.factory()
+        self.reservations.append(reservation)
+        return reservation
+
+    def reserve(self, request, admission):
+        self.calls.append((request, admission))
+        if not self.async_reserve:
+            return self._build()
+
+        async def pending():
+            return self._build()
+
+        return pending()
+
+
+def admission_scheduler(tmp_path, log, **kwargs):
+    quota = kwargs.pop("quota", None) or AdmissionComponent(
+        "quota", log, async_reserve=True
+    )
+    limiter = kwargs.pop("limiter", None) or AdmissionComponent("limiter", log)
+    provider = kwargs.pop("provider", None)
+    scheduler, store = make_scheduler(
+        tmp_path, provider, quota=quota, limiter=limiter, **kwargs
+    )
+    return scheduler, store, quota, limiter
+
+
+@pytest.mark.asyncio
+async def test_quota_rejection_creates_no_job_and_propagates_error(tmp_path):
+    log = []
+    denied = QuotaExceededError("额度不足", details={"silent": False})
+    observer = RecordingObserver()
+    scheduler, store, quota, limiter = admission_scheduler(
+        tmp_path,
+        log,
+        quota=AdmissionComponent("quota", log, error=denied),
+        observers=[observer],
+    )
+    try:
+        with pytest.raises(QuotaExceededError) as caught:
+            await scheduler.submit(request())
+        # 异常对象原样抛给调用方，且不创建 Job、不触发 job_accepted。
+        assert caught.value is denied
+        assert await store.list_jobs() == []
+        assert observer.events == []
+        assert limiter.calls == []
+        assert scheduler._admissions == {}
+        assert scheduler._tasks == {}
+        assert log == []
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_limiter_rejection_refunds_quota_and_creates_no_job(tmp_path):
+    log = []
+    full = QueueFullError("生成队列已满")
+    observer = RecordingObserver()
+    scheduler, store, quota, _ = admission_scheduler(
+        tmp_path,
+        log,
+        limiter=AdmissionComponent("limiter", log, error=full),
+        observers=[observer],
+    )
+    try:
+        with pytest.raises(QueueFullError) as caught:
+            await scheduler.submit(request())
+        assert caught.value is full
+        reservation = quota.reservations[0]
+        # 已预留的额度按 submit 失败回滚：退款而不是普通释放。
+        assert (reservation.refunds, reservation.releases) == (1, 0)
+        assert await store.list_jobs() == []
+        assert observer.events == []
+        assert scheduler._admissions == {}
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failing", ["create", "save"])
+async def test_persist_failure_rolls_back_both_reservations_in_reverse(
+    tmp_path, monkeypatch, failing
+):
+    log = []
+    scheduler, store, quota, limiter = admission_scheduler(tmp_path, log)
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("store failed")
+
+    monkeypatch.setattr(store, failing, broken)
+    try:
+        with pytest.raises(RuntimeError, match="store failed"):
+            await scheduler.submit(request())
+        assert log == [("refund", "limiter"), ("refund", "quota")]
+        assert scheduler._admissions == {}
+        assert scheduler._tasks == {}
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_rollback_prefers_refund_and_falls_back_to_release(tmp_path, monkeypatch):
+    log = []
+    lean = AdmissionComponent("limiter", log, factory=lambda: LeanReservation(log))
+    scheduler, store, _, _ = admission_scheduler(tmp_path, log, limiter=lean)
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("store failed")
+
+    monkeypatch.setattr(store, "create", broken)
+    try:
+        with pytest.raises(RuntimeError, match="store failed"):
+            await scheduler.submit(request())
+        assert log == [("release", "lean"), ("refund", "quota")]
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_rollback_failure_does_not_mask_original_error(tmp_path, monkeypatch):
+    log = []
+
+    class RefundFails(AdmissionReservation):
+        def refund(self):
+            raise ValueError("refund failed")
+
+    quota = AdmissionComponent(
+        "quota", log, async_reserve=True, factory=lambda: RefundFails("quota", log)
+    )
+    scheduler, store, _, _ = admission_scheduler(tmp_path, log, quota=quota)
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("store failed")
+
+    monkeypatch.setattr(store, "create", broken)
+    try:
+        # quota 的 refund 抛错只记日志，submit 抛出的仍是落库的原始异常；
+        # 逆序中先回滚的 limiter 不受影响。
+        with pytest.raises(RuntimeError, match="store failed"):
+            await scheduler.submit(request())
+        assert log == [("refund", "limiter")]
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_admission_context_reaches_components_but_is_not_persisted(tmp_path):
+    log = []
+    marker = object()
+    scheduler, store, quota, limiter = admission_scheduler(tmp_path, log)
+    try:
+        handle = await scheduler.submit(request(), admission={"event": marker})
+        await scheduler.wait(handle.job_id)
+        for component in (quota, limiter):
+            ((seen_request, seen_admission),) = component.calls
+            assert seen_admission["event"] is marker
+            assert seen_request.prompt == "draw"
+        stored = await store.get(handle.job_id)
+        assert "event" not in stored.request.metadata
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_service_submit_forwards_admission_context(tmp_path):
+    log = []
+    scheduler, _, quota, _ = admission_scheduler(tmp_path, log)
+    service = GenerationService(scheduler)
+    marker = object()
+    try:
+        handle = await service.submit(request(), admission={"event": marker})
+        await service.wait(handle.job_id)
+        assert quota.calls[0][1]["event"] is marker
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_accepted_job_persists_admission_leases_and_never_refunds(tmp_path):
+    log = []
+    quota = AdmissionComponent("quota", log, async_reserve=True, token="quota-token")
+    scheduler, store, _, limiter = admission_scheduler(tmp_path, log, quota=quota)
+    try:
+        result = await scheduler.wait((await scheduler.submit(request())).job_id)
+        assert result.state is JobState.SUCCEEDED
+        records = {
+            record.kind: record for record in await store.list_leases(result.job_id)
+        }
+        # QUOTA / LIMITER lease 照旧落库，结束时标记已释放。
+        assert records["quota"].lease_id == "quota-token"
+        assert records["quota"].status == "released"
+        assert records["limiter"].status == "released"
+        # 终态只 release（逆序），不退款。
+        assert log == [("release", "limiter"), ("release", "quota")]
+        assert scheduler._admissions == {}
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_none_reservation_is_skipped(tmp_path):
+    log = []
+    quota = AdmissionComponent("quota", log, reservation=False)
+    scheduler, store, _, limiter = admission_scheduler(tmp_path, log, quota=quota)
+    try:
+        handle = await scheduler.submit(request())
+        # 登记表只含需要预留的组件。
+        assert [kind for kind, _ in scheduler._admissions[handle.job_id]] == [
+            LeaseKind.LIMITER
+        ]
+        await scheduler.wait(handle.job_id)
+        kinds = {record.kind for record in await store.list_leases(handle.job_id)}
+        assert "quota" not in kinds and "limiter" in kinds
+        assert log == [("release", "limiter")]
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_job_releases_admissions_without_refund(tmp_path):
+    log = []
+    provider = FakeProvider(failures=100)
+    scheduler, _, quota, limiter = admission_scheduler(
+        tmp_path, log, provider=provider, retry_backoff=0.01
+    )
+    try:
+        result = await scheduler.wait(
+            (await scheduler.submit(request(timeout=0.05))).job_id
+        )
+        assert result.state is JobState.FAILED
+        # 已接受的 Job 失败不退款，只释放。
+        assert sorted(log) == [("release", "limiter"), ("release", "quota")]
+        assert all(r.refunds == 0 for r in quota.reservations + limiter.reservations)
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_cancel_running_job_releases_admissions_without_refund(tmp_path):
+    log = []
+    block = asyncio.Event()
+    provider = FakeProvider(block=block)
+    scheduler, _, quota, limiter = admission_scheduler(tmp_path, log, provider=provider)
+    try:
+        handle = await scheduler.submit(request(timeout=30.0))
+        await provider.started.wait()
+        snapshot = await scheduler.cancel(handle.job_id)
+        assert snapshot.state is JobState.CANCELLED
+        assert sorted(log) == [("release", "limiter"), ("release", "quota")]
+        assert all(r.refunds == 0 for r in quota.reservations + limiter.reservations)
+    finally:
+        block.set()
+        await scheduler.close()
+
+
+class ScopedReservation(AdmissionReservation):
+    """runtime_scope 在 provider 执行期间设置 contextvar 并记录进出顺序。"""
+
+    def __init__(self, name, log, trace, **options):
+        super().__init__(name, log, **options)
+        self.trace = trace
+
+    def runtime_scope(self):
+        @contextlib.contextmanager
+        def scope():
+            token = _SCOPE_VAR.set("reserved")
+            self.trace.append(f"{self.name}:enter")
+            try:
+                yield
+            finally:
+                self.trace.append(f"{self.name}:exit")
+                _SCOPE_VAR.reset(token)
+
+        return scope()
+
+
+class TraceScopeObserver:
+    def __init__(self, trace):
+        self.trace = trace
+
+    def runtime_scope(self, job):
+        @contextlib.contextmanager
+        def scope():
+            self.trace.append("observer:enter")
+            try:
+                yield
+            finally:
+                self.trace.append("observer:exit")
+
+        return scope()
+
+
+class TraceProvider(FakeProvider):
+    def __init__(self, trace):
+        super().__init__()
+        self.trace = trace
+        self.seen = []
+
+    async def build_request(self, request, attempt):
+        self.trace.append("provider")
+        self.seen.append(_SCOPE_VAR.get())
+        return await super().build_request(request, attempt)
+
+
+@pytest.mark.asyncio
+async def test_reservation_runtime_scope_wraps_provider_with_observer_scope(
+    tmp_path,
+):
+    log, trace = [], []
+    limiter = AdmissionComponent(
+        "limiter", log, factory=lambda: ScopedReservation("limiter", log, trace)
+    )
+    provider = TraceProvider(trace)
+    scheduler, _, _, _ = admission_scheduler(
+        tmp_path,
+        log,
+        limiter=limiter,
+        provider=provider,
+        observers=[TraceScopeObserver(trace)],
+    )
+    try:
+        await scheduler.wait((await scheduler.submit(request())).job_id)
+        # 预留的 scope 与观察者的 scope 同进同出，provider 在最内层执行。
+        assert trace == [
+            "limiter:enter",
+            "observer:enter",
+            "provider",
+            "observer:exit",
+            "limiter:exit",
+        ]
+        assert provider.seen == ["reserved"]
+        assert _SCOPE_VAR.get() is None
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_reservation_scope_enter_failure_is_logged_and_skipped(tmp_path):
+    log = []
+
+    class BrokenScope(AdmissionReservation):
+        def runtime_scope(self):
+            raise RuntimeError("scope broken")
+
+    limiter = AdmissionComponent(
+        "limiter", log, factory=lambda: BrokenScope("limiter", log)
+    )
+    scheduler, _, _, _ = admission_scheduler(tmp_path, log, limiter=limiter)
+    try:
+        result = await scheduler.wait((await scheduler.submit(request())).job_id)
+        assert result.state is JobState.SUCCEEDED
+        assert ("release", "limiter") in log
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_cancel_before_run_releases_unclaimed_admissions(tmp_path):
+    log = []
+    provider = FakeProvider()
+    scheduler, _, quota, limiter = admission_scheduler(
+        tmp_path,
+        log,
+        quota=AdmissionComponent("quota", log, async_reserve=True, async_release=True),
+        provider=provider,
+    )
+    try:
+        handle = await scheduler.submit(request())
+        task = scheduler._tasks[handle.job_id]
+        assert list(scheduler._admissions) == [handle.job_id]
+        # submit 返回时 task 还没跑过第一步：同步取消，_run 来不及取走预留。
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        assert scheduler._admissions == {}
+    finally:
+        # 返回 awaitable 的释放进入 _cleanup_tasks，由 close 等待完成。
+        await scheduler.close()
+    assert provider.attempts == 0
+    assert sorted(log) == [("release", "limiter"), ("release", "quota")]
+    assert all(r.refunds == 0 for r in quota.reservations + limiter.reservations)
+
+
+@pytest.mark.asyncio
+async def test_close_leaves_no_admissions_registered(tmp_path):
+    log = []
+    scheduler, _, quota, limiter = admission_scheduler(
+        tmp_path,
+        log,
+        quota=AdmissionComponent("quota", log, async_reserve=True, async_release=True),
+    )
+    await scheduler.submit(request())
+    assert scheduler._admissions
+    await scheduler.close()
+    assert scheduler._admissions == {}
+    assert sorted(log) == [("release", "limiter"), ("release", "quota")]
+
+
+@pytest.mark.asyncio
+async def test_close_releases_running_job_admissions_once(tmp_path):
+    log = []
+    block = asyncio.Event()
+    provider = FakeProvider(block=block)
+    scheduler, _, quota, limiter = admission_scheduler(tmp_path, log, provider=provider)
+    await scheduler.submit(request(timeout=30.0))
+    await provider.started.wait()
+    await scheduler.close()
+    block.set()
+    assert scheduler._admissions == {}
+    assert sorted(log) == [("release", "limiter"), ("release", "quota")]
+
+
+@pytest.mark.asyncio
+async def test_close_releases_admissions_that_have_no_runtime_task(tmp_path):
+    log = []
+    scheduler, _ = make_scheduler(tmp_path)
+    reservation = AdmissionReservation("orphan", log, async_release=True)
+    scheduler._admissions["job-without-task"] = ((LeaseKind.QUOTA, reservation),)
+    await scheduler.close()
+    assert scheduler._admissions == {}
+    assert (reservation.releases, reservation.refunds) == (1, 0)
+
+
+@pytest.mark.asyncio
+async def test_release_failure_of_one_admission_does_not_block_others(tmp_path):
+    log = []
+
+    class FailingRelease(AdmissionReservation):
+        def release(self):
+            raise RuntimeError("release failed")
+
+    scheduler, _, _, _ = admission_scheduler(
+        tmp_path,
+        log,
+        quota=AdmissionComponent(
+            "quota", log, factory=lambda: FailingRelease("quota", log)
+        ),
+    )
+    await scheduler.submit(request())
+    await scheduler.close()
+    assert scheduler._admissions == {}
+    assert log == [("release", "limiter")]
+
+
+@pytest.mark.asyncio
+async def test_attach_failure_refunds_admissions(tmp_path, monkeypatch):
+    log = []
+    observer = RecordingObserver()
+    scheduler, store, _, _ = admission_scheduler(tmp_path, log, observers=[observer])
+    module, original = scheduler_module_create_task()
+
+    def failing_create_task(coro, **kwargs):
+        if str(kwargs.get("name", "")).startswith("job:"):
+            raise RuntimeError("create_task failed")
+        return original(coro, **kwargs)
+
+    try:
+        monkeypatch.setattr(module, "create_task", failing_create_task)
+        with pytest.raises(RuntimeError, match="create_task failed"):
+            await scheduler.submit(request())
+        # Job 从未运行，孤儿分支按 submit 失败口径退款（而不是普通释放）。
+        assert log == [("refund", "limiter"), ("refund", "quota")]
+        assert scheduler._admissions == {}
+        assert observer.events[-1][2] is JobState.ORPHANED
+    finally:
+        monkeypatch.setattr(module, "create_task", original)
+        await scheduler.close()
+
+
+class AcceptHangObserver:
+    """job_accepted 挂起，用来在 Job 入队后、task 创建前取消 submit。"""
+
+    def __init__(self):
+        self.entered = asyncio.Event()
+        self.finished = []
+
+    async def job_accepted(self, job):
+        self.entered.set()
+        await asyncio.sleep(30)
+
+    async def job_finished(self, job):
+        self.finished.append(job.state)
+
+
+@pytest.mark.asyncio
+async def test_submit_cancelled_during_job_accepted_refunds_admissions(tmp_path):
+    log = []
+    observer = AcceptHangObserver()
+    scheduler, store, _, _ = admission_scheduler(tmp_path, log, observers=[observer])
+    try:
+        submitting = asyncio.create_task(scheduler.submit(request()))
+        await observer.entered.wait()
+        submitting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await submitting
+        assert log == [("refund", "limiter"), ("refund", "quota")]
+        assert scheduler._admissions == {}
+        assert scheduler._tasks == {}
+        assert scheduler._original_references == {}
+        assert observer.finished == [JobState.ORPHANED]
+        (job,) = await store.list_jobs()
+        assert job.state is JobState.ORPHANED
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_recovered_run_without_admission_record_does_nothing(tmp_path):
+    """重启恢复的 Job 没有预留记录：_run 不重新预留，也不写 quota/limiter lease。"""
+
+    log = []
+    scheduler, store, quota, limiter = admission_scheduler(tmp_path, log)
+    try:
+        restored = Job.from_dict(
+            Job.create(request(), job_id="recovered-admission").to_storage_dict()
+        )
+        await store.create(restored)
+        await scheduler._run(restored.job_id)
+        assert (await store.get(restored.job_id)).state is JobState.SUCCEEDED
+        assert quota.calls == [] and limiter.calls == []
+        kinds = {r.kind for r in await store.list_leases(restored.job_id)}
+        assert "quota" not in kinds and "limiter" not in kinds
+        assert log == []
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_lease_persist_failure_still_releases_every_admission(
+    tmp_path, monkeypatch
+):
+    """第一个准入 lease 落库失败时，已摘出登记表的其余预留不能泄漏。"""
+
+    log = []
+    scheduler, store, quota, limiter = admission_scheduler(tmp_path, log)
+    original = store.add_lease
+
+    async def failing_add_lease(record):
+        if record.kind == "quota":
+            raise RuntimeError("lease store failed")
+        return await original(record)
+
+    monkeypatch.setattr(store, "add_lease", failing_add_lease)
+    try:
+        result = await scheduler.wait((await scheduler.submit(request())).job_id)
+        assert result.state is JobState.FAILED
+        assert sorted(log) == [("release", "limiter"), ("release", "quota")]
+        assert all(r.refunds == 0 for r in quota.reservations + limiter.reservations)
+        assert scheduler._admissions == {}
     finally:
         await scheduler.close()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import re
 from collections.abc import Awaitable, Callable
@@ -12,6 +13,8 @@ from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 import aiohttp
 
+from .core.errors import PathPolicyError
+from .outbound_policy import PinnedResolver
 from .provider_metadata import get_provider_spec, iter_provider_specs
 
 _MAX_BYTES = 2 * 1024 * 1024
@@ -282,7 +285,8 @@ class _ModelResults:
 class ModelCatalogService:
     """Own workers/sessions only; queue time is part of the total deadline."""
 
-    def __init__(self):
+    def __init__(self, url_checker=None):
+        self._url_checker = url_checker
         self._semaphore = asyncio.Semaphore(2)
         self._workers: set[asyncio.Task] = set()
         self._closed = False
@@ -365,8 +369,16 @@ class ModelCatalogService:
         if request.protocol not in {"google", "openai", "xai", "siliconflow", "ark"}:
             raise _invalid("不支持的模型目录协议。")
         _parse_url(request.url)
+        if self._url_checker is not None:
+            try:
+                await self._url_checker(request.url)
+            except PathPolicyError as exc:
+                raise ModelCatalogError(
+                    str(exc), reason="url_rejected", status_code=400
+                ) from None
         connector = None
         proxy = request.proxy
+        pinned_resolver = PinnedResolver()
         if proxy:
             parsed_proxy = _parse_url(proxy, proxy=True)
             if parsed_proxy.scheme.startswith("socks"):
@@ -384,15 +396,21 @@ class ModelCatalogService:
                     urlunsplit(parsed_proxy._replace(scheme=scheme)), rdns=True
                 )
                 proxy = None
+        else:
+            connector = aiohttp.TCPConnector(resolver=pinned_resolver, ttl_dns_cache=0)
         async with aiohttp.ClientSession(
             connector=connector,
             timeout=aiohttp.ClientTimeout(total=_TIMEOUT),
             trust_env=False,
         ) as session:
-            return await self._fetch_pages(session, request, proxy)
+            return await self._fetch_pages(session, request, proxy, pinned_resolver)
 
     async def _fetch_pages(
-        self, session: aiohttp.ClientSession, request: CatalogRequest, proxy: str | None
+        self,
+        session: aiohttp.ClientSession,
+        request: CatalogRequest,
+        proxy: str | None,
+        pinned_resolver: PinnedResolver | None = None,
     ) -> dict[str, Any]:
         results = _ModelResults(_secrets(request))
         url = request.url
@@ -408,6 +426,12 @@ class ModelCatalogService:
             seen_tokens.add(params["pageToken"])
         fallback = False
         while True:
+            if self._url_checker is not None:
+                parameters = inspect.signature(self._url_checker).parameters
+                if "pin" in parameters:
+                    await self._url_checker(request.url, pin=pinned_resolver)
+                else:
+                    await self._url_checker(request.url)
             async with session.get(
                 url,
                 headers=request.headers,

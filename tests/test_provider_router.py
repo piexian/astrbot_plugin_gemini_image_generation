@@ -223,6 +223,25 @@ async def test_provider_name_preference_reorders():
 
 
 @pytest.mark.asyncio
+async def test_single_synthetic_candidate_preserves_explicit_route():
+    class RouteProbe(ScriptedProvider):
+        route_provider = "legacy"
+        route_model = "auto"
+
+        async def build_request(self, request, attempt):
+            self.calls.append("build_request")
+            assert attempt.context["candidate_preferred"] is True
+            return await super().build_request(request, attempt)
+
+    provider = RouteProbe("legacy")
+    router = ProviderRouter([provider])
+    result = await router.execute(
+        make_request(provider="openai_images", model="gpt-image-1")
+    )
+    assert result.provider == "legacy"
+
+
+@pytest.mark.asyncio
 async def test_normalize_not_chained_across_candidates():
     class MutatingProvider(ScriptedProvider):
         async def normalize(self, request):

@@ -6,6 +6,7 @@ import io
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from aiohttp import web
@@ -745,3 +746,238 @@ async def test_concurrent_url_misses_are_serialized(tmp_path, monkeypatch) -> No
     assert calls == 1
     assert service._url_locks == {}
     assert service._url_lock_users == {}
+
+
+# ---- trusted_local：调用方已校验过的本地路径 ----
+
+
+def _outside_png(tmp_path: Path, name: str = "outside.png", color=(5, 6, 7)):
+    """落在 PathPolicy 本地根之外的 PNG，返回 (路径, 字节)。"""
+    outside = tmp_path / "outside"
+    outside.mkdir(exist_ok=True)
+    payload = _png_bytes(color=color)
+    path = outside / name
+    path.write_bytes(payload)
+    return path, payload
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["local", "file"])
+async def test_trusted_local_ingests_local_files_as_tmp_handles(tmp_path, shape):
+    root = tmp_path / "allowed"
+    root.mkdir()
+    path, payload = _outside_png(tmp_path)
+    service = _service(root, tmp_path / "cache")
+    reference = str(path) if shape == "local" else path.resolve().as_uri()
+    requester = {"user_id": "u1", "umo": "qq:g1"}
+
+    prepared = await service.ingest_inline(
+        [reference], requester=requester, trusted_local=True
+    )
+
+    assert len(prepared) == 1
+    assert _handle_pattern().match(prepared[0])
+    artifacts = await _collect(service, prepared, requester=requester)
+    assert Path(artifacts[0].location).parent == tmp_path / "cache"
+    assert Path(artifacts[0].location).read_bytes() == payload
+    # PathPolicy 的本地根没有被放宽：同一路径直接解析仍被拒绝。
+    with pytest.raises(PathPolicyError):
+        await _collect(service, (reference,), requester=requester)
+
+
+@pytest.mark.asyncio
+async def test_trusted_local_keeps_order_and_other_shapes(tmp_path):
+    root = tmp_path / "allowed"
+    root.mkdir()
+    first, first_bytes = _outside_png(tmp_path, "first.png", (1, 1, 1))
+    second, second_bytes = _outside_png(tmp_path, "second.png", (2, 2, 2))
+    service = _service(root, tmp_path / "cache")
+    url = "https://example.com/a.png"
+    data_uri = f"data:image/png;base64,{base64.b64encode(_png_bytes()).decode()}"
+    requester = {"user_id": "u"}
+
+    prepared = await service.ingest_inline(
+        [str(first), url, data_uri, second.resolve().as_uri()],
+        requester=requester,
+        trusted_local=True,
+    )
+
+    # URL 原样保留；本地与内联图都换成句柄，顺序不变。
+    assert prepared[1] == url
+    assert all(prepared[i].startswith("ref:tmp:") for i in (0, 2, 3))
+    artifacts = await _collect(
+        service, (prepared[0], prepared[2], prepared[3]), requester=requester
+    )
+    assert Path(artifacts[0].location).read_bytes() == first_bytes
+    assert Path(artifacts[2].location).read_bytes() == second_bytes
+
+
+@pytest.mark.asyncio
+async def test_trusted_local_defaults_to_false_and_keeps_local_paths(tmp_path):
+    root = tmp_path / "allowed"
+    root.mkdir()
+    path, _ = _outside_png(tmp_path)
+    service = _service(root, tmp_path / "cache")
+    references = [str(path), path.resolve().as_uri()]
+
+    prepared = await service.ingest_inline(references, requester={})
+
+    assert prepared == tuple(references)
+    assert service._stores["tmp"]._entries == {}
+
+
+@pytest.mark.asyncio
+async def test_trusted_local_rejects_oversized_file_by_stat_before_reading(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "allowed"
+    root.mkdir()
+    large = tmp_path / "outside" / "large.png"
+    large.parent.mkdir()
+    large.write_bytes(b"x" * 32)
+    service = _service(root, tmp_path / "cache", max_reference_bytes=8)
+
+    def fail_open(self, *args, **kwargs):
+        raise AssertionError("超限文件不应被读取")
+
+    monkeypatch.setattr(Path, "open", fail_open)
+    with pytest.raises(ReferenceTooLargeError):
+        await service.ingest_inline(
+            [large.resolve().as_uri()], requester={}, trusted_local=True
+        )
+    assert service._stores["tmp"]._entries == {}
+
+
+@pytest.mark.asyncio
+async def test_trusted_local_read_is_bounded_when_file_grows_after_stat(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "allowed"
+    root.mkdir()
+    grown = tmp_path / "outside" / "grown.png"
+    grown.parent.mkdir()
+    grown.write_bytes(b"x" * 64)
+    service = _service(root, tmp_path / "cache", max_reference_bytes=8)
+    real_stat = Path.stat
+    real_open = Path.open
+    read_sizes = []
+
+    def stale_stat(self, *args, **kwargs):
+        info = real_stat(self, *args, **kwargs)
+        return SimpleNamespace(st_mode=info.st_mode, st_size=1)
+
+    class SpyFile:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._inner.__exit__(*exc_info)
+
+        def read(self, size=-1):
+            read_sizes.append(size)
+            return self._inner.read(size)
+
+    monkeypatch.setattr(Path, "stat", stale_stat)
+    monkeypatch.setattr(
+        Path, "open", lambda self, *a, **k: SpyFile(real_open(self, *a, **k))
+    )
+    with pytest.raises(ReferenceTooLargeError):
+        await service.ingest_inline(
+            [grown.resolve().as_uri()], requester={}, trusted_local=True
+        )
+    # stat 已过期时读取量仍以上限封顶（多读 1 字节用来识别超限）。
+    assert read_sizes == [9]
+
+
+@pytest.mark.asyncio
+async def test_trusted_local_missing_file_is_rejected(tmp_path):
+    root = tmp_path / "allowed"
+    root.mkdir()
+    missing = tmp_path / "outside" / "missing.png"
+    service = _service(root, tmp_path / "cache")
+
+    # file: 形态直接 stat 失败；不存在的裸路径按内联处理，base64 解码失败。
+    for reference in (missing.resolve().as_uri(), str(missing)):
+        with pytest.raises(ReferenceResolveError):
+            await service.ingest_inline([reference], requester={}, trusted_local=True)
+
+
+@pytest.mark.asyncio
+async def test_trusted_local_rejects_directory_and_non_image(tmp_path):
+    root = tmp_path / "allowed"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    text_file = outside / "secret.png"
+    text_file.write_text("not an image", encoding="utf-8")
+    service = _service(root, tmp_path / "cache")
+
+    for reference in (outside.resolve().as_uri(), text_file.resolve().as_uri()):
+        with pytest.raises(ReferenceResolveError):
+            await service.ingest_inline([reference], requester={}, trusted_local=True)
+    assert service._stores["tmp"]._entries == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "make_reference",
+    [
+        lambda path: path.as_uri().replace("file:///", "file://evil.example/", 1),
+        lambda path: "file:relative.png",
+    ],
+    ids=["remote-host", "relative"],
+)
+async def test_trusted_local_rejects_non_local_file_uris(tmp_path, make_reference):
+    root = tmp_path / "allowed"
+    root.mkdir()
+    # 真实存在的合法图片：URI 不是本机绝对路径时不能因为文件可读而放行。
+    path, _ = _outside_png(tmp_path)
+    service = _service(root, tmp_path / "cache")
+
+    with pytest.raises(ReferenceResolveError):
+        await service.ingest_inline(
+            [make_reference(path.resolve())], requester={}, trusted_local=True
+        )
+    assert service._stores["tmp"]._entries == {}
+
+
+@pytest.mark.asyncio
+async def test_trusted_local_file_uri_uses_shared_parser_for_host_and_encoding(
+    tmp_path,
+):
+    root = tmp_path / "allowed"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    path = outside / "参考 图 #1.png"
+    payload = _png_bytes(color=(8, 8, 8))
+    path.write_bytes(payload)
+    service = _service(root, tmp_path / "cache")
+    uri = path.resolve().as_uri()
+    requester = {"user_id": "u"}
+    assert "%" in uri  # 空格、中文与 # 都经百分号编码
+
+    prepared = await service.ingest_inline(
+        [uri, uri.replace("file:///", "file://localhost/", 1)],
+        requester=requester,
+        trusted_local=True,
+    )
+
+    artifacts = await _collect(service, prepared, requester=requester)
+    assert [Path(a.location).read_bytes() for a in artifacts] == [payload, payload]
+
+
+@pytest.mark.asyncio
+async def test_trusted_local_requires_absolute_local_path(tmp_path, monkeypatch):
+    root = tmp_path / "allowed"
+    root.mkdir()
+    (tmp_path / "rel.png").write_bytes(_png_bytes())
+    monkeypatch.chdir(tmp_path)
+    service = _service(root, tmp_path / "cache")
+
+    with pytest.raises(ReferenceResolveError, match="绝对路径"):
+        await service.ingest_inline(["rel.png"], requester={}, trusted_local=True)

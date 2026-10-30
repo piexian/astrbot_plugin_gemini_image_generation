@@ -232,6 +232,11 @@ async def test_proxy_for_archived_result_uses_successful_candidate(
 
     import tl.web_studio_service as module
 
+    async def allow_url(url, **kwargs):
+        return url
+
+    monkeypatch.setattr(module, "check_outbound_url", allow_url)
+
     content = _png(tmp_path / "input.png").read_bytes()
     observed = []
     connectors = []
@@ -239,6 +244,7 @@ async def test_proxy_for_archived_result_uses_successful_candidate(
     monkeypatch.setattr(ProxyConnector, "from_url", lambda proxy: connector)
 
     class Response:
+        status = 200
         content_length = None
         content = SimpleNamespace()
 

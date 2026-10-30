@@ -13,9 +13,11 @@ import re
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin
 
 import aiohttp
 import cv2
@@ -24,6 +26,15 @@ from astrbot.api import logger
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from .api_types import ApiRequestConfig
+from .core.errors import (
+    CoreError,
+    QueueFullError,
+    QuotaExceededError,
+    ReferenceResolveError,
+    ServiceClosedError,
+    StudioBusyError,
+    redact_url,
+)
 from .file_uri import file_uri_to_path
 from .generation_scheduler import generation_progress
 from .generation_tracker import (
@@ -32,6 +43,7 @@ from .generation_tracker import (
     ReferenceImageUnavailableError,
     _timestamp,
 )
+from .outbound_policy import PinnedResolver, check_outbound_url
 from .provider_capabilities import (
     candidate_capability,
     candidate_reference_limit,
@@ -45,6 +57,7 @@ from .studio_parameters import (
     validate_generation_settings,
 )
 from .studio_preferences import StudioPreferencesStore
+from .v2_bridge import build_request as v2_build_request
 
 _SAFE_FILE_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 _REMOTE_IMAGE_MAX_BYTES = 20 * 1024 * 1024
@@ -131,9 +144,11 @@ class WebStudioService:
         data_dir: str | Path,
         *,
         rate_limiter: Any = None,
+        v2_service_provider: Callable[[], Any] | None = None,
     ) -> None:
         self.api_client = api_client
         self.rate_limiter = rate_limiter
+        self._v2_service_provider = v2_service_provider
         self.tracker = tracker
         self.config = config
         self.data_dir = Path(data_dir)
@@ -187,6 +202,7 @@ class WebStudioService:
         self._admitted_jobs += 1
 
     def _attach(self, job_id: str, coroutine: Any, upload_names: list[str]) -> None:
+        """旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
         leased = frozenset(upload_names)
         try:
             if self._closed:
@@ -228,40 +244,54 @@ class WebStudioService:
             normalized, warning = self.validate_payload(payload)
             if self.api_client is None:
                 raise StudioServiceError("API 客户端尚未初始化", status_code=503)
-            self._admit()
-            leased: frozenset[str] = frozenset()
-            limit_token: str | None = None
-            attachment_count = self._attachment_count
-            try:
+            v2_service = (
+                self._v2_service_provider() if self._v2_service_provider else None
+            )
+            if v2_service is not None:
                 leased = self._acquire_uploads(normalized["upload_names"])
-                if self.rate_limiter is not None:
-                    decision = await self.rate_limiter.acquire(
-                        None, cost=len(normalized.get("batch") or []) or 1
+                try:
+                    response = await self._start_v2(
+                        v2_service, normalized, requester or {}
                     )
-                    if not decision.allowed:
-                        raise StudioServiceError(
-                            decision.message or "请求过于频繁，请稍后再试",
-                            status_code=429,
-                            data={
-                                "scope": decision.scope,
-                                "retry_after": decision.retry_after,
-                            },
-                        )
-                    limit_token = decision.token
-                if normalized.get("batch") is not None:
-                    response = await self._start_batch(normalized, requester or {})
-                else:
-                    response = await self._start_single(normalized, requester or {})
-            except BaseException as exc:
-                # 挂入后的资源由任务完成回调释放，供应商失败不退额度。
-                if self._attachment_count == attachment_count:
+                except (CoreError, ReferenceImageUnavailableError) as exc:
+                    raise self._map_v2_error(exc) from exc
+                finally:
                     self._release_uploads(leased)
-                    self._admitted_jobs = max(self._admitted_jobs - 1, 0)
-                    if self.rate_limiter is not None and limit_token is not None:
-                        await self.rate_limiter.refund(limit_token)
-                if isinstance(exc, ReferenceImageUnavailableError):
-                    raise StudioServiceError(str(exc), status_code=404) from exc
-                raise
+            else:
+                self._admit()
+                leased = frozenset()
+                limit_token: str | None = None
+                attachment_count = self._attachment_count
+                try:
+                    leased = self._acquire_uploads(normalized["upload_names"])
+                    if self.rate_limiter is not None:
+                        decision = await self.rate_limiter.acquire(
+                            None, cost=len(normalized.get("batch") or []) or 1
+                        )
+                        if not decision.allowed:
+                            raise StudioServiceError(
+                                decision.message or "请求过于频繁，请稍后再试",
+                                status_code=429,
+                                data={
+                                    "scope": decision.scope,
+                                    "retry_after": decision.retry_after,
+                                },
+                            )
+                        limit_token = decision.token
+                    if normalized.get("batch") is not None:
+                        response = await self._start_batch(normalized, requester or {})
+                    else:
+                        response = await self._start_single(normalized, requester or {})
+                except BaseException as exc:
+                    # 挂入后的资源由任务完成回调释放，供应商失败不退额度。
+                    if self._attachment_count == attachment_count:
+                        self._release_uploads(leased)
+                        self._admitted_jobs = max(self._admitted_jobs - 1, 0)
+                        if self.rate_limiter is not None and limit_token is not None:
+                            await self.rate_limiter.refund(limit_token)
+                    if isinstance(exc, ReferenceImageUnavailableError):
+                        raise StudioServiceError(str(exc), status_code=404) from exc
+                    raise
         if warning:
             response["warning"] = warning
         batch_items = normalized.get("batch") or []
@@ -275,6 +305,140 @@ class WebStudioService:
             f"来源=webui, 目标张数={target_count}, 批量条目数={len(batch_items)}"
         )
         return response
+
+    def _v2_common_metadata(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "requested_candidate_id": payload.get("candidate_id"),
+            "route_all_candidates": True,
+            "seed": payload.get("seed"),
+            "generation_settings": payload.get("generation_settings") or {},
+            "reference_names": payload["reference_names"],
+            "enable_smart_retry": bool(
+                getattr(self.config, "enable_smart_retry", True)
+            ),
+            "max_attempts_per_key": _positive_int(
+                getattr(self.config, "max_attempts_per_key", 3), 3
+            ),
+            "total_timeout": _positive_int(
+                getattr(self.config, "total_timeout", 120), 120
+            ),
+        }
+
+    async def _start_v2(
+        self,
+        service: Any,
+        payload: dict[str, Any],
+        requester: dict[str, Any],
+    ) -> dict[str, Any]:
+        references = await service.prepare_references(
+            payload["reference_images"], requester=requester, trusted_local=True
+        )
+        common = self._v2_common_metadata(payload)
+        total_timeout = common["total_timeout"]
+        items = payload.get("batch")
+        if items is not None:
+            children = []
+            for item in items:
+                children.append(
+                    v2_build_request(
+                        source="webui",
+                        prompt=item["prompt"],
+                        resolution=payload.get("resolution"),
+                        aspect_ratio=payload.get("aspect_ratio"),
+                        provider=payload.get("provider"),
+                        model=payload.get("model"),
+                        reference_images=references,
+                        deadline_seconds=None,
+                        requester=requester,
+                        negative_prompt=payload.get("negative_prompt"),
+                        quality=payload.get("quality"),
+                        image_count=item["image_count"],
+                        metadata={
+                            **common,
+                            "item_name": item["name"],
+                            "fill_image_count": True,
+                            "completion_policy": "studio",
+                            "quota": False,
+                            "deadline_seconds": total_timeout * item["image_count"],
+                        },
+                    )
+                )
+            parent = v2_build_request(
+                source="webui",
+                prompt="批量生图：" + "、".join(item["name"] for item in items),
+                resolution=payload.get("resolution"),
+                aspect_ratio=payload.get("aspect_ratio"),
+                provider=payload.get("provider"),
+                model=payload.get("model"),
+                reference_images=(),
+                deadline_seconds=None,
+                requester=requester,
+                image_count=sum(item["image_count"] for item in items),
+                metadata={
+                    **common,
+                    "batch_parent": True,
+                    "studio_admission": True,
+                    "completion_policy": "studio",
+                    "quota": {"cost": len(items), "scope": "global"},
+                },
+            )
+            handle = await service.submit_batch(
+                parent,
+                children,
+                concurrency=_positive_int(
+                    getattr(self.config, "batch_concurrency", 3), 3
+                ),
+            )
+            return {"job_id": handle.job_id, "item_job_ids": list(handle.child_job_ids)}
+
+        request = v2_build_request(
+            source="webui",
+            prompt=payload["prompt"],
+            resolution=payload.get("resolution"),
+            aspect_ratio=payload.get("aspect_ratio"),
+            provider=payload.get("provider"),
+            model=payload.get("model"),
+            reference_images=references,
+            deadline_seconds=total_timeout * payload["image_count"],
+            requester=requester,
+            negative_prompt=payload.get("negative_prompt"),
+            quality=payload.get("quality"),
+            image_count=payload["image_count"],
+            metadata={
+                **common,
+                "fill_image_count": True,
+                "studio_admission": True,
+                "completion_policy": "studio",
+                "quota": {"cost": 1, "scope": "global"},
+            },
+        )
+        handle = await service.submit(request)
+        return {"job_id": handle.job_id}
+
+    @staticmethod
+    def _map_v2_error(error: CoreError | ReferenceImageUnavailableError):
+        if isinstance(error, ReferenceImageUnavailableError):
+            return StudioServiceError(str(error), status_code=404)
+        if isinstance(error, ReferenceResolveError) and error.message.startswith(
+            "读取本地参考图失败:"
+        ):
+            return StudioServiceError(
+                "参考图片不存在或正在清理，请重新选择", status_code=404
+            )
+        if isinstance(error, QuotaExceededError):
+            return StudioServiceError(
+                error.message or "请求过于频繁，请稍后再试",
+                status_code=429,
+                data={
+                    "scope": error.details.get("scope"),
+                    "retry_after": error.details.get("retry_after"),
+                },
+            )
+        if isinstance(error, (StudioBusyError, QueueFullError)):
+            return StudioServiceError(error.message, status_code=429)
+        if isinstance(error, ServiceClosedError):
+            return StudioServiceError(error.message, status_code=503)
+        return StudioServiceError(error.message or "生成任务提交失败", status_code=400)
 
     async def _start_single(
         self,
@@ -750,6 +914,7 @@ class WebStudioService:
         payload["candidate_id"] = str(accepted[0].id)
 
     async def _run_single(self, job_id: str, payload: dict[str, Any]) -> None:
+        """旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
         try:
             await self._execute_generation(job_id, payload)
         except asyncio.CancelledError:
@@ -763,6 +928,7 @@ class WebStudioService:
         parent_job_id: str,
         child_jobs: list[tuple[str, dict[str, Any]]],
     ) -> None:
+        """旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
         semaphore = asyncio.Semaphore(
             max(int(getattr(self.config, "batch_concurrency", 3)), 1)
         )
@@ -843,6 +1009,7 @@ class WebStudioService:
         job_id: str,
         payload: dict[str, Any],
     ) -> None:
+        """旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
         target = payload["image_count"]
         collected: list[str] = []
         text_parts: list[str] = []
@@ -951,7 +1118,7 @@ class WebStudioService:
         if not archived:
             await self.tracker.fail(job_id, error=error or "生成结果归档失败")
             if source_urls:
-                # 投递失败也保留源链接，便于从任务详情手动取回图片。
+                # 投递失败保留脱敏源链接供追溯；签名参数在记录前移除。
                 await self.tracker.update(job_id, source_urls=source_urls)
             self._log_job_outcome(job_id)
             return
@@ -1152,6 +1319,15 @@ class WebStudioService:
         )
         return archived
 
+    def _saved_api_bases(self) -> list[str]:
+        values = [getattr(self.config, "api_base", None)]
+        for candidate in self._all_candidates():
+            settings = getattr(candidate, "settings", None) or {}
+            values.extend(
+                (getattr(candidate, "api_base", None), settings.get("api_base"))
+            )
+        return [value for value in values if isinstance(value, str) and value.strip()]
+
     async def _download_remote_image(
         self, url: str, *, candidate_id: str | None = None
     ) -> bytes:
@@ -1176,24 +1352,50 @@ class WebStudioService:
         )
         connector = None
         http_proxy = proxy
+        pinned_resolver = PinnedResolver()
         if proxy and proxy.lower().startswith("socks"):
             from aiohttp_socks import ProxyConnector
 
             connector = ProxyConnector.from_url(proxy)
             http_proxy = None
-        async with aiohttp.ClientSession(
-            timeout=timeout, connector=connector
-        ) as session:
-            async with session.get(url, proxy=http_proxy) as response:
-                response.raise_for_status()
-                content_length = response.content_length
-                if content_length and content_length > _REMOTE_IMAGE_MAX_BYTES:
-                    raise StudioServiceError("远程图片超过 20MB")
-                async for chunk in response.content.iter_chunked(_CHUNK_SIZE):
-                    data.extend(chunk)
-                    if len(data) > _REMOTE_IMAGE_MAX_BYTES:
-                        raise StudioServiceError("远程图片超过 20MB")
-        return bytes(data)
+        elif not proxy:
+            connector = aiohttp.TCPConnector(resolver=pinned_resolver, ttl_dns_cache=0)
+        current = url
+        try:
+            async with aiohttp.ClientSession(
+                timeout=timeout, connector=connector
+            ) as session:
+                for hop in range(4):
+                    await check_outbound_url(
+                        current,
+                        saved_api_bases=self._saved_api_bases(),
+                        pin=pinned_resolver,
+                    )
+                    async with session.get(
+                        current, proxy=http_proxy, allow_redirects=False
+                    ) as response:
+                        if response.status in {301, 302, 303, 307, 308}:
+                            if hop >= 3:
+                                raise StudioServiceError("远程图片重定向超过 3 次")
+                            location = response.headers.get("Location", "")
+                            if not location:
+                                raise StudioServiceError("远程图片重定向缺少目标地址")
+                            current = urljoin(current, location)
+                            continue
+                        response.raise_for_status()
+                        content_length = response.content_length
+                        if content_length and content_length > _REMOTE_IMAGE_MAX_BYTES:
+                            raise StudioServiceError("远程图片超过 20MB")
+                        async for chunk in response.content.iter_chunked(_CHUNK_SIZE):
+                            data.extend(chunk)
+                            if len(data) > _REMOTE_IMAGE_MAX_BYTES:
+                                raise StudioServiceError("远程图片超过 20MB")
+                        return bytes(data)
+        except (aiohttp.ClientError, OSError):
+            raise StudioServiceError(
+                f"远程图片下载失败: {redact_url(current)}"
+            ) from None
+        raise StudioServiceError("远程图片下载失败")
 
     @staticmethod
     def _validate_image_bytes(data: bytes) -> str:

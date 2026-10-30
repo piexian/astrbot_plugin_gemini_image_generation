@@ -24,6 +24,7 @@ except ImportError:  # pragma: no cover - 取决于运行环境可选依赖
 
 from ..api.reference_pipeline import transcode_to_supported_mime
 from ..api_types import APIError
+from ..file_uri import file_uri_to_path
 from ..reference_image import (
     REFERENCE_IMAGE_CACHE_DIR,
     build_reference_image_headers,
@@ -118,6 +119,20 @@ def classify_reference(
         return "local"
     # 歧义输入与共享管道一致：非本地文件时按裸 base64 处理。
     return "inline"
+
+
+def _trusted_local_path(text: str) -> Path:
+    """local / file: 形态的参考图转本地绝对路径；file URI 复用 file_uri_to_path。"""
+
+    if text.lower().startswith("file:"):
+        path = file_uri_to_path(text)
+        if path is None:
+            raise ReferenceResolveError("本地参考图 file URI 不是本机路径")
+    else:
+        path = Path(text)
+    if not path.is_absolute():
+        raise ReferenceResolveError("本地参考图必须是绝对路径")
+    return path
 
 
 def _detect_transcodable_mime(raw: bytes) -> str | None:
@@ -276,9 +291,18 @@ class ReferenceService:
             self._tmp_store.release(match.group(2))
 
     async def ingest_inline(
-        self, references: Sequence[str], *, requester: Mapping[str, str]
+        self,
+        references: Sequence[str],
+        *,
+        requester: Mapping[str, str],
+        trusted_local: bool = False,
     ) -> tuple[str, ...]:
         """内联形态转句柄、其余原样保留并保持顺序；失败立即抛出。
+
+        ``trusted_local`` 表示调用方已按自己的规则校验过 local / file: 形态的
+        本地路径（如 LLM 工具的 tool_path_guard）：这些文件在此读取并换成句柄，
+        只套用大小、格式与像素边界；PathPolicy 的本地根不因此放宽，默认 False
+        时本地路径仍原样保留，留给执行阶段按 PathPolicy 校验。
 
         已落盘的前几张句柄不回滚，留给 tmp store 的 TTL/容量清理。
         """
@@ -286,11 +310,33 @@ class ReferenceService:
         prepared: list[str] = []
         for item in references:
             text = str(item or "").strip()
-            if classify_reference(text) == "inline":
+            shape = classify_reference(text)
+            if shape == "inline":
                 prepared.append(await self.ingest(text, requester=requester))
+            elif trusted_local and shape in ("local", "file"):
+                raw = await asyncio.to_thread(self._read_trusted_local, text)
+                prepared.append(await self.ingest(raw, requester=requester))
             else:
                 prepared.append(text)
         return tuple(prepared)
+
+    def _read_trusted_local(self, text: str) -> bytes:
+        """读取调用方已校验过的本地文件；先 stat 判大小，读取量也以上限封顶。"""
+
+        path = _trusted_local_path(text)
+        limit = self.max_reference_bytes
+        try:
+            if path.stat().st_size > limit:
+                raise ReferenceTooLargeError(f"参考图超过 {limit} 字节上限")
+            with path.open("rb") as handle:
+                raw = handle.read(limit + 1)
+        except (OSError, ValueError) as exc:
+            logger.error("读取本地参考图失败: %s", exc)
+            raise ReferenceResolveError(f"读取本地参考图失败: {path.name}") from exc
+        if len(raw) > limit:
+            # stat 之后文件又变大：与 stat 判定同口径拒绝。
+            raise ReferenceTooLargeError(f"参考图超过 {limit} 字节上限")
+        return raw
 
     def _load_local(self, text: str) -> tuple[bytes, str]:
         try:
