@@ -900,7 +900,6 @@ async def test_event_inline_reference_still_becomes_a_handle(make_env):
     [
         ("missing_reference", "未取得所需参考图片，未启动生成"),
         ("missing_avatar", "未取得所需用户头像，未启动生成"),
-        ("size_conflict", "参数冲突"),
         ("no_candidate", "没有匹配所选供应商"),
     ],
 )
@@ -926,10 +925,6 @@ async def test_existing_validation_precedes_v2_and_charges_nothing(
         kwargs = {"use_reference_images": True}
     elif case == "missing_avatar":
         kwargs = {"include_user_avatar": True}
-    elif case == "size_conflict":
-        env.plugin._fetch_images_from_event.return_value = (["ref"], [])
-        env.plugin.cfg.preserve_reference_image_size = True
-        kwargs = {"use_reference_images": True, "resolution": "1K"}
     else:
         kwargs = {"model": "unknown"}
 
@@ -941,6 +936,47 @@ async def test_existing_validation_precedes_v2_and_charges_nothing(
     env.plugin.image_generator.submit_v2.assert_not_awaited()
     assert quota.calls == []
     assert await stored_jobs(env) == []
+
+
+@pytest.mark.asyncio
+async def test_explicit_size_overrides_reference_size_config(make_env):
+    env = await make_env()
+    env.plugin.cfg.preserve_reference_image_size = True
+    data_uri = "data:image/png;base64," + base64.b64encode(png_bytes()).decode()
+    env.plugin._fetch_images_from_event.return_value = ([data_uri], [])
+
+    await call(env, use_reference_images=True, resolution="1K")
+
+    config = env.client.configs[0]
+    assert config.resolution == "1K"
+    assert config.suppress_resolution is False
+
+
+@pytest.mark.asyncio
+async def test_batch_explicit_size_overrides_reference_size_config(make_env):
+    env = await make_env()
+    env.plugin.cfg.preserve_reference_image_size = True
+    data_uri = "data:image/png;base64," + base64.b64encode(png_bytes()).decode()
+    env.plugin._fetch_images_from_event.return_value = ([data_uri], [])
+
+    prepared, error = await llm_tools._prepare_batch_tasks(
+        env.plugin,
+        _Event(),
+        [
+            {
+                "name": "a",
+                "prompt": "a",
+                "image_count": 1,
+                "provider": "legacy",
+                "use_reference_images": True,
+                "resolution": "1K",
+            }
+        ],
+    )
+
+    assert error is None
+    assert prepared[0]["suppress_resolution"] is False
+    assert prepared[0]["resolution"] == "1K"
 
 
 # ===== 灰度之外与提交阶段参数 =====

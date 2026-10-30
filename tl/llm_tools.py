@@ -1009,11 +1009,9 @@ async def _prepare_batch_tasks(
             value is not None and str(value).strip()
             for value in (size_value, resolution_value, aspect_value)
         )
-        if has_references and preserve_size and explicit_size:
-            return None, (
-                f"批量任务 {name} 同时指定 preserve_reference_image_size=true "
-                "和尺寸参数"
-            )
+        # 模型显式给出尺寸时优先满足本次请求；配置默认值只约束未指定尺寸的请求。
+        if explicit_size:
+            preserve_size = False
         suppress_resolution = has_references and preserve_size
         if suppress_resolution:
             resolution = None
@@ -1627,11 +1625,9 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
             value is not None and str(value).strip()
             for value in (size, raw_resolution, raw_aspect_ratio)
         )
-        if has_references and preserve_size and explicit_size:
-            return (
-                "❌ 参数冲突：有参考图并启用 preserve_reference_image_size 时，"
-                "不能同时指定 size、resolution 或 aspect_ratio"
-            )
+        # 模型显式给出尺寸时优先满足本次请求；配置默认值只约束未指定尺寸的请求。
+        if explicit_size:
+            preserve_size = False
         suppress_resolution = has_references and preserve_size
         if suppress_resolution:
             resolution = None

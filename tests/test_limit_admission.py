@@ -313,7 +313,7 @@ def _tool_plugin(tmp_path):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "failure",
-    ["api", "empty", "route", "conflict", "batch", "empty_batch", "malformed_batch"],
+    ["api", "empty", "route", "batch", "empty_batch", "malformed_batch"],
 )
 async def test_llm_invalid_requests_do_not_consume(tmp_path, failure):
     plugin = _tool_plugin(tmp_path)
@@ -324,13 +324,6 @@ async def test_llm_invalid_requests_do_not_consume(tmp_path, failure):
         kwargs["prompt"] = " "
     elif failure == "route":
         kwargs["model"] = "unknown"
-    elif failure == "conflict":
-        plugin._fetch_images_from_event.return_value = (["ref.png"], [])
-        kwargs.update(
-            use_reference_images=True,
-            preserve_reference_image_size=True,
-            resolution="1K",
-        )
     elif failure == "empty_batch":
         kwargs["batch_tasks"] = []
     elif failure == "malformed_batch":
