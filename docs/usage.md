@@ -85,8 +85,8 @@ v2.0.0 起，插件只使用 `供应商配置` 中配置的生图供应商。
 插件注册以下三个工具：
 
 - `gemini_image_generation`：单次或批量生图。
-- `gemini_image_provider_models`：查询供应商、原始模型、别名、生成模式；设置 `detail=true` 时返回该模型在生图工具中实际支持的参数。
-- `gemini_image_task_status`：按任务号查询当前会话的后台进度和结果摘要。
+- `gemini_image_lookup`：按 `kind` 查询模型、可用提示词模板、可引用的生成记录和当前会话的后台任务。
+- `gemini_image_share`：用户明确要求把自己的生成图用到其他会话后，共享或取消共享该记录。
 
 模型可以用自然语言触发生图：
 

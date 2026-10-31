@@ -228,17 +228,17 @@ def _build_tool_description(plugin: Any) -> str:
         "provider 和 model 通常省略，由插件按配置自动选择；只填 provider 时仅使用该供应商，"
         "只填 model 时按模型名或别名跨供应商选择，两者都填时只使用同时匹配的模型。"
         "传 negative_prompt、watermark、quality 时只会使用支持该参数的模型；"
-        "可先调用 gemini_image_provider_models 查询可用模型和参数。"
+        "可先调用 gemini_image_lookup，kind 设为 models，查询可用模型和参数。"
         "此工具会先在前台短时间等待结果，若快速完成则直接返回图片；"
         "若超出等待时间则返回后台任务号并继续生成，完成后会重新激活你并提供图片 URL/路径，你必须调用 send_message_to_user 发送图片；"
-        "可调用 gemini_image_task_status 查询任务状态。"
+        "可调用 gemini_image_lookup，kind 设为 tasks，查询任务状态。"
         "需要批量生成时传 batch_tasks；每项必须包含唯一 name、完整 prompt、image_count，"
         "并至少指定 provider 或 model。批量任务固定进入后台。"
         "判断逻辑：对话中出现'改成'、'变成'、'基于'、'修改'、'改图'等词时，"
         "设置 use_reference_images=true；当前请求提到'根据我'、'我的头像'或@某人时，"
         "设置 use_reference_images=true 和 include_user_avatar=true。"
         "需要控制输出分辨率或长宽比时设置 resolution / aspect_ratio；"
-        "各渠道与模型支持的具体取值不要猜测，先调用 gemini_image_provider_models 查询，"
+        "各渠道与模型支持的具体取值不要猜测，先调用 gemini_image_lookup，kind 设为 models，查询，"
         "不支持的比例会被忽略。"
         "【重要】当当前请求明确要求将生成的图片发到论坛/AstrBook时，设置 for_forum=true。"
         "此时工具会等待图片生成完成后返回图片路径，你需要使用 upload_image 工具将图片上传到论坛图床获取URL，"
@@ -254,7 +254,7 @@ def _build_tool_parameters(plugin: Any) -> dict[str, Any]:
     properties["resolution"] = {
         "type": "string",
         "description": (
-            "输出分辨率，可选；不传则使用插件配置或供应商默认值。具体取值先用 gemini_image_provider_models 查询。"
+            "输出分辨率，可选；不传则使用插件配置或供应商默认值。具体取值先用 gemini_image_lookup（kind=models）查询。"
         ),
         "enum": list(resolution_options),
     }
@@ -262,7 +262,7 @@ def _build_tool_parameters(plugin: Any) -> dict[str, Any]:
         "type": "string",
         "description": (
             "输出长宽比，可选；不传则使用插件配置或供应商默认值。"
-            "各模型支持的具体取值先用 gemini_image_provider_models 查询，不支持的比例由渠道忽略。"
+            "各模型支持的具体取值先用 gemini_image_lookup（kind=models）查询，不支持的比例由渠道忽略。"
         ),
         "enum": list(ASPECT_RATIO_OPTIONS),
     }

@@ -44,3 +44,7 @@ WebUI 没有会话 UMO，公开 SDK 也允许不传 `umo`：只有灰度名单�
 ## 旧逻辑弃用与删除
 
 旧路径函数仅以文档字符串标记弃用，不发出运行时警告。删除重复逻辑需同时满足：四个入口在 v2 下稳定运行一段时间、回滚路径与兼容测试充分、默认开关已切换为开启。之后按“先弃用、再默认切换、最后删除”的顺序执行，并单独发布行为说明。
+
+## 工具改名
+
+`gemini_image_provider_models` 与 `gemini_image_task_status` 已合并为 `gemini_image_lookup`，用 `kind` 区分 `models`、`templates`、`history` 和 `tasks`。新增 `gemini_image_share`。AstrBot 按工具名保存的人格工具列表、工具权限和禁用状态不会自动迁移，升级后需要在 AstrBot 里重新勾选和授权。

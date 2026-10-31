@@ -8,11 +8,13 @@
 
 - 提示词模板库：内置快速模式提示词、本地模板与 JSON 包（`gemini-image-templates`），并定义模板源协议。模板文件在插件数据目录的 `prompt_templates.json`。
 - 内部引用解析器，以及生成记录的 `umo` 与共享标记。配置项 `service_settings.reference_cross_session` 默认关闭。
+- LLM 工具 `gemini_image_lookup` 查询模型、模板、可引用的生成记录和后台任务；`gemini_image_share` 由请求者本人共享或取消共享自己的生成记录。
 - `retry_settings.scheduler_v2_sessions` 会话灰度名单：填会话的 unified_msg_origin，非空时仅名单内会话的聊天命令与 LLM 工具走 v2 调度器，其余会话、WebUI 与 SDK 保持旧路径。
 
 ### Changed
 
 - `/快速` 的提示词改由模板库渲染，附加要求前的标签统一为“用户需求：”；生成历史记录 `template_id`。
+- 原 `gemini_image_provider_models` 与 `gemini_image_task_status` 合并为 `gemini_image_lookup`。升级后需要在 AstrBot 里重新勾选和授权。
 - v2 调度器（`scheduler_v2`）覆盖命令入口全部生成路径：`/表情包`（含切割模式）与 `/换风格` 也经由 v2 提交；开启后生成历史由调度器生命周期投影写入，字段与旧路径一致。
 - v2 调度器的额度与生成队列改在提交时统一准入：先预留共享额度，再预留生成队列名额，任一步被拒都不创建任务，已预留的额度自动退回；命令入口不再自行扣额度。任务一旦被接受，之后失败或取消不退还额度（与旧路径一致）。
 - v2 路径下额度不足、群名单拒绝（静默不回复）、生成队列已满时，拒绝提示先于"生成中"/"开始转换风格"发出，被拒绝的命令不再出现进度提示。
@@ -26,11 +28,12 @@
 - v2 下 LLM 工具调用在前台等待期间被取消时同时取消生成，不再出现取消后生成仍在后台运行却无人投递的情况。
 - v2 下 LLM 工具前台结果构建超时（如代理下载慢）不再转后台，改为直接返回图片 URL/本地路径文本，提示调用 `send_message_to_user` 的 `image` 组件发送。
 - 运行环境与 CI 基线统一为 Python 3.12。
-- LLM 工具描述去掉内部术语，改为面向模型的用法说明：生图工具不再自称只用 Gemini 模型，`preserve_reference_image_size` 写明显式传入 `resolution`/`aspect_ratio` 时以显式尺寸为准，`batch_tasks` 条目字段沿用顶层同名参数含义；`gemini_image_task_status` 提示任务完成会自动通知、无需轮询。
+- LLM 工具描述去掉内部术语，改为面向模型的用法说明：生图工具不再自称只用 Gemini 模型，`preserve_reference_image_size` 写明显式传入 `resolution`/`aspect_ratio` 时以显式尺寸为准，`batch_tasks` 条目字段沿用顶层同名参数含义；查询工具提示任务完成会自动通知、无需轮询。
 
 ### Removed
 
 - LLM 生图工具不再接受遗留的 `size` 参数，请使用 `resolution` 与 `aspect_ratio`。
+- 移除 LLM 工具 `gemini_image_provider_models` 与 `gemini_image_task_status`。
 
 ### Fixed
 

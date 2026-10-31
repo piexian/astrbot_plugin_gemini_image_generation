@@ -32,8 +32,8 @@ main.py
 | `get_api_client()` / `clear_api_client()` | `tl_api.py` | API 客户端单例管理 |
 | `ImageGenerator.generate_image_core()` | `image_generator.py` | 指令与 LLM Tool 共用的核心生图逻辑 |
 | `GeminiImageGenerationTool.call()` | `llm_tools.py` | AstrBot FunctionTool 调用入口 |
-| `ProviderModelQueryTool.call()` | `llm_query_tools.py` | 查询已配置供应商、模型、别名、生成模式和可选参数 |
-| `BackgroundTaskStatusTool.call()` | `llm_query_tools.py` | 按会话查询后台任务状态 |
+| `GeminiImageLookupTool.call()` | `llm_query_tools.py` | 按 kind 查询模型、模板、生成记录和后台任务 |
+| `GeminiImageShareTool.call()` | `llm_query_tools.py` | 由请求者本人共享或取消共享自己的生成记录 |
 | `BackgroundTaskManager` | `background_tasks.py` | 持久化、隔离和清理后台任务记录 |
 | `run_batch_job()` | `batch_generation.py` | 按配置并发执行命名批量任务并顺序发送结果 |
 | `execute_image_generation_tool()` | `llm_tools.py` | 兼容旧调用方式的工具入口 |

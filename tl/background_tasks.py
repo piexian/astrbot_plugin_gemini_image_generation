@@ -208,6 +208,24 @@ class BackgroundTaskManager:
                 raise PermissionError("任务不属于当前插件")
             return copy.deepcopy(record)
 
+    async def list_for_session(
+        self, session_id: str, limit: int
+    ) -> list[dict[str, Any]]:
+        """按会话返回最近的任务副本，不包含其他会话或插件任务。"""
+
+        async with self._lock:
+            if self._prune_expired():
+                await self._save()
+            session = str(session_id or "unknown")
+            rows = [
+                record
+                for record in self._records.values()
+                if not record.get("plugin_id") and record.get("session_id") == session
+            ]
+            rows.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+            size = max(int(limit), 0)
+            return [copy.deepcopy(record) for record in rows[:size]]
+
     def attach(
         self,
         task_id: str,

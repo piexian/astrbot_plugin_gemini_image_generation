@@ -61,7 +61,7 @@ from .tl.generation_tracker import (
     record_generation_success,
     requester_from_event,
 )
-from .tl.llm_query_tools import BackgroundTaskStatusTool, ProviderModelQueryTool
+from .tl.llm_query_tools import GeminiImageLookupTool, GeminiImageShareTool
 from .tl.llm_tools import GeminiImageGenerationTool
 from .tl.plugin_config import get_session_tool_timeout, max_configured_reference_images
 from .tl.plugin_service import ImageGenerationService
@@ -126,8 +126,8 @@ class GeminiImageGenerationPlugin(Star):
         # v2 调度器（灰度）：scheduler_v2 开启且首次使用时装配。
         self._v2_service = None
         self.llm_image_tool: GeminiImageGenerationTool | None = None
-        self.llm_provider_query_tool: ProviderModelQueryTool | None = None
-        self.llm_task_status_tool: BackgroundTaskStatusTool | None = None
+        self.llm_lookup_tool: GeminiImageLookupTool | None = None
+        self.llm_share_tool: GeminiImageShareTool | None = None
 
         # 获取插件数据目录
         self._plugin_data_dir = os.path.join(
@@ -375,16 +375,16 @@ class GeminiImageGenerationPlugin(Star):
         try:
             tool = GeminiImageGenerationTool(plugin=self)
             tool.refresh_from_plugin()
-            provider_query_tool = ProviderModelQueryTool(plugin=self)
-            task_status_tool = BackgroundTaskStatusTool(plugin=self)
+            lookup_tool = GeminiImageLookupTool(plugin=self)
+            share_tool = GeminiImageShareTool(plugin=self)
             self.llm_image_tool = tool
-            self.llm_provider_query_tool = provider_query_tool
-            self.llm_task_status_tool = task_status_tool
-            for registered_tool in (tool, provider_query_tool, task_status_tool):
+            self.llm_lookup_tool = lookup_tool
+            self.llm_share_tool = share_tool
+            for registered_tool in (tool, lookup_tool, share_tool):
                 self.context.add_llm_tools(registered_tool)
             if self.cfg.llm_tool_reference_path_mode == "global":
                 ensure_admin_default_tool_permission(tool.name)
-            logger.debug("已注册生图、供应商查询和后台任务查询 LLM 工具")
+            logger.debug("已注册生图、查询和共享 LLM 工具")
         except Exception as e:
             logger.warning(f"注册 LLM 工具失败: {e}，将使用装饰器方式")
 
