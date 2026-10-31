@@ -7,6 +7,7 @@ from typing import Any
 
 from astrbot.api import logger
 
+from .llm_output import sanitize_task_result
 from .plugin_config import get_session_tool_timeout
 
 try:  # 官方内部 API（_get_session_conv 为私有函数），版本漂移风险防御
@@ -102,7 +103,7 @@ async def notify_llm_background_result(
         if context is None or not umo:
             raise RuntimeError("缺少插件 context 或会话标识")
 
-        extras = {"background_task_result": task_result}
+        extras = {"background_task_result": sanitize_task_result(task_result)}
 
         session = MessageSession.from_str(umo)
         cron_event = CronMessageEvent(

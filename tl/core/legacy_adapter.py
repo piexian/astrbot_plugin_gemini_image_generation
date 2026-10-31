@@ -299,6 +299,7 @@ class LegacyClientAdapter:
         # 第 4 项是思维签名（如 Gemini thoughtSignature），不是错误；
         # 忽略不持久化，避免成功结果被误判失败。
         urls, paths, text, _thought_signature = legacy_tuple
+
         if (request.metadata or {}).get("require_images") and not any(
             (*(urls or ()), *(paths or ()))
         ):

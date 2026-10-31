@@ -20,9 +20,10 @@ from tl.v2_bridge import v2_failure_message
 from tl.v2_tool_delivery import ToolBackgroundDelivery, ToolBatchDelivery
 
 SCENE = "后台任务"
+TEST_IMAGE_PATH = __file__
 TOTAL_TIMEOUT = 120
 RESULT = GenerationResult(
-    artifacts=("https://img.test/a.png", "/tmp/b.png"),
+    artifacts=("https://img.test/a.png", TEST_IMAGE_PATH),
     text="ok",
     provider="legacy",
     model="auto",
@@ -156,7 +157,7 @@ async def test_deliver_dispatches_result_and_finalizes_record_like_legacy(
         "task_id": task_id,
         "status": "succeeded",
         "image_urls": ["https://img.test/a.png"],
-        "image_paths": ["/tmp/b.png"],
+        "image_paths": [TEST_IMAGE_PATH],
         "text_content": "ok",
     }
     assert task_id in notice
@@ -174,7 +175,7 @@ async def test_deliver_dispatches_result_and_finalizes_record_like_legacy(
             "candidate_id": "cand-1",
             "delivery_success": True,
             "image_urls": ["https://img.test/a.png"],
-            "image_paths": ["/tmp/b.png"],
+            "image_paths": [TEST_IMAGE_PATH],
         }
     ]
     assert (record["completed_items"], record["succeeded_items"]) == (1, 1)
@@ -185,7 +186,7 @@ async def test_deliver_dispatches_result_and_finalizes_record_like_legacy(
         plugin,
         event,
         success=True,
-        result_data=(["https://img.test/a.png"], ["/tmp/b.png"], "ok", None),
+        result_data=(["https://img.test/a.png"], [TEST_IMAGE_PATH], "ok", None),
         stats={
             "successful_provider": "legacy",
             "successful_model": "auto",
@@ -194,6 +195,25 @@ async def test_deliver_dispatches_result_and_finalizes_record_like_legacy(
         },
     )
     assert stable(record) == stable(legacy)
+
+
+@pytest.mark.asyncio
+async def test_v2_delivery_feedback_includes_generation_reference(plugin, notifier):
+    event = _Event()
+    plugin.cfg = SimpleNamespace(reference_cross_session=False)
+    plugin.generation_tracker = SimpleNamespace(
+        enabled=True,
+        get=lambda job_id: {"images": ["gallery.png"], "shared": False},
+    )
+    task_id = await new_record(plugin, event)
+    adapter = ToolBackgroundDelivery(plugin, event, scene=SCENE)
+    adapter.bind_record(task_id)
+
+    await adapter.deliver(make_job(), RESULT)
+
+    task_result = notifier.results[0][0]
+    assert task_result["generation_record"].startswith("本次生成记录：gen:job-v2-1")
+    assert "gemini_image_share" in task_result["generation_record"]
 
 
 @pytest.mark.asyncio
@@ -218,7 +238,7 @@ async def test_deliver_not_delivered_marks_partial_success_and_raises(plugin, no
         plugin,
         event,
         success=True,
-        result_data=(["https://img.test/a.png"], ["/tmp/b.png"], "ok", None),
+        result_data=(["https://img.test/a.png"], [TEST_IMAGE_PATH], "ok", None),
         stats={
             "successful_provider": "legacy",
             "successful_model": "auto",

@@ -17,6 +17,7 @@ from .internal_references import (
     ReferenceResolver,
     parse_references,
 )
+from .llm_output import sanitize_task_result
 from .provider_capabilities import candidate_capability, select_candidates
 
 _KINDS = ("models", "templates", "history", "tasks")
@@ -278,12 +279,12 @@ class GeminiImageLookupTool(FunctionTool[AstrAgentContext]):
             if record is None:
                 return {"error": "任务不存在或已过期"}
             record.pop("session_id", None)
-            return record
+            return sanitize_task_result(record)
         records = await manager.list_for_session(session_id, 21)
         items = [_task_summary(record) for record in records[:20]]
         shown = items[:limit]
         return {
-            "tasks": shown,
+            "tasks": sanitize_task_result(shown),
             "total": len(items) if len(records) <= 20 else len(records),
             "truncated": len(items) > limit or len(records) > 20,
         }

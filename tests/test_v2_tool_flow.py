@@ -141,7 +141,7 @@ async def eventually(check, timeout=3.0):
 
 
 def make_plugin(tmp_path, service, client, *, allowed_dirs=(), candidates=()):
-    return SimpleNamespace(
+    plugin = SimpleNamespace(
         api_client=SimpleNamespace(proxy=None),
         cfg=SimpleNamespace(
             provider_candidates=list(candidates),
@@ -167,7 +167,20 @@ def make_plugin(tmp_path, service, client, *, allowed_dirs=(), candidates=()):
         _fetch_images_from_event=AsyncMock(return_value=([], [])),
         _v2_service_for=Mock(return_value=service),
         get_tool_timeout=lambda event: 10,
+        avatar_handler=SimpleNamespace(
+            download_user_avatar=AsyncMock(return_value="avatar-b64")
+        ),
     )
+    # references 经 image_handler 读取当前消息的图片；测试仍通过
+    # _fetch_images_from_event 的 return_value 控制它。
+    plugin.image_handler = SimpleNamespace(
+        fetch_images_from_event=lambda event, include_at_avatars=False: (
+            plugin._fetch_images_from_event(
+                event, include_at_avatars=include_at_avatars
+            )
+        )
+    )
+    return plugin
 
 
 @pytest.fixture
@@ -246,9 +259,15 @@ async def make_env(tmp_path, monkeypatch, fake_mcp):
         plugin._check_and_consume_limit.assert_not_awaited()
 
 
+def new_event():
+    event = _Event()
+    event.get_sender_id = lambda: "sender-1"
+    return event
+
+
 async def call(env, event=None, **kwargs):
     kwargs.setdefault("prompt", "draw a cat")
-    return await env.tool.call(_context(event or _Event()), **kwargs)
+    return await env.tool.call(_context(event or new_event()), **kwargs)
 
 
 async def record_of(env, task_id):
@@ -314,7 +333,7 @@ async def test_build_timeout_returns_image_locations_instead_of_background(
 
     monkeypatch.setattr(llm_tools, "_build_call_tool_result", never_built)
     env = await make_env(
-        GatedClient(urls=[URL], paths=["/tmp/local-out.png"]),
+        GatedClient(urls=[URL], paths=[__file__]),
         asyncio_overrides={"wait_for": fast_wait_for},
     )
 
@@ -323,7 +342,7 @@ async def test_build_timeout_returns_image_locations_instead_of_background(
     assert isinstance(result, str)
     assert "send_message_to_user" in result and "image 组件" in result
     assert f"图片1 (URL): {URL}" in result
-    assert "图片2 (本地路径): /tmp/local-out.png" in result
+    assert f"图片2 (本地路径): {__file__}" in result
     # Job 已结束，无法再挂投递：不建后台记录。
     assert env.manager._records == {}
     assert env.service._scheduler._deliveries == {}
@@ -699,12 +718,12 @@ async def test_real_scheduler_race_between_timeout_and_decision_point(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("for_forum", [False, True])
-async def test_cancelling_the_tool_call_cancels_the_job(make_env, for_forum):
+@pytest.mark.parametrize("deliver", ["user", "return"])
+async def test_cancelling_the_tool_call_cancels_the_job(make_env, deliver):
     gate = asyncio.Event()
     env = await make_env(GatedClient(gate=gate), foreground=30)
 
-    task = asyncio.create_task(call(env, for_forum=for_forum))
+    task = asyncio.create_task(call(env, deliver=deliver))
     await asyncio.wait_for(env.client.started.wait(), 2)
     task.cancel()
 
@@ -718,7 +737,7 @@ async def test_cancelling_the_tool_call_cancels_the_job(make_env, for_forum):
     assert env.service._scheduler._tasks == {}
 
 
-# ===== for_forum =====
+# ===== deliver=return =====
 
 
 class LegacyPlugin:
@@ -740,8 +759,8 @@ class LegacyPlugin:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("outcome", ["success", "failure", "text_only"])
-async def test_forum_text_matches_legacy_path(tmp_path, make_env, outcome):
-    local = tmp_path / "forum-out.png"
+async def test_return_text_matches_legacy_path(tmp_path, make_env, outcome):
+    local = tmp_path / "return-out.png"
     local.write_bytes(png_bytes())
     error = APIError("限流", 429, "rate_limit", retryable=False)
 
@@ -755,16 +774,16 @@ async def test_forum_text_matches_legacy_path(tmp_path, make_env, outcome):
     legacy_plugin = LegacyPlugin(tmp_path / "legacy", client())
     legacy_plugin._v2_service_for = lambda umo: None
     legacy = await GeminiImageGenerationTool(plugin=legacy_plugin).call(
-        _context(_Event()), prompt="draw a cat", for_forum=True
+        _context(_Event()), prompt="draw a cat", deliver="return"
     )
     # 旧路径经 _check_and_consume_limit 扣额度；v2 的额度由调度器扣。
     legacy_plugin._check_and_consume_limit.assert_awaited_once()
 
     env = await make_env(client())
-    v2_text = await call(env, for_forum=True)
+    v2_text = await call(env, deliver="return")
 
     assert v2_text == legacy
-    assert ("[图像生成完成 - 论坛发帖模式]" in v2_text) == (outcome == "success")
+    assert ("[图像生成完成 - 未发送给用户]" in v2_text) == (outcome == "success")
 
 
 # ===== 额度与准入 =====
@@ -847,7 +866,7 @@ async def test_reference_image_paths_are_ingested_as_trusted_local(make_env, tmp
     source.write_bytes(payload)
     env = await make_env(allowed_dirs=[allowed])
 
-    await call(env, reference_image_paths=[str(source)])
+    await call(env, references=[str(source)])
 
     (config,) = env.client.configs
     (reference,) = config.reference_images
@@ -870,7 +889,7 @@ async def test_oversized_local_reference_fails_before_any_job(make_env, tmp_path
         allowed_dirs=[allowed], service_options={"max_reference_bytes": 8}
     )
 
-    result = await call(env, reference_image_paths=[str(source)])
+    result = await call(env, references=[str(source)])
 
     assert result == v2_failure_text(
         "reference_too_large", "参考图超过 8 字节上限", total_timeout=120
@@ -885,7 +904,7 @@ async def test_event_inline_reference_still_becomes_a_handle(make_env):
     data_uri = "data:image/png;base64," + base64.b64encode(png_bytes()).decode()
     env.plugin._fetch_images_from_event.return_value = ([data_uri], [])
 
-    await call(env, use_reference_images=True)
+    await call(env, references=["current"])
 
     (config,) = env.client.configs
     assert config.reference_images[0].startswith(str(REFERENCE_IMAGE_CACHE_DIR))
@@ -898,9 +917,9 @@ async def test_event_inline_reference_still_becomes_a_handle(make_env):
 @pytest.mark.parametrize(
     ("case", "expected"),
     [
-        ("missing_reference", "未取得所需参考图片，未启动生成"),
-        ("missing_avatar", "未取得所需用户头像，未启动生成"),
-        ("no_candidate", "没有匹配所选供应商"),
+        ("missing_reference", "当前消息没有图片"),
+        ("missing_avatar", "头像"),
+        ("no_candidate", "无法识别 model"),
     ],
 )
 async def test_existing_validation_precedes_v2_and_charges_nothing(
@@ -922,9 +941,10 @@ async def test_existing_validation_precedes_v2_and_charges_nothing(
     env.plugin.image_generator.submit_v2 = AsyncMock()
     kwargs = {}
     if case == "missing_reference":
-        kwargs = {"use_reference_images": True}
+        kwargs = {"references": ["current"]}
     elif case == "missing_avatar":
-        kwargs = {"include_user_avatar": True}
+        env.plugin.avatar_handler.download_user_avatar.return_value = None
+        kwargs = {"references": ["avatar:sender"]}
     else:
         kwargs = {"model": "unknown"}
 
@@ -945,7 +965,7 @@ async def test_explicit_size_overrides_reference_size_config(make_env):
     data_uri = "data:image/png;base64," + base64.b64encode(png_bytes()).decode()
     env.plugin._fetch_images_from_event.return_value = ([data_uri], [])
 
-    await call(env, use_reference_images=True, resolution="1K")
+    await call(env, references=["current"], resolution="1K")
 
     config = env.client.configs[0]
     assert config.resolution == "1K"
@@ -991,7 +1011,7 @@ async def test_without_v2_service_the_legacy_flow_is_untouched(tmp_path, monkeyp
     monkeypatch.setattr(llm_tools, "invoke_generation_core", generate)
 
     result = await GeminiImageGenerationTool(plugin=plugin).call(
-        _context(_Event()), prompt="draw", for_forum=True
+        _context(_Event()), prompt="draw", deliver="return"
     )
 
     assert result == "❌ 图片生成失败：provider failed"
@@ -1193,7 +1213,7 @@ async def test_v2_explicit_dimension_beats_preserve_and_ignores_size(
     env.plugin.cfg.preserve_reference_image_size = True
     env.plugin._fetch_images_from_event.return_value = ([_png_data_uri()], [])
 
-    await call(env, use_reference_images=True, size="1024x1024", **explicit)
+    await call(env, references=["current"], size="1024x1024", **explicit)
 
     config = env.client.configs[0]
     assert config.suppress_resolution is False
@@ -1207,7 +1227,7 @@ async def test_v2_size_alone_does_not_override_reference_size(make_env):
     env.plugin.cfg.preserve_reference_image_size = True
     env.plugin._fetch_images_from_event.return_value = ([_png_data_uri()], [])
 
-    await call(env, use_reference_images=True, size="9999x1")
+    await call(env, references=["current"], size="9999x1")
 
     config = env.client.configs[0]
     assert config.resolution is None
@@ -1234,13 +1254,13 @@ async def test_legacy_explicit_dimension_beats_preserve_and_ignores_size(
     result = await GeminiImageGenerationTool(plugin=plugin).call(
         _context(_Event()),
         prompt="draw",
-        for_forum=True,
-        use_reference_images=True,
+        deliver="return",
+        references=["current"],
         size="1024x1024",
         **explicit,
     )
 
-    assert "论坛发帖模式" in result
+    assert "未发送给用户" in result
     kwargs = generate.await_args.kwargs
     assert kwargs["suppress_resolution"] is False
     assert kwargs["override_resolution"] == explicit.get("resolution")
@@ -1263,12 +1283,12 @@ async def test_legacy_size_alone_does_not_override_reference_size(
     result = await GeminiImageGenerationTool(plugin=plugin).call(
         _context(_Event()),
         prompt="draw",
-        for_forum=True,
-        use_reference_images=True,
+        deliver="return",
+        references=["current"],
         size="not-a-size",
     )
 
-    assert "论坛发帖模式" in result
+    assert "未发送给用户" in result
     kwargs = generate.await_args.kwargs
     assert kwargs["suppress_resolution"] is True
     assert kwargs["override_resolution"] is None
@@ -1303,11 +1323,11 @@ async def test_legacy_custom_size_mode_ignores_tool_size(tmp_path, monkeypatch):
     result = await GeminiImageGenerationTool(plugin=plugin).call(
         _context(_Event()),
         prompt="draw",
-        for_forum=True,
+        deliver="return",
         size="1024x1024",
     )
 
-    assert "论坛发帖模式" in result
+    assert "未发送给用户" in result
     assert generate.await_args.kwargs["override_resolution"] == "1536x1024"
     assert generate.await_args.kwargs["override_aspect_ratio"] is None
     await plugin.background_task_manager.close()
@@ -1393,3 +1413,67 @@ async def test_batch_v2_ignores_size(make_env, notifier):
     assert config.resolution == "2K"
     assert config.aspect_ratio == "16:9"
     assert config.suppress_resolution is False
+
+
+@pytest.mark.asyncio
+async def test_template_applies_prompt_defaults_and_history_metadata(
+    make_env, tmp_path
+):
+    from tl.prompt_templates import (
+        PromptTemplateStore,
+        builtin_template,
+        render_template,
+    )
+
+    env = await make_env()
+    env.plugin.prompt_templates = PromptTemplateStore(tmp_path / "templates")
+
+    result = await call(env, prompt="一只猫", template="poster")
+
+    assert isinstance(result, FakeMcpTypes.CallToolResult)
+    config = env.client.configs[0]
+    assert config.prompt == render_template(builtin_template("poster"), "一只猫")
+    assert config.resolution == "2K"
+    assert config.aspect_ratio == "16:9"
+    (job,) = await stored_jobs(env)
+    assert job.request.metadata["template_id"] == "poster"
+
+
+@pytest.mark.asyncio
+async def test_required_template_rejects_before_quota(make_env, tmp_path):
+    from tl.prompt_templates import PromptTemplateStore
+
+    quota = RecordingQuota()
+    env = await make_env(service_options={"quota": quota})
+    env.plugin.prompt_templates = PromptTemplateStore(tmp_path / "templates")
+
+    result = await call(env, prompt="", template="sticker")
+
+    assert "需要参考图" in result
+    assert quota.calls == []
+    assert await stored_jobs(env) == []
+
+
+@pytest.mark.asyncio
+async def test_legacy_template_applies_prompt_and_defaults(tmp_path):
+    from tl.prompt_templates import (
+        PromptTemplateStore,
+        builtin_template,
+        render_template,
+    )
+
+    client = GatedClient(urls=[URL], text="ok")
+    plugin = LegacyPlugin(tmp_path / "legacy", client)
+    plugin.prompt_templates = PromptTemplateStore(tmp_path / "templates")
+    plugin._v2_service_for = lambda umo: None
+
+    result = await GeminiImageGenerationTool(plugin=plugin).call(
+        _context(_Event()), prompt="一只猫", template="poster", deliver="return"
+    )
+
+    assert "未发送给用户" in result
+    config = client.configs[0]
+    assert config.prompt == render_template(builtin_template("poster"), "一只猫")
+    assert config.resolution == "2K"
+    assert config.aspect_ratio == "16:9"
+    await plugin.background_task_manager.close()

@@ -8,11 +8,12 @@ LLM 工具定义模块
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import math
 import os
 import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import mcp.types
 from astrbot.api import logger
@@ -25,7 +26,10 @@ from pydantic.dataclasses import dataclass
 from .background_dispatch import (
     dispatch_generation_result as _dispatch_generation_result,
 )
-from .background_dispatch import single_task_record_changes
+from .background_dispatch import (
+    generation_reference_note,
+    single_task_record_changes,
+)
 from .background_notify import report_background_failure
 from .batch_generation import run_batch_job
 from .core.errors import (
@@ -35,17 +39,25 @@ from .core.errors import (
     ServiceClosedError,
 )
 from .core.states import JobState
-from .file_uri import file_uri_to_path
 from .generation_call import invoke_generation_core
 from .generation_errors import api_failure_message
 from .generation_tracker import requester_from_event
+from .image_generator import DEFAULT_MAX_REFERENCE_IMAGES
+from .internal_references import (
+    InternalReferenceError,
+    ReferenceResolver,
+    parse_references,
+)
+from .llm_output import image_location_list, image_locations, sanitize_text
 from .openai_image_size import (
     CUSTOM_SIZE_DEFAULT,
     validate_custom_size,
 )
+from .prompt_templates import PromptTemplate, render_template
 from .provider_capabilities import (
     SUPPORTED_ASPECT_RATIOS,
     candidate_capability,
+    parse_model_selector,
     routing_description,
     routing_mode,
     select_candidates,
@@ -60,7 +72,7 @@ from .provider_settings import (
 )
 from .session_image_dir import bind_session_image_dir, reset_session_image_dir
 from .thought_signature import log_thought_signature_debug
-from .tl_utils import encode_file_to_base64, format_error_message
+from .tl_utils import format_error_message
 from .tool_path_guard import filter_reference_paths
 from .v2_bridge import build_request as v2_build_request
 from .v2_bridge import split_artifacts, v2_failure_message, v2_failure_text
@@ -148,130 +160,88 @@ def _build_tool_base_properties() -> dict[str, Any]:
     return {
         "prompt": {
             "type": "string",
-            "description": "未使用 batch_tasks 时必填：图像生成或修改的详细描述",
-        },
-        "provider": {
-            "type": "string",
-            "description": "可选，限制在指定供应商内部生成",
-        },
-        "model": {
-            "type": "string",
-            "description": "可选，指定原始模型名或配置的模型别名",
-        },
-        "negative_prompt": {
-            "type": "string",
-            "description": "可选负面提示词；指定后只会使用支持该参数的模型",
-        },
-        "watermark": {
-            "type": "boolean",
-            "description": "可选水印开关；省略时使用供应商配置",
-        },
-        "quality": {
-            "type": "string",
-            "description": "可选质量档位；合法值通过供应商模型查询工具获取",
-        },
-        "preserve_reference_image_size": {
-            "type": "boolean",
             "description": (
-                "有参考图时是否保留参考图尺寸；省略时使用插件配置。"
-                "如果同时显式传入 resolution 或 aspect_ratio，则以显式尺寸为准。"
+                "不用模板时必填：图像生成或修改的详细描述。"
+                "使用 template 时只写主体或附加要求"
             ),
         },
-        "use_reference_images": {
-            "type": "boolean",
+        "template": {
+            "type": "string",
             "description": (
-                "是否使用上下文中的参考图片。"
-                "当当前请求意图是修改、变换或基于现有图片时设置为true"
+                "可选。提示词模板 id；先用 gemini_image_lookup（kind=templates）"
+                "查询可用模板"
             ),
-            "default": False,
         },
-        "include_user_avatar": {
-            "type": "boolean",
-            "description": (
-                "是否包含用户头像作为参考图像。"
-                "当当前请求提到'根据我'、'我的头像'或@某人时设置为true"
-            ),
-            "default": False,
-        },
-        "reference_image_paths": {
+        "references": {
             "type": "array",
             "items": {"type": "string"},
             "description": (
-                "可选。作为参考图的本地图片路径列表。"
-                "默认白名单模式下，路径必须位于插件配置的允许目录内"
-                "（默认覆盖各系统 AstrBot 数据目录，如 ~/.astrbot/data、/opt/astrbot/data）。"
-                "禁止 .. 穿越。路径不存在、越界、非图片或图片损坏将被丢弃并在日志记录；"
-                "请求使用参考图却未取得有效图片时停止生成。"
-                "典型用途：复用上一次工具调用缓存在 data/temp/tool_images/ 的图片。"
+                "可选。要作为参考图的图片，每项是下列写法之一："
+                "current（当前消息和被引用消息里的图片）、"
+                "avatar:sender（发送者头像）、"
+                "avatar:mentioned（消息里 @ 到的用户头像）、"
+                "avatar:用户ID（发送者或被 @ 用户的头像）、"
+                "gen:last（本会话上一次生成的图）、"
+                "gen:记录ID 或 gen:记录ID#序号（指定生成记录的第几张，"
+                "可用 gemini_image_lookup 的 history 查到）、"
+                "本地图片的绝对路径（需位于插件允许的目录内）。"
+                '改图传 ["current"]，要在上一张生成图上继续修改传 ["gen:last"]'
             ),
-            "default": [],
         },
     }
 
 
-def _build_forum_property() -> dict[str, Any]:
-    return {
+_OPTION_PROPERTIES: dict[str, dict[str, Any]] = {
+    "quality": {
+        "type": "string",
+        "description": "质量档位；合法值用 gemini_image_lookup（kind=models，detail=true）查询",
+    },
+    "negative_prompt": {
+        "type": "string",
+        "description": "负面提示词",
+    },
+    "watermark": {
         "type": "boolean",
-        "description": (
-            "是否用于论坛发帖。当当前请求明确要求将生成的图片发到论坛/AstrBook时设置为true。"
-            "设置为true时，工具会等待图片生成完成并返回图片路径，不会自动发送给用户。"
-            "你需要使用返回的路径调用 upload_image 上传到论坛图床。"
-        ),
-        "default": False,
-    }
+        "description": "水印开关；省略时使用供应商配置",
+    },
+}
+
+
+def _configured_option_fields(plugin: Any) -> list[str]:
+    """已配置候选的能力表里声明过的 options 字段，按固定顺序。"""
+
+    declared: set[str] = set()
+    for candidate in (
+        getattr(getattr(plugin, "cfg", None), "provider_candidates", []) or []
+    ):
+        parameters = candidate_capability(candidate).get("parameters") or {}
+        declared.update(name for name in _OPTION_PROPERTIES if name in parameters)
+    return [name for name in _OPTION_PROPERTIES if name in declared]
 
 
 def _build_tool_description(plugin: Any) -> str:
     return (
         "生成或修改图像。"
         "当当前对话需要图像生成、绘画、改图、换风格或手办化时调用此函数。"
-        "provider 和 model 通常省略，由插件按配置自动选择；只填 provider 时仅使用该供应商，"
-        "只填 model 时按模型名或别名跨供应商选择，两者都填时只使用同时匹配的模型。"
-        "传 negative_prompt、watermark、quality 时只会使用支持该参数的模型；"
-        "可先调用 gemini_image_lookup，kind 设为 models，查询可用模型和参数。"
-        "此工具会先在前台短时间等待结果，若快速完成则直接返回图片；"
-        "若超出等待时间则返回后台任务号并继续生成，完成后会重新激活你并提供图片 URL/路径，你必须调用 send_message_to_user 发送图片；"
-        "可调用 gemini_image_lookup，kind 设为 tasks，查询任务状态。"
+        "有现成的提示词模板时，先用 gemini_image_lookup 查询，kind 设为 templates，"
+        "再用 template 直接套用，prompt 只写主体或附加要求。"
+        "基于已有图片生成时传 references：对话中出现“改成”“变成”“基于”“修改”“改图”等词，"
+        '传 ["current"]；提到“根据我”“我的头像”传 ["avatar:sender"]；@了某人传 '
+        '["avatar:mentioned"]；要在上一张生成图的基础上继续修改传 ["gen:last"]，'
+        "也可以用 gemini_image_lookup 的 history 取得 gen: 标识。"
+        "模型和参数取值用 gemini_image_lookup 查询，kind 设为 models，不要猜测。"
+        "此工具会先在前台短时间等待；超时后转后台，完成后会自动唤醒你，"
+        "你必须调用 send_message_to_user 发送图片。"
+        "deliver 设为 return 时不发给用户，只返回图片路径，用于需要自己处理图片的场景。"
         "需要批量生成时传 batch_tasks；每项必须包含唯一 name、完整 prompt、image_count，"
         "并至少指定 provider 或 model。批量任务固定进入后台。"
-        "判断逻辑：对话中出现'改成'、'变成'、'基于'、'修改'、'改图'等词时，"
-        "设置 use_reference_images=true；当前请求提到'根据我'、'我的头像'或@某人时，"
-        "设置 use_reference_images=true 和 include_user_avatar=true。"
-        "需要控制输出分辨率或长宽比时设置 resolution / aspect_ratio；"
-        "各渠道与模型支持的具体取值不要猜测，先调用 gemini_image_lookup，kind 设为 models，查询，"
-        "不支持的比例会被忽略。"
-        "【重要】当当前请求明确要求将生成的图片发到论坛/AstrBook时，设置 for_forum=true。"
-        "此时工具会等待图片生成完成后返回图片路径，你需要使用 upload_image 工具将图片上传到论坛图床获取URL，"
-        "然后在发帖或回复时使用 Markdown 格式 ![描述](URL) 插入图片。"
-        "【本地路径参考图】如需基于上一轮工具产出的本地图片改图（如 data/temp/tool_images/ 下缓存图），"
-        "用 reference_image_paths 传路径；默认仅允许插件配置的允许目录内文件，禁止 .. 穿越。"
     )
 
 
-def _build_tool_parameters(plugin: Any) -> dict[str, Any]:
-    properties = _build_tool_base_properties()
-    resolution_options = _tool_resolution_options(plugin)
-    properties["resolution"] = {
-        "type": "string",
-        "description": (
-            "输出分辨率，可选；不传则使用插件配置或供应商默认值。具体取值先用 gemini_image_lookup（kind=models）查询。"
-        ),
-        "enum": list(resolution_options),
-    }
-    properties["aspect_ratio"] = {
-        "type": "string",
-        "description": (
-            "输出长宽比，可选；不传则使用插件配置或供应商默认值。"
-            "各模型支持的具体取值先用 gemini_image_lookup（kind=models）查询，不支持的比例由渠道忽略。"
-        ),
-        "enum": list(ASPECT_RATIO_OPTIONS),
-    }
-    properties["batch_tasks"] = {
+def _build_batch_tasks_property(resolution_options: tuple[str, ...]) -> dict[str, Any]:
+    return {
         "type": "array",
-        "description": (
-            "可选。传入后按命名任务直接在后台批量生成，不再使用顶层 prompt；"
-            "每项中未注明的字段与顶层同名参数含义相同。"
-        ),
+        "description": "可选。传入后按命名任务直接在后台批量生成，忽略顶层的单图参数",
         "items": {
             "type": "object",
             "properties": {
@@ -298,29 +268,105 @@ def _build_tool_parameters(plugin: Any) -> dict[str, Any]:
                     "type": "string",
                     "description": "原始模型名或别名；与 provider 至少填写一个",
                 },
-                "negative_prompt": {"type": "string"},
-                "watermark": {"type": "boolean"},
-                "quality": {"type": "string"},
-                "use_reference_images": {"type": "boolean", "default": False},
-                "include_user_avatar": {"type": "boolean", "default": False},
+                "negative_prompt": {
+                    "type": "string",
+                    "description": "可选负面提示词；指定后只会使用支持该参数的模型",
+                },
+                "watermark": {
+                    "type": "boolean",
+                    "description": "可选水印开关；省略时使用供应商配置",
+                },
+                "quality": {
+                    "type": "string",
+                    "description": "可选质量档位；合法值用 gemini_image_lookup（kind=models，detail=true）查询",
+                },
+                "use_reference_images": {
+                    "type": "boolean",
+                    "description": "是否使用当前消息和被引用消息里的图片作为参考图",
+                    "default": False,
+                },
+                "include_user_avatar": {
+                    "type": "boolean",
+                    "description": "是否包含用户头像作为参考图",
+                    "default": False,
+                },
                 "reference_image_paths": {
                     "type": "array",
                     "items": {"type": "string"},
+                    "description": (
+                        "可选。作为参考图的本地图片绝对路径列表，需位于插件允许的目录内；"
+                        "路径无效时停止生成。典型用途：复用上一次工具调用缓存在 "
+                        "data/temp/tool_images/ 的图片"
+                    ),
                 },
                 "resolution": {
                     "type": "string",
+                    "description": "输出分辨率，可选；不传则使用插件配置或供应商默认值",
                     "enum": list(resolution_options),
                 },
                 "aspect_ratio": {
                     "type": "string",
+                    "description": "输出长宽比，可选；不传则使用插件配置或供应商默认值",
                     "enum": list(ASPECT_RATIO_OPTIONS),
                 },
-                "preserve_reference_image_size": {"type": "boolean"},
+                "preserve_reference_image_size": {
+                    "type": "boolean",
+                    "description": (
+                        "有参考图时是否保留参考图尺寸；省略时使用插件配置。"
+                        "如果同时显式传入 resolution 或 aspect_ratio，则以显式尺寸为准。"
+                    ),
+                },
             },
             "required": ["name", "prompt", "image_count"],
         },
     }
-    properties["for_forum"] = _build_forum_property()
+
+
+def _build_tool_parameters(plugin: Any) -> dict[str, Any]:
+    properties = _build_tool_base_properties()
+    resolution_options = _tool_resolution_options(plugin)
+    properties["resolution"] = {
+        "type": "string",
+        "description": (
+            "输出分辨率，可选；不传则使用模板默认值、插件配置或供应商默认值。具体取值先用 gemini_image_lookup（kind=models）查询。"
+        ),
+        "enum": list(resolution_options),
+    }
+    properties["aspect_ratio"] = {
+        "type": "string",
+        "description": (
+            "输出长宽比，可选；不传则使用模板默认值、插件配置或供应商默认值。"
+            "各模型支持的具体取值先用 gemini_image_lookup（kind=models）查询，不支持的比例由渠道忽略。"
+        ),
+        "enum": list(ASPECT_RATIO_OPTIONS),
+    }
+    properties["model"] = {
+        "type": "string",
+        "description": (
+            "可选。写法为 供应商/模型、供应商/（只限定供应商）、模型名或模型别名；"
+            "无法识别时会报错而不是改用默认路由，请先用 gemini_image_lookup（kind=models）查询"
+        ),
+    }
+    option_fields = _configured_option_fields(plugin)
+    if option_fields:
+        properties["options"] = {
+            "type": "object",
+            "description": "可选的模型参数，只填写本次需要覆盖的项；指定后只会使用支持该参数的模型",
+            "properties": {
+                name: dict(_OPTION_PROPERTIES[name]) for name in option_fields
+            },
+        }
+    properties["deliver"] = {
+        "type": "string",
+        "enum": ["user", "return", "forum"],
+        "description": (
+            "user（默认）把图片交给主 AI 发送；"
+            "return 不发给用户，只返回图片路径，用于普通文件处理；"
+            "forum 同步返回图片位置，并指导调用 upload_image 上传到论坛图床"
+        ),
+        "default": "user",
+    }
+    properties["batch_tasks"] = _build_batch_tasks_property(resolution_options)
     return {
         "type": "object",
         "properties": properties,
@@ -442,39 +488,12 @@ _MIME_TYPE_MAP = {
 }
 
 
-def _image_to_base64_content(image_ref: str) -> mcp.types.ImageContent | None:
-    """将图片引用（本地路径、data URI 或 base64 字符串）转换为 ImageContent。"""
-    if not image_ref:
-        return None
+def _image_location_values(
+    image_urls: list[str] | None, image_paths: list[str] | None
+) -> list[str]:
+    """Return safe image locations in path-first order."""
 
-    # data URI
-    if image_ref.startswith("data:image/") and ";base64," in image_ref:
-        try:
-            header, b64_data = image_ref.split(";base64,", 1)
-            mime_type = header.replace("data:", "")
-            return mcp.types.ImageContent(
-                type="image", data=b64_data, mimeType=mime_type
-            )
-        except Exception:
-            return None
-
-    # 本地文件路径
-    fs_candidate = file_uri_to_path(image_ref) or image_ref
-
-    if os.path.exists(fs_candidate):
-        try:
-            ext = os.path.splitext(fs_candidate)[1].lower()
-            mime_type = _MIME_TYPE_MAP.get(ext, "image/png")
-            b64_data = encode_file_to_base64(fs_candidate)
-            return mcp.types.ImageContent(
-                type="image", data=b64_data, mimeType=mime_type
-            )
-        except Exception as e:
-            logger.warning(f"[CallToolResult] 编码图片失败: {e}")
-            return None
-
-    # HTTP URL 等无法直接转换的引用
-    return None
+    return image_location_list(image_urls, image_paths)
 
 
 async def _build_call_tool_result(
@@ -485,111 +504,30 @@ async def _build_call_tool_result(
     api_client: Any | None = None,
     llm_notice: str | None = None,
 ) -> mcp.types.CallToolResult:
-    """将图像生成结果转换为 AstrBot 官方 CallToolResult 格式（含 ImageContent）。
+    """Build a text-only tool result with local paths preferred over URLs."""
 
-    当 api_client 配置了代理时，远程 URL 图片会通过代理下载后内联返回，
-    避免 AstrBot Core 无法访问需要代理的图片导致缓存失败。
-    """
-    contents: list[mcp.types.TextContent | mcp.types.ImageContent] = []
-
-    # 合并去重图片
-    available_images = message_sender.merge_available_images(image_urls, image_paths)
-
-    # 判断是否需要走代理下载远程 URL
-    has_proxy = bool(api_client and getattr(api_client, "proxy", None))
-
-    # 处理图片 → ImageContent，并用 data 哈希做最终去重
-    import hashlib
-
-    seen_data_hashes: set[str] = set()
-    url_only_images: list[str] = []
-    for img in available_images:
-        img_content = _image_to_base64_content(img)
-        if img_content:
-            data_hash = hashlib.sha256(img_content.data.encode("ascii")).hexdigest()
-            if data_hash in seen_data_hashes:
-                logger.debug(f"[CallToolResult 去重] 跳过内容相同的图片: {img[:80]}")
-                continue
-            seen_data_hashes.add(data_hash)
-            contents.append(img_content)
-        elif img.startswith(("http://", "https://")):
-            url_only_images.append(img)
-
-    # 对远程 URL：如果配有代理则通过代理下载后内联，否则文本告知模型
-    remaining_urls: list[str] = []
-    if url_only_images and has_proxy:
-        logger.debug(
-            f"[CallToolResult] 检测到代理，将下载 {len(url_only_images)} 张远程图片"
-        )
-        try:
-            session = await api_client._get_session()
-            for url in url_only_images:
-                try:
-                    _, local_path = await api_client._download_image(
-                        url, session, use_cache=False
-                    )
-                    if local_path:
-                        img_content = _image_to_base64_content(local_path)
-                        if img_content:
-                            data_hash = hashlib.sha256(
-                                img_content.data.encode("ascii")
-                            ).hexdigest()
-                            if data_hash not in seen_data_hashes:
-                                seen_data_hashes.add(data_hash)
-                                contents.append(img_content)
-                                continue
-                            else:
-                                logger.debug(
-                                    f"[CallToolResult 去重] 下载后内容相同: {url[:80]}"
-                                )
-                                continue
-                except Exception as e:
-                    logger.warning(f"[CallToolResult] 代理下载图片失败: {url[:80]} {e}")
-                # 下载失败的保留为 URL
-                remaining_urls.append(url)
-        except Exception as e:
-            logger.warning(f"[CallToolResult] 获取下载会话失败: {e}")
-            remaining_urls = url_only_images
-    else:
-        remaining_urls = url_only_images
-
-    if remaining_urls:
-        url_lines = [
-            f"Image URL ({i + 1}): {url}" for i, url in enumerate(remaining_urls)
-        ]
-        contents.append(
-            mcp.types.TextContent(
-                type="text",
-                text=(
-                    "The following images are available as remote URLs only.\n"
-                    + "\n".join(url_lines)
-                    + "\nUse send_message_to_user with type='image' and "
-                    "url=<image_url> to send them to the user."
-                ),
-            )
-        )
-
-    # 处理文本
-    prepared_text = message_sender.prepare_text_content(text_content, available_images)
+    del message_sender, api_client
+    locations = _image_location_values(image_urls, image_paths)
     text_parts: list[str] = []
-    if prepared_text:
-        text_parts.append(prepared_text)
+    if locations:
+        text_parts.append(
+            "生成图片位置（优先使用本地路径）：\n"
+            + "\n".join(
+                f"图片 {index}: {location}"
+                for index, location in enumerate(locations, start=1)
+            )
+            + "\n需要发送给用户时，请调用 send_message_to_user 的 image 工具；"
+            "不要把图片数据重新编码后放入上下文。"
+        )
+    if text_content:
+        text_parts.append(text_content)
     if llm_notice:
         text_parts.append(llm_notice)
-    # thought signature 只能留在 Provider 协议层，绝不能拼进 Tool 文本结果。
-    # 否则下游 Runner 会把这类超大 opaque 数据重新塞回上下文。
-    if text_parts:
-        contents.append(mcp.types.TextContent(type="text", text="\n".join(text_parts)))
-
-    if not contents:
-        contents.append(
-            mcp.types.TextContent(
-                type="text",
-                text="图片已生成但未能获取到有效的图片数据。",
-            )
-        )
-
-    return mcp.types.CallToolResult(content=contents)
+    if not text_parts:
+        text_parts.append("图片已生成但未能获取到有效的图片路径或 URL。")
+    return mcp.types.CallToolResult(
+        content=[mcp.types.TextContent(type="text", text="\n".join(text_parts))]
+    )
 
 
 def _build_background_start_notice(
@@ -674,6 +612,7 @@ def _create_generation_task(
     quality: str | None = None,
     image_count: int = 1,
     suppress_resolution: bool = False,
+    template_id: str | None = None,
 ) -> asyncio.Task:
     """旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
 
@@ -694,6 +633,7 @@ def _create_generation_task(
             quality=quality,
             image_count=image_count,
             suppress_resolution=suppress_resolution,
+            template_id=template_id,
         )
         return success, result_data, plugin.image_generator.get_request_stats()
 
@@ -720,6 +660,9 @@ async def _await_generation_task_and_send(
             scene=scene,
             notify_llm=notify_llm,
             task_id=task_id,
+            reference_note=generation_reference_note(
+                plugin, (stats or {}).get("job_id") if success else None
+            ),
         )
         if task_id:
             await plugin.background_task_manager.update(
@@ -859,11 +802,18 @@ def _matching_candidates(
     )
 
 
-def _normalize_reference_paths(plugin: Any, values: Any) -> list[str]:
-    raw_paths = values if isinstance(values, list) else [values] if values else []
+def _reference_path_policy(plugin: Any) -> tuple[list[str], str]:
+    """本地参考图路径的校验配置：(允许目录, 权限模式)。批量与 references 共用。"""
+
     cfg = getattr(plugin, "cfg", None)
     path_mode = getattr(cfg, "llm_tool_reference_path_mode", "whitelist")
     allowed_dirs = list(getattr(cfg, "llm_tool_reference_allowed_dirs", []) or [])
+    return allowed_dirs, path_mode
+
+
+def _normalize_reference_paths(plugin: Any, values: Any) -> list[str]:
+    raw_paths = values if isinstance(values, list) else [values] if values else []
+    allowed_dirs, path_mode = _reference_path_policy(plugin)
     accepted, rejected = filter_reference_paths(
         raw_paths,
         allowed_dirs=allowed_dirs,
@@ -1045,10 +995,20 @@ async def _prepare_batch_tasks(
     return prepared, None
 
 
-def _format_forum_result(
-    success: bool, result_data: Any, config_value_notice: str | None
+def _joined_notice(*parts: str | None) -> str | None:
+    text = "\n".join(part for part in parts if part)
+    return text or None
+
+
+def _format_returned_images(
+    success: bool,
+    result_data: Any,
+    config_value_notice: str | None,
+    reference_note: str | None = None,
+    *,
+    forum: bool = False,
 ) -> str:
-    """for_forum 模式的生成结果文本（旧路径与 v2 共用）。"""
+    """格式化 deliver=return 或 deliver=forum 的同步结果。"""
     if not success:
         error_msg = result_data if isinstance(result_data, str) else "图像生成失败"
         return f"❌ 图片生成失败：{error_msg}"
@@ -1057,60 +1017,53 @@ def _format_forum_result(
         return "❌ 图片生成返回格式异常"
 
     image_urls, image_paths, text_content, thought_signature = result_data
-
-    # 优先使用 URL，其次使用本地路径
-    available_images = []
-
-    # 先添加 URL（优先级更高）
-    if image_urls:
-        for url in image_urls:
-            if url and url.strip():
-                available_images.append(("url", url.strip()))
-
-    # 再添加本地路径
-    if image_paths:
-        from pathlib import Path
-
-        for path in image_paths:
-            if path and Path(path).exists():
-                available_images.append(("path", path))
+    local_paths, public_urls = image_locations(image_urls, image_paths)
+    available_images = [
+        *(("path", path) for path in local_paths),
+        *(("url", url) for url in public_urls),
+    ]
 
     if not available_images:
         return "❌ 图片生成完成，但未获取到有效的图片路径或URL"
 
-    # 构建返回信息
-    result_lines = [
-        "[图像生成完成 - 论坛发帖模式]",
-        "",
-        "图片已生成成功！以下是图片信息：",
-        "",
-    ]
+    if forum:
+        result_lines = [
+            "[图像生成完成 - 论坛发帖准备]",
+            "",
+            "图片已生成，插件不会直接发帖。请按下面流程完成论坛自动化：",
+            "",
+        ]
+    else:
+        result_lines = [
+            "[图像生成完成 - 未发送给用户]",
+            "",
+            "图片已生成，没有发给用户。以下是图片路径，用于需要自己处理图片的场景：",
+            "",
+        ]
 
     for idx, (img_type, img_value) in enumerate(available_images, 1):
-        if img_type == "url":
-            result_lines.append(f"图片{idx} (URL): {img_value}")
-        else:
-            result_lines.append(f"图片{idx} (本地路径): {img_value}")
+        label = "URL" if img_type == "url" else "本地路径"
+        result_lines.append(f"图片{idx} ({label}): {img_value}")
 
-    result_lines.extend(
-        [
-            "",
-            "【下一步操作】",
-            "1. 使用 upload_image 工具上传图片到论坛图床",
-            "   - 如果有 URL，可以直接使用 URL",
-            "   - 如果只有本地路径，使用本地路径",
-            "2. 获取图床返回的永久 URL",
-            "3. 在发帖或回复时使用 Markdown 格式插入图片：![图片描述](图床URL)",
-        ]
-    )
+    if forum:
+        result_lines.extend(
+            [
+                "",
+                "【下一步操作】",
+                "1. 对每个图片 URL 或本地路径调用 upload_image 上传到论坛图床。",
+                "2. 使用 upload_image 返回的永久图片 URL。",
+                "3. 在发帖或回复中用 Markdown 格式插入图片：![图片描述](图床URL)。",
+            ]
+        )
 
     if text_content:
         result_lines.extend(["", f"【AI 生成的图片描述】{text_content[:200]}..."])
 
-    if config_value_notice:
-        result_lines.extend(["", config_value_notice])
+    for extra in (config_value_notice, reference_note):
+        if extra:
+            result_lines.extend(["", extra])
 
-    logger.info(f"[后台任务] 图片生成成功，返回 {len(available_images)} 张图片")
+    logger.info("[后台任务] 图片生成成功，返回 %s 张图片", len(available_images))
     return "\n".join(result_lines)
 
 
@@ -1160,6 +1113,7 @@ async def _finish_foreground_v2(
     job_result: Any,
     *,
     config_value_notice: str | None,
+    job_id: str | None = None,
 ) -> Any:
     """前台拿到已结束的 Job：成功构建 CallToolResult，失败返回与旧路径同措辞的提示。"""
     if (
@@ -1173,6 +1127,9 @@ async def _finish_foreground_v2(
     image_urls, image_paths = split_artifacts(result.artifacts)
     images = plugin.message_sender.merge_available_images(image_urls, image_paths)
     logger.info(f"[前台等待] 生成完成，通过 CallToolResult 返回 {len(images)} 张图片")
+    llm_notice = _joined_notice(
+        config_value_notice, generation_reference_note(plugin, job_id)
+    )
     try:
         return await asyncio.wait_for(
             _build_call_tool_result(
@@ -1181,7 +1138,7 @@ async def _finish_foreground_v2(
                 text_content=result.text,
                 message_sender=plugin.message_sender,
                 api_client=plugin.api_client,
-                llm_notice=config_value_notice,
+                llm_notice=llm_notice,
             ),
             timeout=30,  # 下载最多给 30 秒
         )
@@ -1189,7 +1146,7 @@ async def _finish_foreground_v2(
         logger.warning(
             "[前台等待] 构建 CallToolResult 超时（代理下载慢），返回图片位置文本"
         )
-        return _build_image_location_notice(images, config_value_notice)
+        return _build_image_location_notice(images, llm_notice)
 
 
 async def _run_single_v2(
@@ -1208,8 +1165,11 @@ async def _run_single_v2(
     watermark: bool | None,
     quality: str | None,
     suppress_resolution: bool,
-    for_forum: bool,
+    return_images: bool,
+    forum_mode: bool,
     config_value_notice: str | None,
+    trusted_local: bool = False,
+    template_id: str | None = None,
 ) -> Any:
     """单图 v2：生成与后台投递都由调度器执行，工具侧不创建任何 task、不扣额度。"""
     ref_count = len(reference_images)
@@ -1221,7 +1181,7 @@ async def _run_single_v2(
     logger.info(
         f"[工具调用] 启动图像生成任务（v2）："
         f"提示词长度={len(prompt)} 参考图={ref_count} 张 头像={avatar_count} 张 "
-        f"尺寸/分辨率={resolution} 比例={aspect_ratio} 发帖模式={for_forum}"
+        f"尺寸/分辨率={resolution} 比例={aspect_ratio} 投递模式={'forum' if forum_mode else 'return' if return_images else 'user'}"
     )
     submission = await generator.submit_v2(
         event=event,
@@ -1239,9 +1199,10 @@ async def _run_single_v2(
         quality=quality,
         image_count=1,
         suppress_resolution=suppress_resolution,
+        template_id=template_id,
         admission={"event": event},
         quota={"cost": 1},
-        trusted_local=True,
+        trusted_local=trusted_local,
     )
     handle = submission.handle
     if handle is None:
@@ -1249,9 +1210,9 @@ async def _run_single_v2(
         return submission.message or "请求过于频繁，请稍后再试"
     job_id = handle.job_id
 
-    # ========== for_forum 模式：同步等待生成完成 ==========
-    if for_forum:
-        logger.info("[后台任务] 论坛模式：同步等待图片生成完成……")
+    # ========== deliver=return：同步等待生成完成 ==========
+    if return_images:
+        logger.info("[后台任务] 仅返回路径：同步等待图片生成完成……")
         try:
             success, result_data = await generator.wait_v2(
                 v2_service=service,
@@ -1260,7 +1221,13 @@ async def _run_single_v2(
                 requested_model=model,
                 image_count=1,
             )
-            return _format_forum_result(success, result_data, config_value_notice)
+            return _format_returned_images(
+                success,
+                result_data,
+                config_value_notice,
+                generation_reference_note(plugin, job_id),
+                forum=forum_mode,
+            )
         except Exception as e:
             logger.error(f"[后台任务] 图片生成异常：{e}", exc_info=True)
             return f"❌ 图片生成过程中出错：{str(e)}"
@@ -1323,7 +1290,7 @@ async def _run_single_v2(
                 plugin, event, delivery, request_routing_mode, background_notice
             )
         return await _finish_foreground_v2(
-            plugin, job_result, config_value_notice=config_value_notice
+            plugin, job_result, config_value_notice=config_value_notice, job_id=job_id
         )
     except Exception as e:
         logger.error(f"[前台等待] 图像生成异常：{e}", exc_info=True)
@@ -1445,6 +1412,254 @@ async def _run_batch_v2(
     return _background_json(task_id, batch_mode, message)
 
 
+# gen: 引用的画廊图在工具层读成 data URI，单文件上限。
+_GALLERY_REFERENCE_LIMIT = 20 * 1024 * 1024
+_REFERENCE_FAILURE_PREFIX = "❌ 参考图解析失败，未启动生成："
+
+
+class _ToolReferences(NamedTuple):
+    # 顺序：消息图、gen: 画廊图、用户本地文件；头像单独放。
+    images: list[str]
+    avatars: list[str]
+    has_user_files: bool
+
+
+class _SingleRequest(NamedTuple):
+    prompt: str
+    template_id: str | None
+    provider: str | None
+    model: str | None
+    negative_prompt: str | None
+    watermark: bool | None
+    quality: str | None
+    reference_images: list[str]
+    avatar_reference: list[str]
+    trusted_local: bool
+    resolution: str | None
+    aspect_ratio: str | None
+    config_value_notice: str | None
+    suppress_resolution: bool
+    return_images: bool
+    forum_mode: bool
+
+
+def _blank(value: Any) -> bool:
+    return value is None or not str(value).strip()
+
+
+def _reference_settings(plugin: Any) -> dict[str, Any]:
+    cfg = getattr(plugin, "cfg", None)
+    tracker = getattr(plugin, "generation_tracker", None)
+    generator = getattr(plugin, "image_generator", None)
+    allowed_dirs, path_mode = _reference_path_policy(plugin)
+    return {
+        "cross_session": bool(getattr(cfg, "reference_cross_session", False)),
+        "history_enabled": bool(getattr(tracker, "enabled", False)),
+        "max_reference_images": getattr(
+            generator, "max_reference_images", DEFAULT_MAX_REFERENCE_IMAGES
+        ),
+        "allowed_dirs": allowed_dirs,
+        "global_paths": path_mode == "global",
+    }
+
+
+def _inline_gallery_file(path: str) -> str:
+    """把 gen: 解析出的画廊文件读成 data URI，让它和消息图走同一条普通通道。"""
+
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read(_GALLERY_REFERENCE_LIMIT + 1)
+    except OSError as exc:
+        raise ValueError("参考图片不存在或正在清理，请重新选择") from exc
+    if len(raw) > _GALLERY_REFERENCE_LIMIT:
+        raise ValueError("参考图片超过 20MB")
+    mime_type = _MIME_TYPE_MAP.get(os.path.splitext(path)[1].lower(), "image/png")
+    return f"data:{mime_type};base64,{base64.b64encode(raw).decode('ascii')}"
+
+
+async def _resolve_tool_references(
+    plugin: Any, event: Any, values: list[str]
+) -> tuple[_ToolReferences | None, str | None]:
+    """解析 references；任何一项失败都整体失败，错误里带上出错的那一项。"""
+
+    if not values:
+        return _ToolReferences([], [], False), None
+    resolver = ReferenceResolver(
+        image_handler=getattr(plugin, "image_handler", None),
+        avatar_handler=getattr(plugin, "avatar_handler", None),
+        generation_tracker=getattr(plugin, "generation_tracker", None),
+        settings=lambda: _reference_settings(plugin),
+    )
+    try:
+        resolved = await resolver.resolve(parse_references(values), event)
+    except InternalReferenceError as exc:
+        return None, f"{_REFERENCE_FAILURE_PREFIX}{exc.message}"
+    images = list(resolved.message_images)
+    gallery_tokens = [
+        item["token"] for item in resolved.sources if item["kind"] == "gallery"
+    ]
+    for token, path in zip(gallery_tokens, resolved.gallery_files, strict=True):
+        try:
+            images.append(await asyncio.to_thread(_inline_gallery_file, path))
+        except ValueError as exc:
+            return None, f"{_REFERENCE_FAILURE_PREFIX}{exc}：{token[:64]}"
+    images.extend(resolved.user_files)
+    return (
+        _ToolReferences(
+            images, list(resolved.avatar_reference), bool(resolved.user_files)
+        ),
+        None,
+    )
+
+
+def _apply_template(
+    plugin: Any, template_id: str, prompt: str
+) -> tuple[PromptTemplate | None, str, str | None]:
+    """取模板并渲染提示词；模板不存在或未对模型开放时返回错误文本。"""
+
+    store = getattr(plugin, "prompt_templates", None)
+    template = store.get(template_id) if store is not None else None
+    if template is None or not template.ai_enabled:
+        shown = " ".join(template_id.split())[:48]
+        return (
+            None,
+            prompt,
+            f"❌ 模板 {shown} 不存在或未对模型开放；"
+            "请用 gemini_image_lookup（kind=templates）查询可用模板",
+        )
+    cfg = getattr(plugin, "cfg", None)
+    rendered = render_template(
+        template,
+        prompt,
+        rows=getattr(cfg, "sticker_grid_rows", 4),
+        cols=getattr(cfg, "sticker_grid_cols", 4),
+    )
+    return template, rendered, None
+
+
+async def _prepare_single_request(
+    plugin: Any, event: Any, kwargs: dict[str, Any], prompt: str
+) -> tuple[_SingleRequest | None, str | None]:
+    """校验并整理单图调用的全部入参。
+
+    模板、model、references 和 deliver 的任何问题都在这里返回，此时还没有扣额度、
+    建任务或发起生成。
+    """
+
+    template = None
+    template_text = str(kwargs.get("template") or "").strip()
+    if template_text:
+        template, prompt, error = _apply_template(plugin, template_text, prompt)
+        if error:
+            return None, error
+
+    deliver = kwargs.get("deliver") or "user"
+    if deliver not in ("user", "return", "forum"):
+        return None, "❌ deliver 只能是 user、return 或 forum"
+
+    provider = model = None
+    model_text = str(kwargs.get("model") or "").strip()
+    if model_text:
+        provider, model, recognized = parse_model_selector(
+            model_text, list(getattr(plugin.cfg, "provider_candidates", []) or [])
+        )
+        if not recognized:
+            return None, (
+                "❌ 无法识别 model；请用 gemini_image_lookup（kind=models）"
+                "查询可用的供应商和模型"
+            )
+
+    # options 只认 schema 里声明过的字段，其余忽略。
+    declared = set(_configured_option_fields(plugin))
+    options = kwargs.get("options")
+    options = options if isinstance(options, dict) else {}
+    negative_prompt = (
+        str(options.get("negative_prompt") or "").strip()
+        if "negative_prompt" in declared and "negative_prompt" in options
+        else None
+    )
+    watermark = (
+        bool(options["watermark"])
+        if "watermark" in declared and "watermark" in options
+        else None
+    )
+    quality = (
+        str(options.get("quality") or "").strip()
+        if "quality" in declared and "quality" in options
+        else None
+    )
+
+    raw_references = kwargs.get("references") or []
+    if isinstance(raw_references, str):
+        raw_references = [raw_references]
+    if not isinstance(raw_references, list):
+        return None, "❌ references 必须是字符串数组"
+    references, error = await _resolve_tool_references(plugin, event, raw_references)
+    if error:
+        return None, error
+    if (
+        template is not None
+        and template.reference == "required"
+        and not (references.images or references.avatars)
+    ):
+        return None, (
+            f"❌ 模板「{template.name}」需要参考图，未启动生成；"
+            '请在 references 里提供，例如 ["current"]'
+        )
+
+    raw_resolution = kwargs.get("resolution") or None
+    raw_aspect_ratio = kwargs.get("aspect_ratio") or None
+    explicit_size = not (_blank(raw_resolution) and _blank(raw_aspect_ratio))
+    # 模板默认尺寸只补调用里没有显式给出的那一项。
+    template_size = False
+    if template is not None:
+        if _blank(raw_resolution) and template.defaults.get("resolution"):
+            raw_resolution = template.defaults["resolution"]
+            template_size = True
+        if _blank(raw_aspect_ratio) and template.defaults.get("aspect_ratio"):
+            raw_aspect_ratio = template.defaults["aspect_ratio"]
+            template_size = True
+    resolution, aspect_ratio, config_value_notice = _resolve_tool_size_params(
+        plugin,
+        resolution=raw_resolution,
+        aspect_ratio=raw_aspect_ratio,
+        provider=provider,
+        model=model,
+    )
+    has_references = bool(references.images or references.avatars)
+    preserve_size = bool(getattr(plugin.cfg, "preserve_reference_image_size", False))
+    # 显式尺寸与模板默认尺寸优先满足；配置默认值只约束未指定尺寸的请求。
+    if explicit_size or template_size:
+        preserve_size = False
+    suppress_resolution = has_references and preserve_size
+    if suppress_resolution:
+        resolution = None
+        aspect_ratio = None
+    return (
+        _SingleRequest(
+            prompt=prompt,
+            template_id=None if template is None else template.id,
+            provider=provider,
+            model=model,
+            negative_prompt=negative_prompt,
+            watermark=watermark,
+            quality=quality,
+            reference_images=references.images,
+            avatar_reference=references.avatars,
+            # 只有过了路径守卫的用户本地文件需要受信读取；画廊图已内联为 data URI，
+            # 消息图本来就是内联形态。
+            trusted_local=references.has_user_files,
+            resolution=resolution,
+            aspect_ratio=aspect_ratio,
+            config_value_notice=config_value_notice,
+            suppress_resolution=suppress_resolution,
+            return_images=deliver in ("return", "forum"),
+            forum_mode=deliver == "forum",
+        ),
+        None,
+    )
+
+
 @dataclass
 class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
     """
@@ -1474,7 +1689,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         执行图像生成工具（触发器模式）
 
         Foreground-first hybrid mode for normal chats.
-        When for_forum=True, the tool waits synchronously and returns image paths.
+        When deliver="return", the tool waits synchronously and returns image paths.
         """
         self.refresh_from_plugin()
         event = context.context.event
@@ -1485,10 +1700,14 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         raw_batch_tasks = kwargs.get("batch_tasks")
         is_batch = raw_batch_tasks is not None
         prompt = str(kwargs.get("prompt") or "").strip()
-        if not is_batch and not prompt:
+        if (
+            not is_batch
+            and not prompt
+            and not str(kwargs.get("template") or "").strip()
+        ):
             return "❌ 缺少必填参数：单图模式的图像描述不能为空"
-        if is_batch and kwargs.get("for_forum"):
-            return "❌ batch_tasks 固定进入后台，不能与 for_forum=true 同时使用"
+        if is_batch and kwargs.get("deliver") == "return":
+            return "❌ batch_tasks 固定进入后台，不能与 deliver=return 同时使用"
 
         if not plugin.api_client:
             return (
@@ -1550,82 +1769,26 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
             )
             return _background_json(task_id, batch_mode, message)
 
-        use_reference_images = kwargs.get("use_reference_images", False)
-        include_user_avatar = kwargs.get("include_user_avatar", False)
-        raw_resolution = kwargs.get("resolution") or None
-        raw_aspect_ratio = kwargs.get("aspect_ratio") or None
-        provider = str(kwargs.get("provider") or "").strip() or None
-        model = str(kwargs.get("model") or "").strip() or None
-        negative_prompt = (
-            str(kwargs.get("negative_prompt") or "").strip()
-            if "negative_prompt" in kwargs
-            else None
-        )
-        watermark = bool(kwargs.get("watermark")) if "watermark" in kwargs else None
-        quality = (
-            str(kwargs.get("quality") or "").strip() if "quality" in kwargs else None
-        )
-        for_forum = kwargs.get("for_forum", False)
-
-        # 布尔参数已在工具定义中声明为 boolean 类型，直接使用
-        include_avatar = bool(include_user_avatar)
-        include_ref_images = bool(use_reference_images)
-        resolution, aspect_ratio, config_value_notice = _resolve_tool_size_params(
-            plugin,
-            resolution=raw_resolution,
-            aspect_ratio=raw_aspect_ratio,
-            provider=provider,
-            model=model,
-        )
-
-        # 获取参考图片（需要在启动后台任务前获取，因为 event 可能在之后失效）
-        reference_images, avatar_reference = await plugin._fetch_images_from_event(
-            event, include_at_avatars=include_avatar
-        )
-
-        if not include_ref_images:
-            reference_images = []
-        if not include_avatar:
-            avatar_reference = []
-
-        reference_images = list(reference_images) + _normalize_reference_paths(
-            plugin,
-            kwargs.get("reference_image_paths"),
-        )
-        reference_error = _reference_admission_error(
-            plugin,
-            reference_images,
-            avatar_reference,
-            references_required=bool(
-                include_ref_images
-                or include_avatar
-                or kwargs.get("reference_image_paths")
-            ),
-            avatar_required=include_avatar,
-        )
-        if reference_error:
-            return f"❌ {reference_error}"
-
+        single, error = await _prepare_single_request(plugin, event, kwargs, prompt)
+        if error:
+            return error
+        prompt = single.prompt
+        template_id = single.template_id
+        provider = single.provider
+        model = single.model
+        negative_prompt = single.negative_prompt
+        watermark = single.watermark
+        quality = single.quality
+        reference_images = single.reference_images
+        avatar_reference = single.avatar_reference
+        resolution = single.resolution
+        aspect_ratio = single.aspect_ratio
+        config_value_notice = single.config_value_notice
+        suppress_resolution = single.suppress_resolution
+        return_images = single.return_images
         ref_count = len(reference_images)
         avatar_count = len(avatar_reference)
         has_references = bool(ref_count or avatar_count)
-        preserve_size = (
-            bool(kwargs.get("preserve_reference_image_size"))
-            if "preserve_reference_image_size" in kwargs
-            else bool(getattr(plugin.cfg, "preserve_reference_image_size", False))
-        )
-        explicit_size = any(
-            value is not None and str(value).strip()
-            for value in (raw_resolution, raw_aspect_ratio)
-        )
-        # 模型显式给出尺寸时优先满足本次请求；配置默认值只约束未指定尺寸的请求。
-        if explicit_size:
-            preserve_size = False
-        suppress_resolution = has_references and preserve_size
-        if suppress_resolution:
-            resolution = None
-            aspect_ratio = None
-
         candidates = _matching_candidates(
             plugin,
             provider=provider,
@@ -1655,8 +1818,11 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                 watermark=watermark,
                 quality=quality,
                 suppress_resolution=suppress_resolution,
-                for_forum=for_forum,
+                return_images=return_images,
                 config_value_notice=config_value_notice,
+                forum_mode=single.forum_mode,
+                trusted_local=single.trusted_local,
+                template_id=template_id,
             )
         allowed, limit_message = await plugin._check_and_consume_limit(event)
         if not allowed:
@@ -1668,12 +1834,12 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         logger.info(
             f"[工具调用] 启动图像生成任务："
             f"提示词长度={prompt_len} 参考图={ref_count} 张 头像={avatar_count} 张 "
-            f"尺寸/分辨率={resolution} 比例={aspect_ratio} 发帖模式={for_forum}"
+            f"尺寸/分辨率={resolution} 比例={aspect_ratio} 仅返回路径={return_images}"
         )
 
-        # ========== for_forum 模式：同步等待生成完成 ==========
-        if for_forum:
-            logger.info("[后台任务] 论坛模式：同步等待图片生成完成……")
+        # ========== deliver=return：同步等待生成完成 ==========
+        if return_images:
+            logger.info("[后台任务] 仅返回路径：同步等待图片生成完成……")
 
             try:
                 # 直接调用核心生成逻辑，同步等待
@@ -1693,8 +1859,20 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                     quality=quality,
                     image_count=1,
                     suppress_resolution=suppress_resolution,
+                    template_id=template_id,
                 )
-                return _format_forum_result(success, result_data, config_value_notice)
+                job_id = (
+                    plugin.image_generator.get_request_stats().get("job_id")
+                    if success
+                    else None
+                )
+                return _format_returned_images(
+                    success,
+                    result_data,
+                    config_value_notice,
+                    generation_reference_note(plugin, job_id),
+                    forum=single.forum_mode,
+                )
 
             except asyncio.TimeoutError:
                 return "❌ 图片生成超时，请稍后重试"
@@ -1718,6 +1896,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
             quality=quality,
             image_count=1,
             suppress_resolution=suppress_resolution,
+            template_id=template_id,
         )
         foreground_wait_seconds = _resolve_foreground_wait_seconds(plugin, event)
 
@@ -1775,7 +1954,12 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                             text_content=text_content,
                             message_sender=plugin.message_sender,
                             api_client=plugin.api_client,
-                            llm_notice=config_value_notice,
+                            llm_notice=_joined_notice(
+                                config_value_notice,
+                                generation_reference_note(
+                                    plugin, request_stats.get("job_id")
+                                ),
+                            ),
                         ),
                         timeout=30,  # 下载最多给 30 秒
                     )
@@ -1868,9 +2052,6 @@ async def execute_image_generation_tool(
     已弃用：请使用 GeminiImageGenerationTool 类代替。
     此函数保留用于向后兼容 @filter.llm_tool 装饰器方式。
     """
-    from pathlib import Path
-
-    from astrbot.api.message_components import Image as AstrImage
 
     prompt = str(prompt or "").strip()
     if not prompt:
@@ -1946,25 +2127,20 @@ async def execute_image_generation_tool(
     if success and isinstance(result_data, tuple):
         image_urls, image_paths, text_content, thought_signature = result_data
 
-        results: list[Any] = []
-        if text_content:
-            results.append(text_content)
-        # thought signature 只允许作为内部调试/协议层元数据存在，不能返回给
-        # Tool 调用方，更不能让 Agent 把它当成普通文本继续消费。
         log_thought_signature_debug(thought_signature, scene="Tool结果已丢弃")
-
-        # 添加图片
-        for img_path in image_paths or []:
-            if img_path and Path(img_path).exists():
-                results.append(AstrImage.fromFileSystem(img_path))
-
-        # 如果没有本地图片，使用 URL
-        if not any(isinstance(r, AstrImage) for r in results):
-            for url in image_urls or []:
-                if url:
-                    results.append(AstrImage(file=url))
-
-        return results if results else ["✅ 图片已生成"]
+        locations = image_location_list(image_urls, image_paths)
+        results: list[str] = []
+        if text_content:
+            results.append(sanitize_text(text_content) or "")
+        if locations:
+            results.append(
+                "生成图片位置（优先使用本地路径）：\n"
+                + "\n".join(
+                    f"图片 {index}: {location}"
+                    for index, location in enumerate(locations, start=1)
+                )
+            )
+        return results or ["✅ 图片已生成"]
 
     # 失败情况
     error_msg = (

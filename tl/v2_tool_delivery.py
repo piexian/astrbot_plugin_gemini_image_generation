@@ -7,7 +7,11 @@ from typing import Any
 
 from astrbot.api import logger
 
-from .background_dispatch import dispatch_generation_result, single_task_record_changes
+from .background_dispatch import (
+    dispatch_generation_result,
+    generation_reference_note,
+    single_task_record_changes,
+)
 from .background_notify import report_background_failure
 from .batch_generation import (
     _batch_item_result,
@@ -57,6 +61,9 @@ class ToolBackgroundDelivery:
                 scene=self._scene,
                 notify_llm=True,
                 task_id=task_id,
+                reference_note=generation_reference_note(
+                    self._plugin, getattr(job, "job_id", None)
+                ),
             )
         except Exception as exc:
             logger.error(f"[{self._scene}] 后台结果分发异常: {exc}", exc_info=True)

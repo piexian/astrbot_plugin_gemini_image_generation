@@ -66,7 +66,7 @@ from .tl.llm_tools import GeminiImageGenerationTool
 from .tl.plugin_config import get_session_tool_timeout, max_configured_reference_images
 from .tl.plugin_service import ImageGenerationService
 from .tl.prompt_templates import PromptTemplateStore, builtin_template, render_template
-from .tl.provider_capabilities import select_candidates
+from .tl.provider_capabilities import parse_model_selector, select_candidates
 from .tl.provider_runtime import ProviderRuntime, provider_operation
 from .tl.provider_settings import candidate_is_keyless
 from .tl.reference_image import REFERENCE_IMAGE_CACHE_DIR
@@ -1067,34 +1067,9 @@ class GeminiImageGenerationPlugin(Star):
             tokens = text.split()
         if not tokens:
             return text, None, None
-
-        selector = tokens[0]
-        configured_candidates = list(getattr(self.cfg, "provider_candidates", []) or [])
-        provider: str | None = None
-        model: str | None = None
-        consumed = False
-        if "/" in selector:
-            provider_part, model_part = selector.split("/", 1)
-            provider_matches = select_candidates(
-                configured_candidates,
-                provider=provider_part,
-            )
-            if provider_part and provider_matches:
-                provider = provider_part
-                model = model_part or None
-                consumed = True
-            elif select_candidates(configured_candidates, model=selector):
-                model = selector
-                consumed = True
-        else:
-            candidates = select_candidates(
-                configured_candidates,
-                model=selector,
-            )
-            if candidates:
-                model = selector
-                consumed = True
-
+        provider, model, consumed = parse_model_selector(
+            tokens[0], list(getattr(self.cfg, "provider_candidates", []) or [])
+        )
         if not consumed:
             return text, None, None
         return " ".join(tokens[1:]).strip(), provider, model
@@ -2171,6 +2146,7 @@ class GeminiImageGenerationPlugin(Star):
         quality: str | None = None,
         image_count: int = 1,
         suppress_resolution: bool = False,
+        template_id: str | None = None,
     ) -> tuple[bool, tuple[list[str], list[str], str | None, str | None] | str]:
         """兼容旧 API：核心图像生成方法"""
         return await self.image_generator.generate_image_core(
@@ -2188,6 +2164,7 @@ class GeminiImageGenerationPlugin(Star):
             quality=quality,
             image_count=image_count,
             suppress_resolution=suppress_resolution,
+            template_id=template_id,
         )
 
     async def _dispatch_send_results(

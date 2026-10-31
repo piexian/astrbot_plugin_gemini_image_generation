@@ -120,13 +120,16 @@ def test_tool_schema_omits_legacy_size() -> None:
     plugin = _plugin_with_candidates()
     params = _build_tool_parameters(plugin)
     batch_properties = params["properties"]["batch_tasks"]["items"]["properties"]
-    description = params["properties"]["preserve_reference_image_size"]["description"]
+    description = (
+        params["properties"]["resolution"]["description"]
+        + params["properties"]["aspect_ratio"]["description"]
+    )
 
     assert "size" not in params["properties"]
     assert "size" not in batch_properties
     assert "size" not in description
-    assert "resolution" in description
-    assert "aspect_ratio" in description
+    assert "分辨率" in description
+    assert "长宽比" in description
 
 
 def test_custom_size_mode_keeps_resolution_and_configured_default() -> None:

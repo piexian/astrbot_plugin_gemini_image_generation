@@ -26,6 +26,7 @@ from .generation_tracker import (
     record_generation_success,
     requester_from_event,
 )
+from .image_outputs import normalize_image_outputs
 from .provider_capabilities import routing_mode
 from .session_image_dir import bind_session_image_dir, reset_session_image_dir
 from .thought_signature import log_thought_signature_debug
@@ -422,6 +423,8 @@ class ImageGenerator:
                     "successful_model_alias": request_config.successful_model_alias,
                     "effective_image_count": request_config.effective_image_count,
                     "routing_mode": request_config.routing_mode,
+                    # LLM 工具据此给结果附上 gen: 引用；记录清洗 stats 时会丢掉这个键。
+                    "job_id": tracking_job_id,
                 }
             )
 
@@ -745,6 +748,7 @@ class ImageGenerator:
             return False, error_msg
         result = job_result.result
         image_urls, image_paths = v2_split_artifacts(result.artifacts)
+        image_paths, image_urls = await normalize_image_outputs(image_urls, image_paths)
         stats = result.stats or {}
         self._set_request_stats(
             {

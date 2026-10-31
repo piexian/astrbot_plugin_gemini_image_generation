@@ -33,7 +33,7 @@ from tl.generation_tracker import (
 )
 from tl.llm_tools import GeminiImageGenerationTool
 from tl.prompt_templates import builtin_template, render_template
-from tl.provider_capabilities import select_candidates
+from tl.provider_capabilities import parse_model_selector, select_candidates
 from tl.rate_limiter import RateLimiter
 from tl.reference_image import REFERENCE_IMAGE_CACHE_DIR
 from tl.v2_admission import (
@@ -502,6 +502,7 @@ def _command_class():
         "ServiceClosedError": ServiceClosedError,
         "format_error_message": format_error_message,
         "select_candidates": select_candidates,
+        "parse_model_selector": parse_model_selector,
         "requester_from_event": lambda event: {},
         "_build_no_ref_msg": lambda mode, suggestion: f"{mode}: {suggestion}",
         "JobState": JobState,
@@ -723,7 +724,7 @@ async def test_studio_llm_and_command_share_real_global_limiter(
         llm_event = _Event()
         llm_event.unified_msg_origin = "platform:FriendMessage:user-1"
         result = await GeminiImageGenerationTool(plugin=plugin).call(
-            _context(llm_event), prompt="draw", for_forum=True
+            _context(llm_event), prompt="draw", deliver="return"
         )
         assert "provider failed" in result
         with pytest.raises(StudioServiceError) as caught:

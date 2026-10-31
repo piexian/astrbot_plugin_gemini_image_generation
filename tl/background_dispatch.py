@@ -8,6 +8,8 @@ from typing import Any
 from astrbot.api import logger
 
 from .background_notify import notify_llm_background_result, report_background_failure
+from .image_outputs import normalize_image_outputs
+from .llm_output import image_locations, sanitize_text
 
 
 async def bump_delivery_count(
@@ -37,9 +39,11 @@ async def dispatch_generation_result(
     force_text_response: bool = False,
     notify_llm: bool = False,
     task_id: str | None = None,
+    reference_note: str | None = None,
 ) -> bool:
     if success and isinstance(result_data, tuple):
         image_urls, image_paths, text_content, thought_signature = result_data
+        image_paths, image_urls = await normalize_image_outputs(image_urls, image_paths)
 
         # 代理全链路：后台发送前，将需要代理的远程 URL 下载为本地文件
         # 避免 NapCat 等平台无法访问代理依赖的 URL
@@ -89,9 +93,10 @@ async def dispatch_generation_result(
                 {
                     "task_id": task_id or "",
                     "status": "succeeded",
-                    "image_urls": list(image_urls or []),
-                    "image_paths": list(image_paths or []),
-                    "text_content": content_text,
+                    "image_paths": list(image_locations(image_urls, image_paths)[0]),
+                    "image_urls": list(image_locations(image_urls, image_paths)[1]),
+                    "text_content": sanitize_text(content_text),
+                    **({"generation_record": reference_note} if reference_note else {}),
                 },
                 notice=f"后台图片生成任务 {task_id or '-'} 已完成，请调用主动发送工具发送图片。",
                 scene=scene,
@@ -133,6 +138,32 @@ async def dispatch_generation_result(
         logger.warning(f"[{scene}] 发送错误消息失败: {exc}")
         return False
     return True
+
+
+def generation_reference_note(plugin: Any, job_id: Any) -> str:
+    """成功结果附上的生成记录引用。历史关闭或记录里没有可引用的图时返回空字符串。"""
+
+    tracker = getattr(plugin, "generation_tracker", None)
+    if not job_id or tracker is None or not getattr(tracker, "enabled", False):
+        return ""
+    record = tracker.get(str(job_id)) or {}
+    # 归档不完整的记录里没有画廊图，gen: 无法解析，不能让模型去引用。
+    image_count = len(record.get("images") or [])
+    if not image_count:
+        return ""
+    lines = [f"本次生成记录：gen:{job_id}"]
+    if image_count > 1:
+        lines.append(
+            f"共 {image_count} 张，可用 gen:{job_id}#<序号> 选第几张，序号从 1 开始。"
+        )
+    cross_session = getattr(
+        getattr(plugin, "cfg", None), "reference_cross_session", False
+    )
+    if not record.get("shared") and not cross_session:
+        lines.append(
+            "用户表示要在别的群或私聊里使用这张图时，先征得同意再调用 gemini_image_share。"
+        )
+    return "\n".join(lines)
 
 
 def single_task_record_changes(

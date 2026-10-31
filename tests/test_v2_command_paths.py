@@ -258,7 +258,7 @@ def _make_generator(api_client=None):
 @pytest.mark.asyncio
 async def test_image_generator_v2_success_returns_split_artifacts():
     result = GenerationResult(
-        artifacts=("https://img.test/a.png", "/tmp/b.png"),
+        artifacts=("https://img.test/a.png", __file__),
         text="ok",
         provider="legacy",
         model="auto",
@@ -279,7 +279,7 @@ async def test_image_generator_v2_success_returns_split_artifacts():
     assert success is True
     urls, paths, text, thought = data
     assert urls == ["https://img.test/a.png"]
-    assert paths == ["/tmp/b.png"]
+    assert paths == [__file__]
     assert text == "ok"
     assert thought is None
     stats = generator.get_request_stats()
@@ -291,6 +291,40 @@ async def test_image_generator_v2_success_returns_split_artifacts():
     # 等待上限取调度器的 result_wait_timeout（含观察者钩子时间）。
     submit_timeout = [call[2] for call in service.calls if call[0] == "wait"][0]
     assert submit_timeout == service.result_wait_timeout(generator.total_timeout)
+
+
+async def _save_inline_image(_data, image_format="png"):
+    path = Path(__file__).with_suffix(f".inline.{image_format}")
+    path.write_bytes(b"saved")
+    return str(path)
+
+
+@pytest.mark.asyncio
+async def test_image_generator_v2_saves_inline_base64_artifact(monkeypatch):
+    import base64
+
+    png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\ninline").decode()
+    monkeypatch.setattr("tl.image_outputs.save_base64_image", _save_inline_image)
+    result = GenerationResult(
+        artifacts=(f"data:image/png;base64,{png_b64}",),
+        text=None,
+        provider="legacy",
+        model="auto",
+    )
+    generator = _make_generator()
+    success, data = await generator.generate_image_core(
+        event=SimpleNamespace(unified_msg_origin="u"),
+        prompt="draw",
+        reference_images=[],
+        avatar_reference=[],
+        v2_service=_FakeV2Service(result=result),
+    )
+
+    assert success is True
+    urls, paths, _text, _thought = data
+    assert len(paths) == 1
+    assert paths[0].endswith(".png")
+    assert urls == []
 
 
 @pytest.mark.asyncio

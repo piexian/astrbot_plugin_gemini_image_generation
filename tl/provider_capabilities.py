@@ -612,6 +612,30 @@ def explicit_runtime_parameters(config: Any) -> set[str]:
     return required
 
 
+def parse_model_selector(
+    selector: str, candidates: list[Any]
+) -> tuple[str | None, str | None, bool]:
+    """识别 ``供应商/模型``、``供应商/``、模型名或别名，命令与 LLM 工具共用。
+
+    返回 (provider, model, 是否识别成功)。无法识别时不回退到默认路由，由调用方决定
+    是原样保留文本还是报错。
+    """
+
+    text = str(selector or "")
+    if not text.strip():
+        return None, None, False
+    if "/" in text:
+        provider_part, model_part = text.split("/", 1)
+        if provider_part and select_candidates(candidates, provider=provider_part):
+            return provider_part, model_part or None, True
+        if select_candidates(candidates, model=text):
+            return None, text, True
+        return None, None, False
+    if select_candidates(candidates, model=text):
+        return None, text, True
+    return None, None, False
+
+
 def select_candidates(
     candidates: list[Any],
     *,
