@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 from astrbot.api import logger
 
 from .core.errors import redact_url
-from .generation_tracker import GenerationTracker
+from .generation_tracker import GenerationTracker, without_session_origin
 from .studio_parameters import clean_browser_preferences
 from .web_studio_service import StudioServiceError, WebStudioService
 
@@ -111,6 +111,7 @@ def _valid_json_value(value: Any, depth: int = 0) -> bool:
 
 
 def _redact_source_urls(value: Any) -> Any:
+    value = without_session_origin(value)
     if isinstance(value, dict):
         return {
             key: (

@@ -145,6 +145,7 @@ avatar / poster / wallpaper / card / mobile / figure / sticker
 |--------|--------|------|
 | `napcat_stream_threshold_mb` | `2.0` | 本地图片原始发送失败后，达到该大小才使用 NapCat Stream API 兜底重试；`0` 表示禁用 |
 | `auto_avatar_reference` | `false` | 自动获取头像作为参考图 |
+| `reference_cross_session` | `false` | 开启后，同一机器人下所有会话的生成记录都可以被 `gen:` 引用；关闭时只有同一会话或已共享的记录可以。语法见 [内部引用](references.md) |
 | `show_duration_stats` | `true` | 生成完成后是否展示耗时统计 |
 | `show_retry_stats` | `true` | 生成完成后是否展示重试次数 |
 | `show_token_usage_stats` | `true` | 生成完成后是否展示上游返回的 token 用量 |

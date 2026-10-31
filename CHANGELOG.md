@@ -7,6 +7,7 @@
 ### Added
 
 - 提示词模板库：内置快速模式提示词、本地模板与 JSON 包（`gemini-image-templates`），并定义模板源协议。模板文件在插件数据目录的 `prompt_templates.json`。
+- 内部引用解析器，以及生成记录的 `umo` 与共享标记。配置项 `service_settings.reference_cross_session` 默认关闭。
 - `retry_settings.scheduler_v2_sessions` 会话灰度名单：填会话的 unified_msg_origin，非空时仅名单内会话的聊天命令与 LLM 工具走 v2 调度器，其余会话、WebUI 与 SDK 保持旧路径。
 
 ### Changed

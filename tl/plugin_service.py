@@ -22,7 +22,7 @@ from .core.errors import (
 )
 from .file_uri import file_uri_to_path
 from .generation_scheduler import generation_progress, generation_reservation
-from .generation_tracker import tracking_context
+from .generation_tracker import tracking_context, without_session_origin
 from .limit_config import validate_umo
 from .provider_capabilities import (
     candidate_capability,
@@ -503,7 +503,7 @@ class ImageGenerationService:
         )
         if record is None:
             raise PluginServiceError("task_not_found", "任务不存在或已过期")
-        return record
+        return without_session_origin(record)
 
     async def wait_task(
         self, task_id: str, *, plugin_id: str, timeout: float | None = None
@@ -708,7 +708,9 @@ class ImageGenerationService:
         if callback and self._state == "ready":
             await manager.update(task_id, best_effort=True, callback_status="running")
             await self._update_history(job_id, callback_status="running")
-            callback_task = asyncio.create_task(callback(copy.deepcopy(result)))
+            callback_task = asyncio.create_task(
+                callback(without_session_origin(result))
+            )
             self._callback_tasks[task_id] = callback_task
             callback_status = "succeeded"
             try:

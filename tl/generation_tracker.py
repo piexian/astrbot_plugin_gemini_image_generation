@@ -172,12 +172,34 @@ def requester_from_event(event: Any) -> dict[str, str]:
     if chat_type == "unknown" and group_id:
         chat_type = "group"
 
-    return {
+    try:
+        umo = getattr(event, "unified_msg_origin", None)
+    except Exception:
+        umo = None
+    payload = {
         "user_id": _bounded_text(user_id, 128),
         "user_name": _bounded_text(user_name, 200),
         "group_id": _bounded_text(group_id, 128),
         "chat_type": chat_type,
     }
+    umo_text = _bounded_text(umo, 1024)
+    if umo_text:
+        payload["umo"] = umo_text
+    return payload
+
+
+def without_session_origin(value: Any) -> Any:
+    """去掉对外结果里的会话标识。内部记录仍保留 ``umo``。"""
+
+    if isinstance(value, dict):
+        return {
+            key: without_session_origin(item)
+            for key, item in value.items()
+            if key != "umo"
+        }
+    if isinstance(value, list):
+        return [without_session_origin(item) for item in value]
+    return value
 
 
 async def record_generation_success(
@@ -347,6 +369,9 @@ class GenerationTracker:
                 continue
             job_id = str(record.get("job_id") or "").strip()
             if job_id:
+                record["shared"] = record.get("shared") is True
+                if not record["shared"] or not isinstance(record.get("shared_at"), str):
+                    record["shared_at"] = None
                 records[job_id] = record
         return records
 
@@ -595,15 +620,12 @@ class GenerationTracker:
                 "text_content": "",
                 "error": None,
                 "stats": self._clean_stats({}),
+                "shared": False,
+                "shared_at": None,
             }
             with self.gallery_lock:
                 names = set(record["reference_names"])
-                root = self.gallery_dir.resolve()
-                if names & self._pending_image_deletions or any(
-                    (self.gallery_dir / name).resolve().parent != root
-                    or not (self.gallery_dir / name).is_file()
-                    for name in names
-                ):
+                if any(self.gallery_image_path(name) is None for name in names):
                     raise ReferenceImageUnavailableError(
                         "参考图片不存在或正在清理，请重新选择"
                     )
@@ -770,6 +792,53 @@ class GenerationTracker:
                 f"[生成历史] 失败记录: job_id={job_id}, "
                 f"状态={previous_status}->failed, 记录总数={len(self._jobs)}"
             )
+
+    async def set_shared(
+        self, job_id: str, shared: bool, *, user_id: str, umo: str
+    ) -> dict[str, Any]:
+        """只允许请求者本人修改共享状态。"""
+
+        if type(shared) is not bool:
+            raise ValueError("shared 必须是布尔值")
+        owner_id = str(user_id or "").strip()
+        owner_umo = str(umo or "").strip()
+        if not owner_id or not owner_umo:
+            raise ValueError("只有请求者本人可以修改共享状态")
+        async with self._lock:
+            record = self._jobs.get(str(job_id or ""))
+            if record is None:
+                raise ValueError("生成记录不存在")
+            requester = record.get("requester") or {}
+            if (
+                str(requester.get("user_id") or "") != owner_id
+                or str(requester.get("umo") or "") != owner_umo
+            ):
+                raise ValueError("只有请求者本人可以修改共享状态")
+            if record.get("status") not in {
+                "succeeded",
+                "partial_success",
+            } or not record.get("images"):
+                raise ValueError("只有已完成且有图片的记录可以共享")
+            record["shared"] = shared
+            record["shared_at"] = _timestamp() if shared else None
+            self._prune_locked()
+            await self._save()
+            self._broadcast(record)
+            return self._snapshot(record)
+
+    def gallery_image_path(self, name: str) -> Path | None:
+        """画廊里仍可引用的图片。待删除、越出目录或不存在时返回空。"""
+
+        if not isinstance(name, str) or not _SAFE_FILE_NAME.fullmatch(name):
+            return None
+        with self.gallery_lock:
+            if name in self._pending_image_deletions:
+                return None
+            root = self.gallery_dir.resolve()
+            path = (self.gallery_dir / name).resolve()
+            if path.parent != root or not path.is_file():
+                return None
+            return path
 
     @staticmethod
     def _duration_ms(record: dict[str, Any], finished_at: Any) -> int:

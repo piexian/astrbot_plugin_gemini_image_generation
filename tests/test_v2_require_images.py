@@ -85,6 +85,8 @@ async def test_core_path_text_only_result_fails_like_legacy(tmp_path, text):
         (legacy_record,) = legacy_tracker.records_snapshot()
         (v2_record,) = v2_tracker.records_snapshot()
         assert legacy_record["status"] == v2_record["status"] == "failed"
+        assert legacy_record["requester"]["umo"] == EVENT.unified_msg_origin
+        assert v2_record["requester"]["umo"] == EVENT.unified_msg_origin
         assert v2_record["error"] == "供应商未返回图片"
         assert v2_record["generated_images"] == 0 and v2_record["images"] == []
     finally:

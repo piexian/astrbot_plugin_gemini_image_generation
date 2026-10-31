@@ -265,6 +265,7 @@ class PluginConfig:
     # 服务设置
     napcat_stream_threshold_mb: float = 2.0
     auto_avatar_reference: bool = False
+    reference_cross_session: bool = False
     show_duration_stats: bool = True
     show_retry_stats: bool = True
     show_token_usage_stats: bool = True
@@ -889,6 +890,9 @@ class ConfigLoader:
         config.napcat_stream_threshold_mb = max(config.napcat_stream_threshold_mb, 0.0)
         config.auto_avatar_reference = (
             service_settings.get("auto_avatar_reference") or False
+        )
+        config.reference_cross_session = _clean_bool(
+            service_settings.get("reference_cross_session"), False
         )
         config.show_duration_stats = service_settings.get("show_duration_stats", True)
         config.show_retry_stats = service_settings.get("show_retry_stats", True)

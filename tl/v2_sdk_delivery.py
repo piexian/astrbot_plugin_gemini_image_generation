@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 from typing import Any
 
 from astrbot.api import logger
 
 from .core.states import JobState
+from .generation_tracker import without_session_origin
 from .v2_bridge import split_artifacts, v2_failure_message
 
 _CALLBACK_TIMEOUT_SECONDS = 30
@@ -133,7 +133,7 @@ class SdkDelivery:
 
         await manager.update(task_id, best_effort=True, callback_status="running")
         await self._service._update_history(job_id, callback_status="running")
-        callback_task = asyncio.create_task(callback(copy.deepcopy(record)))
+        callback_task = asyncio.create_task(callback(without_session_origin(record)))
         self._service._callback_tasks[task_id] = callback_task
         callback_status = "succeeded"
         try:
