@@ -106,7 +106,10 @@ class ProviderModelQueryTool(FunctionTool[AstrAgentContext]):
 class BackgroundTaskStatusTool(FunctionTool[AstrAgentContext]):
     name: str = "gemini_image_task_status"
     handler_module_path: str = "astrbot_plugin_gemini_image_generation"
-    description: str = "使用后台任务号查询当前会话中的图片生成进度和结果摘要。"
+    description: str = (
+        "使用后台任务号查询当前会话中的图片生成进度和结果摘要。"
+        "任务完成后会自动通知你，无需反复查询；仅在用户询问进度时调用。"
+    )
     parameters: dict = Field(
         default_factory=lambda: {
             "type": "object",

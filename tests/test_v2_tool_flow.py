@@ -1175,3 +1175,221 @@ async def test_batch_v2_quota_denial_creates_no_job_or_record(make_env):
     assert await stored_jobs(env) == []
     assert env.manager._records == {}
     assert client.configs == []
+
+
+def _png_data_uri() -> str:
+    return "data:image/png;base64," + base64.b64encode(png_bytes()).decode()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "explicit",
+    [{"resolution": "1K"}, {"aspect_ratio": "3:4"}],
+)
+async def test_v2_explicit_dimension_beats_preserve_and_ignores_size(
+    make_env, explicit
+):
+    env = await make_env()
+    env.plugin.cfg.preserve_reference_image_size = True
+    env.plugin._fetch_images_from_event.return_value = ([_png_data_uri()], [])
+
+    await call(env, use_reference_images=True, size="1024x1024", **explicit)
+
+    config = env.client.configs[0]
+    assert config.suppress_resolution is False
+    assert config.resolution == explicit.get("resolution")
+    assert config.aspect_ratio == explicit.get("aspect_ratio")
+
+
+@pytest.mark.asyncio
+async def test_v2_size_alone_does_not_override_reference_size(make_env):
+    env = await make_env()
+    env.plugin.cfg.preserve_reference_image_size = True
+    env.plugin._fetch_images_from_event.return_value = ([_png_data_uri()], [])
+
+    await call(env, use_reference_images=True, size="9999x1")
+
+    config = env.client.configs[0]
+    assert config.resolution is None
+    assert config.aspect_ratio is None
+    assert config.suppress_resolution is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "explicit",
+    [{"resolution": "2K"}, {"aspect_ratio": "16:9"}],
+)
+async def test_legacy_explicit_dimension_beats_preserve_and_ignores_size(
+    tmp_path, monkeypatch, explicit
+):
+    plugin = make_plugin(tmp_path, None, GatedClient())
+    plugin.cfg.preserve_reference_image_size = True
+    plugin._fetch_images_from_event.return_value = ([_png_data_uri()], [])
+    generate = AsyncMock(
+        return_value=(True, (["https://img.test/out.png"], [], "ok", None))
+    )
+    monkeypatch.setattr(llm_tools, "invoke_generation_core", generate)
+
+    result = await GeminiImageGenerationTool(plugin=plugin).call(
+        _context(_Event()),
+        prompt="draw",
+        for_forum=True,
+        use_reference_images=True,
+        size="1024x1024",
+        **explicit,
+    )
+
+    assert "论坛发帖模式" in result
+    kwargs = generate.await_args.kwargs
+    assert kwargs["suppress_resolution"] is False
+    assert kwargs["override_resolution"] == explicit.get("resolution")
+    assert kwargs["override_aspect_ratio"] == explicit.get("aspect_ratio")
+    await plugin.background_task_manager.close()
+
+
+@pytest.mark.asyncio
+async def test_legacy_size_alone_does_not_override_reference_size(
+    tmp_path, monkeypatch
+):
+    plugin = make_plugin(tmp_path, None, GatedClient())
+    plugin.cfg.preserve_reference_image_size = True
+    plugin._fetch_images_from_event.return_value = ([_png_data_uri()], [])
+    generate = AsyncMock(
+        return_value=(True, (["https://img.test/out.png"], [], "ok", None))
+    )
+    monkeypatch.setattr(llm_tools, "invoke_generation_core", generate)
+
+    result = await GeminiImageGenerationTool(plugin=plugin).call(
+        _context(_Event()),
+        prompt="draw",
+        for_forum=True,
+        use_reference_images=True,
+        size="not-a-size",
+    )
+
+    assert "论坛发帖模式" in result
+    kwargs = generate.await_args.kwargs
+    assert kwargs["suppress_resolution"] is True
+    assert kwargs["override_resolution"] is None
+    assert kwargs["override_aspect_ratio"] is None
+    await plugin.background_task_manager.close()
+
+
+@pytest.mark.asyncio
+async def test_legacy_custom_size_mode_ignores_tool_size(tmp_path, monkeypatch):
+    plugin = make_plugin(
+        tmp_path,
+        None,
+        GatedClient(),
+        candidates=[
+            ProviderCandidate(
+                id="openai#1",
+                api_type="openai_images",
+                settings={
+                    "size_mode": "custom",
+                    "custom_size": "1536x1024",
+                    "api_keys": ["key"],
+                    "model": "gpt-image",
+                },
+            )
+        ],
+    )
+    generate = AsyncMock(
+        return_value=(True, (["https://img.test/out.png"], [], "ok", None))
+    )
+    monkeypatch.setattr(llm_tools, "invoke_generation_core", generate)
+
+    result = await GeminiImageGenerationTool(plugin=plugin).call(
+        _context(_Event()),
+        prompt="draw",
+        for_forum=True,
+        size="1024x1024",
+    )
+
+    assert "论坛发帖模式" in result
+    assert generate.await_args.kwargs["override_resolution"] == "1536x1024"
+    assert generate.await_args.kwargs["override_aspect_ratio"] is None
+    await plugin.background_task_manager.close()
+
+
+@pytest.mark.asyncio
+async def test_legacy_batch_ignores_size(tmp_path, monkeypatch):
+    plugin = make_plugin(tmp_path, None, GatedClient(), candidates=batch_candidates())
+    plugin.cfg.preserve_reference_image_size = True
+    plugin._fetch_images_from_event.return_value = ([_png_data_uri()], [])
+    received = []
+
+    async def run_batch(plugin, event, task_id, items, **kwargs):
+        received.extend(items)
+
+    monkeypatch.setattr(llm_tools, "run_batch_job", run_batch)
+    result = await GeminiImageGenerationTool(plugin=plugin).call(
+        _context(_Event()),
+        batch_tasks=[
+            {
+                "name": "explicit",
+                "prompt": "a",
+                "image_count": 1,
+                "provider": "legacy",
+                "use_reference_images": True,
+                "size": "not-a-size",
+                "resolution": "4K",
+                "aspect_ratio": "1:1",
+            },
+            {
+                "name": "size-only",
+                "prompt": "b",
+                "image_count": 1,
+                "provider": "legacy",
+                "use_reference_images": True,
+                "size": "2048x2048",
+            },
+        ],
+    )
+
+    task_id = json.loads(result)["task_id"]
+    await plugin.background_task_manager._runtime_tasks[task_id]
+    explicit, size_only = received
+    assert explicit["resolution"] == "4K"
+    assert explicit["aspect_ratio"] == "1:1"
+    assert explicit["suppress_resolution"] is False
+    assert "size" not in explicit
+    assert size_only["resolution"] is None
+    assert size_only["aspect_ratio"] is None
+    assert size_only["suppress_resolution"] is True
+    await plugin.background_task_manager.close()
+
+
+@pytest.mark.asyncio
+async def test_batch_v2_ignores_size(make_env, notifier):
+    client = BatchClient()
+    env = await make_env(client, candidates=batch_candidates())
+
+    payload = json.loads(
+        await call(
+            env,
+            batch_tasks=[
+                {
+                    "name": "a",
+                    "prompt": "a",
+                    "image_count": 1,
+                    "provider": "legacy",
+                    "size": "1024x1024",
+                    "resolution": "2K",
+                    "aspect_ratio": "16:9",
+                }
+            ],
+        )
+    )
+
+    assert payload["status"] == "running"
+
+    async def delivered():
+        return bool(notifier.results)
+
+    await eventually(delivered)
+    config = client.configs[0]
+    assert config.resolution == "2K"
+    assert config.aspect_ratio == "16:9"
+    assert config.suppress_resolution is False

@@ -148,7 +148,7 @@ def _build_tool_base_properties() -> dict[str, Any]:
     return {
         "prompt": {
             "type": "string",
-            "description": "单图模式下必填：图像生成或修改的详细描述",
+            "description": "未使用 batch_tasks 时必填：图像生成或修改的详细描述",
         },
         "provider": {
             "type": "string",
@@ -160,7 +160,7 @@ def _build_tool_base_properties() -> dict[str, Any]:
         },
         "negative_prompt": {
             "type": "string",
-            "description": "可选负面提示词；仅支持该参数的候选可参与生成",
+            "description": "可选负面提示词；指定后只会使用支持该参数的模型",
         },
         "watermark": {
             "type": "boolean",
@@ -172,7 +172,10 @@ def _build_tool_base_properties() -> dict[str, Any]:
         },
         "preserve_reference_image_size": {
             "type": "boolean",
-            "description": "有参考图时是否保留参考图尺寸；省略时使用插件配置",
+            "description": (
+                "有参考图时是否保留参考图尺寸；省略时使用插件配置。"
+                "如果同时显式传入 resolution 或 aspect_ratio，则以显式尺寸为准。"
+            ),
         },
         "use_reference_images": {
             "type": "boolean",
@@ -220,11 +223,11 @@ def _build_forum_property() -> dict[str, Any]:
 
 def _build_tool_description(plugin: Any) -> str:
     return (
-        "使用 Gemini 模型生成或修改图像。"
+        "生成或修改图像。"
         "当当前对话需要图像生成、绘画、改图、换风格或手办化时调用此函数。"
-        "provider 和 model 均可省略；都省略时按配置轮询，provider 单独指定时仅在该供应商内重试，"
-        "model 单独指定时按原始模型名或别名跨供应商轮询，两者同时指定时只使用交集候选。"
-        "negative_prompt、watermark、quality 只会路由到明确支持该参数的候选；"
+        "provider 和 model 通常省略，由插件按配置自动选择；只填 provider 时仅使用该供应商，"
+        "只填 model 时按模型名或别名跨供应商选择，两者都填时只使用同时匹配的模型。"
+        "传 negative_prompt、watermark、quality 时只会使用支持该参数的模型；"
         "可先调用 gemini_image_provider_models 查询可用模型和参数。"
         "此工具会先在前台短时间等待结果，若快速完成则直接返回图片；"
         "若超出等待时间则返回后台任务号并继续生成，完成后会重新激活你并提供图片 URL/路径，你必须调用 send_message_to_user 发送图片；"
@@ -236,7 +239,7 @@ def _build_tool_description(plugin: Any) -> str:
         "设置 use_reference_images=true 和 include_user_avatar=true。"
         "需要控制输出分辨率或长宽比时设置 resolution / aspect_ratio；"
         "各渠道与模型支持的具体取值不要猜测，先调用 gemini_image_provider_models 查询，"
-        "不支持的比例会被渠道忽略并记录日志。"
+        "不支持的比例会被忽略。"
         "【重要】当当前请求明确要求将生成的图片发到论坛/AstrBook时，设置 for_forum=true。"
         "此时工具会等待图片生成完成后返回图片路径，你需要使用 upload_image 工具将图片上传到论坛图床获取URL，"
         "然后在发帖或回复时使用 Markdown 格式 ![描述](URL) 插入图片。"
@@ -265,7 +268,10 @@ def _build_tool_parameters(plugin: Any) -> dict[str, Any]:
     }
     properties["batch_tasks"] = {
         "type": "array",
-        "description": "可选。传入后按命名任务直接在后台批量生成，不再使用顶层 prompt。",
+        "description": (
+            "可选。传入后按命名任务直接在后台批量生成，不再使用顶层 prompt；"
+            "每项中未注明的字段与顶层同名参数含义相同。"
+        ),
         "items": {
             "type": "object",
             "properties": {
@@ -348,7 +354,6 @@ def _normalize_tool_aspect_ratio(value: Any) -> tuple[str | None, bool]:
 def _resolve_tool_size_params(
     plugin: Any,
     *,
-    size: Any = None,
     resolution: Any = None,
     aspect_ratio: Any = None,
     provider: Any = None,
@@ -367,15 +372,7 @@ def _resolve_tool_size_params(
     if (provider or model) and candidate is None:
         return normalized_resolution, normalized_aspect_ratio, None
     if not _is_custom_size_tool_mode(plugin, candidate):
-        if size is not None and str(size).strip():
-            logger.warning("[工具调用] 当前模式忽略 legacy size 参数")
         return normalized_resolution, normalized_aspect_ratio, None
-
-    if size is not None and str(size).strip():
-        try:
-            return validate_custom_size(size, field_name="size"), None, None
-        except ValueError as exc:
-            logger.warning(f"[工具调用] size={size!r} 非法，已退回默认尺寸: {exc}")
 
     settings = _get_tool_profile_settings(plugin, candidate)
     if invalid_resolution or invalid_aspect_ratio:
@@ -965,12 +962,10 @@ async def _prepare_batch_tasks(
             if "quality" in raw_item
             else None
         )
-        size_value = raw_item.get("size")
         resolution_value = raw_item.get("resolution")
         aspect_value = raw_item.get("aspect_ratio")
         resolution, aspect_ratio, _notice = _resolve_tool_size_params(
             plugin,
-            size=size_value,
             resolution=resolution_value,
             aspect_ratio=aspect_value,
             provider=provider,
@@ -1007,7 +1002,7 @@ async def _prepare_batch_tasks(
         )
         explicit_size = any(
             value is not None and str(value).strip()
-            for value in (size_value, resolution_value, aspect_value)
+            for value in (resolution_value, aspect_value)
         )
         # 模型显式给出尺寸时优先满足本次请求；配置默认值只约束未指定尺寸的请求。
         if explicit_size:
@@ -1557,7 +1552,6 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
 
         use_reference_images = kwargs.get("use_reference_images", False)
         include_user_avatar = kwargs.get("include_user_avatar", False)
-        size = kwargs.get("size") or None
         raw_resolution = kwargs.get("resolution") or None
         raw_aspect_ratio = kwargs.get("aspect_ratio") or None
         provider = str(kwargs.get("provider") or "").strip() or None
@@ -1578,7 +1572,6 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         include_ref_images = bool(use_reference_images)
         resolution, aspect_ratio, config_value_notice = _resolve_tool_size_params(
             plugin,
-            size=size,
             resolution=raw_resolution,
             aspect_ratio=raw_aspect_ratio,
             provider=provider,
@@ -1623,7 +1616,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         )
         explicit_size = any(
             value is not None and str(value).strip()
-            for value in (size, raw_resolution, raw_aspect_ratio)
+            for value in (raw_resolution, raw_aspect_ratio)
         )
         # 模型显式给出尺寸时优先满足本次请求；配置默认值只约束未指定尺寸的请求。
         if explicit_size:

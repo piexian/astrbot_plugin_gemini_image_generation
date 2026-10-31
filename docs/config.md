@@ -321,7 +321,7 @@ GPT Image 编辑使用 `image[]` 上传，最多 16 张参考图，PNG/JPEG/WebP
 |----------|-------------|
 | 普通生图/改图 | 直接使用配置中的 `custom_size` |
 | 快速模式 | 根据模式预设的 `resolution + aspect_ratio` 自动换算，例如 `2K + 16:9 -> 2048x1152` |
-| LLM 工具调用 | 固定接收 `resolution` / `aspect_ratio`，未传入时使用配置中的 `custom_size` |
+| LLM 工具调用 | 只接收 `resolution` / `aspect_ratio`（传入的 `size` 忽略），未传入时使用配置中的 `custom_size` |
 
 WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会自动隐藏，仅保留 `custom_size`；切回 `preset` 后再显示预设分辨率和长宽比。
 

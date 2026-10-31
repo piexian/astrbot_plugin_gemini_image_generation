@@ -120,7 +120,7 @@ LLM 工具支持可选 `provider` / `model` 路由参数。二者都不传时完
 - `aspect_ratio`：仅支持 `1:1` / `16:9` / `4:3` / `3:2` / `9:16` / `4:5` / `5:4` / `21:9` / `3:4` / `2:3`。
 - 未传入时使用插件配置或供应商默认值。
 - `negative_prompt` / `watermark` / `quality`：只允许支持对应参数的候选参与生成；可通过模型查询工具的详细模式获取合法参数和枚举。
-- `preserve_reference_image_size`：有参考图时保留其尺寸；省略时读取插件配置。启用后不能同时显式传入尺寸、分辨率或比例。
+- `preserve_reference_image_size`：有参考图时保留其尺寸；省略时读取插件配置。显式传入 `resolution` 或 `aspect_ratio` 时以显式尺寸为准。
 
 ### 批量生成
 

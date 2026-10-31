@@ -23,6 +23,11 @@
 - v2 下 LLM 工具调用在前台等待期间被取消时同时取消生成，不再出现取消后生成仍在后台运行却无人投递的情况。
 - v2 下 LLM 工具前台结果构建超时（如代理下载慢）不再转后台，改为直接返回图片 URL/本地路径文本，提示调用 `send_message_to_user` 的 `image` 组件发送。
 - 运行环境与 CI 基线统一为 Python 3.12。
+- LLM 工具描述去掉内部术语，改为面向模型的用法说明：生图工具不再自称只用 Gemini 模型，`preserve_reference_image_size` 写明显式传入 `resolution`/`aspect_ratio` 时以显式尺寸为准，`batch_tasks` 条目字段沿用顶层同名参数含义；`gemini_image_task_status` 提示任务完成会自动通知、无需轮询。
+
+### Removed
+
+- LLM 生图工具不再接受遗留的 `size` 参数，请使用 `resolution` 与 `aspect_ratio`。
 
 ### Fixed
 
