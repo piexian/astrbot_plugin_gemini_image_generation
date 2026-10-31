@@ -63,6 +63,7 @@ class TrackerProjection:
                 "quality": request.quality,
                 "seed": metadata.get("seed"),
                 "negative_prompt": request.negative_prompt,
+                "template_id": metadata.get("template_id"),
             },
             "requester": dict(request.requester),
             "parent_job_id": job.parent_job_id,

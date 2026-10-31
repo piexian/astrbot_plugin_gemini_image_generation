@@ -61,6 +61,7 @@ https://github.com/piexian/astrbot_plugin_gemini_image_generation
 
 - [完整配置参考](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/config.md)
 - [使用指南](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/usage.md)
+- [提示词模板库](docs/templates.md)
 - [故障排除](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/troubleshooting.md)
 - [新增 API 供应商](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/新增API供应商.md)
 - [其他插件接入指南（API v1）](docs/plugin-api.md)

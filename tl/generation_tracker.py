@@ -44,6 +44,7 @@ _PARAM_KEYS = (
     "seed",
     "negative_prompt",
     "generation_settings",
+    "template_id",
 )
 
 
@@ -480,6 +481,7 @@ class GenerationTracker:
             "model",
             "candidate_id",
             "quality",
+            "template_id",
         ):
             value = cleaned.get(key)
             cleaned[key] = _bounded_text(value, 128) or None

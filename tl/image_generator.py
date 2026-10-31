@@ -168,6 +168,7 @@ class ImageGenerator:
         prompt: str,
         config: ApiRequestConfig,
         is_tool_call: bool,
+        template_id: str | None = None,
     ) -> str | None:
         if self.tracker is None:
             return None
@@ -190,6 +191,7 @@ class ImageGenerator:
                     "quality": config.quality,
                     "seed": config.seed,
                     "negative_prompt": config.negative_prompt,
+                    "template_id": template_id,
                 },
                 requester=requester_from_event(event),
                 parent_job_id=context.parent_job_id if context else None,
@@ -327,6 +329,7 @@ class ImageGenerator:
         quality: str | None = None,
         image_count: int = 1,
         suppress_resolution: bool = False,
+        template_id: str | None = None,
     ) -> tuple[bool, tuple[list[str], list[str], str | None, str | None] | str]:
         """
         内部核心图像生成方法，不发送消息，只返回结果
@@ -368,6 +371,7 @@ class ImageGenerator:
             prompt=prompt,
             config=request_config,
             is_tool_call=is_tool_call,
+            template_id=template_id,
         )
 
         logger.info("图像生成请求:")
@@ -543,6 +547,7 @@ class ImageGenerator:
         metadata: Mapping[str, Any] | None = None,
         quota: Mapping[str, Any] | Literal[False] | None = None,
         trusted_local: bool = False,
+        template_id: str | None = None,
     ) -> GenerationRequest:
         """准备单图与批量共用的 v2 请求，不提交 Job、不写生成历史。"""
 
@@ -571,6 +576,8 @@ class ImageGenerator:
         if quota is not None:
             request_metadata["quota"] = quota if quota is False else dict(quota)
         prepare_options = {"trusted_local": True} if trusted_local else {}
+        if template_id:
+            request_metadata["template_id"] = template_id
         refs = await v2_service.prepare_references(
             all_reference_images, requester=requester, **prepare_options
         )
@@ -613,6 +620,7 @@ class ImageGenerator:
         admission: Mapping[str, Any] | None = None,
         quota: Mapping[str, Any] | Literal[False] | None = None,
         trusted_local: bool = False,
+        template_id: str | None = None,
     ) -> V2Submission:
         """v2 第一阶段：准备输入并提交 Job，额度与队列准入由调度器在 submit 内完成。
 
@@ -651,6 +659,7 @@ class ImageGenerator:
                     deadline_seconds=self.total_timeout,
                     quota=quota,
                     trusted_local=trusted_local,
+                    template_id=template_id,
                 )
             except asyncio.CancelledError:
                 raise

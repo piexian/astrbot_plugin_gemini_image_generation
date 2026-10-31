@@ -50,17 +50,9 @@ from .tl.core.errors import (
 from .tl.core.stack import build_generation_stack
 from .tl.core.states import JobState
 from .tl.enhanced_prompts import (
-    get_avatar_prompt,
-    get_card_prompt,
-    get_figure_prompt,
     get_generation_prompt,
-    get_mobile_prompt,
     get_modification_prompt,
-    get_poster_prompt,
-    get_q_version_sticker_prompt,
-    get_sticker_prompt,
     get_style_change_prompt,
-    get_wallpaper_prompt,
 )
 from .tl.generation_errors import api_failure_message
 from .tl.generation_scheduler import GenerationScheduler
@@ -73,6 +65,7 @@ from .tl.llm_query_tools import BackgroundTaskStatusTool, ProviderModelQueryTool
 from .tl.llm_tools import GeminiImageGenerationTool
 from .tl.plugin_config import get_session_tool_timeout, max_configured_reference_images
 from .tl.plugin_service import ImageGenerationService
+from .tl.prompt_templates import PromptTemplateStore, builtin_template, render_template
 from .tl.provider_capabilities import select_candidates
 from .tl.provider_runtime import ProviderRuntime, provider_operation
 from .tl.provider_settings import candidate_is_keyless
@@ -162,6 +155,7 @@ class GeminiImageGenerationPlugin(Star):
             self.cfg.webui_history_max_records,
             enabled=self.cfg.webui_history_enabled,
         )
+        self.prompt_templates = PromptTemplateStore(self._plugin_data_dir)
         self.web_studio_service = WebStudioService(
             self.api_client,
             self.generation_tracker,
@@ -715,6 +709,7 @@ class GeminiImageGenerationPlugin(Star):
         override_aspect_ratio: str | None = None,
         requested_provider: str | None = None,
         requested_model: str | None = None,
+        template_id: str | None = None,
     ):
         """快捷图像生成。旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
         if not str(prompt or "").strip():
@@ -843,6 +838,7 @@ class GeminiImageGenerationPlugin(Star):
                                 "max_attempts_per_key": self.cfg.max_attempts_per_key,
                                 "total_timeout": self.cfg.total_timeout,
                                 "quota": {"cost": 1},
+                                "template_id": template_id,
                             },
                         ),
                         admission={"event": event},
@@ -868,6 +864,7 @@ class GeminiImageGenerationPlugin(Star):
                             "model": requested_model,
                             "image_count": 1,
                             "quality": None,
+                            "template_id": template_id,
                         },
                         requester=requester_from_event(event),
                         requested_images=1,
@@ -1102,6 +1099,32 @@ class GeminiImageGenerationPlugin(Star):
             return text, None, None
         return " ".join(tokens[1:]).strip(), provider, model
 
+    def _quick_template(self, template_id: str):
+        store = getattr(self, "prompt_templates", None)
+        if store is not None:
+            try:
+                found = store.get(template_id)
+                if found is not None:
+                    return found
+            except Exception as exc:
+                logger.warning("[模板库] 读取模板失败，改用内置定义: %s", exc)
+        return builtin_template(template_id)
+
+    def _quick_dimensions(self, template: Any, mode_key: str) -> tuple[str, str]:
+        base = builtin_template(template.id)
+        resolution, aspect_ratio = self._resolve_quick_mode_params(
+            mode_key,
+            str(base.defaults.get("resolution") or ""),
+            str(base.defaults.get("aspect_ratio") or ""),
+        )
+        store = getattr(self, "prompt_templates", None)
+        override = store.builtin_override(template.id) if store is not None else {}
+        defaults = override.get("defaults") if isinstance(override, dict) else None
+        if isinstance(defaults, dict):
+            resolution = str(defaults.get("resolution") or resolution)
+            aspect_ratio = str(defaults.get("aspect_ratio") or aspect_ratio)
+        return self._resolve_quick_mode_custom_size_overrides(resolution, aspect_ratio)
+
     @provider_operation("command")
     async def _handle_quick_mode(
         self,
@@ -1123,9 +1146,7 @@ class GeminiImageGenerationPlugin(Star):
             prompt, requested_provider, requested_model = self._parse_generation_route(
                 prompt
             )
-        effective_resolution, effective_aspect_ratio = self._resolve_quick_mode_params(
-            mode_key, resolution, aspect_ratio
-        )
+        effective_resolution, effective_aspect_ratio = resolution, aspect_ratio
         effective_resolution, effective_aspect_ratio = (
             self._resolve_quick_mode_custom_size_overrides(
                 effective_resolution,
@@ -1194,8 +1215,17 @@ class GeminiImageGenerationPlugin(Star):
     async def quick_avatar(self, event: AstrMessageEvent, prompt: str = ""):
         """头像快速模式 - 1K分辨率，1:1比例"""
         prompt = self._extract_prompt_from_message(event, prompt, ("快速",), ("头像",))
+        template = self._quick_template("avatar")
+        resolution, aspect_ratio = self._quick_dimensions(template, "avatar")
         async for result in self._handle_quick_mode(
-            event, prompt, "1K", "1:1", "头像", "avatar", get_avatar_prompt
+            event,
+            prompt,
+            resolution,
+            aspect_ratio,
+            "头像",
+            "avatar",
+            lambda text, template=template: render_template(template, text),
+            template_id=template.id,
         ):
             yield result
 
@@ -1203,8 +1233,17 @@ class GeminiImageGenerationPlugin(Star):
     async def quick_poster(self, event: AstrMessageEvent, prompt: str = ""):
         """海报快速模式 - 2K分辨率，16:9比例"""
         prompt = self._extract_prompt_from_message(event, prompt, ("快速",), ("海报",))
+        template = self._quick_template("poster")
+        resolution, aspect_ratio = self._quick_dimensions(template, "poster")
         async for result in self._handle_quick_mode(
-            event, prompt, "2K", "16:9", "海报", "poster", get_poster_prompt
+            event,
+            prompt,
+            resolution,
+            aspect_ratio,
+            "海报",
+            "poster",
+            lambda text, template=template: render_template(template, text),
+            template_id=template.id,
         ):
             yield result
 
@@ -1212,8 +1251,17 @@ class GeminiImageGenerationPlugin(Star):
     async def quick_wallpaper(self, event: AstrMessageEvent, prompt: str = ""):
         """壁纸快速模式 - 4K分辨率，16:9比例"""
         prompt = self._extract_prompt_from_message(event, prompt, ("快速",), ("壁纸",))
+        template = self._quick_template("wallpaper")
+        resolution, aspect_ratio = self._quick_dimensions(template, "wallpaper")
         async for result in self._handle_quick_mode(
-            event, prompt, "4K", "16:9", "壁纸", "wallpaper", get_wallpaper_prompt
+            event,
+            prompt,
+            resolution,
+            aspect_ratio,
+            "壁纸",
+            "wallpaper",
+            lambda text, template=template: render_template(template, text),
+            template_id=template.id,
         ):
             yield result
 
@@ -1221,8 +1269,17 @@ class GeminiImageGenerationPlugin(Star):
     async def quick_card(self, event: AstrMessageEvent, prompt: str = ""):
         """卡片快速模式 - 1K分辨率，3:2比例"""
         prompt = self._extract_prompt_from_message(event, prompt, ("快速",), ("卡片",))
+        template = self._quick_template("card")
+        resolution, aspect_ratio = self._quick_dimensions(template, "card")
         async for result in self._handle_quick_mode(
-            event, prompt, "1K", "3:2", "卡片", "card", get_card_prompt
+            event,
+            prompt,
+            resolution,
+            aspect_ratio,
+            "卡片",
+            "card",
+            lambda text, template=template: render_template(template, text),
+            template_id=template.id,
         ):
             yield result
 
@@ -1230,8 +1287,17 @@ class GeminiImageGenerationPlugin(Star):
     async def quick_mobile(self, event: AstrMessageEvent, prompt: str = ""):
         """手机快速模式 - 2K分辨率，9:16比例"""
         prompt = self._extract_prompt_from_message(event, prompt, ("快速",), ("手机",))
+        template = self._quick_template("mobile")
+        resolution, aspect_ratio = self._quick_dimensions(template, "mobile")
         async for result in self._handle_quick_mode(
-            event, prompt, "2K", "9:16", "手机", "mobile", get_mobile_prompt
+            event,
+            prompt,
+            resolution,
+            aspect_ratio,
+            "手机",
+            "mobile",
+            lambda text, template=template: render_template(template, text),
+            template_id=template.id,
         ):
             yield result
 
@@ -1263,18 +1329,22 @@ class GeminiImageGenerationPlugin(Star):
                     tokens = tokens[1:]
                 clean_prompt = " ".join(tokens).strip()
 
-        full_prompt = get_figure_prompt(clean_prompt, style_type)
+        template = self._quick_template(
+            "figure-gk" if style_type == 2 else "figure-pvc"
+        )
+        resolution, aspect_ratio = self._quick_dimensions(template, "figure")
 
         async for result in self._handle_quick_mode(
             event,
-            full_prompt,
-            "2K",
-            "3:2",
+            render_template(template, clean_prompt),
+            resolution,
+            aspect_ratio,
             "手办化",
             "figure",
             None,
             requested_provider=requested_provider,
             requested_model=requested_model,
+            template_id=template.id,
         ):
             yield result
 
@@ -1314,8 +1384,13 @@ class GeminiImageGenerationPlugin(Star):
         stripped_prompt = (prompt or "").strip()
         simple_mode = stripped_prompt.startswith("简单")
         user_prompt = stripped_prompt[len("简单") :].strip() if simple_mode else prompt
+        template = self._quick_template("sticker-simple" if simple_mode else "sticker")
 
-        if not valid_reference_images and not valid_avatar_reference:
+        if (
+            template.reference == "required"
+            and not valid_reference_images
+            and not valid_avatar_reference
+        ):
             yield event.plain_result(
                 _build_no_ref_msg(
                     "表情包",
@@ -1324,30 +1399,17 @@ class GeminiImageGenerationPlugin(Star):
             )
             return
 
-        sticker_resolution, sticker_aspect_ratio = self._resolve_quick_mode_params(
-            "sticker", "4K", "16:9"
+        sticker_resolution, sticker_aspect_ratio = self._quick_dimensions(
+            template, "sticker"
         )
-        sticker_resolution, sticker_aspect_ratio = (
-            self._resolve_quick_mode_custom_size_overrides(
-                sticker_resolution,
-                sticker_aspect_ratio,
-            )
+        full_prompt = render_template(
+            template,
+            user_prompt,
+            rows=self.cfg.sticker_grid_rows,
+            cols=self.cfg.sticker_grid_cols,
         )
 
         if not self.cfg.enable_sticker_split:
-            full_prompt = (
-                get_q_version_sticker_prompt(
-                    user_prompt,
-                    rows=self.cfg.sticker_grid_rows,
-                    cols=self.cfg.sticker_grid_cols,
-                )
-                if simple_mode
-                else get_sticker_prompt(
-                    user_prompt,
-                    rows=self.cfg.sticker_grid_rows,
-                    cols=self.cfg.sticker_grid_cols,
-                )
-            )
             async for result in self._quick_generate_image(
                 event,
                 full_prompt,
@@ -1356,6 +1418,7 @@ class GeminiImageGenerationPlugin(Star):
                 override_aspect_ratio=sticker_aspect_ratio,
                 requested_provider=requested_provider,
                 requested_model=requested_model,
+                template_id=template.id,
             ):
                 yield result
             return
@@ -1375,19 +1438,6 @@ class GeminiImageGenerationPlugin(Star):
             return
 
         # 启用切割的表情包生成
-        full_prompt = (
-            get_q_version_sticker_prompt(
-                user_prompt,
-                rows=self.cfg.sticker_grid_rows,
-                cols=self.cfg.sticker_grid_cols,
-            )
-            if simple_mode
-            else get_sticker_prompt(
-                user_prompt,
-                rows=self.cfg.sticker_grid_rows,
-                cols=self.cfg.sticker_grid_cols,
-            )
-        )
 
         api_start_time = time.perf_counter()
         try:
@@ -1406,6 +1456,7 @@ class GeminiImageGenerationPlugin(Star):
                     requested_model=requested_model,
                     admission={"event": event},
                     quota={"cost": 1},
+                    template_id=template.id,
                 )
                 if submission.handle is None:
                     if not submission.silent:
@@ -1437,6 +1488,7 @@ class GeminiImageGenerationPlugin(Star):
                     override_aspect_ratio=sticker_aspect_ratio,
                     requested_provider=requested_provider,
                     requested_model=requested_model,
+                    template_id=template.id,
                 )
             api_duration = time.perf_counter() - api_start_time
 

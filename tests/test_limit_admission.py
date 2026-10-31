@@ -32,6 +32,7 @@ from tl.generation_tracker import (
     record_generation_success,
 )
 from tl.llm_tools import GeminiImageGenerationTool
+from tl.prompt_templates import builtin_template, render_template
 from tl.provider_capabilities import select_candidates
 from tl.rate_limiter import RateLimiter
 from tl.reference_image import REFERENCE_IMAGE_CACHE_DIR
@@ -453,7 +454,14 @@ def _command_class():
         "modify_image",
         "change_style",
         "_handle_quick_mode",
+        "_quick_template",
+        "_quick_dimensions",
         "quick_avatar",
+        "quick_poster",
+        "quick_wallpaper",
+        "quick_card",
+        "quick_mobile",
+        "quick_figure",
         "quick_sticker",
         "_parse_generation_route",
         "_extract_prompt_from_message",
@@ -482,6 +490,8 @@ def _command_class():
     ]
     namespace = {
         **vars(enhanced_prompts),
+        "render_template": render_template,
+        "builtin_template": builtin_template,
         "asyncio": asyncio,
         "shlex": shlex,
         "time": time,

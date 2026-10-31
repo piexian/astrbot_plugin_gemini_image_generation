@@ -1,0 +1,51 @@
+{
+  "format": "gemini-image-templates",
+  "version": 1,
+  "updated_at": "2026-10-31T00:00:00Z",
+  "templates": [
+    {
+      "id": "line-sticker",
+      "name": "角色表情网格",
+      "ai_description": "按参考图生成中文聊天表情网格。",
+      "content": "彩色手绘，严格按照{{rows}}*{{cols}}布局，白色背景。\n其他需求：{{input}}",
+      "defaults": {"resolution": "4K", "aspect_ratio": "16:9"},
+      "reference": "required",
+      "tags": ["表情包", "Q版"],
+      "author": "示例作者",
+      "source_url": "https://ai.google.dev/gemini-api/docs/image-generation",
+      "created_at": "2026-10-31T00:00:00Z",
+      "updated_at": "2026-10-31T00:00:01Z"
+    },
+    {
+      "id": "poster-night",
+      "name": "夜色海报",
+      "ai_description": "生成一张夜色电影海报。",
+      "content": "夜色电影海报，主体居中。",
+      "defaults": {"resolution": "2K", "aspect_ratio": "16:9"},
+      "reference": "optional",
+      "author": "示例作者",
+      "source_url": "https://creativecommons.org/licenses/by/4.0/",
+      "created_at": "2026-10-31T00:00:00Z",
+      "updated_at": "2026-10-31T00:00:02Z"
+    },
+    {
+      "id": "avatar-plain",
+      "name": "简洁头像",
+      "content": "简洁头像，适合圆形裁剪。",
+      "reference": "none",
+      "tags": ["头像"],
+      "created_at": "2026-10-31T00:00:00Z",
+      "updated_at": "2026-10-31T00:00:03Z"
+    },
+    {
+      "id": "figure-note",
+      "name": "手办说明",
+      "ai_description": "把角色做成收藏级手办。",
+      "content": "收藏级手办，全身，博物馆灯光。",
+      "defaults": {"resolution": "2K", "aspect_ratio": "3:2"},
+      "reference": "optional",
+      "created_at": "2026-10-31T00:00:00Z",
+      "updated_at": "2026-10-31T00:00:04Z"
+    }
+  ]
+}
