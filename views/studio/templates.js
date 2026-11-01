@@ -38,7 +38,7 @@
       this.hubTag = '';
       this.hub = {templates: [], notice: '', state: null};
       this.hubTags = [];
-      this.hubMine = false;
+      this.mine = [];
       this.hubLoading = false;
       this.cleanups = [];
       this.bind(root, this.cleanups);
@@ -94,6 +94,9 @@
         this.loaded = true;
         this.loadFailed = false;
         this.message = this.t('已加载 {v0} 个模板。', {v0: this.templates.length});
+        // 本地页合并远程缓存，本地模板就绪后拉一次缓存检索与标签。
+        void this.searchHub();
+        if (!this.hubTags.length) void this.loadHubTags();
       } catch (_) {
         if (this.destroyed || epoch !== this.epoch) return;
         this.loadFailed = true;
@@ -145,7 +148,7 @@
       if (action === 'hub-import') { void this.importHub(id); return; }
       if (action === 'hub-use') { this.useHub(id); return; }
       if (action === 'hub-view') { this.viewHub(id); return; }
-      if (action === 'hub-mine') { void this.toggleHubMine(); return; }
+      if (action === 'hub-mine') { void this.openMine(); return; }
       if (action === 'hub-edit') { this.editHub(id); return; }
       if (action === 'hub-drop') { void this.dropHub(id); return; }
       if (action === 'hub-report') { void this.reportHub(id); return; }
@@ -156,20 +159,38 @@
     input(event) {
       const field = event.target.dataset?.tplField;
       if (!field || this.destroyed) return;
-      if (field === 'query') { this.query = event.target.value; this.renderGrid(); return; }
-      if (field === 'tag') { this.tag = event.target.value; this.renderGrid(); }
-      if (field === 'hub-query') { this.hubQuery = event.target.value; return; }
-      if (field === 'hub-tag') { this.hubTag = event.target.value; }
+      // 单一搜索框同时管本地与远程：本地即时过滤，远程随检索按钮刷新。
+      if (field === 'query') {
+        this.query = event.target.value;
+        this.hubQuery = this.query;
+        this.renderGrid();
+        return;
+      }
+      if (field === 'tag') {
+        this.tag = event.target.value;
+        this.hubTag = this.tag;
+        this.renderGrid();
+        void this.searchHub();
+        void this.searchHub();
+      }
     }
 
     keydown(event) {
       if (event.key !== 'Enter' || this.destroyed) return;
       const field = event.target.dataset?.tplField;
-      if (field === 'query') event.preventDefault();
+      if (field === 'query') {
+        event.preventDefault();
+        if (this.scope === 'local') void this.searchHub();
+      }
     }
 
     byId(id) { return this.templates.find(item => item.id === id) || null; }
 
+    hubById(id) {
+      // 远程缓存与我的模板分属两个列表：查看/填入两边都要能找到。
+      return this.hub.templates.find(item => item.id === id)
+        || (this.mine.find(item => item.id === id) || null);
+    }
     referenceOptions() {
       const text = value => (value === 'required' ? this.t('需要参考图')
         : value === 'optional' ? this.t('可选参考图') : this.t('不需要参考图'));
@@ -233,10 +254,9 @@
       if (this.scope === next) return;
       this.scope = next;
       this.render();
-      if (next === 'online') {
-        void this.searchHub();
-        if (!this.hubTags.length) void this.loadHubTags();
-      }
+      // 本地页合并远程缓存，首次进入补拉在线标签。
+      if (next === 'local' && !this.hubTags.length) void this.loadHubTags();
+      if (next === 'online') void this.openMine();
     }
 
     hubEnabled() {
@@ -302,28 +322,29 @@
       }
     }
 
-    async toggleHubMine() {
-      this.hubMine = !this.hubMine;
-      if (this.hubMine) await this.loadHubMine();
-      else void this.searchHub();
-      this.render();
-    }
-
-    async loadHubMine() {
+    async openMine() {
+      // 没绑密钥时不发注定失败的请求，直接弹绑定弹窗。
+      const state = this.hub.state;
+      if (state && state.has_key === false) {
+        this.mine = [];
+        this.message = this.t('请先填写在线模板密钥。');
+        void this.openKeyDialog();
+        this.render();
+        return;
+      }
       this.hubLoading = true;
       this.render();
       try {
         const payload = await this.bridge.get('webui/templates/hub/mine', {limit: '50'});
         if (this.destroyed) return;
-        this.hub = {
-          templates: Array.isArray(payload?.templates) ? payload.templates : [],
-          notice: '',
-          state: payload?.state || this.hub.state
-        };
+        this.mine = Array.isArray(payload?.templates) ? payload.templates : [];
+        this.hub = {...this.hub, state: payload?.state || this.hub.state, notice: ''};
       } catch (_) {
-        // 没有密钥时后端返回 400，这里只提示不切换视图。
         if (!this.destroyed) {
-          this.hub = {...this.hub, notice: this.t('在线操作失败，请稍后重试。')};
+          this.mine = [];
+          // 桥接错误信封不带状态码：失败时提示并弹密钥窗兜底。
+          this.hub = {...this.hub, notice: this.t('读取我的模板失败，请检查密钥。')};
+          void this.openKeyDialog();
         }
       } finally {
         if (!this.destroyed) { this.hubLoading = false; this.render(); }
@@ -342,7 +363,7 @@
 
     editHub(id) {
       // 服务端按整份内容覆盖：这里把当前正文带出来改，改完提交整份。
-      const hit = this.hub.templates.find(item => item.id === id);
+      const hit = this.mine.find(item => item.id === id);
       if (!hit) return;
       this.openTextDialog(hit.name, hit.content || '', {
         readOnly: false,
@@ -354,14 +375,14 @@
             changes: {id: hit.id, content: value}
           });
           this.message = result ? this.t('已保存修改。') : this.t('在线操作失败，请稍后重试。');
-          if (this.hubMine) await this.loadHubMine();
+          await this.openMine();
           this.render();
         }
       });
     }
 
     async dropHub(id) {
-      const hit = this.hub.templates.find(item => item.id === id);
+      const hit = this.mine.find(item => item.id === id);
       if (!hit) return;
       const ok = await this.modal.confirm({
         title: this.t('删除在线模板'),
@@ -374,7 +395,7 @@
         action: 'delete', remote_id: hit.remote_id || hit.id
       });
       this.message = result ? this.t('已删除。') : this.t('在线操作失败，请稍后重试。');
-      if (this.hubMine) await this.loadHubMine();
+      await this.openMine();
       this.render();
     }
 
@@ -421,7 +442,7 @@
 
     viewHub(id) {
       // 缓存已在本地，查看正文不需要联网。
-      const hit = this.hub.templates.find(item => item.id === id);
+      const hit = this.hubById(id);
       if (!hit) return;
       const meta = [
         hit.author ? this.t('标签') + ': ' + hit.author : '',
@@ -434,7 +455,7 @@
     }
 
     useHub(id) {
-      const hit = this.hub.templates.find(item => item.id === id);
+      const hit = this.hubById(id);
       if (!hit) return;
       this.onUsed({prompt: hit.content, template: hit});
       this.message = this.t('已把「{v0}」填入工作台。', {v0: hit.name});
@@ -566,6 +587,7 @@
                   if (node) node.value = info.masked;
                   setFeedback(this.t('已保存密钥。'));
                   void this.loadHubState();
+                  if (this.scope === 'online') void this.openMine();
                 } else {
                   setFeedback(this.t('在线操作失败，请稍后重试。'));
                 }
@@ -804,13 +826,11 @@
           className: `comic-btn comic-btn--sm ${this.scope === 'online' ? 'comic-btn--cta' : 'comic-btn--outline'}`,
           'data-tpl-action': 'scope', 'data-tpl-scope': 'online',
           'aria-selected': this.scope === 'online'
-        }, [this.t('在线模板')])
+        }, [this.t('我的模板')])
       ]);
 
       const grid = this.el('div', {className: 'tpl-grid', id: 'tpl-grid'});
-      const toolbar = this.scope === 'online'
-        ? this.hubToolbar()
-        : this.el('div', {className: 'tpl-toolbar'}, [this.localSearch(), this.localTagSelect(), this.localActions()]);
+      const toolbar = this.scope === 'online' ? this.mineToolbar() : this.mergedToolbar();
 
       this.root.replaceChildren(
         this.el('div', {className: 'tpl-heading'}, [
@@ -824,11 +844,11 @@
         toolbar,
         grid
       );
-      if (this.scope === 'online') this.renderHubGrid();
+      if (this.scope === 'online') this.renderMineGrid();
       else this.renderGrid();
     }
 
-    localSearch() {
+    mergedSearch() {
       return this.el('input', {
         type: 'text', className: 'comic-input tpl-search',
         'data-tpl-field': 'query', value: this.query,
@@ -837,13 +857,18 @@
       });
     }
 
-    localTagSelect() {
+    mergedTagSelect() {
+      // 合并页一个下拉同时筛本地与远程：取本地标签与在线标签并集。
+      const names = [...this.tags()];
+      for (const item of this.hubTags) {
+        if (item.tag && !names.includes(item.tag)) names.push(item.tag);
+      }
       return this.el('select', {
         className: 'comic-select', 'data-tpl-field': 'tag',
         'aria-label': this.t('按标签筛选')
       }, [
         this.el('option', {value: ''}, [this.t('全部标签')]),
-        ...this.tags().map(tag => this.el('option', {value: tag, selected: tag === this.tag}, [tag]))
+        ...names.map(tag => this.el('option', {value: tag, selected: tag === this.tag}, [tag]))
       ]);
     }
 
@@ -868,7 +893,7 @@
       ]);
     }
 
-    hubToolbar() {
+    mergedToolbar() {
       const state = this.hub.state || {};
       const summary = this.el('p', {className: 'tpl-hub-state'}, [
         state.hash
@@ -879,22 +904,8 @@
           : this.t('尚未同步在线模板。')
       ]);
       return this.el('div', {className: 'tpl-toolbar'}, [
-        this.el('input', {
-          type: 'text', className: 'comic-input tpl-search',
-          'data-tpl-field': 'hub-query', value: this.hubQuery,
-          placeholder: this.t('搜索在线模板'),
-          'aria-label': this.t('搜索在线模板')
-        }),
-        this.el('select', {
-          // 标签用在线真实列表，避免手打拼错。
-          className: 'comic-select', 'data-tpl-field': 'hub-tag',
-          'aria-label': this.t('按标签筛选')
-        }, [
-          this.el('option', {value: ''}, [this.t('全部标签')]),
-          ...this.hubTags.map(item => this.el('option', {
-            value: item.tag, selected: item.tag === this.hubTag
-          }, [this.hubMine ? item.tag : `${item.tag} (${item.count})`]))
-        ]),
+        this.mergedSearch(),
+        this.mergedTagSelect(),
         this.el('div', {className: 'tpl-actions'}, [
           this.el('button', {
             type: 'button', className: 'comic-btn comic-btn--cta',
@@ -905,40 +916,51 @@
             'data-tpl-action': 'hub-sync', disabled: this.hubLoading
           }, [this.t('立即同步')]),
           this.el('button', {
-            type: 'button',
-            className: this.hubMine
-              ? 'comic-btn comic-btn--cta' : 'comic-btn comic-btn--outline',
-            'data-tpl-action': 'hub-mine', disabled: this.hubLoading
-          }, [this.t('我的模板')]),
-          this.el('button', {
             type: 'button', className: 'comic-btn comic-btn--outline',
             'data-tpl-action': 'hub-key'
           }, [this.t('密钥')])
         ]),
+        this.localActions(),
         summary
       ]);
     }
 
-    renderHubGrid() {
+    mineToolbar() {
+      return this.el('div', {className: 'tpl-toolbar'}, [
+        this.el('div', {className: 'tpl-actions'}, [
+          this.el('button', {
+            type: 'button', className: 'comic-btn comic-btn--outline',
+            'data-tpl-action': 'hub-mine', disabled: this.hubLoading
+          }, [this.t('刷新')]),
+          this.el('button', {
+            type: 'button', className: 'comic-btn comic-btn--outline',
+            'data-tpl-action': 'hub-key'
+          }, [this.t('密钥')])
+        ])
+      ]);
+    }
+
+    renderMineGrid() {
       const grid = this.root.querySelector('#tpl-grid');
       if (!grid) return;
-      const notice = this.hub.notice;
       const children = [];
-      if (notice) {
-        children.push(this.el('p', {className: 'tpl-status'}, [notice]));
+      if (this.hub.notice) {
+        children.push(this.el('p', {className: 'tpl-status'}, [this.hub.notice]));
       }
-      if (!this.hub.templates.length) {
+      if (!this.mine.length) {
         children.push(this.el('p', {className: 'tpl-empty'}, [
-          this.hubLoading ? this.t('正在检索在线模板…') : this.t('没有符合条件的在线模板。')
+          this.hubLoading
+            ? this.t('正在读取我的模板…')
+            : this.t('还没有上传过在线模板。')
         ]));
         grid.replaceChildren(...children);
         return;
       }
-      children.push(...this.hub.templates.map(item => this.hubCard(item)));
+      children.push(...this.mine.map(item => this.hubCard(item, true)));
       grid.replaceChildren(...children);
     }
 
-    hubCard(template) {
+    hubCard(template, mine = false) {
       const tags = this.el('div', {className: 'tpl-card-tags'},
         (template.tags || []).map(tag => this.el('span', {className: 'meta-pill'}, [tag])));
       const defaults = [];
@@ -948,7 +970,8 @@
         this.el('div', {className: 'tpl-card-head'}, [
           this.el('h3', {className: 'tpl-card-title'}, [template.name]),
           this.el('span', {className: 'meta-pill'}, [
-            template.found_via === 'online' ? this.t('实时检索') : this.t('缓存')
+            mine ? this.t('我的')
+              : (template.found_via === 'online' ? this.t('实时检索') : this.t('缓存'))
           ])
         ]),
         this.el('p', {className: 'tpl-card-desc'}, [template.ai_description || '']),
@@ -963,7 +986,7 @@
             type: 'button', className: 'comic-btn comic-btn--sm comic-btn--outline',
             'data-tpl-action': 'hub-view', 'data-tpl-id': template.id
           }, [this.t('查看')]),
-          ...(this.hubMine ? [
+          ...(mine ? [
             this.el('button', {
               type: 'button', className: 'comic-btn comic-btn--sm comic-btn--outline',
               'data-tpl-action': 'hub-edit', 'data-tpl-id': template.id
@@ -972,8 +995,7 @@
               type: 'button', className: 'comic-btn comic-btn--sm comic-btn--danger',
               'data-tpl-action': 'hub-drop', 'data-tpl-id': template.id
             }, [this.t('删除')])
-          ] : []),
-          ...(this.hubMine ? [] : [this.el('button', {
+          ] : [this.el('button', {
             type: 'button', className: 'comic-btn comic-btn--sm comic-btn--outline',
             'data-tpl-action': 'hub-report', 'data-tpl-id': template.id
           }, [this.t('举报')])]),
@@ -981,10 +1003,10 @@
             type: 'button', className: 'comic-btn comic-btn--sm comic-btn--cta',
             'data-tpl-action': 'hub-use', 'data-tpl-id': template.id
           }, [this.t('填入工作台')]),
-          this.el('button', {
+          ...(mine ? [] : [this.el('button', {
             type: 'button', className: 'comic-btn comic-btn--sm comic-btn--outline',
             'data-tpl-action': 'hub-import', 'data-tpl-id': template.id
-          }, [this.t('导入为本地')])
+          }, [this.t('导入为本地')])])
         ])
       ]);
     }
@@ -993,14 +1015,24 @@
     renderGrid() {
       const grid = this.root.querySelector('#tpl-grid');
       if (!grid) return;
-      const items = this.visible();
-      if (!items.length) {
-        grid.replaceChildren(this.el('p', {className: 'tpl-empty'}, [
-          this.loaded ? this.t('没有符合条件的模板。') : this.t('尚未加载模板。')
+      const children = [];
+      if (this.hub.notice) {
+        children.push(this.el('p', {className: 'tpl-status'}, [this.hub.notice]));
+      }
+      const locals = this.visible();
+      const remotes = this.hub.templates;
+      if (!locals.length && !remotes.length) {
+        children.push(this.el('p', {className: 'tpl-empty'}, [
+          this.hubLoading ? this.t('正在检索在线模板…')
+            : (this.loaded ? this.t('没有符合条件的模板。') : this.t('尚未加载模板。'))
         ]));
+        grid.replaceChildren(...children);
         return;
       }
-      grid.replaceChildren(...items.map(item => this.card(item)));
+      // 本地在前、远程缓存紧随，同一网格混排。
+      children.push(...locals.map(item => this.card(item)));
+      children.push(...remotes.map(item => this.hubCard(item)));
+      grid.replaceChildren(...children);
     }
 
     card(template) {
