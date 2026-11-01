@@ -209,25 +209,7 @@
       <!-- 2. 任务进度面板 -->
       <section id="panel-progress" class="studio-panel"
                role="tabpanel" aria-labelledby="tab-btn-progress" aria-hidden="true" hidden>
-        <div class="progress-toolbar">
-          <div class="toolbar-stats">
-            <span class="stat-item"><span data-i18n="运行中 ">运行中 </span><strong id="stat-active-count">0</strong></span>
-            <span class="stat-item"><span data-i18n="近 24 小时 ">近 24 小时 </span><strong id="stat-recent-count">0</strong></span>
-          </div>
-          <button type="button" id="btn-refresh-jobs" class="comic-btn comic-btn--sm comic-btn--outline">
-            <span class="btn-icon" data-icon="refresh"></span>
-            <span data-i18n="刷新任务状态">刷新任务状态</span>
-          </button>
-        </div>
-
-        <div id="jobs-stream-container" class="jobs-container">
-          <!-- 动态渲染任务卡片列表 -->
-          <div class="comic-empty-state" id="empty-jobs-tip" style="display: none;">
-            <div class="empty-icon" data-icon="inbox"></div>
-            <h2 class="empty-title" data-i18n="下一幅作品，从工作台开始">下一幅作品，从工作台开始</h2>
-            <p class="empty-desc" data-i18n="还没有近期任务。发起生成后，可以在这里实时查看进度与结果。">还没有近期任务。发起生成后，可以在这里实时查看进度与结果。</p>
-          </div>
-        </div>
+        <!-- 任务进度视图由 Vue 挂载渲染（src/progress/ProgressView.vue） -->
       </section>
 
       <!-- 3. 历史画廊面板 -->

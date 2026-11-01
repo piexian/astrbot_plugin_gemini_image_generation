@@ -23,6 +23,10 @@ GALLERY = "\n".join(
     p.read_text(encoding="utf-8")
     for p in sorted((ROOT / "frontend/src/gallery").glob("*.vue"))
 )
+PROGRESS = "\n".join(
+    p.read_text(encoding="utf-8")
+    for p in sorted((ROOT / "frontend/src/progress").glob("*.vue"))
+)
 HTML = (ROOT / "frontend/index.html").read_text(encoding="utf-8")
 I18N_DIR = ROOT / ".astrbot-plugin/i18n"
 
@@ -44,6 +48,8 @@ def _collect_keys():
     for m in re.finditer(r"\bt\((['\"])(.+?)\1", LIMITS):
         keys.add(m.group(2))
     for m in re.finditer(r"\bt\((['\"])(.+?)\1", GALLERY):
+        keys.add(m.group(2))
+    for m in re.finditer(r"\bt\((['\"])(.+?)\1", PROGRESS):
         keys.add(m.group(2))
     keys |= set(re.findall(r'data-i18n(?:-[a-z-]+)?="([^"]+)"', HTML))
     return keys
@@ -100,6 +106,7 @@ def test_no_bare_chinese_display_strings_in_js():
         ("templates/*.vue", TPL),
         ("limits/*.vue", LIMITS),
         ("gallery/*.vue", GALLERY),
+        ("progress/*.vue", PROGRESS),
     ):
         for i, line in enumerate(src.split("\n"), 1):
             if SKIP_LINE.search(line) or COMMENT_LINE.match(line):
