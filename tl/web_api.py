@@ -773,6 +773,15 @@ class WebStudioAPI:
                         payload.get("remote_id") or payload.get("id"),
                         payload.get("reason"),
                     )
+                elif action == "update":
+                    result = await self.templates_service.hub_update(
+                        payload.get("remote_id") or payload.get("id"),
+                        payload.get("changes"),
+                    )
+                elif action == "delete":
+                    result = await self.templates_service.hub_delete(
+                        payload.get("remote_id") or payload.get("id")
+                    )
                 else:
                     return error_response("不支持的在线操作", status_code=400)
             else:

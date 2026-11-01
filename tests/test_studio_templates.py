@@ -917,3 +917,41 @@ async def test_hub_tags_returns_list(tmp_path, monkeypatch):
     monkeypatch.setattr(service, "_with_source", lambda: Source())
     result = await service.hub_tags()
     assert result == {"tags": [{"tag": "摄影", "count": 5}]}
+
+
+@pytest.mark.asyncio
+async def test_hub_update_rejects_unknown_fields(tmp_path):
+    service = _service(tmp_path)
+    with pytest.raises(StudioServiceError) as error:
+        await service.hub_update("abcdefghijk1", {"id": "x", "owner": "me"})
+    assert error.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_hub_update_requires_local_source(tmp_path):
+    service = _service(tmp_path)
+    with pytest.raises(StudioServiceError) as error:
+        await service.hub_update("abcdefghijk1", {"name": "新名字"})
+    assert error.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_hub_delete_requires_identifier(tmp_path):
+    service = _service(tmp_path)
+    with pytest.raises(StudioServiceError) as error:
+        await service.hub_delete("")
+    assert error.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_hub_delete_calls_source(tmp_path, monkeypatch):
+    calls = []
+
+    class Source:
+        async def delete(self, identifier):
+            calls.append(identifier)
+
+    service = _service(tmp_path)
+    monkeypatch.setattr(service, "_with_source", lambda: Source())
+    assert await service.hub_delete("abcdefghijk1") == {"status": "deleted"}
+    assert calls == ["abcdefghijk1"]

@@ -146,6 +146,8 @@
       if (action === 'hub-use') { this.useHub(id); return; }
       if (action === 'hub-view') { this.viewHub(id); return; }
       if (action === 'hub-mine') { void this.toggleHubMine(); return; }
+      if (action === 'hub-edit') { this.editHub(id); return; }
+      if (action === 'hub-drop') { void this.dropHub(id); return; }
       if (action === 'hub-report') { void this.reportHub(id); return; }
       if (action === 'hub-upload') { void this.uploadHub(id); return; }
       if (action === 'hub-key') { void this.openKeyDialog(); }
@@ -338,6 +340,44 @@
       } catch (_) { /* 标签拉取失败不影响检索 */ }
     }
 
+    editHub(id) {
+      // 服务端按整份内容覆盖：这里把当前正文带出来改，改完提交整份。
+      const hit = this.hub.templates.find(item => item.id === id);
+      if (!hit) return;
+      this.openTextDialog(hit.name, hit.content || '', {
+        readOnly: false,
+        submitText: this.t('保存修改'),
+        submit: async value => {
+          const result = await this.request('POST', 'webui/templates/hub', {
+            action: 'update',
+            remote_id: hit.remote_id || hit.id,
+            changes: {id: hit.id, content: value}
+          });
+          this.message = result ? this.t('已保存修改。') : this.t('在线操作失败，请稍后重试。');
+          if (this.hubMine) await this.loadHubMine();
+          this.render();
+        }
+      });
+    }
+
+    async dropHub(id) {
+      const hit = this.hub.templates.find(item => item.id === id);
+      if (!hit) return;
+      const ok = await this.modal.confirm({
+        title: this.t('删除在线模板'),
+        content: this.t('将从在线模板库删除「{v0}」。', {v0: hit.name}),
+        confirmText: this.t('删除'),
+        danger: true
+      });
+      if (!ok) return;
+      const result = await this.request('POST', 'webui/templates/hub', {
+        action: 'delete', remote_id: hit.remote_id || hit.id
+      });
+      this.message = result ? this.t('已删除。') : this.t('在线操作失败，请稍后重试。');
+      if (this.hubMine) await this.loadHubMine();
+      this.render();
+    }
+
     async reportHub(id) {
       const hit = this.hub.templates.find(item => item.id === id);
       if (!hit) return;
@@ -436,108 +476,116 @@
     }
 
     async openKeyDialog() {
-      // 打开前先取当前是否已配置，用于展示掩码而不回显完整密钥。
-      let maskedInfo = {configured: false, masked: ''};
+      // 后端只给掩码：既显示"已配置"，又不把完整密钥回显到页面。
+      let info = {configured: false, masked: ''};
       try {
-        const info = await this.bridge.get('webui/templates/hub/key');
-        maskedInfo = {configured: !!info?.configured, masked: String(info?.masked || '')};
-      } catch (_) { /* 取不到就按未配置处理 */ }
+        const payload = await this.bridge.get('webui/templates/hub/key');
+        info = {configured: !!payload?.configured, masked: String(payload?.masked || '')};
+      } catch (_) { /* 取不到按未配置处理 */ }
+
       let keyVisible = false;
+      // 弹窗内反馈：主视图的 message 被弹窗遮住，点"测试连接"看不到结果。
+      let feedback = null;
+      const setFeedback = text => { if (feedback) feedback.textContent = text; };
+
       this.modal.openCustom({
         title: this.t('在线模板密钥'),
         renderBody: body => {
-          body.appendChild(this.el('p', {className: 'tpl-note'}, [
-            this.t('申请或重置密钥只填邮箱：提交后去邮箱打开验证链接并点确认，密钥会发送到邮箱。')
-          ]));
+          feedback = this.el('p', {className: 'tpl-note', role: 'status', 'aria-live': 'polite'});
           body.appendChild(this.el('div', {className: 'tpl-field'}, [
             this.el('label', {className: 'tpl-field-label'}, [this.t('邮箱')]),
             this.el('input', {
               type: 'text', className: 'comic-input', 'data-tpl-key': 'email',
-              placeholder: 'you@example.com'
-            })
+              value: this.storedEmail(), placeholder: 'you@example.com'
+            }),
+            // 申请/重置放在邮箱框下面，就近操作。
+            this.el('button', {
+              type: 'button', className: 'comic-btn comic-btn--sm comic-btn--outline',
+              onClick: async () => {
+                const value = this._keyEmail();
+                if (!value) { setFeedback(this.t('请先填写邮箱')); return; }
+                this.storeEmail(value);
+                setFeedback(this.t('正在提交…'));
+                const result = await this.request(
+                  'POST', 'webui/templates/hub/key', {email: value}
+                );
+                setFeedback(result
+                  ? this.t('已提交，请到邮箱确认后等待密钥。')
+                  : this.t('在线操作失败，请稍后重试。'));
+              }
+            }, [this.t('申请密钥')])
           ]));
-          // 已配置时展示掩码，避免把完整密钥回显到页面。
-          if (maskedInfo.configured) {
-            body.appendChild(this.el('p', {className: 'tpl-note'}, [
-              this.t('已配置密钥：{v0}', {v0: maskedInfo.masked})
-            ]));
-          }
+
           body.appendChild(this.el('div', {className: 'tpl-field'}, [
             this.el('label', {className: 'tpl-field-label'}, [this.t('在线模板密钥')]),
             this.el('div', {className: 'tpl-key-row'}, [
               this.el('input', {
                 type: keyVisible ? 'text' : 'password',
                 className: 'comic-input', 'data-tpl-key': 'key',
-                placeholder: maskedInfo.configured ? this.t('留空保持原值') : 'iph_...'
+                // 已配置时直接把掩码填进框，看得出已配置。
+                value: info.configured ? info.masked : '',
+                placeholder: info.configured ? this.t('留空保持原值') : 'iph_...'
               }),
               this.el('button', {
                 type: 'button', className: 'comic-btn comic-btn--sm comic-btn--outline',
-                'data-tpl-key': 'toggle',
                 onClick: () => {
                   keyVisible = !keyVisible;
                   const node = document.querySelector('[data-tpl-key="key"]');
                   if (node) node.type = keyVisible ? 'text' : 'password';
                 }
-              }, [keyVisible ? this.t('隐藏') : this.t('显示')])
-            ])
-          ]));
-        },
-        renderFooter: (footer, confirm, cancel) => {
-          footer.appendChild(this.el('button', {
-            type: 'button', className: 'comic-btn comic-btn--outline', onClick: cancel
-          }, [this.t('关闭')]));
-          footer.appendChild(this.el('button', {
-            type: 'button', className: 'comic-btn comic-btn--danger',
-            onClick: async () => {
-              await this.request('POST', 'webui/templates/hub/key', {action: 'save', key: ''});
-              await this.request('DELETE', 'webui/templates/hub/key');
-              this.message = this.t('已吊销当前密钥。');
-              confirm();
-              void this.loadHubState();
-            }
-          }, [this.t('吊销密钥')]));
-          footer.appendChild(this.el('button', {
-            type: 'button', className: 'comic-btn comic-btn--outline',
-            onClick: async () => {
-              const result = await this.request('POST', 'webui/templates/hub/key', {
-                action: 'test'
-              });
-              this.message = result
-                ? this.t('密钥可用。')
-                : this.t('在线操作失败，请稍后重试。');
-              this.render();
-            }
-          }, [this.t('测试连接')]));
-          footer.appendChild(this.el('button', {
-            type: 'button', className: 'comic-btn comic-btn--outline',
-            onClick: async () => {
-              const value = this._keyEmail();
-              await this.request('POST', 'webui/templates/hub/key', {email: value});
-              this.message = this.t('已提交，请到邮箱确认后等待密钥。');
-              confirm();
-              this.render();
-            }
-          }, [this.t('申请密钥')]));
-          footer.appendChild(this.el('button', {
-            type: 'button', className: 'comic-btn comic-btn--cta',
-            onClick: async () => {
-              const email = this._keyEmail();
-              if (email) {
-                await this.request('POST', 'webui/templates/hub/key', {email});
-              }
-              const key = this._keyValue();
-              if (key) {
-                const saved = await this.request('POST', 'webui/templates/hub/key', {
-                  action: 'save', key
+              }, [keyVisible ? this.t('隐藏') : this.t('显示')]),
+              this.el('button', {
+                type: 'button', className: 'comic-btn comic-btn--sm comic-btn--outline',
+                onClick: async () => {
+                  setFeedback(this.t('正在测试…'));
+                  const result = await this.request(
+                    'POST', 'webui/templates/hub/key', {action: 'test'}
+                  );
+                  setFeedback(result
+                    ? this.t('密钥可用。')
+                    : this.t('在线操作失败，请稍后重试。'));
+                }
+              }, [this.t('测试连接')])
+            ]),
+            // 保存放在密钥框下面。
+            this.el('button', {
+              type: 'button', className: 'comic-btn comic-btn--sm comic-btn--cta',
+              onClick: async () => {
+                const raw = this._keyValue();
+                // 掩码原样提交会覆盖真实密钥，等同未修改则跳过。
+                if (!raw || (info.configured && raw === info.masked)) {
+                  setFeedback(this.t('密钥未变化。'));
+                  return;
+                }
+                const result = await this.request('POST', 'webui/templates/hub/key', {
+                  action: 'save', key: raw
                 });
-                if (saved) this.message = this.t('已保存密钥。');
+                if (result) {
+                  info = {configured: true, masked: String(result.masked || info.masked)};
+                  const node = document.querySelector('[data-tpl-key="key"]');
+                  if (node) node.value = info.masked;
+                  setFeedback(this.t('已保存密钥。'));
+                  void this.loadHubState();
+                } else {
+                  setFeedback(this.t('在线操作失败，请稍后重试。'));
+                }
               }
-              confirm();
-              void this.loadHubState();
-            }
-          }, [this.t('完成')]));
+            }, [this.t('保存密钥')])
+          ]));
+
+          body.appendChild(feedback);
         }
+        // 不提供 renderFooter：右上角 × 即可关闭。
       });
+    }
+
+    storedEmail() {
+      try { return String(localStorage.getItem('tpl_hub_email') || ''); }
+      catch (_) { return ''; }
+    }
+
+    storeEmail(value) {
+      try { localStorage.setItem('tpl_hub_email', value); } catch (_) { /* 隐私模式忽略 */ }
     }
 
     _keyEmail() {
@@ -598,7 +646,9 @@
       });
     }
 
-    openTextDialog(title, value, {readOnly = true, submit = null} = {}) {
+    openTextDialog(title, value, {
+      readOnly = true, submit = null, submitText = null
+    } = {}) {
       this.modal.openCustom({
         title,
         renderBody: body => {
@@ -625,7 +675,7 @@
                 await submit(area ? area.value : '');
                 confirm();
               }
-            }, [this.t('导入')]));
+            }, [submitText || this.t('导入')]));
           }
         }
       });
@@ -913,10 +963,20 @@
             type: 'button', className: 'comic-btn comic-btn--sm comic-btn--outline',
             'data-tpl-action': 'hub-view', 'data-tpl-id': template.id
           }, [this.t('查看')]),
-          this.el('button', {
+          ...(this.hubMine ? [
+            this.el('button', {
+              type: 'button', className: 'comic-btn comic-btn--sm comic-btn--outline',
+              'data-tpl-action': 'hub-edit', 'data-tpl-id': template.id
+            }, [this.t('修改')]),
+            this.el('button', {
+              type: 'button', className: 'comic-btn comic-btn--sm comic-btn--danger',
+              'data-tpl-action': 'hub-drop', 'data-tpl-id': template.id
+            }, [this.t('删除')])
+          ] : []),
+          ...(this.hubMine ? [] : [this.el('button', {
             type: 'button', className: 'comic-btn comic-btn--sm comic-btn--outline',
             'data-tpl-action': 'hub-report', 'data-tpl-id': template.id
-          }, [this.t('举报')]),
+          }, [this.t('举报')])]),
           this.el('button', {
             type: 'button', className: 'comic-btn comic-btn--sm comic-btn--cta',
             'data-tpl-action': 'hub-use', 'data-tpl-id': template.id

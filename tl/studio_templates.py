@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import re
 import shutil
 import uuid
@@ -260,7 +261,7 @@ class StudioTemplateService:
             else:
                 await asyncio.to_thread(save_sync, {"template_hub_key": value})
             self.reconfigure_hub(key=value)
-        return self.hub_state()
+        return {**self.hub_state(), **self.hub_key_masked()}
 
     def hub_key_masked(self) -> dict[str, Any]:
         """返回已配置密钥的掩码，用于在页面上确认是否填写。"""
@@ -339,6 +340,59 @@ class StudioTemplateService:
         except TemplateSourceError as exc:
             raise StudioServiceError(_source_message(exc), status_code=502) from exc
         return {"status": "reported"}
+
+    async def hub_update(self, remote_id: Any, changes: Any) -> dict[str, Any]:
+        """修改自己上传的在线模板；只接受展示用的可编辑字段。"""
+
+        identifier = str(remote_id or "").strip()
+        if not identifier:
+            raise StudioServiceError("缺少在线模板 id", status_code=400)
+        if not isinstance(changes, dict) or not changes:
+            raise StudioServiceError("没有需要修改的字段", status_code=400)
+        allowed = {"name", "ai_description", "content", "tags", "reference"}
+        unknown = sorted(set(changes) - allowed)
+        if unknown:
+            raise StudioServiceError(
+                f"不支持修改的字段：{', '.join(unknown)}", status_code=400
+            )
+        found = self.store.get(str(changes.get("id") or "").strip())
+        if found is None:
+            raise StudioServiceError("请提供本地模板 id 作为修改来源", status_code=400)
+        draft = copy.deepcopy(found)
+        for field, value in changes.items():
+            if field == "tags" and isinstance(value, list):
+                draft.tags = [str(item).strip() for item in value if str(item).strip()]
+                continue
+            setattr(draft, field, str(value or "").strip())
+        try:
+            updated = await self._with_source().update(identifier, draft)
+        except SourceAuthError as exc:
+            raise StudioServiceError(_source_message(exc), status_code=401) from exc
+        except SourceRateLimited as exc:
+            raise StudioServiceError(_source_message(exc), status_code=429) from exc
+        except SourceRejected as exc:
+            raise StudioServiceError(str(exc), status_code=400) from exc
+        except TemplateSourceError as exc:
+            raise StudioServiceError(_source_message(exc), status_code=502) from exc
+        return _public_record(updated)
+
+    async def hub_delete(self, remote_id: Any) -> dict[str, Any]:
+        """删除自己上传的在线模板，需要密钥。"""
+
+        identifier = str(remote_id or "").strip()
+        if not identifier:
+            raise StudioServiceError("缺少在线模板 id", status_code=400)
+        try:
+            await self._with_source().delete(identifier)
+        except SourceAuthError as exc:
+            raise StudioServiceError(_source_message(exc), status_code=401) from exc
+        except SourceRateLimited as exc:
+            raise StudioServiceError(_source_message(exc), status_code=429) from exc
+        except SourceRejected as exc:
+            raise StudioServiceError(str(exc), status_code=400) from exc
+        except TemplateSourceError as exc:
+            raise StudioServiceError(_source_message(exc), status_code=502) from exc
+        return {"status": "deleted"}
 
     def _with_source(self) -> HubTemplateSource:
         if self.hub_source is None:
