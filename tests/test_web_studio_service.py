@@ -759,3 +759,75 @@ async def test_source_urls_recorded_on_success_and_archive_failure(
     assert record2["source_urls"] == ["https://cdn.example/a.png"]
     await service2.close()
     await tracker2.close()
+
+
+def test_probe_rejects_unsupported_format_before_size_limit() -> None:
+    """非图片在文件头就被拒，不等 20MB 上限触发。"""
+
+    with pytest.raises(StudioServiceError, match="不支持的图片格式"):
+        WebStudioService._probe_bytes(b"<html>" * 1024)
+
+
+@pytest.mark.parametrize(
+    ("prefix", "extension"),
+    [
+        (b"\x89PNG\r\n\x1a\n", "png"),
+        (b"\xff\xd8\xff", "jpg"),
+        (b"GIF89a", "gif"),
+        (b"BM", "bmp"),
+        (b"RIFF\x00\x00\x00\x00WEBP", "webp"),
+    ],
+)
+def test_detect_extension_recognizes_supported_magic(prefix, extension) -> None:
+    assert WebStudioService._detect_extension(prefix + b"padding") == extension
+
+
+@pytest.mark.asyncio
+async def test_download_stops_early_on_unsupported_format(tmp_path, monkeypatch):
+    """下载循环在首个分块后就拒绝，不再读满整个响应体。"""
+
+    import tl.web_studio_service as module
+
+    chunks_seen = []
+
+    class Content:
+        async def iter_chunked(self, _size):
+            for _ in range(8):  # 8MB 垃圾，远超探测阈值但低于 20MB 上限
+                chunks_seen.append(1)
+                yield b"<html>" * (1024 * 1024 // 6)
+
+    class Response:
+        status = 200
+        content_length = None
+        content = Content()
+
+        def raise_for_status(self):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+    class Session:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        def get(self, url, **kwargs):
+            return Response()
+
+    monkeypatch.setattr(module.aiohttp, "ClientSession", Session)
+    service = WebStudioService(
+        None, GenerationTracker(tmp_path, 20), _config(), tmp_path
+    )
+    with pytest.raises(StudioServiceError, match="不支持的图片格式"):
+        await service._download_remote_image("https://example.test/junk.html")
+    # 只取了首个 1MB 分块就中止，未读完 8MB。
+    assert len(chunks_seen) == 1

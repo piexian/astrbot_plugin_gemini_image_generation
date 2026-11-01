@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlsplit
 
@@ -26,6 +26,9 @@ from .path_policy import check_remote_url
 MAX_REDIRECTS = 5
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _READ_CHUNK_BYTES = 64 * 1024
+# 受支持格式的魔数都在文件头：实测 512B 已足够，取 4096 留余量。
+# 尺寸未必：WEBP 需完整内容，故探测只把魔数当权威，像素校验尽力而为。
+PROBE_BYTES = 4 * 1024
 _SENSITIVE_REDIRECT_HEADERS = frozenset(
     {"authorization", "proxy-authorization", "cookie", "cookie2"}
 )
@@ -81,8 +84,9 @@ class RemoteFetchService:
         deadline_at: datetime | None = None,
         proxy: str | None = None,
         headers: Mapping[str, str] | None = None,
+        probe: Callable[[bytes], None] | None = None,
     ) -> bytes:
-        """抓取 URL 字节；deadline_at 截断总时长，proxy 由调用方显式传入。"""
+        """抓取 URL 字节；deadline_at 截断总时长，proxy 与 probe 由调用方传入。"""
 
         current = str(url or "").strip()
         request_headers = dict(headers or {})
@@ -159,7 +163,7 @@ class RemoteFetchService:
                                 f"远端抓取失败: HTTP {response.status} "
                                 f"{redact_url(current)}"
                             )
-                        return await self._read_body(response, current)
+                        return await self._read_body(response, current, probe)
                 except asyncio.CancelledError:
                     raise
                 except asyncio.TimeoutError as exc:
@@ -177,7 +181,12 @@ class RemoteFetchService:
             f"远端抓取重定向超过 {self.max_redirects} 跳"
         )
 
-    async def _read_body(self, response: aiohttp.ClientResponse, url: str) -> bytes:
+    async def _read_body(
+        self,
+        response: aiohttp.ClientResponse,
+        url: str,
+        probe: Callable[[bytes], None] | None,
+    ) -> bytes:
         content_length = response.headers.get("Content-Length", "")
         if content_length.isdigit() and int(content_length) > self.max_body_bytes:
             logger.error(
@@ -190,6 +199,7 @@ class RemoteFetchService:
             )
         chunks: list[bytes] = []
         size = 0
+        probed = probe is None
         async for chunk in response.content.iter_chunked(_READ_CHUNK_BYTES):
             size += len(chunk)
             if size > self.max_body_bytes:
@@ -202,4 +212,10 @@ class RemoteFetchService:
                     f"远端响应体超过 {self.max_body_bytes} 字节上限: {redact_url(url)}"
                 )
             chunks.append(chunk)
+            if not probed and size >= PROBE_BYTES:
+                # 格式与尺寸都在文件头，先用已收字节提前判定，不合格就不再读下去。
+                probe(b"".join(chunks)[:PROBE_BYTES])
+                probed = True
+        if not probed and chunks:
+            probe(b"".join(chunks)[:PROBE_BYTES])
         return b"".join(chunks)

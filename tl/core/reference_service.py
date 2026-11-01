@@ -382,7 +382,10 @@ class ReferenceService:
                     return self._materialize(raw, source=redact_url(url))
                 try:
                     raw = await self.fetcher.fetch(
-                        url, deadline_at=deadline_at, headers=headers
+                        url,
+                        deadline_at=deadline_at,
+                        headers=headers,
+                        probe=self._probe_bytes,
                     )
                 except RemoteFetchTimeoutError as exc:
                     logger.error("参考图抓取超时: %s", redact_url(url))
@@ -432,20 +435,37 @@ class ReferenceService:
             raise ReferenceTooLargeError(
                 f"参考图超过 {self.max_reference_bytes} 字节上限"
             )
-        mime_type = detect_reference_image_mime(raw)
-        if mime_type:
-            # 透传格式不做转码，像素校验后原样落盘。
-            self._check_pixels(raw, mime_type)
-            return raw, mime_type
-        transcode_mime = _detect_transcodable_mime(raw)
-        if not transcode_mime:
+        mime_type = self._identify(raw)
+        if mime_type is None:
             logger.warning("参考图格式无法识别（文件头不匹配）")
             raise ReferenceResolveError(
                 "无法识别参考图格式（仅支持 PNG/JPEG/WebP/HEIC/HEIF/GIF/BMP/TIFF）"
             )
+        if mime_type in _PASSTHROUGH_MIMES:
+            # 透传格式不做转码，像素校验后原样落盘。
+            self._check_pixels(raw, mime_type)
+            return raw, mime_type
         # 像素数在解码前读取：超限的 GIF/BMP/TIFF 不进入转码。
-        self._check_pixels(raw, transcode_mime)
-        return self._transcode(raw, transcode_mime)
+        self._check_pixels(raw, mime_type)
+        return self._transcode(raw, mime_type)
+
+    @staticmethod
+    def _identify(raw: bytes) -> str | None:
+        """识别参考图 MIME：透传格式或需转码格式，无法识别返回 None。"""
+
+        return detect_reference_image_mime(raw) or _detect_transcodable_mime(raw)
+
+    def _probe_bytes(self, raw: bytes) -> None:
+        """用已下载的文件头提前判定格式与像素，不合格就不再读下去。"""
+
+        mime_type = self._identify(raw)
+        if mime_type is None:
+            raise ReferenceResolveError(
+                "无法识别参考图格式（仅支持 PNG/JPEG/WebP/HEIC/HEIF/GIF/BMP/TIFF）"
+            )
+        # 像素尽力而为：WEBP 等需完整内容才能读尺寸，读不出就交回主体再判。
+        if size := self._pixel_size(raw, mime_type):
+            self._enforce_pixels(size)
 
     def _transcode(self, raw: bytes, mime_type: str) -> tuple[bytes, str]:
         """GIF/BMP/TIFF 复用共享管道转 PNG（动图取首帧），不在本地另写转码。"""
@@ -466,7 +486,9 @@ class ReferenceService:
             raise ReferenceResolveError(f"参考图转码失败（{mime_type}）") from exc
         return base64.b64decode(encoded), out_mime
 
-    def _check_pixels(self, raw: bytes, mime_type: str) -> None:
+    def _pixel_size(self, raw: bytes, mime_type: str) -> tuple[int, int] | None:
+        """读声明尺寸；None = 字节不足或无法本地解码，需完整内容再判。"""
+
         if PILImage is None:  # pragma: no cover - Pillow 缺失时拒绝而非放行
             raise ReferenceResolveError("Pillow 不可用，无法校验参考图像素数")
         try:
@@ -476,21 +498,30 @@ class ReferenceService:
             raise ReferenceTooLargeError(
                 f"参考图像素数超过 PIL 安全上限（{mime_type}）"
             ) from exc
-        except PILImage.UnidentifiedImageError as exc:
-            if mime_type in {"image/heic", "image/heif"}:
-                # Pillow 缺 libheif 解不开 HEIC/HEIF；文件头已确认格式，
-                # 与旧管道一致透传给供应商解码，字节上限仍然生效。
-                logger.warning("参考图 %s 无法本地解码，跳过像素校验", mime_type)
-                return
-            logger.warning("参考图解码失败（%s）", mime_type)
-            raise ReferenceResolveError(f"参考图解码失败（{mime_type}）") from exc
-        except Exception as exc:
-            logger.warning("参考图解码失败（%s）: %s", mime_type, exc)
-            raise ReferenceResolveError(f"参考图解码失败（{mime_type}）") from exc
+        except Exception:
+            # 前缀不完整（WEBP 需完整文件）、HEIC 缺 libheif、或内容损坏。
+            return None
+        return width, height
+
+    def _enforce_pixels(self, size: tuple[int, int]) -> None:
+        width, height = size
         if width * height > self.max_pixels:
             raise ReferenceTooLargeError(
                 f"参考图像素数超限: {width}x{height} > {self.max_pixels}"
             )
+
+    def _check_pixels(self, raw: bytes, mime_type: str) -> None:
+        """校验完整内容的像素数。"""
+
+        size = self._pixel_size(raw, mime_type)
+        if size is None:
+            if mime_type in {"image/heic", "image/heif"}:
+                # 文件头已确认格式；Pillow 缺 libheif 解不开时按旧管道透传给
+                # 供应商解码，字节上限仍然生效。
+                logger.warning("参考图 %s 无法本地解码，跳过像素校验", mime_type)
+                return
+            raise ReferenceResolveError("参考图解码失败")
+        self._enforce_pixels(size)
 
     def _write_cache(self, raw: bytes, mime_type: str) -> Path:
         digest = hashlib.sha256(raw).hexdigest()

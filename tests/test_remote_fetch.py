@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import io
 from datetime import datetime, timedelta, timezone
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
+from PIL import Image
 
 from tl.core.errors import (
     RemoteFetchBodyTooLargeError,
@@ -15,6 +17,18 @@ from tl.core.errors import (
     RemoteFetchTooManyRedirectsError,
 )
 from tl.core.remote_fetch import RemoteFetchService
+
+
+def _make_png(width: int, height: int) -> bytes:
+    """生成超过 PROBE_BYTES(4KB) 的合法 PNG。"""
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (width, height), (9, 80, 200)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+# 超过探测阈值的合法 PNG：探测后应继续读完而不是拒绝。
+_PNG_BYTES = _make_png(900, 900)
 
 
 def _service(**kwargs) -> RemoteFetchService:
@@ -46,6 +60,14 @@ def _app() -> web.Application:
     async def missing(request: web.Request) -> web.Response:
         return web.Response(status=404, text="nope")
 
+    async def junk(request: web.Request) -> web.Response:
+        # 超过探测阈值的非图片内容，用于验证提前拦截。
+        return web.Response(body=b"<html>" * 4096, content_type="text/html")
+
+    async def png_large(request: web.Request) -> web.Response:
+        # 超过探测阈值的合法 PNG，用于确认探测不会误杀。
+        return web.Response(body=_PNG_BYTES, content_type="image/png")
+
     app.router.add_get("/img.png", ok)
     app.router.add_get("/big.bin", big)
     app.router.add_get("/to-file", to_file)
@@ -53,6 +75,8 @@ def _app() -> web.Application:
     app.router.add_get("/redirect-ok", redir_ok)
     app.router.add_get("/slow", slow)
     app.router.add_get("/missing.png", missing)
+    app.router.add_get("/junk.html", junk)
+    app.router.add_get("/png-large.png", png_large)
     return app
 
 
@@ -262,3 +286,49 @@ async def test_redirect_hops_share_deadline(monkeypatch) -> None:
         "https://example.invalid/start.png",
         "https://example.invalid/hop-2.png",
     ]
+
+
+@pytest.mark.asyncio
+async def test_probe_rejects_non_image_before_full_download() -> None:
+    """探测在读完响应体之前就拒绝非图片，且只拿到文件头前缀。"""
+
+    server = await _start(_app())
+    seen: list[bytes] = []
+
+    def probe(data: bytes) -> None:
+        seen.append(data)
+        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise RemoteFetchRejectedError("不是受支持的图片格式")
+
+    try:
+        with pytest.raises(RemoteFetchRejectedError, match="不是受支持的图片格式"):
+            await _service().fetch(str(server.make_url("/junk.html")), probe=probe)
+    finally:
+        await server.close()
+    # 服务端共 24KB，探测只应看到 4KB 前缀，说明主体没有被读完。
+    assert len(seen) == 1
+    assert len(seen[0]) == 4 * 1024
+    assert seen[0].startswith(b"<html>")
+
+
+@pytest.mark.asyncio
+async def test_probe_allows_valid_image_to_complete() -> None:
+    """探测不应误杀合法图片：通过探测后完整读取。"""
+
+    server = await _start(_app())
+    seen: list[bytes] = []
+
+    def probe(data: bytes) -> None:
+        seen.append(data)
+        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise RemoteFetchRejectedError("不是受支持的图片格式")
+
+    try:
+        data = await _service().fetch(
+            str(server.make_url("/png-large.png")), probe=probe
+        )
+    finally:
+        await server.close()
+    assert data == _PNG_BYTES
+    assert len(seen) == 1
+    assert len(seen[0]) == 4 * 1024

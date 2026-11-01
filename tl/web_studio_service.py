@@ -36,6 +36,7 @@ from .core.errors import (
     redact_url,
 )
 from .core.path_policy import check_remote_url
+from .core.remote_fetch import PROBE_BYTES
 from .file_uri import file_uri_to_path
 from .generation_scheduler import generation_progress
 from .generation_tracker import (
@@ -1372,10 +1373,17 @@ class WebStudioService:
                         content_length = response.content_length
                         if content_length and content_length > _REMOTE_IMAGE_MAX_BYTES:
                             raise StudioServiceError("远程图片超过 20MB")
+                        probed = False
                         async for chunk in response.content.iter_chunked(_CHUNK_SIZE):
                             data.extend(chunk)
                             if len(data) > _REMOTE_IMAGE_MAX_BYTES:
                                 raise StudioServiceError("远程图片超过 20MB")
+                            if not probed and len(data) >= PROBE_BYTES:
+                                # 格式在文件头：先用已收字节判定，不合格就不再读下去。
+                                self._probe_bytes(bytes(data[:PROBE_BYTES]))
+                                probed = True
+                        if not probed and data:
+                            self._probe_bytes(bytes(data[:PROBE_BYTES]))
                         return bytes(data)
         except (aiohttp.ClientError, OSError):
             raise StudioServiceError(
@@ -1383,25 +1391,44 @@ class WebStudioService:
             ) from None
         raise StudioServiceError("远程图片下载失败")
 
-    @staticmethod
-    def _validate_image_bytes(data: bytes) -> str:
-        if data.startswith(b"\x89PNG\r\n\x1a\n"):
-            extension = "png"
-        elif data.startswith(b"\xff\xd8\xff"):
-            extension = "jpg"
-        elif data.startswith((b"GIF87a", b"GIF89a")):
-            extension = "gif"
-        elif data.startswith(b"BM"):
-            extension = "bmp"
-        elif len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-            extension = "webp"
-        else:
+    # 受支持格式的魔数都在文件头，截断前缀也能判定；像素校验需完整内容。
+    _IMAGE_MAGIC_PREFIXES = (
+        ("png", (b"\x89PNG\r\n\x1a\n",)),
+        ("jpg", (b"\xff\xd8\xff",)),
+        ("gif", (b"GIF87a", b"GIF89a")),
+        ("bmp", (b"BM",)),
+    )
+
+    @classmethod
+    def _detect_extension(cls, data: bytes) -> str | None:
+        """按魔数识别扩展名，无法识别返回 None。"""
+
+        for extension, prefixes in cls._IMAGE_MAGIC_PREFIXES:
+            if data.startswith(prefixes):
+                return extension
+        if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            return "webp"
+        return None
+
+    @classmethod
+    def _probe_bytes(cls, data: bytes) -> None:
+        """用已下载的文件头提前判定格式，不合格就不再读下去。"""
+
+        if cls._detect_extension(data) is None:
+            raise StudioServiceError("不支持的图片格式")
+
+    @classmethod
+    def _validate_image_bytes(cls, data: bytes) -> str:
+        extension = cls._detect_extension(data)
+        if extension is None:
             raise StudioServiceError("不支持的图片格式")
         try:
             with Image.open(io.BytesIO(data)) as header:
                 width, height = header.size
                 if width > 8000 or height > 8000:
                     raise StudioServiceError("图片像素尺寸不能超过 8000×8000")
+        except StudioServiceError:
+            raise
         except (
             UnidentifiedImageError,
             OSError,
