@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="./style.css">
   <link rel="stylesheet" href="./provider-config.css">
   <link rel="stylesheet" href="./templates.css">
-  <script type="module" crossorigin src="./assets/index-sx_U-XCQ.js"></script>
+  <script type="module" crossorigin src="./assets/index-CSykM_yw.js"></script>
 </head>
 <body class="studio-body">
   <div class="studio-shell">
@@ -316,20 +316,7 @@
       <!-- 4. 限流控制：首次打开时独立加载，不影响创作与 SSE -->
       <section id="panel-limits" class="studio-panel"
                role="tabpanel" aria-labelledby="tab-btn-limits" aria-hidden="true" hidden>
-        <div class="limits-toolbar">
-          <div>
-            <h2 class="card-title" data-i18n="访问限制与生图限流">访问限制与生图限流</h2>
-            <p class="field-hint" data-i18n="群限制模式、黑白名单与全局／会话限流统一管理、统一保存，不修改供应商配置。">群限制模式、黑白名单与全局／会话限流统一管理、统一保存，不修改供应商配置。</p>
-          </div>
-          <div class="limits-actions">
-            <button type="button" id="btn-reload-limits" class="comic-btn comic-btn--outline" data-i18n="重新加载服务器配置">重新加载服务器配置</button>
-            <button type="button" id="btn-save-limits" class="comic-btn comic-btn--cta" disabled data-i18n="保存限流配置">保存限流配置</button>
-          </div>
-        </div>
-        <p id="limits-dirty" class="field-hint" role="status" aria-live="polite" data-i18n="尚未加载">尚未加载</p>
-        <p id="limits-status" class="limits-notice" role="status" aria-live="polite" data-i18n="打开此页签后加载配置。">打开此页签后加载配置。</p>
-        <p id="limits-migration" class="limits-notice limits-notice--warning" role="status" hidden></p>
-        <fieldset id="limits-editor" class="limits-editor" disabled aria-label="限流配置草稿" data-i18n-aria-label="限流配置草稿"></fieldset>
+        <!-- 限流视图由 Vue 挂载渲染（src/limits/LimitsView.vue） -->
       </section>
       <section id="panel-providers" class="studio-panel"
                role="tabpanel" aria-labelledby="tab-btn-providers" aria-hidden="true" hidden>
