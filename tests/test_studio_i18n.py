@@ -7,7 +7,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 APP = (ROOT / "frontend/src/app.js").read_text(encoding="utf-8")
-PC = (ROOT / "frontend/public/provider-config.js").read_text(encoding="utf-8")
+PC = "\n".join(
+    q.read_text(encoding="utf-8")
+    for q in sorted((ROOT / "frontend/src/provider-config").glob("*.vue"))
+)
 TPL = "\n".join(
     p.read_text(encoding="utf-8")
     for p in sorted((ROOT / "frontend/src/templates").glob("*.vue"))
@@ -26,7 +29,7 @@ def _collect_keys():
     keys = set()
     for m in re.finditer(r"\bt\((['\"])(.+?)\1", APP):
         keys.add(m.group(2))
-    for m in re.finditer(r"this\.t\((['\"])(.+?)\1", PC):
+    for m in re.finditer(r"\bt\((['\"])(.+?)\1", PC):
         keys.add(m.group(2))
     for m in re.finditer(r"\bt\((['\"])(.+?)\1", TPL):
         keys.add(m.group(2))
@@ -81,7 +84,7 @@ def test_no_bare_chinese_display_strings_in_js():
     leftovers = []
     for fname, src in (
         ("app.js", APP),
-        ("provider-config.js", PC),
+        ("provider-config/*.vue", PC),
         ("templates/*.vue", TPL),
     ):
         for i, line in enumerate(src.split("\n"), 1):

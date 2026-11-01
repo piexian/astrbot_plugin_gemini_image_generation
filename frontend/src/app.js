@@ -4088,9 +4088,10 @@ class StudioApp {
 
     this.limits = new LimitsView();
     const providerRoot = document.getElementById('provider-config-root');
-    if (providerRoot && window.StudioProviderConfigView) {
-      this.providers = new window.StudioProviderConfigView({
-        root: providerRoot, bridge: BridgeClient, dom: SafeDOM, modal: Modal, t: t,
+    const createProviderConfigView = window.__createProviderConfigView;
+    if (providerRoot && typeof createProviderConfigView === 'function') {
+      this.providers = createProviderConfigView(providerRoot, {
+        bridge: BridgeClient, modal: Modal, t: t,
         onSaved: async () => {
           if (!this.destroyed) await this.workbench.loadCapabilities();
         }
