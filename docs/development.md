@@ -45,7 +45,15 @@ ruff check . \
 ruff format --check . --line-length 88 --exclude plans,docs,templates
 ```
 
+
 只格式化本次修改的 Python 文件；不要为通过检查而重排无关文件。
+
+## 前端工程
+
+- Studio 前端源码在 `frontend/`（vp + pnpm + Vue 3 + TS）；构建产物提交到 `views/studio/`，由宿主按目录通配伺服，i18n 走桥接上下文。
+- 依赖安装、构建与单测：`cd frontend && vp i`、`vp build`、`pnpm test:unit`。
+- 改动 `frontend/` 源码后必须重新 `vp build` 并一并提交 `views/studio/`；CI 会重新构建并校验产物与提交一致（`git diff --exit-code -- views/studio`）。
+- 同步到实例时排除 `frontend/`，实例只需要 `views/studio/` 构建产物。
 
 ## 提交约定
 

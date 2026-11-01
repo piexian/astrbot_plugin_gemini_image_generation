@@ -6,10 +6,10 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-APP = (ROOT / "views/studio/app.js").read_text(encoding="utf-8")
-PC = (ROOT / "views/studio/provider-config.js").read_text(encoding="utf-8")
-TPL = (ROOT / "views/studio/templates.js").read_text(encoding="utf-8")
-HTML = (ROOT / "views/studio/index.html").read_text(encoding="utf-8")
+APP = (ROOT / "frontend/src/app.js").read_text(encoding="utf-8")
+PC = (ROOT / "frontend/public/provider-config.js").read_text(encoding="utf-8")
+TPL = (ROOT / "frontend/public/templates.js").read_text(encoding="utf-8")
+HTML = (ROOT / "frontend/index.html").read_text(encoding="utf-8")
 I18N_DIR = ROOT / ".astrbot-plugin/i18n"
 
 ZH = re.compile(r"[\u4e00-\u9fff]")

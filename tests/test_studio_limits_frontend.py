@@ -6,8 +6,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-APP = (ROOT / "views/studio/app.js").read_text(encoding="utf-8")
-HTML = (ROOT / "views/studio/index.html").read_text(encoding="utf-8")
+APP = (ROOT / "frontend/src/app.js").read_text(encoding="utf-8")
+HTML = (ROOT / "frontend/index.html").read_text(encoding="utf-8")
 
 
 class _PageParser(HTMLParser):

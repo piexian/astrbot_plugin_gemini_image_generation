@@ -155,3 +155,6 @@ tmp
 plans/
 .codegraph/
 files/
+
+# 前端工程（vp + pnpm）
+frontend/node_modules/

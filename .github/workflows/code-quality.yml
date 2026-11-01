@@ -43,6 +43,39 @@ jobs:
       - name: Run pytest
         run: pytest -q
 
+  frontend:
+    name: Frontend (pnpm build & test)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: "12.16.1"
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Unit tests
+        working-directory: frontend
+        run: pnpm test:unit
+
+      - name: Build
+        working-directory: frontend
+        run: pnpm build
+
+      # views/studio 是提交进仓库的构建产物，构建后必须与提交完全一致。
+      - name: Verify committed build output is up to date
+        run: git diff --exit-code -- views/studio
+
   lint:
     name: Lint & Format
     runs-on: ubuntu-latest
