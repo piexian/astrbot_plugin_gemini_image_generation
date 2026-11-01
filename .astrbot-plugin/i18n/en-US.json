@@ -357,6 +357,7 @@
     "提示词已复制到剪贴板": "Prompt copied to clipboard",
     "提示词广场": "Prompt hub",
     "提示词广场组件未能加载，请刷新 Studio。": "Prompt hub component failed to load. Please refresh Studio.",
+    "提示词广场组件未能加载，请刷新 Studio。": "Prompt hub component failed to load. Please refresh Studio.",
     "提示词正文": "Prompt content",
     "插件": "Plugin",
     "插件 ID: {v0}": "Plugin ID: {v0}",

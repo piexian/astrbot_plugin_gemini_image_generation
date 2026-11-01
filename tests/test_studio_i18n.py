@@ -8,7 +8,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 APP = (ROOT / "frontend/src/app.js").read_text(encoding="utf-8")
 PC = (ROOT / "frontend/public/provider-config.js").read_text(encoding="utf-8")
-TPL = (ROOT / "frontend/public/templates.js").read_text(encoding="utf-8")
+TPL = "\n".join(
+    p.read_text(encoding="utf-8")
+    for p in sorted((ROOT / "frontend/src/templates").glob("*.vue"))
+)
 HTML = (ROOT / "frontend/index.html").read_text(encoding="utf-8")
 I18N_DIR = ROOT / ".astrbot-plugin/i18n"
 
@@ -25,7 +28,7 @@ def _collect_keys():
         keys.add(m.group(2))
     for m in re.finditer(r"this\.t\((['\"])(.+?)\1", PC):
         keys.add(m.group(2))
-    for m in re.finditer(r"this\.t\((['\"])(.+?)\1", TPL):
+    for m in re.finditer(r"\bt\((['\"])(.+?)\1", TPL):
         keys.add(m.group(2))
     keys |= set(re.findall(r'data-i18n(?:-[a-z-]+)?="([^"]+)"', HTML))
     return keys
@@ -79,7 +82,7 @@ def test_no_bare_chinese_display_strings_in_js():
     for fname, src in (
         ("app.js", APP),
         ("provider-config.js", PC),
-        ("templates.js", TPL),
+        ("templates/*.vue", TPL),
     ):
         for i, line in enumerate(src.split("\n"), 1):
             if SKIP_LINE.search(line) or COMMENT_LINE.match(line):

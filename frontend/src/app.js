@@ -3,7 +3,6 @@
  * 纯静态无构建 / 原生 ES2020 / XSS 绝对防护 / 极简漫画令牌体系
  */
 
-// ==========================================================================
 // 1. IconSet (极简漫画 2px 手绘 SVG 图标字典，静态安全常量)
 // ==========================================================================
 const IconSet = {
@@ -4101,9 +4100,10 @@ class StudioApp {
     }
 
     const templatesRoot = document.getElementById('templates-root');
-    if (templatesRoot && window.StudioTemplatesView) {
-      this.templates = new window.StudioTemplatesView({
-        root: templatesRoot, bridge: BridgeClient, dom: SafeDOM, modal: Modal, t: t,
+    const createTemplatesView = window.__createTemplatesView;
+    if (templatesRoot && typeof createTemplatesView === 'function') {
+      this.templates = createTemplatesView(templatesRoot, {
+        bridge: BridgeClient, modal: Modal, t: t,
         onUsed: ({prompt, template}) => {
           this.workbench.applyTemplate(prompt, template);
           this.switchTab('workbench');

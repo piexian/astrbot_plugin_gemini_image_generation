@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vp dev",
-    "build": "vp build",
+    "build": "run-p type-check \"build-only {@}\" --",
     "preview": "vp preview",
     "test:unit": "vp test",
     "build-only": "vp build",
