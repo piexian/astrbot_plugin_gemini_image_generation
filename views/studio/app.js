@@ -2277,6 +2277,14 @@ class WorkbenchView {
   }
 
   // 回填工作台参数（再次生成）
+  applyTemplate(prompt, template = {}) {
+    // 模板默认值视为显式覆盖：与提示词一起回填工作台。
+    this.refillParameters(prompt || '', {
+      resolution: template.defaults?.resolution || undefined,
+      aspect_ratio: template.defaults?.aspect_ratio || undefined
+    });
+  }
+
   refillParameters(prompt, params = {}) {
     this.rememberParameters();
     this.switchMode('single');
@@ -4019,7 +4027,8 @@ class StudioApp {
       progress: document.getElementById('tab-btn-progress'),
       gallery: document.getElementById('tab-btn-gallery'),
       limits: document.getElementById('tab-btn-limits'),
-      providers: document.getElementById('tab-btn-providers')
+      providers: document.getElementById('tab-btn-providers'),
+      templates: document.getElementById('tab-btn-templates')
     };
 
     this.panels = {
@@ -4027,7 +4036,8 @@ class StudioApp {
       progress: document.getElementById('panel-progress'),
       gallery: document.getElementById('panel-gallery'),
       limits: document.getElementById('panel-limits'),
-      providers: document.getElementById('panel-providers')
+      providers: document.getElementById('panel-providers'),
+      templates: document.getElementById('panel-templates')
     };
   }
 
@@ -4088,6 +4098,19 @@ class StudioApp {
       });
     } else if (providerRoot) {
       providerRoot.textContent = t('供应商配置组件未能加载，请刷新 Studio。');
+    }
+
+    const templatesRoot = document.getElementById('templates-root');
+    if (templatesRoot && window.StudioTemplatesView) {
+      this.templates = new window.StudioTemplatesView({
+        root: templatesRoot, bridge: BridgeClient, dom: SafeDOM, modal: Modal, t: t,
+        onUsed: ({prompt, template}) => {
+          this.workbench.applyTemplate(prompt, template);
+          this.switchTab('workbench');
+        }
+      });
+    } else if (templatesRoot) {
+      templatesRoot.textContent = t('提示词广场组件未能加载，请刷新 Studio。');
     }
 
     // 5. 绑定 Tab 切换事件
@@ -4209,6 +4232,8 @@ class StudioApp {
       void this.limits.open();
     } else if (tabKey === 'providers') {
       void this.providers?.open();
+    } else if (tabKey === 'templates') {
+      void this.templates?.open();
     }
   }
 
@@ -4223,6 +4248,7 @@ class StudioApp {
     this.navCleanups = [];
     this.limits?.destroy();
     this.providers?.destroy();
+    this.templates?.destroy();
     this.progress?.destroy();
     this.gallery?.destroy();
     this.workbench?.destroy();

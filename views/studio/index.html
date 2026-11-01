@@ -6,6 +6,7 @@
   <title data-i18n="Gemini 图像生成 Studio">Gemini 图像生成 Studio</title>
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="provider-config.css">
+  <link rel="stylesheet" href="templates.css">
 </head>
 <body class="studio-body">
   <div class="studio-shell">
@@ -53,6 +54,11 @@
               role="tab" aria-selected="false" aria-controls="panel-providers" tabindex="-1">
         <span class="tab-icon" data-icon="sliders"></span>
         <span class="tab-label" data-i18n="供应商配置">供应商配置</span>
+      </button>
+      <button type="button" class="tab-btn" id="tab-btn-templates"
+              role="tab" aria-selected="false" aria-controls="panel-templates" tabindex="-1">
+        <span class="tab-icon" data-icon="brush"></span>
+        <span class="tab-label" data-i18n="提示词广场">提示词广场</span>
       </button>
     </nav>
 
@@ -328,6 +334,10 @@
                role="tabpanel" aria-labelledby="tab-btn-providers" aria-hidden="true" hidden>
         <div id="provider-config-root"></div>
       </section>
+      <section id="panel-templates" class="studio-panel"
+               role="tabpanel" aria-labelledby="tab-btn-templates" aria-hidden="true" hidden>
+        <div id="templates-root" class="templates-view"></div>
+      </section>
     </main>
 
     <!-- 全局自绘模态层 (Modal) -->
@@ -369,6 +379,7 @@
 
   <script src="/api/plugin/page/bridge-sdk.js"></script>
   <script src="provider-config.js"></script>
+  <script src="templates.js"></script>
   <script type="module" src="app.js"></script>
 </body>
 </html>

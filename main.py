@@ -170,6 +170,7 @@ class GeminiImageGenerationPlugin(Star):
             logger.warning(f"[WebUI] 历史生成图纳入画廊失败（不影响启动）: {e}")
         self._web_api = None
         self.studio_providers = None
+        self.studio_templates = None
         self._web_routes: list[tuple[Any, ...]] = []
         self._web_closed = False
 
@@ -417,6 +418,7 @@ class GeminiImageGenerationPlugin(Star):
             from .tl.provider_application import ProviderApplication
             from .tl.studio_limits import StudioLimitsService
             from .tl.studio_providers import ProviderConfigService
+            from .tl.studio_templates import StudioTemplateService
 
             self.studio_limits = StudioLimitsService(
                 self.raw_config,
@@ -426,6 +428,11 @@ class GeminiImageGenerationPlugin(Star):
                 self._plugin_data_dir,
                 config_lock=self.configuration_lock,
                 is_closed=lambda: self._web_closed,
+            )
+            self.studio_templates = StudioTemplateService(
+                self.prompt_templates,
+                self._plugin_data_dir,
+                gallery_dir=self.web_studio_service.gallery_dir,
             )
             application = ProviderApplication(self)
             self.studio_providers = ProviderConfigService(
@@ -442,6 +449,7 @@ class GeminiImageGenerationPlugin(Star):
                 self.web_studio_service,
                 limits_service=self.studio_limits,
                 providers_service=self.studio_providers,
+                templates_service=self.studio_templates,
                 is_closed=lambda: self._web_closed,
             )
             self._web_routes = self._web_api.register(self.context)

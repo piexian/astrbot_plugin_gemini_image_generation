@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 APP = (ROOT / "views/studio/app.js").read_text(encoding="utf-8")
 PC = (ROOT / "views/studio/provider-config.js").read_text(encoding="utf-8")
+TPL = (ROOT / "views/studio/templates.js").read_text(encoding="utf-8")
 HTML = (ROOT / "views/studio/index.html").read_text(encoding="utf-8")
 I18N_DIR = ROOT / ".astrbot-plugin/i18n"
 
@@ -23,6 +24,8 @@ def _collect_keys():
     for m in re.finditer(r"\bt\((['\"])(.+?)\1", APP):
         keys.add(m.group(2))
     for m in re.finditer(r"this\.t\((['\"])(.+?)\1", PC):
+        keys.add(m.group(2))
+    for m in re.finditer(r"this\.t\((['\"])(.+?)\1", TPL):
         keys.add(m.group(2))
     keys |= set(re.findall(r'data-i18n(?:-[a-z-]+)?="([^"]+)"', HTML))
     return keys
@@ -73,7 +76,11 @@ def test_first_render_waits_on_real_bridge_readiness():
 
 def test_no_bare_chinese_display_strings_in_js():
     leftovers = []
-    for fname, src in (("app.js", APP), ("provider-config.js", PC)):
+    for fname, src in (
+        ("app.js", APP),
+        ("provider-config.js", PC),
+        ("templates.js", TPL),
+    ):
         for i, line in enumerate(src.split("\n"), 1):
             if SKIP_LINE.search(line) or COMMENT_LINE.match(line):
                 continue

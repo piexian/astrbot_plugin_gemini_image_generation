@@ -65,3 +65,18 @@
 ```
 
 包最多 500 条。未知字段以及 `preview`、`ai_enabled`、`origin` 会被忽略。
+
+## WebUI 广场
+
+Studio 的「提示词广场」页签管理本地模板，接口沿用工作台的鉴权与 CSRF 守卫：
+
+| 接口 | 说明 |
+| --- | --- |
+| `GET /templates` | 列出内置与本地模板 |
+| `POST /templates` | `create` / `update` / `delete` / `restore` / `set_ai_enabled` |
+| `POST /templates/import` | 导入包，默认重新分配本地 id（`keep_ids` 保留包内 id） |
+| `GET /templates/export` | 导出包 |
+| `POST /templates/asset` | 把画廊图片复制为模板预览图 |
+| `GET /template_asset/<name>` | 读取预览图 |
+
+字段校验与本地存储共用同一套规则，非法输入按字段返回中文原因。预览图存插件数据目录 `template_assets/`，不参与画廊容量清理；删除模板时一并清理。

@@ -17,6 +17,7 @@ from astrbot.api import logger
 
 from .core.errors import redact_url
 from .generation_tracker import GenerationTracker, without_session_origin
+from .prompt_templates import TemplateValidationError
 from .studio_parameters import clean_browser_preferences
 from .web_studio_service import StudioServiceError, WebStudioService
 
@@ -54,6 +55,9 @@ _PANEL_ONLY_METHODS = {
     "/sessions": frozenset({"GET"}),
     "/upload": frozenset({"POST"}),
     "/preferences": frozenset({"POST"}),
+    "/templates": frozenset({"GET", "POST"}),
+    "/templates/import": frozenset({"POST"}),
+    "/templates/export": frozenset({"GET"}),
 }
 
 
@@ -146,6 +150,11 @@ class WebStudioAPI:
         ("/vision-providers", "vision_providers", ["GET"], "本体视觉检测提供商配置"),
         ("/providers/models", "provider_models", ["POST"], "拉取供应商模型目录"),
         ("/sessions", "sessions", ["GET"], "WebUI 已有 UMO 会话"),
+        ("/templates", "templates", ["GET", "POST"], "WebUI 提示词模板"),
+        ("/templates/import", "templates_import", ["POST"], "WebUI 导入模板包"),
+        ("/templates/export", "templates_export", ["GET"], "WebUI 导出模板包"),
+        ("/templates/asset", "template_asset", ["POST"], "WebUI 保存模板预览图"),
+        ("/template_asset/<name>", "template_asset_file", ["GET"], "读取模板预览图"),
     )
 
     def __init__(
@@ -155,12 +164,14 @@ class WebStudioAPI:
         *,
         limits_service: Any = None,
         providers_service: Any = None,
+        templates_service: Any = None,
         is_closed: Callable[[], bool] | None = None,
     ) -> None:
         self.tracker = tracker
         self.service = service
         self.limits_service = limits_service
         self.providers_service = providers_service
+        self.templates_service = templates_service
         self._web_closed = False
         self._is_closed = is_closed or (lambda: self._web_closed)
         self._registered_entries: list[tuple[Any, ...]] = []
@@ -611,3 +622,104 @@ class WebStudioAPI:
         if not _valid_json_value(payload):
             return None
         return payload
+
+    def _templates_guard(self):
+        if closed := self._closed_response():
+            return closed
+        if self.templates_service is None:
+            return error_response("提示词模板服务不可用", status_code=503)
+        return None
+
+    async def templates(self):
+        if denied := self._templates_guard():
+            return denied
+        try:
+            if request.method == "POST":
+                payload = await self._json_body()
+                if payload is None:
+                    return error_response(
+                        "请求体必须是有效的 JSON 对象", status_code=400
+                    )
+                result = await self._templates_write(payload)
+            else:
+                result = {"templates": self.templates_service.list_templates()}
+            return json_response(
+                {"status": "ok", "data": result}, headers={"Cache-Control": "no-store"}
+            )
+        except StudioServiceError as exc:
+            return self._service_error(exc)
+        except TemplateValidationError as exc:
+            return error_response(str(exc), status_code=400)
+        except Exception:
+            logger.error("[模板广场] 模板请求失败", exc_info=True)
+            return error_response("提示词模板暂时不可用", status_code=500)
+
+    async def _templates_write(self, payload: dict[str, Any]) -> dict[str, Any]:
+        action = str(payload.get("action") or "").strip()
+        if action == "delete":
+            template_id = payload.get("id")
+            target = self.templates_service.get(template_id)
+            await self.templates_service.save(payload)
+            await self.templates_service.drop_asset((target or {}).get("preview"))
+            return {"id": template_id}
+        return await self.templates_service.save(payload)
+
+    async def templates_export(self):
+        if denied := self._templates_guard():
+            return denied
+        try:
+            package = self.templates_service.export_package()
+        except Exception:
+            logger.error("[模板广场] 导出模板包失败", exc_info=True)
+            return error_response("导出模板包失败", status_code=500)
+        return json_response({"status": "ok", "data": package})
+
+    async def templates_import(self):
+        if denied := self._templates_guard():
+            return denied
+        try:
+            payload = await self._json_body()
+            if payload is None:
+                return error_response("请求体必须是有效的 JSON 对象", status_code=400)
+            result = await self.templates_service.import_package(payload)
+            return self._ok(result)
+        except StudioServiceError as exc:
+            return self._service_error(exc)
+        except TemplateValidationError as exc:
+            return error_response(str(exc), status_code=400)
+        except Exception:
+            logger.error("[模板广场] 导入模板包失败", exc_info=True)
+            return error_response("导入模板包失败", status_code=500)
+
+    async def template_asset(self):
+        if denied := self._templates_guard():
+            return denied
+        try:
+            payload = await self._json_body()
+            if payload is None:
+                return error_response("请求体必须是有效的 JSON 对象", status_code=400)
+            name = await self.templates_service.save_asset_from_gallery(
+                str(payload.get("image_name") or "")
+            )
+        except StudioServiceError as exc:
+            return self._service_error(exc)
+        except Exception:
+            logger.error("[模板广场] 保存模板预览图失败", exc_info=True)
+            return error_response("保存模板预览图失败", status_code=500)
+        return self._ok({"name": name})
+
+    async def template_asset_file(self, name: str):
+        if closed := self._closed_response():
+            return closed
+        if self.templates_service is None:
+            return error_response("提示词模板服务不可用", status_code=503)
+        try:
+            path = self.templates_service.asset_file(name)
+        except StudioServiceError as exc:
+            return self._service_error(exc)
+        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        return file_response(
+            path,
+            content_type=content_type,
+            headers={"X-Content-Type-Options": "nosniff"},
+        )
