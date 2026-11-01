@@ -8,6 +8,7 @@ import binascii
 import hashlib
 import io
 import re
+import struct
 import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import datetime
@@ -65,6 +66,44 @@ _TRANSCODE_MAGIC_PREFIXES: tuple[tuple[str, tuple[bytes, ...]], ...] = (
     ("image/bmp", (b"BM",)),
     ("image/tiff", (b"II*\x00", b"MM\x00*")),
 )
+
+# PNG 可剥离的辅助块：只影响体积，与像素和色彩无关。
+# 关键块（IHDR/PLTE/IDAT/IEND）、透明（tRNS）、色彩空间（sRGB/iCCP/gAMA/sBIT）
+# 与动画（acTL/fcTL/fdAT）一律保留——删 tRNS 会丢透明，删 acTL 会让动图变静图。
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_PNG_DROPPABLE_CHUNKS = frozenset(
+    {"tEXt", "zTXt", "iTXt", "tIME", "eXIf", "pHYS", "bKGD"}
+)
+_PNG_CHUNK_HEADER = struct.Struct(">I4s")
+
+
+def strip_png_metadata(raw: bytes) -> bytes:
+    """Drop size-only PNG ancillary chunks, carrying every other chunk verbatim.
+
+    Surgical: bytes are moved, never re-encoded, so bit depth, APNG frames,
+    tRNS transparency and ICC colour data all survive. A structurally invalid
+    stream is returned untouched and left to the format and pixel checks.
+    """
+
+    if not raw.startswith(_PNG_SIGNATURE):
+        return raw
+    header = _PNG_CHUNK_HEADER.size
+    out = bytearray(_PNG_SIGNATURE)
+    pos = len(_PNG_SIGNATURE)
+    total = len(raw)
+    while pos + header + 4 <= total:
+        length, kind = _PNG_CHUNK_HEADER.unpack_from(raw, pos)
+        chunk_type = kind.decode("latin-1")
+        end = pos + header + length + 4
+        # 长度越界或缺少 IEND 都视为结构损坏，原样交回，由后续校验处理。
+        if end > total:
+            return raw
+        if chunk_type not in _PNG_DROPPABLE_CHUNKS:
+            out += raw[pos:end]
+        pos = end
+        if chunk_type == "IEND":
+            return bytes(out)
+    return raw
 
 
 def _ensure_deadline(deadline_at: datetime | None) -> None:
@@ -441,6 +480,10 @@ class ReferenceService:
             raise ReferenceResolveError(
                 "无法识别参考图格式（仅支持 PNG/JPEG/WebP/HEIC/HEIF/GIF/BMP/TIFF）"
             )
+        if mime_type == "image/png":
+            # 剥离必须先于 PIL：PIL 会解析 tEXt/zTXt/iTXt 并受 MAX_TEXT_MEMORY(64MB)
+            # 约束，大文本块会在像素校验阶段就吃内存或直接 ValueError。
+            raw = strip_png_metadata(raw)
         if mime_type in _PASSTHROUGH_MIMES:
             # 透传格式不做转码，像素校验后原样落盘。
             self._check_pixels(raw, mime_type)
