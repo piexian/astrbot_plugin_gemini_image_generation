@@ -49,6 +49,11 @@
       return !!this.bridge && (!this.bridge.isAvailable || this.bridge.isAvailable());
     }
 
+    get hubEnabled() {
+      const state = this.hub.state || {};
+      return state.mode !== 'off' && state.enabled !== false;
+    }
+
     get writable() {
       return !this.destroyed && this.loaded && !this.loading && !this.saving && this.available;
     }
@@ -316,6 +321,12 @@
 
     async uploadHub(id) {
       if (!this.available || !id) return;
+      // 上传需要密钥，未配置时先引导填写，避免点了才报 401。
+      if (!(this.hub.state || {}).has_key) {
+        this.message = this.t('请先填写在线模板密钥。');
+        void this.openKeyDialog();
+        return;
+      }
       let preview = null;
       try {
         preview = await this.bridge.post('webui/templates/hub', {action: 'preview', id});
@@ -855,6 +866,13 @@
           type: 'button', className: 'comic-btn comic-btn--sm comic-btn--outline',
           'data-tpl-action': 'copy', 'data-tpl-id': template.id, disabled: !this.writable
         }, [this.t('复制')]),
+        !builtin && this.hubEnabled
+          ? this.el('button', {
+            type: 'button', className: 'comic-btn comic-btn--sm comic-btn--outline',
+            'data-tpl-action': 'hub-upload', 'data-tpl-id': template.id,
+            disabled: !this.writable
+          }, [this.t('上传到在线模板库')])
+          : null,
         builtin
           ? this.el('button', {
             type: 'button', className: 'comic-btn comic-btn--sm comic-btn--outline',

@@ -551,6 +551,7 @@
     "该 Key 已存在，未重复添加。": "This key already exists; not added again.",
     "该图片已在参考图托盘中": "This image is already in the reference tray",
     "请先修正 UMO 格式与数量，再确认迁移。": "Fix UMO format and counts before confirming migration.",
+    "请先填写在线模板密钥。": "Please fill in the online template key first.",
     "请检查{v0}的值与范围": "Check the value and range of {v0}",
     "请每行粘贴一个完整 UMO。": "Paste one full UMO per line.",
     "请每行输入一项。": "Enter one item per line.",
