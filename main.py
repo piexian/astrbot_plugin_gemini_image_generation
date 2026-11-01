@@ -62,7 +62,7 @@ from .tl.generation_tracker import (
     requester_from_event,
 )
 from .tl.llm_query_tools import GeminiImageLookupTool, GeminiImageShareTool
-from .tl.llm_tools import GeminiImageGenerationTool
+from .tl.llm_tools import GeminiImageBatchTool, GeminiImageGenerationTool
 from .tl.plugin_config import get_session_tool_timeout, max_configured_reference_images
 from .tl.plugin_service import ImageGenerationService
 from .tl.prompt_templates import PromptTemplateStore, builtin_template, render_template
@@ -126,6 +126,7 @@ class GeminiImageGenerationPlugin(Star):
         # v2 调度器（灰度）：scheduler_v2 开启且首次使用时装配。
         self._v2_service = None
         self.llm_image_tool: GeminiImageGenerationTool | None = None
+        self.llm_batch_tool: GeminiImageBatchTool | None = None
         self.llm_lookup_tool: GeminiImageLookupTool | None = None
         self.llm_share_tool: GeminiImageShareTool | None = None
 
@@ -374,16 +375,20 @@ class GeminiImageGenerationPlugin(Star):
         """注册 LLM 工具到 Context"""
         try:
             tool = GeminiImageGenerationTool(plugin=self)
+            batch_tool = GeminiImageBatchTool(plugin=self)
             tool.refresh_from_plugin()
+            batch_tool.refresh_from_plugin()
             lookup_tool = GeminiImageLookupTool(plugin=self)
             share_tool = GeminiImageShareTool(plugin=self)
             self.llm_image_tool = tool
+            self.llm_batch_tool = batch_tool
             self.llm_lookup_tool = lookup_tool
             self.llm_share_tool = share_tool
-            for registered_tool in (tool, lookup_tool, share_tool):
+            for registered_tool in (tool, batch_tool, lookup_tool, share_tool):
                 self.context.add_llm_tools(registered_tool)
             if self.cfg.llm_tool_reference_path_mode == "global":
                 ensure_admin_default_tool_permission(tool.name)
+                ensure_admin_default_tool_permission(batch_tool.name)
             logger.debug("已注册生图、查询和共享 LLM 工具")
         except Exception as e:
             logger.warning(f"注册 LLM 工具失败: {e}，将使用装饰器方式")
@@ -648,6 +653,8 @@ class GeminiImageGenerationPlugin(Star):
         self._load_api_client_from_config(quiet=True)
         if self.llm_image_tool:
             self.llm_image_tool.refresh_from_plugin()
+        if self.llm_batch_tool:
+            self.llm_batch_tool.refresh_from_plugin()
         if self.cfg.help_render_mode == "local":
             asyncio.create_task(self._ensure_font_for_local_mode())
 
@@ -655,7 +662,8 @@ class GeminiImageGenerationPlugin(Star):
             self._load_api_client_from_config()
             if self.llm_image_tool:
                 self.llm_image_tool.refresh_from_plugin()
-
+            if self.llm_batch_tool:
+                self.llm_batch_tool.refresh_from_plugin()
         if self.api_client:
             logger.info("Gemini 图像生成插件已加载")
         else:

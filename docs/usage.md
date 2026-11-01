@@ -82,9 +82,10 @@ v2.0.0 起，插件只使用 `供应商配置` 中配置的生图供应商。
 
 ## LLM 工具集成
 
-插件注册以下三个工具：
+插件注册以下工具：
 
-- `gemini_image_generation`：单次生图或改图；一次生成多项时仍用其中的 `batch_tasks`。
+- `gemini_image_generation`：单次生图或改图。
+- `gemini_image_batch`：一次生成多项；每项用唯一 `name` 和 `tasks` 数组提交。
 - `gemini_image_lookup`：按 `kind` 查询模型、可用提示词模板、可引用的生成记录和当前会话的后台任务。
 - `gemini_image_share`：用户明确要求把自己的生成图用到其他会话后，共享或取消共享该记录。
 
@@ -122,14 +123,14 @@ LLM 工具会根据当前 `tool_call_timeout` 和 `llm_tool_timeout_reserve_perc
 - `resolution`、`aspect_ratio`：可选。未传入时使用模板默认值、插件配置或供应商默认值；显式传入时以显式尺寸为准。
 - `model`：可选，写法与命令相同，可以是 `供应商/模型`、`供应商/`、模型名或别名。无法识别时先查询 `kind=models`，不会改用默认路由。
 - `options`：可选对象，只包含当前已配置模型声明过的 `quality`、`negative_prompt`、`watermark`。一个都没有时，这个参数不出现。
-- `deliver`：`user`（默认）发给用户；`return` 不发给用户，只返回图片路径。
+- `deliver`：`user`（默认）发给用户；`return` 不发给用户，只返回图片路径；`forum` 同步返回图片位置并提示调用 `upload_image` 上传论坛图床。
 
 生成成功后，结果会附上 `gen:<记录ID>`。历史记录关闭时不附。`reference_cross_session` 关闭且记录未共享时，还会提示：用户要在别的群或私聊使用这张图时，先征得同意再调用 `gemini_image_share`。
 
-旧参数 `provider`、`use_reference_images`、`include_user_avatar`、`reference_image_paths`、`preserve_reference_image_size`、顶层 `negative_prompt` / `watermark` / `quality` 和 `for_forum` 已从单图参数中移除。调用时传入会被忽略。`batch_tasks` 仍使用原来的字段。
+旧参数 `provider`、`use_reference_images`、`include_user_avatar`、`reference_image_paths`、`preserve_reference_image_size`、顶层 `negative_prompt` / `watermark` / `quality` 和 `for_forum` 已从单图参数中移除。调用时传入会被忽略。批量请求请用独立工具 `gemini_image_batch`；`gemini_image_generation` 不再接受 `batch_tasks`。
 ### 批量生成
 
-`gemini_image_generation` 的 `batch_tasks` 会直接进入后台。每个条目必须包含唯一 `name`、完整 `prompt`、`image_count`，并至少指定 `provider` 或 `model`。插件按配置并发执行；供应商支持原生批量时优先按其单次上限提交，不支持时逐张生成，返回数量不足时会继续补齐。
+`gemini_image_batch` 的 `tasks` 会直接进入后台。每个条目必须包含唯一 `name`、完整 `prompt` 和 `image_count`。顶层参数 `model`、`template`、`references`、`resolution`、`aspect_ratio` 和 `options` 作为全部任务的默认值，条目内同名字段覆盖默认值。插件按配置并发执行；供应商支持原生批量时优先按其单次上限提交，不支持时逐张生成，返回数量不足时会继续补齐。
 
 ### 参数校验
 

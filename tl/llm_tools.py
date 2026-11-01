@@ -233,8 +233,6 @@ def _build_tool_description(plugin: Any) -> str:
         "此工具会先在前台短时间等待；超时后转后台，完成后会自动唤醒你，"
         "你必须调用 send_message_to_user 发送图片。"
         "deliver 设为 return 时不发给用户，只返回图片路径，用于需要自己处理图片的场景。"
-        "需要批量生成时传 batch_tasks；每项必须包含唯一 name、完整 prompt、image_count，"
-        "并至少指定 provider 或 model。批量任务固定进入后台。"
     )
 
 
@@ -366,12 +364,92 @@ def _build_tool_parameters(plugin: Any) -> dict[str, Any]:
         ),
         "default": "user",
     }
-    properties["batch_tasks"] = _build_batch_tasks_property(resolution_options)
     return {
         "type": "object",
         "properties": properties,
         "required": [],
     }
+
+
+def _build_batch_tool_parameters(plugin: Any) -> dict[str, Any]:
+    """Build the independent batch image tool schema."""
+
+    resolution_options = _tool_resolution_options(plugin)
+    task = _build_batch_tasks_property(resolution_options)["items"]
+    task_properties = dict(task["properties"])
+    for field in (
+        "provider",
+        "negative_prompt",
+        "watermark",
+        "quality",
+        "use_reference_images",
+        "include_user_avatar",
+        "reference_image_paths",
+        "preserve_reference_image_size",
+    ):
+        task_properties.pop(field, None)
+    task_properties.update(
+        {
+            "template": {
+                "type": "string",
+                "description": "可选模板 ID；先用 gemini_image_lookup 查询",
+            },
+            "references": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "可选内部引用或本地图片路径",
+            },
+            "model": {
+                "type": "string",
+                "description": "可选供应商/模型、供应商或模型别名",
+            },
+            "options": {
+                "type": "object",
+                "description": "可选模型参数覆盖",
+                "properties": {
+                    name: dict(_OPTION_PROPERTIES[name])
+                    for name in _configured_option_fields(plugin)
+                },
+            },
+        }
+    )
+    properties = {
+        "tasks": {
+            "type": "array",
+            "minItems": 1,
+            "description": "命名批量任务；固定进入后台",
+            "items": {
+                "type": "object",
+                "properties": task_properties,
+                "required": ["name", "prompt", "image_count"],
+            },
+        },
+        "model": {"type": "string", "description": "所有任务的默认模型"},
+        "template": {
+            "type": "string",
+            "description": "所有任务的默认模板 ID；先用 gemini_image_lookup 查询",
+        },
+        "references": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "所有任务的默认参考图引用或本地图片路径",
+        },
+        "resolution": {
+            "type": "string",
+            "enum": list(resolution_options),
+            "description": "所有任务的默认分辨率",
+        },
+        "aspect_ratio": {
+            "type": "string",
+            "enum": list(ASPECT_RATIO_OPTIONS),
+            "description": "所有任务的默认长宽比",
+        },
+        "options": {
+            "type": "object",
+            "description": "所有任务的默认模型参数",
+        },
+    }
+    return {"type": "object", "properties": properties, "required": ["tasks"]}
 
 
 def _normalize_tool_resolution(
@@ -860,39 +938,61 @@ async def _prepare_batch_tasks(
     plugin: Any,
     event: Any,
     raw_items: Any,
+    defaults: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]] | None, str | None]:
-    if not isinstance(raw_items, list) or not raw_items:
-        return None, "batch_tasks 必须是非空数组"
-    if len(raw_items) > int(plugin.cfg.batch_max_tasks):
-        return None, f"batch_tasks 最多允许 {plugin.cfg.batch_max_tasks} 个命名任务"
-    if not all(isinstance(item, dict) for item in raw_items):
-        return None, "batch_tasks 中每一项都必须是对象"
+    """Validate batch tasks through the same parser used by single-image calls."""
 
-    include_any_avatar = any(
-        bool(item.get("include_user_avatar")) for item in raw_items
-    )
-    event_refs, event_avatars = await plugin._fetch_images_from_event(
-        event,
-        include_at_avatars=include_any_avatar,
-    )
+    if not isinstance(raw_items, list) or not raw_items:
+        return None, "tasks 必须是非空数组"
+    if len(raw_items) > int(plugin.cfg.batch_max_tasks):
+        return None, f"tasks 最多允许 {plugin.cfg.batch_max_tasks} 个命名任务"
+    if not all(isinstance(item, dict) for item in raw_items):
+        return None, "tasks 中每一项都必须是对象"
+
+    defaults = dict(defaults or {})
+    default_options = defaults.get("options")
+    if not isinstance(default_options, dict):
+        default_options = {}
     prepared: list[dict[str, Any]] = []
     names: set[str] = set()
     for index, raw_item in enumerate(raw_items, 1):
-        name = str(raw_item.get("name") or "").strip()
-        prompt = str(raw_item.get("prompt") or "").strip()
-        provider = str(raw_item.get("provider") or "").strip() or None
-        model = str(raw_item.get("model") or "").strip() or None
+        item = dict(defaults)
+        item.update(raw_item)
+        task_options = item.get("options")
+        merged_options = dict(default_options)
+        if isinstance(task_options, dict):
+            merged_options.update(task_options)
+        item["options"] = merged_options
+
+        # Internal migration compatibility for callers that still construct the
+        # old batch shape; the public tool schema no longer exposes these keys.
+        if not item.get("model") and item.get("provider"):
+            item["_provider"] = item["provider"]
+        if "references" not in item:
+            references: list[str] = []
+            if item.get("use_reference_images"):
+                references.append("current")
+            if item.get("include_user_avatar"):
+                references.append("avatar:sender")
+            paths = item.get("reference_image_paths") or []
+            if isinstance(paths, list):
+                references.extend(str(path) for path in paths)
+            item["references"] = references
+        for legacy_key in ("negative_prompt", "watermark", "quality"):
+            if legacy_key in item and legacy_key not in merged_options:
+                merged_options[legacy_key] = item[legacy_key]
+
+        name = str(item.get("name") or "").strip()
         if not name:
             return None, f"第 {index} 个批量任务缺少 name"
         if name in names:
             return None, f"批量任务名称重复：{name}"
         names.add(name)
-        if not prompt:
-            return None, f"批量任务 {name} 缺少 prompt"
-        if not provider and not model:
-            return None, f"批量任务 {name} 必须至少指定 provider 或 model"
+        prompt = str(item.get("prompt") or "").strip()
+        if not prompt and not str(item.get("template") or "").strip():
+            return None, f"批量任务 {name} 缺少 prompt 或 template"
         try:
-            image_count = int(raw_item.get("image_count"))
+            image_count = int(item.get("image_count"))
         except (TypeError, ValueError):
             return None, f"批量任务 {name} 的 image_count 必须是整数"
         if not 1 <= image_count <= int(plugin.cfg.batch_max_images_per_task):
@@ -901,95 +1001,27 @@ async def _prepare_batch_tasks(
                 f"{plugin.cfg.batch_max_images_per_task} 之间"
             )
 
-        negative_prompt = (
-            str(raw_item.get("negative_prompt") or "").strip()
-            if "negative_prompt" in raw_item
-            else None
-        )
-        watermark = bool(raw_item.get("watermark")) if "watermark" in raw_item else None
-        quality = (
-            str(raw_item.get("quality") or "").strip()
-            if "quality" in raw_item
-            else None
-        )
-        resolution_value = raw_item.get("resolution")
-        aspect_value = raw_item.get("aspect_ratio")
-        resolution, aspect_ratio, _notice = _resolve_tool_size_params(
-            plugin,
-            resolution=resolution_value,
-            aspect_ratio=aspect_value,
-            provider=provider,
-            model=model,
-        )
-
-        reference_images = (
-            list(event_refs) if raw_item.get("use_reference_images") else []
-        )
-        avatar_reference = (
-            list(event_avatars) if raw_item.get("include_user_avatar") else []
-        )
-        reference_images.extend(
-            _normalize_reference_paths(plugin, raw_item.get("reference_image_paths"))
-        )
-        reference_error = _reference_admission_error(
-            plugin,
-            reference_images,
-            avatar_reference,
-            references_required=bool(
-                raw_item.get("use_reference_images")
-                or raw_item.get("include_user_avatar")
-                or raw_item.get("reference_image_paths")
-            ),
-            avatar_required=bool(raw_item.get("include_user_avatar")),
-        )
-        if reference_error:
-            return None, f"批量任务 {name} {reference_error}"
-        has_references = bool(reference_images or avatar_reference)
-        preserve_size = (
-            bool(raw_item.get("preserve_reference_image_size"))
-            if "preserve_reference_image_size" in raw_item
-            else bool(getattr(plugin.cfg, "preserve_reference_image_size", False))
-        )
-        explicit_size = any(
-            value is not None and str(value).strip()
-            for value in (resolution_value, aspect_value)
-        )
-        # 模型显式给出尺寸时优先满足本次请求；配置默认值只约束未指定尺寸的请求。
-        if explicit_size:
-            preserve_size = False
-        suppress_resolution = has_references and preserve_size
-        if suppress_resolution:
-            resolution = None
-            aspect_ratio = None
-
-        candidates = _matching_candidates(
-            plugin,
-            provider=provider,
-            model=model,
-            has_reference_images=has_references,
-            negative_prompt=negative_prompt,
-            watermark=watermark,
-            quality=quality,
-        )
-        if not candidates:
-            return None, f"批量任务 {name} 没有匹配所选路由和参数能力的候选模型"
-
+        single, error = await _prepare_single_request(plugin, event, item, prompt)
+        if error or single is None:
+            return None, f"批量任务 {name} {error or '参数无效'}"
         prepared.append(
             {
                 "name": name,
-                "prompt": prompt,
+                "prompt": single.prompt,
                 "image_count": image_count,
-                "provider": provider,
-                "model": model,
-                "negative_prompt": negative_prompt,
-                "watermark": watermark,
-                "quality": quality,
-                "reference_images": reference_images,
-                "avatar_reference": avatar_reference,
-                "resolution": resolution,
-                "aspect_ratio": aspect_ratio,
-                "suppress_resolution": suppress_resolution,
-                "routing_mode": routing_mode(provider, model),
+                "provider": single.provider,
+                "model": single.model,
+                "template_id": single.template_id,
+                "negative_prompt": single.negative_prompt,
+                "watermark": single.watermark,
+                "quality": single.quality,
+                "reference_images": single.reference_images,
+                "avatar_reference": single.avatar_reference,
+                "resolution": single.resolution,
+                "aspect_ratio": single.aspect_ratio,
+                "suppress_resolution": single.suppress_resolution,
+                "trusted_local": single.trusted_local,
+                "routing_mode": routing_mode(single.provider, single.model),
             }
         )
     return prepared, None
@@ -1557,7 +1589,8 @@ async def _prepare_single_request(
     if deliver not in ("user", "return", "forum"):
         return None, "❌ deliver 只能是 user、return 或 forum"
 
-    provider = model = None
+    provider = str(kwargs.get("_provider") or "").strip() or None
+    model = None
     model_text = str(kwargs.get("model") or "").strip()
     if model_text:
         provider, model, recognized = parse_model_selector(
@@ -1660,6 +1693,112 @@ async def _prepare_single_request(
     )
 
 
+async def _run_batch_tool(
+    plugin: Any,
+    event: Any,
+    raw_tasks: Any,
+    defaults: dict[str, Any] | None = None,
+) -> str:
+    """Validate and submit an independent LLM batch request."""
+
+    prepared_items, error = await _prepare_batch_tasks(
+        plugin, event, raw_tasks, defaults=defaults
+    )
+    if error or not prepared_items:
+        return f"❌ 批量任务参数错误：{error or '没有有效任务'}"
+
+    v2_service = plugin._v2_service_for(getattr(event, "unified_msg_origin", None))
+    if v2_service is not None:
+        return await _run_batch_v2(plugin, event, v2_service, prepared_items)
+
+    allowed, limit_message = await plugin._check_and_consume_limit(
+        event, cost=len(prepared_items)
+    )
+    if not allowed:
+        return limit_message or "请求过于频繁，请稍后再试"
+    modes = {item["routing_mode"] for item in prepared_items}
+    batch_mode = next(iter(modes)) if len(modes) == 1 else "mixed"
+    message = routing_description(batch_mode)
+    record = await plugin.background_task_manager.create(
+        session_id=_event_session_id(event),
+        kind="batch",
+        routing_mode=batch_mode,
+        message=message,
+        total_items=len(prepared_items),
+    )
+    task_id = record["task_id"]
+    tracker = getattr(plugin, "generation_tracker", None)
+    parent_job_id = None
+    if tracker is not None:
+        try:
+            parent = await tracker.begin(
+                source="llm_batch",
+                prompt="",
+                params={},
+                requester=requester_from_event(event),
+                requested_images=sum(item["image_count"] for item in prepared_items),
+            )
+            parent_job_id = parent["job_id"]
+        except Exception as exc:
+            logger.warning(f"[生成追踪] 创建批量父记录失败: {exc}")
+    plugin.background_task_manager.attach(
+        task_id,
+        run_batch_job(
+            plugin, event, task_id, prepared_items, parent_job_id=parent_job_id
+        ),
+    )
+    return _background_json(task_id, batch_mode, message)
+
+
+@dataclass
+class GeminiImageBatchTool(FunctionTool[AstrAgentContext]):
+    """Run named image-generation tasks in the background."""
+
+    name: str = "gemini_image_batch"
+    handler_module_path: str = "astrbot_plugin_gemini_image_generation"
+    description: str = Field(
+        default=(
+            "后台批量生成多项图片。每项使用唯一 name、prompt、image_count；"
+            "可按任务或顶层默认值指定 template、references、model、尺寸和 options。"
+        )
+    )
+    parameters: dict = Field(default_factory=dict)
+    plugin: Any = Field(default=None, repr=False)
+
+    def refresh_from_plugin(self) -> None:
+        self.parameters = _build_batch_tool_parameters(self.plugin)
+
+    @provider_operation("tool")
+    async def call(
+        self, context: ContextWrapper[AstrAgentContext], **kwargs
+    ) -> ToolExecResult:
+        plugin = self.plugin
+        if not plugin:
+            return "❌ 工具未正确初始化，缺少插件实例引用"
+        if not plugin.api_client:
+            return (
+                "❌ 无法生成图像：API 客户端尚未初始化\n"
+                "✅ 建议：在插件配置中填写有效密钥并重启服务"
+            )
+        self.refresh_from_plugin()
+        event = context.context.event
+        defaults = {
+            key: kwargs[key]
+            for key in (
+                "model",
+                "template",
+                "references",
+                "resolution",
+                "aspect_ratio",
+                "options",
+            )
+            if key in kwargs
+        }
+        return await _run_batch_tool(
+            plugin, event, kwargs.get("tasks"), defaults=defaults
+        )
+
+
 @dataclass
 class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
     """
@@ -1696,79 +1835,16 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         plugin = self.plugin
         if not plugin:
             return "❌ 工具未正确初始化，缺少插件实例引用"
-
-        raw_batch_tasks = kwargs.get("batch_tasks")
-        is_batch = raw_batch_tasks is not None
-        prompt = str(kwargs.get("prompt") or "").strip()
-        if (
-            not is_batch
-            and not prompt
-            and not str(kwargs.get("template") or "").strip()
-        ):
-            return "❌ 缺少必填参数：单图模式的图像描述不能为空"
-        if is_batch and kwargs.get("deliver") == "return":
-            return "❌ batch_tasks 固定进入后台，不能与 deliver=return 同时使用"
-
         if not plugin.api_client:
             return (
                 "❌ 无法生成图像：API 客户端尚未初始化\n"
-                "🧐 可能原因：API 密钥未配置或加载失败\n"
                 "✅ 建议：在插件配置中填写有效密钥并重启服务"
             )
-
-        if is_batch:
-            prepared_items, error = await _prepare_batch_tasks(
-                plugin,
-                event,
-                raw_batch_tasks,
-            )
-            if error or not prepared_items:
-                return f"❌ 批量任务参数错误：{error or '没有有效任务'}"
-            v2_service = plugin._v2_service_for(
-                getattr(event, "unified_msg_origin", None)
-            )
-            if v2_service is not None:
-                return await _run_batch_v2(plugin, event, v2_service, prepared_items)
-            allowed, limit_message = await plugin._check_and_consume_limit(
-                event, cost=len(prepared_items)
-            )
-            if not allowed:
-                return limit_message or "请求过于频繁，请稍后再试"
-            modes = {item["routing_mode"] for item in prepared_items}
-            batch_mode = next(iter(modes)) if len(modes) == 1 else "mixed"
-            message = routing_description(batch_mode)
-            record = await plugin.background_task_manager.create(
-                session_id=_event_session_id(event),
-                kind="batch",
-                routing_mode=batch_mode,
-                message=message,
-                total_items=len(prepared_items),
-            )
-            task_id = record["task_id"]
-            tracker = getattr(plugin, "generation_tracker", None)
-            parent_job_id = None
-            if tracker is not None:
-                try:
-                    parent = await tracker.begin(
-                        source="llm_batch",
-                        prompt="",
-                        params={},
-                        requester=requester_from_event(event),
-                        requested_images=sum(
-                            item["image_count"] for item in prepared_items
-                        ),
-                    )
-                    parent_job_id = parent["job_id"]
-                except Exception as exc:
-                    logger.warning(f"[生成追踪] 创建批量父记录失败: {exc}")
-            plugin.background_task_manager.attach(
-                task_id,
-                run_batch_job(
-                    plugin, event, task_id, prepared_items, parent_job_id=parent_job_id
-                ),
-            )
-            return _background_json(task_id, batch_mode, message)
-
+        if "batch_tasks" in kwargs:
+            return "❌ 批量请求请使用独立工具 gemini_image_batch"
+        prompt = str(kwargs.get("prompt") or "").strip()
+        if not prompt and not str(kwargs.get("template") or "").strip():
+            return "❌ 缺少必填参数：单图模式的图像描述不能为空"
         single, error = await _prepare_single_request(plugin, event, kwargs, prompt)
         if error:
             return error

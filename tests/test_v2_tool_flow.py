@@ -26,7 +26,7 @@ from tl.core.stack import build_generation_stack
 from tl.core.states import JobState
 from tl.generation_errors import IMAGE_FILE_MISSING_MESSAGE, api_failure_message
 from tl.image_generator import ImageGenerator
-from tl.llm_tools import GeminiImageGenerationTool
+from tl.llm_tools import GeminiImageBatchTool, GeminiImageGenerationTool
 from tl.plugin_config import ProviderCandidate
 from tl.rate_limiter import RateLimiter
 from tl.reference_image import REFERENCE_IMAGE_CACHE_DIR
@@ -250,6 +250,7 @@ async def make_env(tmp_path, monkeypatch, fake_mcp):
             plugin=plugin,
             manager=plugin.background_task_manager,
             tool=GeminiImageGenerationTool(plugin=plugin),
+            batch_tool=GeminiImageBatchTool(plugin=plugin),
         )
 
     yield build
@@ -268,6 +269,10 @@ def new_event():
 async def call(env, event=None, **kwargs):
     kwargs.setdefault("prompt", "draw a cat")
     return await env.tool.call(_context(event or new_event()), **kwargs)
+
+
+async def call_batch(env, event=None, **kwargs):
+    return await env.batch_tool.call(_context(event or new_event()), **kwargs)
 
 
 async def record_of(env, task_id):
@@ -1129,7 +1134,7 @@ async def test_batch_v2_uses_parent_children_and_delivers_without_legacy_task(
     )
 
     event = _Event()
-    payload = json.loads(await call(env, event, batch_tasks=batch_tasks()))
+    payload = json.loads(await call_batch(env, event, tasks=batch_tasks()))
 
     assert payload["status"] == "running"
     task_id = payload["task_id"]
@@ -1189,7 +1194,7 @@ async def test_batch_v2_quota_denial_creates_no_job_or_record(make_env):
     event = _Event()
     event.unified_msg_origin = FULL_UMO
 
-    result = await call(env, event, batch_tasks=batch_tasks())
+    result = await call_batch(env, event, tasks=batch_tasks())
 
     assert "超过当前会话单周期额度 1" in result
     assert await stored_jobs(env) == []
@@ -1344,9 +1349,9 @@ async def test_legacy_batch_ignores_size(tmp_path, monkeypatch):
         received.extend(items)
 
     monkeypatch.setattr(llm_tools, "run_batch_job", run_batch)
-    result = await GeminiImageGenerationTool(plugin=plugin).call(
+    result = await GeminiImageBatchTool(plugin=plugin).call(
         _context(_Event()),
-        batch_tasks=[
+        tasks=[
             {
                 "name": "explicit",
                 "prompt": "a",
@@ -1387,9 +1392,9 @@ async def test_batch_v2_ignores_size(make_env, notifier):
     env = await make_env(client, candidates=batch_candidates())
 
     payload = json.loads(
-        await call(
+        await call_batch(
             env,
-            batch_tasks=[
+            tasks=[
                 {
                     "name": "a",
                     "prompt": "a",

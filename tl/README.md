@@ -350,19 +350,21 @@ StepFun provider。
 
 | 接口 | 说明 |
 |------|------|
-| `GeminiImageGenerationTool` | AstrBot FunctionTool 实现 |
+| `GeminiImageGenerationTool` | AstrBot FunctionTool 实现（单图） |
+| `GeminiImageBatchTool` | AstrBot FunctionTool 实现（批量，参数 `tasks`） |
 | `GeminiImageGenerationTool.refresh_from_plugin()` | 根据当前插件配置刷新工具描述和参数 schema |
 | `GeminiImageGenerationTool.call()` | LLM Tool 调用入口 |
 | `execute_image_generation_tool()` | 兼容旧路径的执行入口 |
-| `_build_call_tool_result()` | 将图片结果封装为 `CallToolResult`，包含 `ImageContent` / `TextContent` |
+| `_build_call_tool_result()` | 将图片结果封装为仅文本的 `CallToolResult`，只列本地路径或 URL，不内联图片数据 |
 | `_await_generation_task_and_send()` | LLM 后台生成完成后反向激活主 Agent，提供图片 URL/路径并要求调用主动发送工具 |
 
 核心工具参数包括：
 
 ```text
-prompt + provider + model + negative_prompt + watermark + quality
-+ use_reference_images + include_user_avatar + reference_image_paths
-+ preserve_reference_image_size + resolution + aspect_ratio + batch_tasks + for_forum
+单图：prompt + template + references + model + resolution + aspect_ratio + options + deliver
+
+批量（gemini_image_batch）：tasks[].name/prompt/image_count
++ 顶层默认值（model、template、references、resolution、aspect_ratio、options）
 ```
 
 ### `provider_capabilities.py` / `llm_query_tools.py`

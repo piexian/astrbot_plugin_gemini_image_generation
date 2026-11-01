@@ -31,7 +31,7 @@ from tl.generation_tracker import (
     ReferenceImageUnavailableError,
     record_generation_success,
 )
-from tl.llm_tools import GeminiImageGenerationTool
+from tl.llm_tools import GeminiImageBatchTool, GeminiImageGenerationTool
 from tl.prompt_templates import builtin_template, render_template
 from tl.provider_capabilities import parse_model_selector, select_candidates
 from tl.rate_limiter import RateLimiter
@@ -318,22 +318,23 @@ def _tool_plugin(tmp_path):
 )
 async def test_llm_invalid_requests_do_not_consume(tmp_path, failure):
     plugin = _tool_plugin(tmp_path)
-    kwargs = {"prompt": "draw"}
+    # 单图失败只走单图工具；批量失败只走独立批量工具。
+    batch_failure = failure in {"batch", "empty_batch", "malformed_batch"}
     if failure == "api":
         plugin.api_client = None
+        kwargs = {"prompt": "draw"}
     elif failure == "empty":
-        kwargs["prompt"] = " "
+        kwargs = {"prompt": " "}
     elif failure == "route":
-        kwargs["model"] = "unknown"
+        kwargs = {"prompt": "draw", "model": "unknown"}
     elif failure == "empty_batch":
-        kwargs["batch_tasks"] = []
+        kwargs = {"tasks": []}
     elif failure == "malformed_batch":
-        kwargs["batch_tasks"] = "bad"
+        kwargs = {"tasks": "bad"}
     else:
-        kwargs["batch_tasks"] = [{"name": "a", "prompt": "draw", "image_count": 2}]
-    result = await GeminiImageGenerationTool(plugin=plugin).call(
-        _context(_Event()), **kwargs
-    )
+        kwargs = {"tasks": [{"prompt": "draw", "image_count": 2}]}
+    tool_cls = GeminiImageBatchTool if batch_failure else GeminiImageGenerationTool
+    result = await tool_cls(plugin=plugin).call(_context(_Event()), **kwargs)
     assert "❌" in result
     assert plugin.rate_limiter.calls == []
     await plugin.background_task_manager.close()
@@ -356,8 +357,8 @@ async def test_llm_batch_charges_prepared_task_count_once(
         {"name": name, "prompt": name, "image_count": count, "provider": "google"}
         for name, count in (("a", 3), ("b", 2))
     ]
-    result = await GeminiImageGenerationTool(plugin=plugin).call(
-        _context(_Event()), batch_tasks=items
+    result = await GeminiImageBatchTool(plugin=plugin).call(
+        _context(_Event()), tasks=items
     )
     if allowed:
         task_id = json.loads(result)["task_id"]

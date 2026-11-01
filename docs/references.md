@@ -1,6 +1,6 @@
 # 内部引用
 
-生图工具的 `references` 已支持这些写法。批量工具 `batch_tasks` 还没有接入。
+生图工具的 `references` 已支持这些写法。批量工具 `gemini_image_batch` 的顶层 `references` 同样支持，作为全部任务的默认值。
 
 ## 语法
 

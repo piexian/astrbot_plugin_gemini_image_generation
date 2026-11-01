@@ -97,7 +97,7 @@ google / gemini_interactions / vertex / openai / agnes_ai / xai / minimax / step
 | `llm_tool_reference_path_mode` | `whitelist` | LLM 工具 `reference_image_paths` 的本地路径权限模式 |
 | `llm_tool_reference_allowed_dirs` | `[]` | `whitelist` 模式下额外允许的参考图目录 |
 | `batch_max_images_per_task` | `10` | 单个命名提示词的目标图片数量上限；供应商原生单次上限更小时自动拆分补齐 |
-| `batch_max_tasks` | `20` | 一次 `batch_tasks` 允许的命名任务条目上限 |
+| `batch_max_tasks` | `20` | 一次 `gemini_image_batch` 的 `tasks` 允许的命名任务条目上限 |
 | `batch_concurrency` | `3` | 后台批量生成并发数；每个条目内部按供应商单次上限顺序补齐 |
 | `generation_max_concurrency` | `3` | 指令、LLM、Studio 与外部插件共用的生成执行槽上限；重载生效 |
 | `generation_max_queue_size` | `100` | 全入口等待队列容量，不含执行请求；排队不占供应商请求超时，满时拒绝提交；重载生效 |

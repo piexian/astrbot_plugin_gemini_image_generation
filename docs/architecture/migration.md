@@ -47,9 +47,9 @@ WebUI 没有会话 UMO，公开 SDK 也允许不传 `umo`：只有灰度名单�
 
 ## 工具改名
 
-`gemini_image_provider_models` 与 `gemini_image_task_status` 已合并为 `gemini_image_lookup`，用 `kind` 区分 `models`、`templates`、`history` 和 `tasks`。新增 `gemini_image_share`。AstrBot 按工具名保存的人格工具列表、工具权限和禁用状态不会自动迁移，升级后需要在 AstrBot 里重新勾选和授权。
+`gemini_image_provider_models` 与 `gemini_image_task_status` 已合并为 `gemini_image_lookup`，用 `kind` 区分 `models`、`templates`、`history` 和 `tasks`。新增 `gemini_image_share`。批量生成从 `gemini_image_generation` 的 `batch_tasks` 拆为独立工具 `gemini_image_batch`。AstrBot 按工具名保存的人格工具列表、工具权限和禁用状态不会自动迁移，升级后需要在 AstrBot 里重新勾选和授权。
 
-单图工具的参数也已更换。`batch_tasks` 仍用旧字段。
+单图工具的参数也已更换。批量改由独立工具 `gemini_image_batch` 承载，`gemini_image_generation` 不再接受 `batch_tasks`。
 
 | 旧参数 | 新写法 |
 | --- | --- |
@@ -59,4 +59,4 @@ WebUI 没有会话 UMO，公开 SDK 也允许不传 `umo`：只有灰度名单�
 | `reference_image_paths` | `references` 里的绝对路径 |
 | 顶层 `quality`、`negative_prompt`、`watermark` | `options` 中的同名字段 |
 | `preserve_reference_image_size` | 不再由工具传入，改用插件配置 |
-| `for_forum` | `deliver: "return"` |
+| `for_forum` | `deliver: "forum"` |

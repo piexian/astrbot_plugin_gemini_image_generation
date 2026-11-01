@@ -2436,7 +2436,7 @@
       "batch_max_tasks": {
         "description": "批量任务条目上限",
         "type": "int",
-        "hint": "一次 batch_tasks 最多包含的命名提示词数量。",
+        "hint": "一次 gemini_image_batch 的 tasks 最多包含的命名提示词数量。",
         "default": 20,
         "slider": {
           "min": 1,
