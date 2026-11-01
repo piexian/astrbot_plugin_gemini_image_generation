@@ -141,6 +141,7 @@
       if (action === 'hub-sync') { void this.syncHub(true); return; }
       if (action === 'hub-import') { void this.importHub(id); return; }
       if (action === 'hub-use') { this.useHub(id); return; }
+      if (action === 'hub-view') { this.viewHub(id); return; }
       if (action === 'hub-upload') { void this.uploadHub(id); return; }
       if (action === 'hub-key') { void this.openKeyDialog(); }
     }
@@ -289,6 +290,20 @@
         this.message = this.t('导入失败，请稍后重试。');
         this.render();
       }
+    }
+
+    viewHub(id) {
+      // 缓存已在本地，查看正文不需要联网。
+      const hit = this.hub.templates.find(item => item.id === id);
+      if (!hit) return;
+      const meta = [
+        hit.author ? this.t('标签') + ': ' + hit.author : '',
+        hit.source_url ? 'source: ' + hit.source_url : ''
+      ].filter(Boolean).join('\n');
+      this.openTextDialog(
+        hit.name,
+        meta ? meta + '\n\n' + (hit.content || '') : (hit.content || '')
+      );
     }
 
     useHub(id) {
@@ -790,6 +805,10 @@
         ]),
         template.author ? this.el('p', {className: 'tpl-card-meta'}, [template.author]) : this.el('span'),
         this.el('div', {className: 'tpl-card-actions'}, [
+          this.el('button', {
+            type: 'button', className: 'comic-btn comic-btn--sm comic-btn--outline',
+            'data-tpl-action': 'hub-view', 'data-tpl-id': template.id
+          }, [this.t('查看')]),
           this.el('button', {
             type: 'button', className: 'comic-btn comic-btn--sm comic-btn--cta',
             'data-tpl-action': 'hub-use', 'data-tpl-id': template.id
