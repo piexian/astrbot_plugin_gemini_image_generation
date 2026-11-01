@@ -11,6 +11,7 @@
 - LLM 工具 `gemini_image_lookup` 查询模型、模板、可引用的生成记录和后台任务；`gemini_image_share` 由请求者本人共享或取消共享自己的生成记录。
 - 单图工具新增 `template`、`references`、`options` 和 `deliver`。生成成功后，前台结果和后台回灌会附上 `gen:` 引用。
 - `retry_settings.scheduler_v2_sessions` 会话灰度名单：填会话的 unified_msg_origin，非空时仅名单内会话的聊天命令与 LLM 工具走 v2 调度器，其余会话、WebUI 与 SDK 保持旧路径。
+- 在线模板（image-prompt-hub）：广场新增「在线模板」子页，支持本地缓存检索、实时检索（`online` 模式）、导入为本地副本、立即同步，以及密钥的申请、校验与吊销。由 `service_settings.template_hub_mode`（`cache`/`online`/`off`）、`template_hub_url` 和 `template_hub_key` 控制；`cache` 模式检索与生成都不联网。
 - LLM 工具 `gemini_image_batch`：批量生图从 `gemini_image_generation` 的 `batch_tasks` 拆为独立工具，用 `tasks` 数组提交；顶层 `model`、`template`、`references`、`resolution`、`aspect_ratio` 和 `options` 作为全部任务的默认值，条目内同名字段覆盖默认值。
 - WebUI 提示词广场：新增「提示词广场」页签，管理内置与本地模板（搜索与标签筛选、新建／编辑／复制／删除、内置恢复默认、AI 可用开关、JSON 包导入导出、填入工作台）。后端：`/templates`（列表与增删改、恢复内置默认、AI 可用开关）、`/templates/import`、`/templates/export` 与 `/template_asset/<name>`；模板预览图存插件数据目录 `template_assets/`，不受画廊容量清理影响。
 

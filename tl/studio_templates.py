@@ -13,10 +13,16 @@ from astrbot.api import logger
 
 from .prompt_templates import (
     PromptTemplateStore,
+    SourceAuthError,
+    SourceRateLimited,
+    SourceRejected,
+    TemplateSourceError,
     TemplateValidationError,
     export_package,
     is_builtin_id,
 )
+from .template_cache import TemplateHubCache
+from .template_hub import HubTemplateSource, source_for
 from .web_studio_service import StudioServiceError
 
 _SAFE_FILE_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -35,12 +41,23 @@ class StudioTemplateService:
         data_dir: str | Path,
         *,
         gallery_dir: str | Path | None = None,
+        hub_mode: str = "cache",
+        hub_url: str = "",
+        hub_key: str = "",
+        source_factory=source_for,
     ) -> None:
         self.store = store
         self.data_dir = Path(data_dir)
         self.asset_dir = self.data_dir / "template_assets"
         self.gallery_dir = Path(gallery_dir) if gallery_dir else None
         self._asset_lock = asyncio.Lock()
+        self._hub_mode = hub_mode
+        self._hub_url = hub_url
+        self._hub_key = hub_key
+        self._source_factory = source_factory
+        self.hub_source: HubTemplateSource | None = None
+        self.hub_cache = TemplateHubCache(self.data_dir, mode=hub_mode)
+        self.reconfigure_hub(mode=hub_mode, url=hub_url, key=hub_key, sync=False)
 
     def list_templates(self) -> list[dict[str, Any]]:
         return [_public_record(item) for item in self.store.list_templates()]
@@ -50,6 +67,186 @@ class StudioTemplateService:
 
         found = self.store.get(str(template_id or "").strip())
         return _public_record(found) if found is not None else None
+
+    # --- 在线模板 ---
+
+    def reconfigure_hub(
+        self,
+        *,
+        mode: str | None = None,
+        url: str | None = None,
+        key: str | None = None,
+        sync: bool = True,
+    ) -> None:
+        """按插件配置重建在线源；键不变时复用同一个客户端。"""
+
+        if mode is not None:
+            self._hub_mode = mode
+        if url is not None:
+            self._hub_url = url
+        if key is not None:
+            self._hub_key = key
+        if self._hub_mode == "off":
+            self.hub_source = None
+            self.hub_cache.reconfigure(source=None, mode="off")
+            return
+        if (
+            self.hub_source is None
+            or self.hub_source.base_url != (self._hub_url or "")
+            or self.hub_source.api_key != (self._hub_key or None)
+        ):
+            previous = self.hub_source
+            self.hub_source = self._source_factory(self._hub_url, self._hub_key or None)
+            if previous is not None:
+                _schedule_close(previous)
+        self.hub_cache.reconfigure(source=self.hub_source, mode=self._hub_mode)
+
+    def hub_state(self) -> dict[str, Any]:
+        state = self.hub_cache.state
+        return {
+            "mode": self._hub_mode,
+            "enabled": self.hub_cache.enabled,
+            "live_search": self.hub_cache.live_search,
+            "has_key": bool(self._hub_key),
+            "url": self.hub_source.base_url if self.hub_source else "",
+            **state.as_dict(),
+        }
+
+    async def sync_hub(self, *, force: bool = False) -> dict[str, Any]:
+        if not self.hub_cache.enabled:
+            return self.hub_state()
+        await self.hub_cache.sync(force=force)
+        return self.hub_state()
+
+    async def hub_search(
+        self, query: str, *, tag: str | None = None, limit: int = 20
+    ) -> dict[str, Any]:
+        """本地缓存检索；online 模式额外合并实时检索结果。"""
+
+        size = max(1, min(int(limit or 20), 200))
+        results: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for score, template in self.hub_cache.search(query, tag=tag, limit=size):
+            record = _public_record(template)
+            record["score"] = round(score, 3)
+            record["found_via"] = "cache"
+            results.append(record)
+            seen.add(record["id"])
+        notice = ""
+        if self.hub_cache.live_search and self.hub_source is not None:
+            try:
+                page = await self.hub_source.search(query, tag=tag, limit=size)
+                for template in page.templates:
+                    record = _public_record(template)
+                    if record["id"] in seen:
+                        continue
+                    record["score"] = 0.0
+                    record["found_via"] = "online"
+                    results.append(record)
+                    seen.add(record["id"])
+            except TemplateSourceError as exc:
+                notice = _source_message(exc)
+        return {
+            "templates": results[:size],
+            "notice": notice,
+            "state": self.hub_state(),
+        }
+
+    async def hub_import(self, remote_ids: Any) -> dict[str, Any]:
+        """把缓存里的在线模板导入为可编辑的本地副本。"""
+
+        wanted = [str(item).strip() for item in (remote_ids or []) if str(item).strip()]
+        if not wanted:
+            raise StudioServiceError("请先选择要导入的在线模板", status_code=400)
+        if len(wanted) > 100:
+            raise StudioServiceError("一次最多导入 100 条模板", status_code=400)
+        results = []
+        for remote_id in wanted:
+            template = self.hub_cache.get(remote_id)
+            if template is None:
+                results.append(
+                    {"id": remote_id, "ok": False, "message": "缓存里没有该模板"}
+                )
+                continue
+            try:
+                created = await self.store.create(
+                    {
+                        "name": template.name,
+                        "content": template.content,
+                        "ai_description": template.ai_description,
+                        "defaults": dict(template.defaults),
+                        "reference": template.reference,
+                        "tags": list(template.tags),
+                        "author": template.author,
+                        "source_url": template.source_url,
+                    }
+                )
+                results.append({"id": remote_id, "ok": True, "local_id": created.id})
+            except TemplateValidationError as exc:
+                results.append({"id": remote_id, "ok": False, "message": str(exc)})
+        return {
+            "imported": sum(1 for item in results if item["ok"]),
+            "failed": sum(1 for item in results if not item["ok"]),
+            "results": results,
+        }
+
+    async def hub_key_request(self, email: str) -> dict[str, Any]:
+        await self._with_source().request_key(email)
+        return {"status": "sent"}
+
+    async def hub_key_check(self) -> dict[str, Any]:
+        payload = await self._with_source().key_status()
+        return {"status": "ok", "key": payload}
+
+    async def hub_key_revoke(self) -> dict[str, Any]:
+        await self._with_source().revoke_key()
+        return {"status": "revoked"}
+
+    async def hub_upload(self, template_id: Any) -> dict[str, Any]:
+        """上传本地模板；先展示内容再由前端确认，这里只负责发送。"""
+
+        found = self.store.get(_require_id(template_id))
+        if found is None:
+            raise StudioServiceError("模板不存在", status_code=404)
+        try:
+            uploaded = await self._with_source().upload(found)
+        except SourceAuthError as exc:
+            raise StudioServiceError(_source_message(exc), status_code=401) from exc
+        except SourceRateLimited as exc:
+            raise StudioServiceError(_source_message(exc), status_code=429) from exc
+        except SourceRejected as exc:
+            raise StudioServiceError(str(exc), status_code=400) from exc
+        except TemplateSourceError as exc:
+            raise StudioServiceError(_source_message(exc), status_code=502) from exc
+        return _public_record(uploaded)
+
+    def hub_upload_preview(self, template_id: Any) -> dict[str, Any]:
+        """上传前展示将发送的完整内容。"""
+
+        found = self.store.get(_require_id(template_id))
+        if found is None:
+            raise StudioServiceError("模板不存在", status_code=404)
+        record = _public_record(found)
+        return {
+            "id": record["id"],
+            "name": record["name"],
+            "ai_description": record["ai_description"],
+            "content": record["content"],
+            "defaults": record["defaults"],
+            "reference": record["reference"],
+            "tags": record["tags"],
+            "author": record["author"],
+            "source_url": record["source_url"],
+        }
+
+    def _with_source(self) -> HubTemplateSource:
+        if self.hub_source is None:
+            raise StudioServiceError("在线模板已关闭或未配置服务地址", status_code=400)
+        return self.hub_source
+
+    async def close(self) -> None:
+        source, self.hub_source = self.hub_source, None
+        await _drain(source)
 
     async def save(self, payload: dict[str, Any]) -> dict[str, Any]:
         action = str(payload.get("action") or "").strip()
@@ -196,4 +393,37 @@ def _public_record(template: Any) -> dict[str, Any]:
         "builtin": is_builtin_id(template.id),
         "created_at": template.created_at,
         "updated_at": template.updated_at,
+        "remote_id": template.remote.remote_id if template.remote else None,
+        "remote_source": template.remote.source if template.remote else None,
     }
+
+
+def _source_message(exc: Exception) -> str:
+    if isinstance(exc, SourceRateLimited):
+        return f"在线服务限流，请 {max(int(exc.retry_after), 1)} 秒后重试"
+    if isinstance(exc, SourceAuthError):
+        return "在线服务密钥无效或权限不足"
+    if isinstance(exc, SourceRejected):
+        return str(exc)
+    return "在线模板服务暂时不可用"
+
+
+def _schedule_close(source: Any) -> None:
+    """配置变更时关闭旧客户端；无事件循环时只能丢弃引用。"""
+
+    if source is None:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(_drain(source))
+
+
+async def _drain(source: Any) -> None:
+    if source is None:
+        return
+    try:
+        await source.close()
+    except Exception as exc:
+        logger.warning("[模板广场] 关闭在线源失败: %s", exc)

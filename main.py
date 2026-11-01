@@ -433,6 +433,9 @@ class GeminiImageGenerationPlugin(Star):
                 self.prompt_templates,
                 self._plugin_data_dir,
                 gallery_dir=self.web_studio_service.gallery_dir,
+                hub_mode=self.cfg.template_hub_mode,
+                hub_url=self.cfg.template_hub_url,
+                hub_key=self.cfg.template_hub_key,
             )
             application = ProviderApplication(self)
             self.studio_providers = ProviderConfigService(
@@ -465,6 +468,8 @@ class GeminiImageGenerationPlugin(Star):
         await self.generation_scheduler.close()
         if self.studio_providers is not None:
             await self.studio_providers.close()
+        if getattr(self, "studio_templates", None) is not None:
+            await self.studio_templates.close()
         # 已开始的配置事务先完成，避免关闭资源时仍在切换客户端。
         async with self.configuration_lock:
             pass

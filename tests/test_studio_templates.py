@@ -418,3 +418,351 @@ async def test_delete_through_api_drops_asset(tmp_path, monkeypatch):
     )
     await api.templates()
     assert not service.asset_file.__self__.asset_dir.joinpath(asset).exists()
+
+
+class _FakeHubSource:
+    """替代在线客户端，记录调用并返回可控结果。"""
+
+    def __init__(self, base_url="https://image-hub.alxy.app", api_key=None):
+        self.base_url = base_url
+        self.api_key = api_key
+        self.source_name = "image-hub.alxy.app"
+        self.calls: list = []
+        self.search_results = []
+        self.search_error = None
+        self.closed = False
+
+    async def search(self, query, *, tag=None, cursor=None, limit=20):
+        from tl.prompt_templates import SearchPage
+
+        self.calls.append(("search", query, tag))
+        if self.search_error:
+            raise self.search_error
+        return SearchPage(templates=list(self.search_results), next_cursor=None)
+
+    async def catalog_version(self):
+        from tl.prompt_templates import CatalogVersion
+
+        return CatalogVersion(hash="h", count=0, updated_at="", size=0)
+
+    async def download_catalog(self, etag=None):
+        items = [self.catalog_item] if getattr(self, "catalog_item", None) else []
+        return ('W/"h"', {"updated_at": "", "templates": items})
+
+    async def request_key(self, email):
+        self.calls.append(("request_key", email))
+
+    async def key_status(self):
+        self.calls.append(("key_status",))
+        return {"scopes": ["read", "write"]}
+
+    async def revoke_key(self):
+        self.calls.append(("revoke_key",))
+
+    async def upload(self, template):
+        self.calls.append(("upload", template.id))
+        return template
+
+    async def close(self):
+        self.closed = True
+
+
+def _hub_service(tmp_path, *, mode="cache", source=None):
+    service = _service(tmp_path)
+    service.reconfigure_hub(mode=mode, url="", key="")
+    if source is not None:
+        service.hub_source = source
+        service.hub_cache.reconfigure(source=source, mode=mode)
+    return service
+
+
+def test_hub_reconfigure_off_clears_source(tmp_path):
+    service = _hub_service(tmp_path, source=_FakeHubSource())
+    service.reconfigure_hub(mode="off")
+    assert service.hub_source is None
+    assert not service.hub_cache.enabled
+    assert service.hub_state()["mode"] == "off"
+
+
+def test_hub_state_reports_mode_and_cached_hash(tmp_path):
+    service = _hub_service(tmp_path, mode="online", source=_FakeHubSource())
+    state = service.hub_state()
+    assert state["mode"] == "online"
+    assert state["live_search"] is True
+    assert state["url"] == "https://image-hub.alxy.app"
+
+
+@pytest.mark.asyncio
+async def test_hub_search_uses_cache_only_in_cache_mode(tmp_path):
+    source = _FakeHubSource()
+    source.catalog_item = _online_template()
+    service = _hub_service(tmp_path, mode="cache", source=source)
+    await service.sync_hub(force=True)
+
+    result = await service.hub_search("猫")
+    assert result["templates"][0]["found_via"] == "cache"
+    assert source.calls == []
+
+
+@pytest.mark.asyncio
+async def test_hub_search_merges_online_results_in_online_mode(tmp_path):
+    from tl.prompt_templates import PromptTemplate, RemoteOrigin
+    from tl.prompt_templates.models import utc_now
+
+    source = _FakeHubSource()
+    service = _hub_service(tmp_path, mode="online", source=source)
+    source.search_results = [
+        PromptTemplate(
+            id="online-one",
+            name="在线模板",
+            content="画 {{input}}",
+            reference="none",
+            remote=RemoteOrigin(source="image-hub.alxy.app", remote_id="online-one"),
+            created_at=utc_now(),
+            updated_at=utc_now(),
+        )
+    ]
+    result = await service.hub_search("在线")
+    assert [item["found_via"] for item in result["templates"]] == ["online"]
+    assert source.calls == [("search", "在线", None)]
+
+
+@pytest.mark.asyncio
+async def test_hub_search_reports_notice_on_source_error(tmp_path):
+    from tl.prompt_templates import SourceUnavailable
+
+    source = _FakeHubSource()
+    source.search_error = SourceUnavailable("down")
+    service = _hub_service(tmp_path, mode="online", source=source)
+    result = await service.hub_search("猫")
+    assert "不可用" in result["notice"]
+
+
+def _online_template():
+    return {
+        "id": "id0aaaaaaa",
+        "name": "在线猫",
+        "content": "画一只猫 {{input}}",
+        "ai_description": "猫模板",
+        "reference": "none",
+        "tags": ["动物"],
+        "created_at": "2026-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
+    }
+
+
+@pytest.mark.asyncio
+async def test_hub_import_creates_local_copy(tmp_path):
+    source = _FakeHubSource()
+
+    class _CatalogSource(_FakeHubSource):
+        async def download_catalog(self, etag=None):
+            return ('W/"hh"', {"updated_at": "", "templates": [_online_template()]})
+
+    source = _CatalogSource()
+    service = _hub_service(tmp_path, source=source)
+    await service.sync_hub(force=True)
+
+    result = await service.hub_import(["id0aaaaaaa"])
+    assert result["imported"] == 1
+    names = {item["name"] for item in service.list_templates()}
+    assert "在线猫" in names
+
+
+@pytest.mark.asyncio
+async def test_hub_import_rejects_empty_and_missing(tmp_path):
+    service = _hub_service(tmp_path, source=_FakeHubSource())
+    with pytest.raises(StudioServiceError):
+        await service.hub_import([])
+    with pytest.raises(StudioServiceError):
+        await service.hub_import([str(i) for i in range(101)])
+    result = await service.hub_import(["missing"])
+    assert result["failed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_hub_key_operations_go_through_source(tmp_path):
+    source = _FakeHubSource()
+    service = _hub_service(tmp_path, source=source)
+    assert (await service.hub_key_request("a@b.com"))["status"] == "sent"
+    assert (await service.hub_key_check())["key"]["scopes"] == ["read", "write"]
+    assert (await service.hub_key_revoke())["status"] == "revoked"
+    assert [call[0] for call in source.calls] == [
+        "request_key",
+        "key_status",
+        "revoke_key",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_hub_operations_require_source(tmp_path):
+    service = _hub_service(tmp_path, mode="off")
+    with pytest.raises(StudioServiceError):
+        await service.hub_key_check()
+
+
+@pytest.mark.asyncio
+async def test_hub_upload_maps_source_errors(tmp_path):
+    from tl.prompt_templates import SourceAuthError, SourceRejected
+
+    service = _hub_service(tmp_path, source=_FakeHubSource())
+    created = await service.save(
+        {"action": "create", "template": _template(name="待上传")}
+    )
+
+    preview = service.hub_upload_preview(created["id"])
+    assert preview["content"] == created["content"]
+    assert "preview" not in preview
+
+    uploaded = await service.hub_upload(created["id"])
+    assert uploaded["name"] == "待上传"
+
+    source = _FakeHubSource()
+
+    async def reject(template):
+        raise SourceRejected("名称重复")
+
+    source.upload = reject
+    service.hub_source = source
+    with pytest.raises(StudioServiceError) as error:
+        await service.hub_upload(created["id"])
+    assert error.value.status_code == 400
+
+    async def unauthorized(template):
+        raise SourceAuthError("bad key")
+
+    source.upload = unauthorized
+    with pytest.raises(StudioServiceError) as auth:
+        await service.hub_upload(created["id"])
+    assert auth.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_hub_upload_preview_missing_template(tmp_path):
+    service = _hub_service(tmp_path, source=_FakeHubSource())
+    with pytest.raises(StudioServiceError) as error:
+        service.hub_upload_preview("nope")
+    assert error.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_close_closes_hub_source(tmp_path):
+    source = _FakeHubSource()
+    service = _hub_service(tmp_path, source=source)
+    await service.close()
+    assert source.closed
+    assert service.hub_source is None
+
+
+# --- 在线路由 ---
+
+
+def _hub_api(tmp_path, monkeypatch, service, *, method="GET", body=None, query=None):
+    import tl.web_api as module
+
+    api = _api(tmp_path, monkeypatch, service=service)
+    module.request = _request(method=method, body=body, query=query)
+    return api
+
+
+@pytest.mark.asyncio
+async def test_hub_routes_registered(tmp_path, monkeypatch):
+    import tl.web_api as module
+
+    api = _api(tmp_path, monkeypatch, service=_hub_service(tmp_path))
+    context = _Context()
+    routes = {route for route, *_ in api.register(context)}
+    assert f"{PREFIX}/templates/hub" in routes
+    assert f"{PREFIX}/templates/hub/sync" in routes
+    assert f"{PREFIX}/templates/hub/import" in routes
+    assert f"{PREFIX}/templates/hub/key" in routes
+    assert module._PANEL_ONLY_METHODS["/templates/hub/key"] == {"GET", "POST", "DELETE"}
+
+
+@pytest.mark.asyncio
+async def test_hub_endpoint_search(tmp_path, monkeypatch):
+    service = _hub_service(tmp_path, source=_FakeHubSource())
+    api = _hub_api(tmp_path, monkeypatch, service, query={"q": "猫", "limit": "10"})
+    response = await api.templates_hub()
+    assert json.loads(response.body)["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_hub_endpoint_upload_and_preview(tmp_path, monkeypatch):
+    service = _hub_service(tmp_path, source=_FakeHubSource())
+    created = await service.save(
+        {"action": "create", "template": _template(name="上传用")}
+    )
+    api = _hub_api(
+        tmp_path,
+        monkeypatch,
+        service,
+        method="POST",
+        body={"action": "upload", "id": created["id"]},
+    )
+    uploaded = await api.templates_hub()
+    assert json.loads(uploaded.body)["data"]["name"] == "上传用"
+
+    api = _hub_api(
+        tmp_path,
+        monkeypatch,
+        service,
+        method="POST",
+        body={"action": "preview", "id": created["id"]},
+    )
+    preview = await api.templates_hub()
+    assert json.loads(preview.body)["data"]["content"] == created["content"]
+
+    api = _hub_api(tmp_path, monkeypatch, service, method="POST", body={"action": "x"})
+    assert (await api.templates_hub()).status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_hub_sync_and_import_endpoints(tmp_path, monkeypatch):
+    service = _hub_service(tmp_path, source=_FakeHubSource())
+    api = _hub_api(tmp_path, monkeypatch, service, method="POST", body={"force": True})
+    synced = await api.templates_hub_sync()
+    assert json.loads(synced.body)["data"]["mode"] == "cache"
+
+    api = _hub_api(
+        tmp_path, monkeypatch, service, method="POST", body={"ids": ["missing"]}
+    )
+    imported = await api.templates_hub_import()
+    assert json.loads(imported.body)["data"]["failed"] == 1
+
+    api = _hub_api(tmp_path, monkeypatch, service, method="POST", body={"ids": []})
+    import tl.web_api as module
+
+    async def bad(default=None):
+        return default
+
+    module.request.json = AsyncMock(side_effect=bad)
+    assert (await api.templates_hub_import()).status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_hub_key_endpoints(tmp_path, monkeypatch):
+    service = _hub_service(tmp_path, source=_FakeHubSource())
+    api = _hub_api(tmp_path, monkeypatch, service, method="GET")
+    assert json.loads((await api.templates_hub_key()).body)["status"] == "ok"
+
+    api = _hub_api(tmp_path, monkeypatch, service, method="DELETE")
+    assert (
+        json.loads((await api.templates_hub_key()).body)["data"]["status"] == "revoked"
+    )
+
+    api = _hub_api(
+        tmp_path, monkeypatch, service, method="POST", body={"email": "a@b.com"}
+    )
+    assert json.loads((await api.templates_hub_key()).body)["data"]["status"] == "sent"
+
+
+@pytest.mark.asyncio
+async def test_hub_endpoints_report_missing_service(tmp_path, monkeypatch):
+    api = _api(tmp_path, monkeypatch, service=None)
+    import tl.web_api as module
+
+    module.request = _request(method="GET")
+    assert (await api.templates_hub()).status_code == 503
+    module.request = _request(method="GET")
+    assert (await api.templates_hub_key()).status_code == 503

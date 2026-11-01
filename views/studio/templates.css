@@ -121,3 +121,15 @@
   font-size: 12px;
   line-height: 1.5;
 }
+.templates-view .tpl-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.templates-view .tpl-hub-state {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}

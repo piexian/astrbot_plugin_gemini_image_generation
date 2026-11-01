@@ -58,6 +58,10 @@ _PANEL_ONLY_METHODS = {
     "/templates": frozenset({"GET", "POST"}),
     "/templates/import": frozenset({"POST"}),
     "/templates/export": frozenset({"GET"}),
+    "/templates/hub": frozenset({"GET", "POST"}),
+    "/templates/hub/sync": frozenset({"POST"}),
+    "/templates/hub/import": frozenset({"POST"}),
+    "/templates/hub/key": frozenset({"GET", "POST", "DELETE"}),
 }
 
 
@@ -155,6 +159,25 @@ class WebStudioAPI:
         ("/templates/export", "templates_export", ["GET"], "WebUI 导出模板包"),
         ("/templates/asset", "template_asset", ["POST"], "WebUI 保存模板预览图"),
         ("/template_asset/<name>", "template_asset_file", ["GET"], "读取模板预览图"),
+        (
+            "/templates/hub",
+            "templates_hub",
+            ["GET", "POST"],
+            "WebUI 在线模板检索与上传",
+        ),
+        ("/templates/hub/sync", "templates_hub_sync", ["POST"], "WebUI 在线模板同步"),
+        (
+            "/templates/hub/import",
+            "templates_hub_import",
+            ["POST"],
+            "WebUI 导入在线模板",
+        ),
+        (
+            "/templates/hub/key",
+            "templates_hub_key",
+            ["GET", "POST", "DELETE"],
+            "WebUI 在线模板密钥",
+        ),
     )
 
     def __init__(
@@ -723,3 +746,91 @@ class WebStudioAPI:
             content_type=content_type,
             headers={"X-Content-Type-Options": "nosniff"},
         )
+
+    async def templates_hub(self):
+        if denied := self._templates_guard():
+            return denied
+        try:
+            if request.method == "POST":
+                payload = await self._json_body()
+                if payload is None:
+                    return error_response(
+                        "请求体必须是有效的 JSON 对象", status_code=400
+                    )
+                action = str(payload.get("action") or "").strip()
+                if action == "upload":
+                    result = await self.templates_service.hub_upload(payload.get("id"))
+                elif action == "preview":
+                    result = self.templates_service.hub_upload_preview(
+                        payload.get("id")
+                    )
+                else:
+                    return error_response("不支持的在线操作", status_code=400)
+            else:
+                result = await self.templates_service.hub_search(
+                    self._query_text("q", 200),
+                    tag=self._query_text("tag", 64) or None,
+                    limit=self._query_int("limit", 20, minimum=1, maximum=200),
+                )
+            return json_response(
+                {"status": "ok", "data": result}, headers={"Cache-Control": "no-store"}
+            )
+        except StudioServiceError as exc:
+            return self._service_error(exc)
+        except Exception:
+            logger.error("[模板广场] 在线模板请求失败", exc_info=True)
+            return error_response("在线模板暂时不可用", status_code=500)
+
+    async def templates_hub_sync(self):
+        if denied := self._templates_guard():
+            return denied
+        try:
+            payload = await self._json_body() or {}
+            result = await self.templates_service.sync_hub(
+                force=payload.get("force") is True
+            )
+            return self._ok(result)
+        except StudioServiceError as exc:
+            return self._service_error(exc)
+        except Exception:
+            logger.error("[模板广场] 在线模板同步失败", exc_info=True)
+            return error_response("在线模板同步失败", status_code=500)
+
+    async def templates_hub_import(self):
+        if denied := self._templates_guard():
+            return denied
+        try:
+            payload = await self._json_body()
+            if payload is None:
+                return error_response("请求体必须是有效的 JSON 对象", status_code=400)
+            result = await self.templates_service.hub_import(payload.get("ids"))
+            return self._ok(result)
+        except StudioServiceError as exc:
+            return self._service_error(exc)
+        except Exception:
+            logger.error("[模板广场] 导入在线模板失败", exc_info=True)
+            return error_response("导入在线模板失败", status_code=500)
+
+    async def templates_hub_key(self):
+        if denied := self._templates_guard():
+            return denied
+        try:
+            if request.method == "GET":
+                result = await self.templates_service.hub_key_check()
+            elif request.method == "DELETE":
+                result = await self.templates_service.hub_key_revoke()
+            else:
+                payload = await self._json_body()
+                if payload is None:
+                    return error_response(
+                        "请求体必须是有效的 JSON 对象", status_code=400
+                    )
+                result = await self.templates_service.hub_key_request(
+                    str(payload.get("email") or "")
+                )
+            return self._ok(result)
+        except StudioServiceError as exc:
+            return self._service_error(exc)
+        except Exception:
+            logger.error("[模板广场] 在线密钥操作失败", exc_info=True)
+            return error_response("在线密钥操作失败", status_code=500)

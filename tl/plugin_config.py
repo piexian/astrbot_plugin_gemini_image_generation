@@ -266,6 +266,9 @@ class PluginConfig:
     napcat_stream_threshold_mb: float = 2.0
     auto_avatar_reference: bool = False
     reference_cross_session: bool = False
+    template_hub_mode: str = "cache"
+    template_hub_url: str = ""
+    template_hub_key: str = ""
     show_duration_stats: bool = True
     show_retry_stats: bool = True
     show_token_usage_stats: bool = True
@@ -894,6 +897,16 @@ class ConfigLoader:
         config.reference_cross_session = _clean_bool(
             service_settings.get("reference_cross_session"), False
         )
+        mode = str(service_settings.get("template_hub_mode") or "cache").strip().lower()
+        config.template_hub_mode = (
+            mode if mode in ("cache", "online", "off") else "cache"
+        )
+        config.template_hub_url = str(
+            service_settings.get("template_hub_url") or ""
+        ).strip()
+        config.template_hub_key = str(
+            service_settings.get("template_hub_key") or ""
+        ).strip()
         config.show_duration_stats = service_settings.get("show_duration_stats", True)
         config.show_retry_stats = service_settings.get("show_retry_stats", True)
         config.show_token_usage_stats = service_settings.get(

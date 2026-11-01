@@ -146,6 +146,9 @@ avatar / poster / wallpaper / card / mobile / figure / sticker
 | `napcat_stream_threshold_mb` | `2.0` | 本地图片原始发送失败后，达到该大小才使用 NapCat Stream API 兜底重试；`0` 表示禁用 |
 | `auto_avatar_reference` | `false` | 自动获取头像作为参考图 |
 | `reference_cross_session` | `false` | 开启后，同一机器人下所有会话的生成记录都可以被 `gen:` 引用；关闭时只有同一会话或已共享的记录可以。语法见 [内部引用](references.md) |
+| `template_hub_mode` | `cache` | 在线模板使用方式：`cache` 按哈希同步到插件本地缓存（检索和生成都不联网）、`online` 额外实时检索在线服务、`off` 完全不连接在线服务 |
+| `template_hub_url` | 空 | 在线模板服务地址，必须是 https；留空用官方地址 `https://image-hub.alxy.app` |
+| `template_hub_key` | 空 | 在线模板服务密钥，用于上传、修改和删除自己上传的模板；不填只能浏览和导入。在提示词广场的在线页申请 |
 | `show_duration_stats` | `true` | 生成完成后是否展示耗时统计 |
 | `show_retry_stats` | `true` | 生成完成后是否展示重试次数 |
 | `show_token_usage_stats` | `true` | 生成完成后是否展示上游返回的 token 用量 |

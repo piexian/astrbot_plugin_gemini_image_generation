@@ -393,7 +393,9 @@ StepFun provider。
 - `ModelCatalogService`（`model_catalog.py`）由 `ProviderSpec.model_catalog_kind` 声明协议，独立会话与任务负责限时、限流、分页、响应边界及卸载取消；`POST webui/providers/models` 使用连接草稿并在发请求前执行共享出站检查，视觉查询只借用本体实例。
 - 本体 bridge 错误只传字符串；模型查询的目标确认以成功信封中的 `confirmation_required`/`target` 传递，未确认不发请求。输入的重复 blur/change 不重建目录按钮，避免首次点击失效。
 - `ProviderRuntime`（`provider_runtime.py`）：命令、LLM、Studio 与 API 生成的同步准入门，兼顾已挂入但尚未执行的后台任务；卸载先封门并等待配置事务。
-- `StudioTemplateService`（`studio_templates.py`）：提示词广场的模板增删改、恢复内置默认、AI 可用开关与 JSON 包导入导出；预览图由画廊图复制进 `template_assets/`，不参与画廊容量清理，删除模板时一并清理。
+- `StudioTemplateService`（`studio_templates.py`）：提示词广场的模板增删改、恢复内置默认、AI 可用开关与 JSON 包导入导出，以及在线检索、同步、导入为本地副本、上传（先预览后发送）与密钥操作；预览图由画廊图复制进 `template_assets/`，不参与画廊容量清理，删除模板时一并清理。
+- `HubTemplateSource`（`template_hub.py`）：在线模板源客户端，只实现 `TemplateSource` 协议与目录快照下载；URL 拼接强制 https 并丢弃空查询值，请求经 `check_outbound_url`，错误按 429/401/403/5xx/其他 4xx 分别映射，密钥只进 `Authorization` 头。
+- `TemplateHubCache`（`template_cache.py`）：目录快照本地缓存，按 ETag 哈希增量同步（首次直连下载、以响应自带 ETag 为准）、原子写 `template_hub_cache.json`、坏记录逐条跳过；本地加权检索（名称/标签/说明/正文 = 3/2/1.5/1，中文子串匹配），解析 `hub:<id>`。
 - `ProviderApplication`（`provider_application.py`）：空闲窗口预构建配置和工具能力，关闭闲置会话后保存、应用或回滚客户端及模块引用，保留共享 `cfg` 身份。
 - `KeyManager.clone_for_config()`：先严格恢复并持久化用量检查点，再重建候选索引；`api_key_usage.__shared_keys_v1` 按供应商类型、Key 保存计数，兼容原候选桶，排序和重启不会重置用量。
 - `pages/studio/provider-config.js/css`：独立、懒加载的二级 Tab 配置视图；表格与弹窗分离，密钥草稿只留内存，Pointer Events 手柄提供鼠标／触摸排序及键盘替代。

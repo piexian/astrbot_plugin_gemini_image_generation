@@ -2867,6 +2867,25 @@
         "hint": "开启后，同一机器人下所有会话的生成记录都可以被 gen: 引用；关闭时只有同一会话或已共享的记录可以",
         "default": false
       },
+      "template_hub_mode": {
+        "description": "在线模板使用方式",
+        "type": "string",
+        "hint": "cache（默认）：按哈希同步到插件本地缓存，检索与生成都不联网；online：额外实时检索在线服务；off：完全不连接在线服务",
+        "default": "cache",
+        "options": ["cache", "online", "off"]
+      },
+      "template_hub_url": {
+        "description": "在线模板服务地址",
+        "type": "string",
+        "hint": "留空使用官方地址 https://image-hub.alxy.app；必须是 https 链接",
+        "default": ""
+      },
+      "template_hub_key": {
+        "description": "在线模板服务密钥",
+        "type": "string",
+        "hint": "用于上传、修改和删除自己上传的在线模板；不填只能浏览和导入。在提示词广场的在线页申请",
+        "default": ""
+      },
       "show_duration_stats": {
         "description": "显示耗时统计",
         "type": "bool",
