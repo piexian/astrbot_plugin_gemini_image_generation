@@ -634,7 +634,7 @@ async def test_hub_upload_maps_source_errors(tmp_path):
     source.upload = unauthorized
     with pytest.raises(StudioServiceError) as auth:
         await service.hub_upload(created["id"])
-    assert auth.value.status_code == 401
+    assert auth.value.status_code == 403
 
 
 @pytest.mark.asyncio

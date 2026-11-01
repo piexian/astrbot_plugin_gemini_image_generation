@@ -167,7 +167,7 @@ class StudioTemplateService:
         try:
             templates = await self._with_source().my_templates(limit=limit)
         except SourceAuthError as exc:
-            raise StudioServiceError(_source_message(exc), status_code=401) from exc
+            raise _auth_error(exc) from exc
         except SourceRateLimited as exc:
             raise StudioServiceError(_source_message(exc), status_code=429) from exc
         except TemplateSourceError as exc:
@@ -280,7 +280,7 @@ class StudioTemplateService:
         try:
             payload = await self._with_source().key_status()
         except SourceAuthError as exc:
-            raise StudioServiceError(_source_message(exc), status_code=401) from exc
+            raise _auth_error(exc) from exc
         except TemplateSourceError as exc:
             raise StudioServiceError(_source_message(exc), status_code=502) from exc
         return {"status": "ok", "key": payload}
@@ -294,7 +294,7 @@ class StudioTemplateService:
         try:
             uploaded = await self._with_source().upload(found)
         except SourceAuthError as exc:
-            raise StudioServiceError(_source_message(exc), status_code=401) from exc
+            raise _auth_error(exc) from exc
         except SourceRateLimited as exc:
             raise StudioServiceError(_source_message(exc), status_code=429) from exc
         except SourceRejected as exc:
@@ -367,7 +367,7 @@ class StudioTemplateService:
         try:
             updated = await self._with_source().update(identifier, draft)
         except SourceAuthError as exc:
-            raise StudioServiceError(_source_message(exc), status_code=401) from exc
+            raise _auth_error(exc) from exc
         except SourceRateLimited as exc:
             raise StudioServiceError(_source_message(exc), status_code=429) from exc
         except SourceRejected as exc:
@@ -385,7 +385,7 @@ class StudioTemplateService:
         try:
             await self._with_source().delete(identifier)
         except SourceAuthError as exc:
-            raise StudioServiceError(_source_message(exc), status_code=401) from exc
+            raise _auth_error(exc) from exc
         except SourceRateLimited as exc:
             raise StudioServiceError(_source_message(exc), status_code=429) from exc
         except SourceRejected as exc:
@@ -570,6 +570,12 @@ def _source_message(exc: Exception) -> str:
     if isinstance(exc, SourceRejected):
         return str(exc)
     return "在线模板服务暂时不可用"
+
+
+def _auth_error(exc: Exception) -> StudioServiceError:
+    # 面板把任何 HTTP 401 当作登录失效踢回登录页，上游密钥问题必须用 403 表达。
+    logger.info("[模板广场] 在线模板密钥被上游拒绝: %s", exc)
+    return StudioServiceError(_source_message(exc), status_code=403)
 
 
 def _schedule_close(source: Any) -> None:

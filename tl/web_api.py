@@ -8,6 +8,7 @@ import math
 import mimetypes
 import re
 import secrets
+import time
 from collections.abc import Callable
 from contextlib import contextmanager
 from typing import Any
@@ -206,9 +207,22 @@ class WebStudioAPI:
 
     def _guarded(self, handler: Callable, suffix: str) -> Callable:
         async def call(*args, **kwargs):
-            if denied := self._access_guard(suffix):
-                return denied
-            return await handler(*args, **kwargs)
+            started = time.monotonic()
+            response = None
+            try:
+                if denied := self._access_guard(suffix):
+                    response = denied
+                    return response
+                response = await handler(*args, **kwargs)
+                return response
+            finally:
+                logger.debug(
+                    "[WebUI] %s %s status=%s elapsed=%.1fms",
+                    request.method,
+                    getattr(request, "path", ""),
+                    getattr(response, "status_code", None),
+                    (time.monotonic() - started) * 1000,
+                )
 
         return call
 
@@ -216,10 +230,20 @@ class WebStudioAPI:
     def _access_guard(suffix: str):
         username = str(getattr(request, "username", "") or "")
         if not username:
-            return error_response("请登录 AstrBot Dashboard 后操作", status_code=401)
+            logger.info(
+                "[WebUI] 拒绝未登录请求: %s %s",
+                request.method,
+                getattr(request, "path", ""),
+            )
+            return error_response("请登录 AstrBot Dashboard 后操作", status_code=403)
         if username.startswith("api_key:") and request.method.upper() in (
             _PANEL_ONLY_METHODS.get(suffix) or ()
         ):
+            logger.info(
+                "[WebUI] 拒绝 API Key 面板操作: %s %s",
+                request.method,
+                getattr(request, "path", ""),
+            )
             return error_response("API Key 无权执行此操作", status_code=403)
         if request.method.upper() == "POST":
             headers = request.headers
@@ -230,8 +254,21 @@ class WebStudioAPI:
                     not origin_host
                     or origin_host.lower() != headers.get("Host", "").lower()
                 ):
+                    logger.info(
+                        "[WebUI] 拒绝跨站来源: %s %s origin=%s host=%s",
+                        request.method,
+                        getattr(request, "path", ""),
+                        origin,
+                        headers.get("Host", ""),
+                    )
                     return error_response("跨站请求来源不一致", status_code=403)
             if headers.get("Sec-Fetch-Site", "").strip().lower() == "cross-site":
+                logger.info(
+                    "[WebUI] 拒绝跨站请求头: %s %s sec_fetch_site=%s",
+                    request.method,
+                    getattr(request, "path", ""),
+                    headers.get("Sec-Fetch-Site", ""),
+                )
                 return error_response("拒绝跨站请求", status_code=403)
         # 单用户面板可操作全部记录；历史读取对宿主已鉴权的面板与 API Key 开放。
         return None
@@ -296,7 +333,12 @@ class WebStudioAPI:
             return closed
         # 身份、授权与 CSRF 由注册时的统一守卫处理。
         if not getattr(request, "username", None):
-            return error_response("请登录 AstrBot Dashboard 后操作", status_code=401)
+            logger.info(
+                "[WebUI] 拒绝未登录限流请求: %s %s",
+                request.method,
+                getattr(request, "path", ""),
+            )
+            return error_response("请登录 AstrBot Dashboard 后操作", status_code=403)
         if self.limits_service is None:
             return error_response("限流管理服务不可用", status_code=503)
         return None

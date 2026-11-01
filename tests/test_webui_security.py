@@ -67,7 +67,7 @@ async def test_routes_require_host_identity(
     handler, route_kwargs = route(api, path, method)
     set_request(monkeypatch, username="", method=method)
     response = await handler(**route_kwargs)
-    assert response.status_code == 401
+    assert response.status_code == 403
 
 
 @pytest.mark.asyncio
