@@ -62,6 +62,8 @@ _PANEL_ONLY_METHODS = {
     "/templates/hub/sync": frozenset({"POST"}),
     "/templates/hub/import": frozenset({"POST"}),
     "/templates/hub/key": frozenset({"GET", "POST", "DELETE"}),
+    "/templates/hub/mine": frozenset({"GET"}),
+    "/templates/hub/tags": frozenset({"GET"}),
 }
 
 
@@ -165,6 +167,8 @@ class WebStudioAPI:
             ["GET", "POST"],
             "WebUI 在线模板检索与上传",
         ),
+        ("/templates/hub/mine", "templates_hub_mine", ["GET"], "WebUI 我的在线模板"),
+        ("/templates/hub/tags", "templates_hub_tags", ["GET"], "WebUI 在线模板标签"),
         ("/templates/hub/sync", "templates_hub_sync", ["POST"], "WebUI 在线模板同步"),
         (
             "/templates/hub/import",
@@ -785,6 +789,35 @@ class WebStudioAPI:
         except Exception:
             logger.error("[模板广场] 在线模板请求失败", exc_info=True)
             return error_response("在线模板暂时不可用", status_code=500)
+
+    async def templates_hub_mine(self):
+        if denied := self._templates_guard():
+            return denied
+        try:
+            result = await self.templates_service.hub_mine(
+                limit=self._query_int("limit", 50, minimum=1, maximum=50)
+            )
+        except StudioServiceError as exc:
+            return self._service_error(exc)
+        except Exception:
+            logger.error("[模板广场] 我的在线模板读取失败", exc_info=True)
+            return error_response("我的在线模板暂时不可用", status_code=500)
+        return self._ok(result)
+
+    async def templates_hub_tags(self):
+        if denied := self._templates_guard():
+            return denied
+        try:
+            result = await self.templates_service.hub_tags(
+                query=self._query_text("q", 64),
+                limit=self._query_int("limit", 20, minimum=1, maximum=50),
+            )
+        except StudioServiceError as exc:
+            return self._service_error(exc)
+        except Exception:
+            logger.error("[模板广场] 在线标签读取失败", exc_info=True)
+            return error_response("在线标签暂时不可用", status_code=500)
+        return self._ok(result)
 
     async def templates_hub_sync(self):
         if denied := self._templates_guard():

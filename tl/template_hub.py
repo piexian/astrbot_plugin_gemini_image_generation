@@ -269,6 +269,33 @@ class HubTemplateSource:
         tag = str(_header(headers, "ETag")).strip()
         return tag, payload
 
+    async def my_templates(self, *, limit: int = 50) -> list[PromptTemplate]:
+        """自己上传的在线模板（含已隐藏），需要密钥。"""
+
+        size = max(1, min(int(limit or 50), _SEARCH_LIMIT_MAX))
+        _status, _headers, payload = await self._request(
+            "GET", "/v1/me/templates", query={"limit": size}, auth=True
+        )
+        items = payload.get("templates") if isinstance(payload, dict) else None
+        if not isinstance(items, list):
+            raise SourceUnavailable("我的模板返回格式异常")
+        return [_record(item, source=self.source_name) for item in items]
+
+    async def tags(self, *, query: str = "", limit: int = 20) -> list[dict[str, Any]]:
+        """标签与模板数，公开接口。"""
+
+        params: dict[str, Any] = {"limit": max(1, min(int(limit or 20), 50))}
+        if str(query or "").strip():
+            params["q"] = str(query).strip()
+        _status, _headers, payload = await self._request(
+            "GET", "/v1/tags", query=params
+        )
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if isinstance(payload, dict) and isinstance(payload.get("tags"), list):
+            return [item for item in payload["tags"] if isinstance(item, dict)]
+        raise SourceUnavailable("标签列表返回格式异常")
+
     async def request_key(self, email: str) -> None:
         address = str(email or "").strip()
         if not address:

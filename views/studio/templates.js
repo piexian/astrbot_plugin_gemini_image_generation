@@ -37,6 +37,8 @@
       this.hubQuery = '';
       this.hubTag = '';
       this.hub = {templates: [], notice: '', state: null};
+      this.hubTags = [];
+      this.hubMine = false;
       this.hubLoading = false;
       this.cleanups = [];
       this.bind(root, this.cleanups);
@@ -49,10 +51,6 @@
       return !!this.bridge && (!this.bridge.isAvailable || this.bridge.isAvailable());
     }
 
-    get hubEnabled() {
-      const state = this.hub.state || {};
-      return state.mode !== 'off' && state.enabled !== false;
-    }
 
     get writable() {
       return !this.destroyed && this.loaded && !this.loading && !this.saving && this.available;
@@ -147,6 +145,7 @@
       if (action === 'hub-import') { void this.importHub(id); return; }
       if (action === 'hub-use') { this.useHub(id); return; }
       if (action === 'hub-view') { this.viewHub(id); return; }
+      if (action === 'hub-mine') { void this.toggleHubMine(); return; }
       if (action === 'hub-report') { void this.reportHub(id); return; }
       if (action === 'hub-upload') { void this.uploadHub(id); return; }
       if (action === 'hub-key') { void this.openKeyDialog(); }
@@ -232,12 +231,15 @@
       if (this.scope === next) return;
       this.scope = next;
       this.render();
-      if (next === 'online') void this.searchHub();
+      if (next === 'online') {
+        void this.searchHub();
+        if (!this.hubTags.length) void this.loadHubTags();
+      }
     }
 
     hubEnabled() {
-      const state = this.hub.state;
-      return !!state && state.mode !== 'off';
+      const state = this.hub.state || {};
+      return state.mode !== 'off' && state.enabled !== false;
     }
 
     async searchHub() {
@@ -296,6 +298,44 @@
         this.message = this.t('导入失败，请稍后重试。');
         this.render();
       }
+    }
+
+    async toggleHubMine() {
+      this.hubMine = !this.hubMine;
+      if (this.hubMine) await this.loadHubMine();
+      else void this.searchHub();
+      this.render();
+    }
+
+    async loadHubMine() {
+      this.hubLoading = true;
+      this.render();
+      try {
+        const payload = await this.bridge.get('webui/templates/hub/mine', {limit: '50'});
+        if (this.destroyed) return;
+        this.hub = {
+          templates: Array.isArray(payload?.templates) ? payload.templates : [],
+          notice: '',
+          state: payload?.state || this.hub.state
+        };
+      } catch (_) {
+        // 没有密钥时后端返回 400，这里只提示不切换视图。
+        if (!this.destroyed) {
+          this.hub = {...this.hub, notice: this.t('在线操作失败，请稍后重试。')};
+        }
+      } finally {
+        if (!this.destroyed) { this.hubLoading = false; this.render(); }
+      }
+    }
+
+    async loadHubTags() {
+      try {
+        const payload = await this.bridge.get('webui/templates/hub/tags', {limit: '50'});
+        if (!this.destroyed && Array.isArray(payload?.tags)) {
+          this.hubTags = payload.tags;
+          this.render();
+        }
+      } catch (_) { /* 标签拉取失败不影响检索 */ }
     }
 
     async reportHub(id) {
@@ -795,11 +835,16 @@
           placeholder: this.t('搜索在线模板'),
           'aria-label': this.t('搜索在线模板')
         }),
-        this.el('input', {
-          type: 'text', className: 'comic-input', 'data-tpl-field': 'hub-tag',
-          value: this.hubTag, placeholder: this.t('标签'),
-          'aria-label': this.t('标签')
-        }),
+        this.el('select', {
+          // 标签用在线真实列表，避免手打拼错。
+          className: 'comic-select', 'data-tpl-field': 'hub-tag',
+          'aria-label': this.t('按标签筛选')
+        }, [
+          this.el('option', {value: ''}, [this.t('全部标签')]),
+          ...this.hubTags.map(item => this.el('option', {
+            value: item.tag, selected: item.tag === this.hubTag
+          }, [this.hubMine ? item.tag : `${item.tag} (${item.count})`]))
+        ]),
         this.el('div', {className: 'tpl-actions'}, [
           this.el('button', {
             type: 'button', className: 'comic-btn comic-btn--cta',
@@ -809,6 +854,12 @@
             type: 'button', className: 'comic-btn comic-btn--outline',
             'data-tpl-action': 'hub-sync', disabled: this.hubLoading
           }, [this.t('立即同步')]),
+          this.el('button', {
+            type: 'button',
+            className: this.hubMine
+              ? 'comic-btn comic-btn--cta' : 'comic-btn comic-btn--outline',
+            'data-tpl-action': 'hub-mine', disabled: this.hubLoading
+          }, [this.t('我的模板')]),
           this.el('button', {
             type: 'button', className: 'comic-btn comic-btn--outline',
             'data-tpl-action': 'hub-key'
@@ -912,7 +963,7 @@
           type: 'button', className: 'comic-btn comic-btn--sm comic-btn--outline',
           'data-tpl-action': 'copy', 'data-tpl-id': template.id, disabled: !this.writable
         }, [this.t('复制')]),
-        !builtin && this.hubEnabled
+        !builtin && this.hubEnabled()
           ? this.el('button', {
             type: 'button', className: 'comic-btn comic-btn--sm comic-btn--outline',
             'data-tpl-action': 'hub-upload', 'data-tpl-id': template.id,

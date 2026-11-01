@@ -158,6 +158,33 @@ class StudioTemplateService:
             "state": self.hub_state(),
         }
 
+    async def hub_mine(self, *, limit: int = 50) -> dict[str, Any]:
+        """自己上传的在线模板，需要密钥。"""
+
+        if not str(self._hub_key or "").strip():
+            raise StudioServiceError("尚未填写在线模板密钥", status_code=400)
+        try:
+            templates = await self._with_source().my_templates(limit=limit)
+        except SourceAuthError as exc:
+            raise StudioServiceError(_source_message(exc), status_code=401) from exc
+        except SourceRateLimited as exc:
+            raise StudioServiceError(_source_message(exc), status_code=429) from exc
+        except TemplateSourceError as exc:
+            raise StudioServiceError(_source_message(exc), status_code=502) from exc
+        return {
+            "templates": [_public_record(item) for item in templates],
+            "state": self.hub_state(),
+        }
+
+    async def hub_tags(self, *, query: str = "", limit: int = 20) -> dict[str, Any]:
+        """在线标签列表，公开接口。"""
+
+        try:
+            tags = await self._with_source().tags(query=query, limit=limit)
+        except TemplateSourceError as exc:
+            raise StudioServiceError(_source_message(exc), status_code=502) from exc
+        return {"tags": tags}
+
     async def hub_import(self, remote_ids: Any) -> dict[str, Any]:
         """把缓存里的在线模板导入为可编辑的本地副本。"""
 

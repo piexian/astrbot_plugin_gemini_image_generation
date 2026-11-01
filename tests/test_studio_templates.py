@@ -866,3 +866,54 @@ async def test_hub_report_sends_reason(tmp_path, monkeypatch):
     result = await service.hub_report("abcdefghijk1", "  不合适  ")
     assert result == {"status": "reported"}
     assert calls == [("abcdefghijk1", "不合适")]
+
+
+@pytest.mark.asyncio
+async def test_hub_mine_requires_key(tmp_path):
+    service = _service(tmp_path)
+    service._hub_key = ""
+    with pytest.raises(StudioServiceError) as error:
+        await service.hub_mine()
+    assert error.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_hub_mine_returns_records(tmp_path, monkeypatch):
+    class Source:
+        async def my_templates(self, *, limit=50):
+            assert limit == 50
+            from tl.prompt_templates import validate_template_data
+
+            item = validate_template_data(
+                {
+                    "id": "abcdefghijk1",
+                    "name": "我的模板",
+                    "content": "画一只 {{input}}",
+                    "tags": ["测试"],
+                    "reference": "none",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z",
+                    "origin": "remote",
+                },
+                origin="remote",
+            )
+            return [item]
+
+    service = _service(tmp_path)
+    service._hub_key = "iph_x"
+    monkeypatch.setattr(service, "_with_source", lambda: Source())
+    result = await service.hub_mine(limit=50)
+    assert len(result["templates"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_hub_tags_returns_list(tmp_path, monkeypatch):
+    class Source:
+        async def tags(self, *, query="", limit=20):
+            assert query == ""
+            return [{"tag": "摄影", "count": 5}]
+
+    service = _service(tmp_path)
+    monkeypatch.setattr(service, "_with_source", lambda: Source())
+    result = await service.hub_tags()
+    assert result == {"tags": [{"tag": "摄影", "count": 5}]}

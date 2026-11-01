@@ -309,6 +309,7 @@
     "恢复默认参数": "Restore default parameters",
     "您已选中 {v0} 个历史任务，删除将彻底清理服务器磁盘中的原始图片文件，且不可恢复。确认继续？": "You selected {v0} history tasks; deletion permanently removes the original image files from the server disk and is unrecoverable. Continue?",
     "成功删除 {v0} 个历史任务": "Deleted {v0} history task(s) successfully",
+    "我的模板": "My templates",
     "手动添加完整 UMO（不接受裸群号）": "Add full UMOs manually (bare group IDs not accepted)",
     "手动粘贴完整 UMO": "Paste full UMOs manually",
     "手动轮询顺序": "Manual polling order",
