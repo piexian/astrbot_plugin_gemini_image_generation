@@ -7,6 +7,7 @@ import base64
 import json
 from io import BytesIO
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -1481,4 +1482,143 @@ async def test_legacy_template_applies_prompt_and_defaults(tmp_path):
     assert config.prompt == render_template(builtin_template("poster"), "一只猫")
     assert config.resolution == "2K"
     assert config.aspect_ratio == "16:9"
+    await plugin.background_task_manager.close()
+
+
+def _openai_quality_candidates():
+    """legacy + openai_images：后者能力表声明 quality，用于跑通 options 白名单。"""
+
+    return [
+        *batch_candidates(),
+        ProviderCandidate(
+            id="openai_images#1",
+            api_type="openai_images",
+            settings={"api_keys": ["key"], "model": "auto"},
+            supports_image_edit=True,
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_batch_top_level_defaults_apply_and_tasks_override(
+    make_env, monkeypatch, tmp_path
+):
+    """顶层 template/尺寸/options 作为默认值下发，条目内同名覆盖。"""
+
+    from tl.prompt_templates import PromptTemplateStore
+
+    client = BatchClient()
+    env = await make_env(client, candidates=_openai_quality_candidates())
+    env.plugin.prompt_templates = PromptTemplateStore(tmp_path / "templates")
+    monkeypatch.setattr(
+        llm_tools, "run_batch_job", Mock(side_effect=AssertionError("legacy batch"))
+    )
+
+    await call_batch(
+        env,
+        template="poster",
+        resolution="2K",
+        aspect_ratio="16:9",
+        options={"quality": "low"},
+        tasks=[
+            {
+                "name": "inherit",
+                "prompt": "inh",
+                "image_count": 1,
+                "provider": "legacy",
+            },
+            {
+                "name": "override",
+                "prompt": "ovr",
+                "image_count": 1,
+                "provider": "legacy",
+                "resolution": "4K",
+                "aspect_ratio": "1:1",
+                "options": {"quality": "high"},
+            },
+        ],
+    )
+
+    # 批量走后台投递，等两项都真正生成完再断言。
+    async def generated():
+        return len(client.configs) >= 2
+
+    await eventually(generated)
+
+    configs = {config.prompt: config for config in client.configs}
+    # 模板渲染进 prompt；顶层默认尺寸/质量落到未覆盖的条目。
+    inherited = next(cfg for prompt, cfg in configs.items() if "inh" in prompt)
+    assert inherited.resolution == "2K"
+    assert inherited.aspect_ratio == "16:9"
+    assert inherited.quality == "low"
+    overridden = next(cfg for prompt, cfg in configs.items() if "ovr" in prompt)
+    assert overridden.resolution == "4K"
+    assert overridden.aspect_ratio == "1:1"
+    assert overridden.quality == "high"
+
+
+@pytest.mark.asyncio
+async def test_batch_template_id_reaches_v2_and_legacy_paths(make_env, tmp_path):
+    """批量条目的模板 ID 进 v2 请求元数据，也进旧路径的 invoke 入参。"""
+
+    from tl.prompt_templates import PromptTemplateStore
+
+    client = BatchClient()
+    env = await make_env(client, candidates=batch_candidates())
+    env.plugin.prompt_templates = PromptTemplateStore(tmp_path / "templates")
+
+    await call_batch(
+        env,
+        tasks=[
+            {
+                "name": "tpl",
+                "prompt": "cat",
+                "image_count": 1,
+                "provider": "legacy",
+                "template": "poster",
+            }
+        ],
+    )
+
+    (child,) = [
+        job
+        for job in await stored_jobs(env)
+        if not job.request.metadata.get("batch_parent")
+    ]
+    assert child.request.metadata["template_id"] == "poster"
+
+
+@pytest.mark.asyncio
+async def test_batch_legacy_path_passes_template_id(tmp_path, monkeypatch):
+    from tl.prompt_templates import PromptTemplateStore
+
+    seen: list[dict[str, Any]] = []
+
+    async def fake_core(plugin, **kwargs):
+        seen.append(kwargs)
+        return True, ([], [], "ok", None)
+
+    monkeypatch.setattr(llm_tools, "invoke_generation_core", fake_core)
+    monkeypatch.setattr("tl.batch_generation.invoke_generation_core", fake_core)
+    plugin = LegacyPlugin(tmp_path / "legacy", GatedClient())
+    plugin._v2_service_for = lambda umo: None
+    plugin.prompt_templates = PromptTemplateStore(tmp_path / "templates")
+
+    result = await GeminiImageBatchTool(plugin=plugin).call(
+        _context(_Event()),
+        tasks=[
+            {
+                "name": "tpl",
+                "prompt": "cat",
+                "image_count": 1,
+                "provider": "legacy",
+                "template": "poster",
+            }
+        ],
+    )
+    task_id = json.loads(result)["task_id"]
+    await plugin.background_task_manager._runtime_tasks[task_id]
+
+    assert seen, "旧路径没有调用生成核心"
+    assert seen[0]["template_id"] == "poster"
     await plugin.background_task_manager.close()

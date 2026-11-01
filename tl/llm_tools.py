@@ -1371,6 +1371,7 @@ async def _run_batch_v2(
                         "deadline_seconds": generator.total_timeout * image_count,
                     },
                     trusted_local=True,
+                    template_id=item.get("template_id"),
                 )
             )
         requester = requester_from_event(event)

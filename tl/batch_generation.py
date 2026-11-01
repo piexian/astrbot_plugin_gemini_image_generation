@@ -81,6 +81,7 @@ async def _generate_batch_item(
                 quality=item.get("quality"),
                 image_count=remaining,
                 suppress_resolution=bool(item.get("suppress_resolution", False)),
+                template_id=item.get("template_id"),
             )
             last_stats = plugin.image_generator.get_request_stats()
             if not success or not isinstance(result_data, tuple):
