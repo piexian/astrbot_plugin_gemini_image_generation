@@ -467,8 +467,8 @@ async def test_legacy_adapter_end_to_end_with_reference_service(tmp_path):
     ref = root / "ref.png"
     ref.write_bytes(buf.getvalue())
     cache_dir = tmp_path / "cache"
-    policy = PathPolicy((root,), allow_private_networks=True)
-    service = ReferenceService(policy, RemoteFetchService(policy), cache_dir)
+    policy = PathPolicy((root,))
+    service = ReferenceService(policy, RemoteFetchService(), cache_dir)
 
     client = _LegacyE2EClient()
     adapter = LegacyClientAdapter(

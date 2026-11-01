@@ -248,10 +248,7 @@ async def test_upload_body_omits_local_only_fields():
 
 @pytest.mark.asyncio
 async def test_outbound_check_failure_becomes_unavailable():
-    async def reject(url, *, pin=None):
-        raise RuntimeError("blocked")
-
-    source, _ = _source(_ok({}), url_checker=reject)
+    source, _ = _source(_ok({}), base_url="ftp://blocked.invalid")
     with pytest.raises(SourceUnavailable):
         await source.status()
 

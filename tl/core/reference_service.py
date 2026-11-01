@@ -356,10 +356,7 @@ class ReferenceService:
         return raw, resolved.as_uri()
 
     async def _load_url(self, url: str, deadline_at: datetime | None) -> Artifact:
-        try:
-            await self.fetcher.check_url(url, deadline_at)
-        except RemoteFetchTimeoutError as exc:
-            raise ReferenceTimeoutError("参考图 URL 安全校验超时") from exc
+        self.fetcher.check_url(url)
         host = urlsplit(url).hostname or ""
         headers = (
             build_reference_image_headers(host, for_qq=True)
@@ -393,7 +390,7 @@ class ReferenceService:
                         f"参考图抓取超时: {redact_url(url)}"
                     ) from exc
                 except PathPolicyError:
-                    logger.warning("参考图抓取目标被安全策略拒绝: %s", redact_url(url))
+                    logger.warning("参考图抓取目标被拒绝: %s", redact_url(url))
                     raise
                 except RemoteFetchError as exc:
                     logger.error("参考图抓取失败: %s", redact_url(url))

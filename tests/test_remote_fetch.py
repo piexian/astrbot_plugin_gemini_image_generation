@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import socket
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -15,17 +14,11 @@ from tl.core.errors import (
     RemoteFetchTimeoutError,
     RemoteFetchTooManyRedirectsError,
 )
-from tl.core.path_policy import PathPolicy
 from tl.core.remote_fetch import RemoteFetchService
 
 
-def _policy() -> PathPolicy:
-    # loopback 测试服务器在私网段，策略必须放行。
-    return PathPolicy((), allow_private_networks=True)
-
-
 def _service(**kwargs) -> RemoteFetchService:
-    return RemoteFetchService(_policy(), **kwargs)
+    return RemoteFetchService(**kwargs)
 
 
 def _app() -> web.Application:
@@ -205,13 +198,7 @@ async def test_cross_origin_redirect_drops_sensitive_headers(monkeypatch) -> Non
             return Response(200)
 
     monkeypatch.setattr("tl.core.remote_fetch.aiohttp.ClientSession", Session)
-
-    async def fake_to_thread(func, *args):
-        return func(*args)
-
-    monkeypatch.setattr("tl.core.remote_fetch.asyncio.to_thread", fake_to_thread)
-    policy = type("Policy", (), {"validate_url": lambda self, url: url})()
-    service = RemoteFetchService(policy)
+    service = RemoteFetchService()
 
     assert (
         await service.fetch(
@@ -226,56 +213,7 @@ async def test_cross_origin_redirect_drops_sensitive_headers(monkeypatch) -> Non
 
 
 @pytest.mark.asyncio
-async def test_dns_validation_is_offloaded(monkeypatch) -> None:
-    class Response:
-        status = 200
-        headers = {}
-
-        def __init__(self):
-            self.content = self
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return None
-
-        async def iter_chunked(self, _size):
-            yield b"ok"
-
-    class Session:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return None
-
-        def get(self, url, **kwargs):
-            return Response()
-
-    monkeypatch.setattr("tl.core.remote_fetch.aiohttp.ClientSession", Session)
-
-    class Policy:
-        def validate_url(self, url):
-            return url
-
-    offloaded = []
-
-    async def fake_to_thread(func, *args):
-        offloaded.append(func)
-        return func(*args)
-
-    monkeypatch.setattr("tl.core.remote_fetch.asyncio.to_thread", fake_to_thread)
-    await RemoteFetchService(Policy()).fetch("https://example.invalid/image.png")
-    assert len(offloaded) == 1
-    assert offloaded[0].__name__ == "validate_url"
-
-
-@pytest.mark.asyncio
-async def test_redirect_hops_share_deadline_for_dns_validation(monkeypatch) -> None:
+async def test_redirect_hops_share_deadline(monkeypatch) -> None:
     calls = []
 
     class Response:
@@ -285,6 +223,8 @@ async def test_redirect_hops_share_deadline_for_dns_validation(monkeypatch) -> N
             self.content = self
 
         async def __aenter__(self):
+            # 每跳网络耗时；deadline 由循环在下一跳开始前判定。
+            await asyncio.sleep(0.03)
             return self
 
         async def __aexit__(self, *args):
@@ -311,52 +251,14 @@ async def test_redirect_hops_share_deadline_for_dns_validation(monkeypatch) -> N
                 else None
             )
 
-    class Policy:
-        def validate_url(self, url):
-            return url
-
-    async def slow_to_thread(func, *args):
-        await asyncio.sleep(0.015)
-        return func(*args)
-
     monkeypatch.setattr("tl.core.remote_fetch.aiohttp.ClientSession", Session)
-    monkeypatch.setattr("tl.core.remote_fetch.asyncio.to_thread", slow_to_thread)
 
     deadline = datetime.now(timezone.utc) + timedelta(seconds=0.04)
     with pytest.raises(RemoteFetchTimeoutError):
-        await RemoteFetchService(Policy()).fetch(
+        await RemoteFetchService().fetch(
             "https://example.invalid/start.png", deadline_at=deadline
         )
     assert calls == [
         "https://example.invalid/start.png",
         "https://example.invalid/hop-2.png",
     ]
-
-
-@pytest.mark.asyncio
-async def test_dns_rebinding_between_validation_and_connect_rejected(
-    monkeypatch,
-) -> None:
-    answers = iter(("93.184.216.34", "127.0.0.1"))
-    calls = []
-
-    def fake_getaddrinfo(host, port, *args, **kwargs):
-        calls.append(host)
-        address = next(answers, "127.0.0.1")
-        return [
-            (
-                socket.AF_INET,
-                socket.SOCK_STREAM,
-                socket.IPPROTO_TCP,
-                "",
-                (address, port),
-            )
-        ]
-
-    monkeypatch.setattr("tl.core.path_policy.socket.getaddrinfo", fake_getaddrinfo)
-
-    with pytest.raises(RemoteFetchRejectedError):
-        await RemoteFetchService(PathPolicy(())).fetch(
-            "http://rebind.invalid:9/image.png"
-        )
-    assert len(calls) >= 2

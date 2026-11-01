@@ -63,13 +63,12 @@ def _transparent_gif_bytes(
 
 
 def _policy(root: Path) -> PathPolicy:
-    # loopback 测试服务器在私网段，策略必须放行。
-    return PathPolicy((root,), allow_private_networks=True)
+    return PathPolicy((root,))
 
 
 def _service(root: Path, cache_dir: Path, **kwargs) -> ReferenceService:
     policy = _policy(root)
-    return ReferenceService(policy, RemoteFetchService(policy), cache_dir, **kwargs)
+    return ReferenceService(policy, RemoteFetchService(), cache_dir, **kwargs)
 
 
 async def _collect(service: ReferenceService, refs, **kwargs):
@@ -686,7 +685,6 @@ async def test_case_insensitive_http_uri_scheme(tmp_path, monkeypatch) -> None:
     root = tmp_path / "allowed"
     root.mkdir()
     service = _service(root, tmp_path / "cache")
-    monkeypatch.setattr(service.policy, "validate_url", lambda url: url)
 
     async def fake_to_thread(func, *args):
         return func(*args)
@@ -707,13 +705,12 @@ async def test_url_cache_hit_still_validates_policy(tmp_path, monkeypatch) -> No
     root.mkdir()
     cache_dir = tmp_path / "cache"
     service = _service(root, cache_dir)
-    service.policy.allow_private_networks = False
 
     async def fake_to_thread(func, *args):
         return func(*args)
 
     monkeypatch.setattr(reference_service_module.asyncio, "to_thread", fake_to_thread)
-    url = "http://127.0.0.1:9/secret.png"
+    url = "file:///etc/passwd"
     cache_dir.mkdir()
     cache_key = reference_service_module.hashlib.sha256(url.encode()).hexdigest()
     (cache_dir / f"{cache_key}.png").write_bytes(_PNG_BYTES)
@@ -727,7 +724,6 @@ async def test_concurrent_url_misses_are_serialized(tmp_path, monkeypatch) -> No
     root = tmp_path / "allowed"
     root.mkdir()
     service = _service(root, tmp_path / "cache")
-    monkeypatch.setattr(service.policy, "validate_url", lambda url: url)
 
     async def fake_to_thread(func, *args):
         return func(*args)

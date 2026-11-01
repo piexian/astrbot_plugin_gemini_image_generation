@@ -296,9 +296,7 @@ async def test_service_forwards_trusted_local_to_reference_ingest(tmp_path):
     Image.new("RGB", (8, 8), (4, 5, 6)).save(buffer, format="PNG")
     outside.write_bytes(buffer.getvalue())
     policy = PathPolicy((root,))
-    references = ReferenceService(
-        policy, RemoteFetchService(policy), tmp_path / "cache"
-    )
+    references = ReferenceService(policy, RemoteFetchService(), tmp_path / "cache")
     service = GenerationService(None, references)
     reference = outside.resolve().as_uri()
 

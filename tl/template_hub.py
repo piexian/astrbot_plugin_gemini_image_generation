@@ -14,7 +14,8 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 import aiohttp
 from astrbot.api import logger
 
-from .outbound_policy import PinnedResolver, check_outbound_url
+from .core.errors import PathPolicyError
+from .core.path_policy import check_remote_url
 from .prompt_templates import (
     CatalogVersion,
     PromptTemplate,
@@ -81,23 +82,13 @@ class HubTemplateSource:
         base_url: str = DEFAULT_BASE_URL,
         api_key: str | None = None,
         *,
-        url_checker=None,
         session: aiohttp.ClientSession | None = None,
     ) -> None:
         self.base_url = str(base_url or DEFAULT_BASE_URL).strip().rstrip("/")
         self.api_key = str(api_key or "").strip() or None
         self.source_name = _source_name(self.base_url)
-        self._url_checker = url_checker
         self._session = session
         self._owns_session = session is None
-
-    async def _check(self, url: str, pin: PinnedResolver) -> str:
-        if self._url_checker is None:
-            return url
-        try:
-            return await self._url_checker(url, pin=pin)
-        except TypeError:
-            return await self._url_checker(url)
 
     def _headers(self, *, auth: bool = False) -> dict[str, str]:
         headers = {
@@ -116,9 +107,6 @@ class HubTemplateSource:
     def _ensure_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession(
-                connector=aiohttp.TCPConnector(
-                    resolver=PinnedResolver(), ttl_dns_cache=0
-                ),
                 timeout=_TIMEOUT,
                 trust_env=False,
             )
@@ -136,13 +124,10 @@ class HubTemplateSource:
         etag: str | None = None,
     ) -> tuple[int, dict[str, str], Any]:
         url = _join(self.base_url, path, query)
-        pin = PinnedResolver()
         try:
-            await self._check(url, pin)
-        except Exception as exc:
-            raise SourceUnavailable(
-                f"在线模板服务地址不可访问：{type(exc).__name__}"
-            ) from exc
+            check_remote_url(url)
+        except PathPolicyError as exc:
+            raise SourceUnavailable(f"在线模板服务地址不可访问：{exc}") from exc
         headers = self._headers(auth=auth)
         if etag:
             headers["If-None-Match"] = etag
@@ -365,7 +350,6 @@ def source_for(base_url: str, api_key: str | None = None) -> HubTemplateSource:
     return HubTemplateSource(
         base_url=str(base_url or "").strip() or DEFAULT_BASE_URL,
         api_key=api_key,
-        url_checker=check_outbound_url,
     )
 
 

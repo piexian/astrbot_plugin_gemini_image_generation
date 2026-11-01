@@ -22,7 +22,6 @@ from .model_catalog import (
     make_catalog_request,
     safe_target,
 )
-from .outbound_policy import check_outbound_url
 from .plugin_config import _clean_api_keys
 from .provider_hooks import materialize_service_account_json
 from .provider_runtime import ProviderRuntimeBusy
@@ -122,7 +121,7 @@ class ProviderConfigService:
         self.prepare = prepare
         self.apply = apply
         self.restore = restore
-        self.catalog = ModelCatalogService(url_checker=self._check_outbound_url)
+        self.catalog = ModelCatalogService()
         self.vision_directory = VisionProviderDirectory(context)
         schema_path = Path(__file__).resolve().parents[1] / "_conf_schema.json"
         schema = json.loads(schema_path.read_text(encoding="utf-8"))[
@@ -314,21 +313,6 @@ class ProviderConfigService:
             or os.getenv("HTTP_PROXY")
             or os.getenv("http_proxy")
             or None
-        )
-
-    def _saved_api_bases(self) -> list[str]:
-        settings = self._settings()
-        values = [settings.get("api_base")]
-        values.extend(
-            entry.get("api_base")
-            for entry in settings.get("provider_overrides", [])
-            if isinstance(entry, dict)
-        )
-        return [value for value in values if isinstance(value, str) and value.strip()]
-
-    async def _check_outbound_url(self, url: str, *, pin=None) -> str:
-        return await check_outbound_url(
-            url, saved_api_bases=self._saved_api_bases(), pin=pin
         )
 
     def _catalog_request(self, api_type: str, entry: dict, common: dict, key: str):

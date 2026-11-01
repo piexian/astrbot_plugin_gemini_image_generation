@@ -112,13 +112,13 @@ def build_generation_stack(
     if data_dir is None:
         raise ValueError("data_dir 不能为空")
 
-    policy = PathPolicy(tuple(allowed_local_roots), allow_private_networks=False)
+    policy = PathPolicy(tuple(allowed_local_roots))
     fetch_options: dict[str, Any] = {}
     if max_body_bytes is not None:
         fetch_options["max_body_bytes"] = max_body_bytes
     if connect_timeout is not None:
         fetch_options["connect_timeout"] = connect_timeout
-    fetcher = RemoteFetchService(policy, **fetch_options)
+    fetcher = RemoteFetchService(**fetch_options)
 
     reference_options: dict[str, Any] = {}
     if max_pixels is not None:

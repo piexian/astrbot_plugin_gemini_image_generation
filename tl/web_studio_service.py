@@ -35,6 +35,7 @@ from .core.errors import (
     StudioBusyError,
     redact_url,
 )
+from .core.path_policy import check_remote_url
 from .file_uri import file_uri_to_path
 from .generation_scheduler import generation_progress
 from .generation_tracker import (
@@ -43,7 +44,6 @@ from .generation_tracker import (
     ReferenceImageUnavailableError,
     _timestamp,
 )
-from .outbound_policy import PinnedResolver, check_outbound_url
 from .provider_capabilities import (
     candidate_capability,
     candidate_reference_limit,
@@ -1319,15 +1319,6 @@ class WebStudioService:
         )
         return archived
 
-    def _saved_api_bases(self) -> list[str]:
-        values = [getattr(self.config, "api_base", None)]
-        for candidate in self._all_candidates():
-            settings = getattr(candidate, "settings", None) or {}
-            values.extend(
-                (getattr(candidate, "api_base", None), settings.get("api_base"))
-            )
-        return [value for value in values if isinstance(value, str) and value.strip()]
-
     async def _download_remote_image(
         self, url: str, *, candidate_id: str | None = None
     ) -> bytes:
@@ -1352,25 +1343,20 @@ class WebStudioService:
         )
         connector = None
         http_proxy = proxy
-        pinned_resolver = PinnedResolver()
         if proxy and proxy.lower().startswith("socks"):
             from aiohttp_socks import ProxyConnector
 
             connector = ProxyConnector.from_url(proxy)
             http_proxy = None
         elif not proxy:
-            connector = aiohttp.TCPConnector(resolver=pinned_resolver, ttl_dns_cache=0)
+            connector = aiohttp.TCPConnector()
         current = url
         try:
             async with aiohttp.ClientSession(
                 timeout=timeout, connector=connector
             ) as session:
                 for hop in range(4):
-                    await check_outbound_url(
-                        current,
-                        saved_api_bases=self._saved_api_bases(),
-                        pin=pinned_resolver,
-                    )
+                    current = check_remote_url(current)
                     async with session.get(
                         current, proxy=http_proxy, allow_redirects=False
                     ) as response:
