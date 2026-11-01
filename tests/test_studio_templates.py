@@ -835,3 +835,34 @@ async def test_hub_key_test_requires_key(tmp_path):
     with pytest.raises(StudioServiceError) as error:
         await service.hub_key_test()
     assert error.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_hub_report_requires_reason(tmp_path):
+    service = _service(tmp_path)
+    with pytest.raises(StudioServiceError) as error:
+        await service.hub_report("abcdefghijk1", "  ")
+    assert error.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_hub_report_requires_identifier(tmp_path):
+    service = _service(tmp_path)
+    with pytest.raises(StudioServiceError) as error:
+        await service.hub_report("", "不合适")
+    assert error.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_hub_report_sends_reason(tmp_path, monkeypatch):
+    calls: list = []
+
+    class Source:
+        async def report(self, identifier, reason):
+            calls.append((identifier, reason))
+
+    service = _service(tmp_path)
+    monkeypatch.setattr(service, "_with_source", lambda: Source())
+    result = await service.hub_report("abcdefghijk1", "  不合适  ")
+    assert result == {"status": "reported"}
+    assert calls == [("abcdefghijk1", "不合适")]

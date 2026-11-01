@@ -147,6 +147,7 @@
       if (action === 'hub-import') { void this.importHub(id); return; }
       if (action === 'hub-use') { this.useHub(id); return; }
       if (action === 'hub-view') { this.viewHub(id); return; }
+      if (action === 'hub-report') { void this.reportHub(id); return; }
       if (action === 'hub-upload') { void this.uploadHub(id); return; }
       if (action === 'hub-key') { void this.openKeyDialog(); }
     }
@@ -295,6 +296,47 @@
         this.message = this.t('导入失败，请稍后重试。');
         this.render();
       }
+    }
+
+    async reportHub(id) {
+      const hit = this.hub.templates.find(item => item.id === id);
+      if (!hit) return;
+      const remoteId = hit.remote_id || hit.id;
+      this.modal.openCustom({
+        title: this.t('举报在线模板'),
+        renderBody: body => {
+          body.appendChild(this.el('p', {className: 'tpl-note'}, [
+            this.t('说明举报原因，服务端会人工复核。')
+          ]));
+          body.appendChild(this.el('textarea', {
+            className: 'comic-input comic-textarea tpl-package-input',
+            rows: 5, 'data-tpl-report': 'reason'
+          }));
+        },
+        renderFooter: (footer, confirm, cancel) => {
+          footer.appendChild(this.el('button', {
+            type: 'button', className: 'comic-btn comic-btn--outline', onClick: cancel
+          }, [this.t('取消')]));
+          footer.appendChild(this.el('button', {
+            type: 'button', className: 'comic-btn comic-btn--danger',
+            onClick: async () => {
+              const node = document.querySelector('[data-tpl-report="reason"]');
+              const reason = node ? String(node.value || '').trim() : '';
+              if (!reason) {
+                this.message = this.t('举报需要填写原因');
+                this.render();
+                return;
+              }
+              const result = await this.request('POST', 'webui/templates/hub', {
+                action: 'report', remote_id: remoteId, reason
+              });
+              this.message = result ? this.t('已提交举报。') : this.t('在线操作失败，请稍后重试。');
+              confirm();
+              this.render();
+            }
+          }, [this.t('提交举报')]));
+        }
+      });
     }
 
     viewHub(id) {
@@ -820,6 +862,10 @@
             type: 'button', className: 'comic-btn comic-btn--sm comic-btn--outline',
             'data-tpl-action': 'hub-view', 'data-tpl-id': template.id
           }, [this.t('查看')]),
+          this.el('button', {
+            type: 'button', className: 'comic-btn comic-btn--sm comic-btn--outline',
+            'data-tpl-action': 'hub-report', 'data-tpl-id': template.id
+          }, [this.t('举报')]),
           this.el('button', {
             type: 'button', className: 'comic-btn comic-btn--sm comic-btn--cta',
             'data-tpl-action': 'hub-use', 'data-tpl-id': template.id

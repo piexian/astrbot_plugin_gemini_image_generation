@@ -294,6 +294,25 @@ class StudioTemplateService:
             "source_url": record["source_url"],
         }
 
+    async def hub_report(self, remote_id: Any, reason: Any) -> dict[str, Any]:
+        """举报在线模板；不需要密钥，但要给出原因。"""
+
+        identifier = str(remote_id or "").strip()
+        text = str(reason or "").strip()
+        if not identifier:
+            raise StudioServiceError("缺少在线模板 id", status_code=400)
+        if not text:
+            raise StudioServiceError("举报需要填写原因", status_code=400)
+        try:
+            await self._with_source().report(identifier, text)
+        except SourceRateLimited as exc:
+            raise StudioServiceError(_source_message(exc), status_code=429) from exc
+        except SourceRejected as exc:
+            raise StudioServiceError(str(exc), status_code=400) from exc
+        except TemplateSourceError as exc:
+            raise StudioServiceError(_source_message(exc), status_code=502) from exc
+        return {"status": "reported"}
+
     def _with_source(self) -> HubTemplateSource:
         if self.hub_source is None:
             raise StudioServiceError("在线模板已关闭或未配置服务地址", status_code=400)

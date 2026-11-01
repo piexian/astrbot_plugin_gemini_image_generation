@@ -764,6 +764,11 @@ class WebStudioAPI:
                     result = self.templates_service.hub_upload_preview(
                         payload.get("id")
                     )
+                elif action == "report":
+                    result = await self.templates_service.hub_report(
+                        payload.get("remote_id") or payload.get("id"),
+                        payload.get("reason"),
+                    )
                 else:
                     return error_response("不支持的在线操作", status_code=400)
             else:
