@@ -16,7 +16,7 @@ from urllib.parse import quote, urlsplit
 
 _ID_RE = re.compile(r"^[a-z0-9_-]{1,48}$")
 _PREVIEW_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
-_TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+_TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$")
 _ALLOWED_PLACEHOLDERS = ("{{input}}", "{{rows}}", "{{cols}}")
 _REFERENCES = frozenset({"none", "optional", "required"})
 _ORIGINS = frozenset({"builtin", "local", "remote"})
@@ -253,12 +253,15 @@ def _validate_remote(value: Any) -> RemoteOrigin | None:
 
 
 def _validate_timestamp(value: Any, field_name: str) -> str:
+    """校验 UTC ISO-8601 时间戳，接受可选小数秒（在线源给出微秒精度）。"""
+
     if not isinstance(value, str) or _TIMESTAMP_RE.fullmatch(value) is None:
-        _fail(field_name, f"{field_name} 必须是 UTC 的秒精度时间")
+        _fail(field_name, f"{field_name} 必须是 UTC 的 ISO-8601 时间")
     try:
-        datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+        # 小数秒需先归一，fromisoformat 在 3.11 前不接受 "Z" 后缀。
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
-        _fail(field_name, f"{field_name} 必须是 UTC 的秒精度时间")
+        _fail(field_name, f"{field_name} 不是有效时间")
     return value
 
 

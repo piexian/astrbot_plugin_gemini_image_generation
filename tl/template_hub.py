@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
@@ -51,6 +52,31 @@ def _join(base_url: str, path: str, query: dict[str, Any] | None = None) -> str:
     return merged
 
 
+def _header(headers: Any, name: str) -> str:
+    """按 HTTP 语义取响应头：头名大小写不敏感。
+
+    aiohttp 返回的是大小写不敏感容器，转成 dict 后就丢了这一特性，
+    直接用 headers.get("ETag") 会漏掉服务端发来的 "Etag"。
+    """
+
+    if headers is None:
+        return ""
+    getter = getattr(headers, "get", None)
+    if getter is not None:
+        value = getter(name)
+        if value is not None:
+            return str(value)
+    wanted = name.lower()
+    try:
+        items = headers.items()
+    except AttributeError:
+        return ""
+    for key, value in items:
+        if str(key).lower() == wanted:
+            return str(value)
+    return ""
+
+
 def _record(data: Any, *, source: str = "hub") -> PromptTemplate:
     """把在线响应转成模板对象，带服务端 id 作为来源标记。"""
 
@@ -82,13 +108,14 @@ class HubTemplateSource:
         base_url: str = DEFAULT_BASE_URL,
         api_key: str | None = None,
         *,
-        session: aiohttp.ClientSession | None = None,
+        session_factory: Callable[[], aiohttp.ClientSession] | None = None,
     ) -> None:
         self.base_url = str(base_url or DEFAULT_BASE_URL).strip().rstrip("/")
         self.api_key = str(api_key or "").strip() or None
         self.source_name = _source_name(self.base_url)
-        self._session = session
-        self._owns_session = session is None
+        self._session_factory = session_factory or (
+            lambda: aiohttp.ClientSession(timeout=_TIMEOUT, trust_env=False)
+        )
 
     def _headers(self, *, auth: bool = False) -> dict[str, str]:
         headers = {
@@ -100,18 +127,7 @@ class HubTemplateSource:
         return headers
 
     async def close(self) -> None:
-        if self._owns_session and self._session is not None:
-            await self._session.close()
-        self._session = None
-
-    def _ensure_session(self) -> aiohttp.ClientSession:
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(
-                timeout=_TIMEOUT,
-                trust_env=False,
-            )
-            self._owns_session = True
-        return self._session
+        """保留协议要求的关闭入口；连接已按请求创建，无需关闭状态。"""
 
     async def _request(
         self,
@@ -131,37 +147,44 @@ class HubTemplateSource:
         headers = self._headers(auth=auth)
         if etag:
             headers["If-None-Match"] = etag
-        session = self._ensure_session()
-        try:
-            async with session.request(
-                method, url, headers=headers, json=json_body, allow_redirects=False
-            ) as response:
-                if response.status == 304:
-                    return 304, dict(response.headers), None
-                if response.status == 429:
-                    retry = response.headers.get("Retry-After", "")
-                    raise SourceRateLimited(_retry_after(retry))
-                if response.status in (401, 403):
-                    raise SourceAuthError("在线模板密钥无效或权限不足")
-                if response.status >= 500:
-                    raise SourceUnavailable("在线模板服务暂时不可用")
-                raw = await response.read()
-                if len(raw) > _MAX_BYTES:
-                    raise SourceUnavailable("在线模板响应过大")
-                payload = _decode(raw)
-                if response.status >= 400:
-                    raise SourceRejected(
-                        _message(payload) or "在线模板服务拒绝了本次请求"
-                    )
-                return response.status, dict(response.headers), payload
-        except (SourceAuthError, SourceRateLimited, SourceRejected, SourceUnavailable):
-            raise
-        except asyncio.TimeoutError as exc:
-            raise SourceUnavailable("在线模板服务响应超时") from exc
-        except aiohttp.ClientError as exc:
-            raise SourceUnavailable(
-                f"在线模板服务连接失败：{type(exc).__name__}"
-            ) from exc
+        # 每次请求新建连接：同步每 6 小时一次、只发两个请求，复用连接没有收益，
+        # 却会把 session 绑在已关闭的 loop 上（缓存同步走 asyncio.run）。
+        async with self._session_factory() as session:
+            try:
+                async with session.request(
+                    method, url, headers=headers, json=json_body, allow_redirects=False
+                ) as response:
+                    if response.status == 304:
+                        return 304, dict(response.headers), None
+                    if response.status == 429:
+                        retry = response.headers.get("Retry-After", "")
+                        raise SourceRateLimited(_retry_after(retry))
+                    if response.status in (401, 403):
+                        raise SourceAuthError("在线模板密钥无效或权限不足")
+                    if response.status >= 500:
+                        raise SourceUnavailable("在线模板服务暂时不可用")
+                    raw = await response.read()
+                    if len(raw) > _MAX_BYTES:
+                        raise SourceUnavailable("在线模板响应过大")
+                    payload = _decode(raw)
+                    if response.status >= 400:
+                        raise SourceRejected(
+                            _message(payload) or "在线模板服务拒绝了本次请求"
+                        )
+                    return response.status, dict(response.headers), payload
+            except (
+                SourceAuthError,
+                SourceRateLimited,
+                SourceRejected,
+                SourceUnavailable,
+            ):
+                raise
+            except asyncio.TimeoutError as exc:
+                raise SourceUnavailable("在线模板服务响应超时") from exc
+            except aiohttp.ClientError as exc:
+                raise SourceUnavailable(
+                    f"在线模板服务连接失败：{type(exc).__name__}"
+                ) from exc
 
     async def search(
         self,
@@ -243,7 +266,7 @@ class HubTemplateSource:
             payload.get("templates"), list
         ):
             raise SourceUnavailable("目录快照返回格式异常")
-        tag = str(headers.get("ETag") or "").strip()
+        tag = str(_header(headers, "ETag")).strip()
         return tag, payload
 
     async def request_key(self, email: str) -> None:

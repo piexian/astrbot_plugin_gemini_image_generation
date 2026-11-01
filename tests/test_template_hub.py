@@ -49,11 +49,17 @@ class _Session:
     async def close(self):
         self.closed = True
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        await self.close()
+        return False
+
 
 def _source(handler, **overrides):
     session = _Session(handler)
-    source = hub.HubTemplateSource(session=session, **overrides)
-    return source, session
+    return hub.HubTemplateSource(session_factory=lambda: session, **overrides), session
 
 
 def _ok(payload, headers=None):
@@ -107,6 +113,49 @@ def test_record_maps_remote_origin_and_fields():
     assert template.remote.source == "image-hub.alxy.app"
     assert template.remote.remote_id == "abcdefghijk1"
     assert template.name == "测试模板"
+
+
+def test_record_accepts_microsecond_timestamps_from_online_source():
+    """在线源给的是微秒精度（如 2026-10-31T14:13:09.826981Z），不能因此拒收整条。"""
+
+    template = hub._record(
+        _template(
+            created_at="2026-10-31T14:13:09.826981Z",
+            updated_at="2026-10-31T15:43:54.118985Z",
+        ),
+        source="image-hub.alxy.app",
+    )
+    assert template.created_at == "2026-10-31T14:13:09.826981Z"
+    assert template.updated_at == "2026-10-31T15:43:54.118985Z"
+
+
+def test_rejects_non_utc_and_malformed_timestamps():
+    # _record 把校验错误包成 SourceUnavailable。
+
+    for bad in ("2026-10-31 14:13:09", "2026-10-31T14:13:09+08:00", "not-a-time"):
+        with pytest.raises(SourceUnavailable):
+            hub._record(_template(created_at=bad), source="hub")
+
+
+@pytest.mark.asyncio
+async def test_download_catalog_reads_etag_case_insensitively():
+    """aiohttp 头名大小写不敏感；服务端发 Etag 也能取到，否则每次都重下。"""
+
+    def handler(method, url, kwargs):
+        # 真实服务端返回 "Etag"（首字母大写），不是 "ETag"。
+        return _Response(200, {"templates": [_template()]}, {"Etag": '"abc123"'})
+
+    source, _ = _source(handler)
+    tag, payload = await source.download_catalog(None)
+    assert tag == '"abc123"'
+    assert len(payload["templates"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_download_catalog_unwraps_weak_etag():
+    source, _ = _source(_ok({"templates": [_template()]}, {"ETag": 'W/"deadbeef"'}))
+    tag, _ = await source.download_catalog(None)
+    assert tag == 'W/"deadbeef"'
 
 
 def test_record_rejects_bad_payload():
@@ -216,7 +265,9 @@ async def test_auth_header_only_when_requested():
     await source.get_many(["abcdefghijk1"])
     assert "Authorization" not in session.calls[0]["headers"]
 
-    keyed = hub.HubTemplateSource(api_key="iph_x", session=_Session(_ok({})))
+    keyed = hub.HubTemplateSource(
+        api_key="iph_x", session_factory=lambda: _Session(_ok({}))
+    )
     await keyed.key_status()
     assert keyed._headers(auth=True)["Authorization"] == "Bearer iph_x"
 
@@ -285,13 +336,28 @@ async def test_oversized_response_is_rejected():
 
 
 @pytest.mark.asyncio
-async def test_close_releases_owned_session():
-    session = _Session(_ok({}))
-    source = hub.HubTemplateSource(session=session)
-    source._owns_session = True
+async def test_each_request_creates_and_closes_its_own_session():
+    """每次请求新建连接：避免复用的 session 绑在已关闭的 loop 上。"""
+
+    sessions: list[_Session] = []
+
+    def factory():
+        session = _Session(_ok({"templates": [_template()]}))
+        sessions.append(session)
+        return session
+
+    source = hub.HubTemplateSource(session_factory=factory)
+    await source.get_many(["abcdefghijk1"])
+    await source.get_many(["abcdefghijk1"])
+    assert len(sessions) == 2
+    assert all(session.closed for session in sessions)
+
+
+@pytest.mark.asyncio
+async def test_close_is_a_noop_for_per_request_sessions():
+    source, session = _source(_ok({}))
     await source.close()
-    assert session.closed
-    assert source._session is None
+    assert not session.closed
 
 
 def test_source_for_defaults_to_official_address():
