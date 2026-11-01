@@ -436,6 +436,9 @@ class GeminiImageGenerationPlugin(Star):
                 hub_mode=self.cfg.template_hub_mode,
                 hub_url=self.cfg.template_hub_url,
                 hub_key=self.cfg.template_hub_key,
+                raw_config=self.raw_config,
+                config_lock=self.configuration_lock,
+                is_closed=lambda: self._web_closed,
             )
             application = ProviderApplication(self)
             self.studio_providers = ProviderConfigService(

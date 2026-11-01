@@ -45,6 +45,9 @@ class StudioTemplateService:
         hub_url: str = "",
         hub_key: str = "",
         source_factory=source_for,
+        raw_config: Any = None,
+        config_lock: Any = None,
+        is_closed: Any = None,
     ) -> None:
         self.store = store
         self.data_dir = Path(data_dir)
@@ -55,6 +58,9 @@ class StudioTemplateService:
         self._hub_url = hub_url
         self._hub_key = hub_key
         self._source_factory = source_factory
+        self.raw_config = raw_config
+        self._config_lock = config_lock if config_lock is not None else asyncio.Lock()
+        self._is_closed = is_closed or (lambda: False)
         self.hub_source: HubTemplateSource | None = None
         self.hub_cache = TemplateHubCache(self.data_dir, mode=hub_mode)
         self.reconfigure_hub(mode=hub_mode, url=hub_url, key=hub_key, sync=False)
@@ -201,6 +207,55 @@ class StudioTemplateService:
     async def hub_key_revoke(self) -> dict[str, Any]:
         await self._with_source().revoke_key()
         return {"status": "revoked"}
+
+    async def save_hub_key(self, key: Any) -> dict[str, Any]:
+        """把在线模板密钥写入插件配置；空串表示清除。"""
+
+        value = str(key or "").strip()
+        raw = self.raw_config
+        if raw is None:
+            raise StudioServiceError(
+                "当前宿主不提供配置保存接口，密钥只能填写在插件配置里",
+                status_code=503,
+            )
+        save_async = getattr(raw, "save_config_async", None)
+        save_sync = getattr(raw, "save_config", None)
+        if not callable(save_async) and not callable(save_sync):
+            raise StudioServiceError(
+                "当前宿主不提供配置保存接口，密钥只能填写在插件配置里",
+                status_code=503,
+            )
+        async with self._config_lock:
+            if self._is_closed():
+                raise StudioServiceError("插件正在关闭", status_code=503)
+            if callable(save_async):
+                await save_async({"template_hub_key": value})
+            else:
+                await asyncio.to_thread(save_sync, {"template_hub_key": value})
+            self.reconfigure_hub(key=value)
+        return self.hub_state()
+
+    def hub_key_masked(self) -> dict[str, Any]:
+        """返回已配置密钥的掩码，用于在页面上确认是否填写。"""
+
+        value = str(self._hub_key or "").strip()
+        return {
+            "configured": bool(value),
+            "masked": _mask_key(value),
+        }
+
+    async def hub_key_test(self) -> dict[str, Any]:
+        """用已保存的密钥测试连接。"""
+
+        if not str(self._hub_key or "").strip():
+            raise StudioServiceError("尚未填写在线模板密钥", status_code=400)
+        try:
+            payload = await self._with_source().key_status()
+        except SourceAuthError as exc:
+            raise StudioServiceError(_source_message(exc), status_code=401) from exc
+        except TemplateSourceError as exc:
+            raise StudioServiceError(_source_message(exc), status_code=502) from exc
+        return {"status": "ok", "key": payload}
 
     async def hub_upload(self, template_id: Any) -> dict[str, Any]:
         """上传本地模板；先展示内容再由前端确认，这里只负责发送。"""
@@ -367,6 +422,15 @@ class StudioTemplateService:
                 path.unlink(missing_ok=True)
         except OSError as exc:
             logger.warning("[模板广场] 清理预览图失败: %s", exc)
+
+
+def _mask_key(value: str) -> str:
+    """只保留首尾各 4 位，避免页面回显完整密钥。"""
+
+    text = str(value or "").strip()
+    if len(text) <= 8:
+        return "*" * len(text)
+    return f"{text[:4]}{'*' * 8}{text[-4:]}"
 
 
 def _require_id(value: Any) -> str:

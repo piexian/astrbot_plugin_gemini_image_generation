@@ -816,7 +816,13 @@ class WebStudioAPI:
             return denied
         try:
             if request.method == "GET":
-                result = await self.templates_service.hub_key_check()
+                masked = self.templates_service.hub_key_masked()
+                state = self.templates_service.hub_state()
+                result = {
+                    "configured": masked["configured"],
+                    "masked": masked["masked"],
+                    "mode": state["mode"],
+                }
             elif request.method == "DELETE":
                 result = await self.templates_service.hub_key_revoke()
             else:
@@ -825,9 +831,17 @@ class WebStudioAPI:
                     return error_response(
                         "请求体必须是有效的 JSON 对象", status_code=400
                     )
-                result = await self.templates_service.hub_key_request(
-                    str(payload.get("email") or "")
-                )
+                action = str(payload.get("action") or "request").strip()
+                if action == "save":
+                    result = await self.templates_service.save_hub_key(
+                        payload.get("key")
+                    )
+                elif action == "test":
+                    result = await self.templates_service.hub_key_test()
+                else:
+                    result = await self.templates_service.hub_key_request(
+                        str(payload.get("email") or "")
+                    )
             return self._ok(result)
         except StudioServiceError as exc:
             return self._service_error(exc)

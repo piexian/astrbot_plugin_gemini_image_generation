@@ -766,3 +766,72 @@ async def test_hub_endpoints_report_missing_service(tmp_path, monkeypatch):
     assert (await api.templates_hub()).status_code == 503
     module.request = _request(method="GET")
     assert (await api.templates_hub_key()).status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_save_hub_key_writes_plugin_config(tmp_path):
+    saved: dict = {}
+
+    class RawConfig:
+        async def save_config_async(self, update):
+            saved.update(update)
+
+    service = _service(tmp_path)
+    service.raw_config = RawConfig()
+    result = await service.save_hub_key("iph_secret_value")
+    assert saved["template_hub_key"] == "iph_secret_value"
+    assert result["has_key"] is True
+
+
+@pytest.mark.asyncio
+async def test_save_hub_key_empty_clears(tmp_path):
+    saved: dict = {}
+
+    class RawConfig:
+        async def save_config_async(self, update):
+            saved.update(update)
+
+    service = _service(tmp_path)
+    service.raw_config = RawConfig()
+    await service.save_hub_key("iph_x")
+    result = await service.save_hub_key("")
+    assert saved["template_hub_key"] == ""
+    assert result["has_key"] is False
+
+
+@pytest.mark.asyncio
+async def test_save_hub_key_without_host_interface_raises(tmp_path):
+    service = _service(tmp_path)
+    service.raw_config = None
+    with pytest.raises(StudioServiceError) as error:
+        await service.save_hub_key("iph_x")
+    assert error.value.status_code == 503
+
+
+def test_mask_key_never_reveals_full_value():
+    from tl.studio_templates import _mask_key
+
+    masked = _mask_key("iph_abcdefghijklmnop")
+    assert "abcdefghijklmnop" not in masked
+    assert masked.startswith("iph_")
+    assert masked.endswith("mnop")
+    assert _mask_key("short") == "*****"
+
+
+@pytest.mark.asyncio
+async def test_hub_key_get_returns_mask_not_secret(tmp_path, monkeypatch):
+    service = _service(tmp_path)
+    service._hub_key = "iph_abcdefghijklmnop"
+    api = _hub_api(tmp_path, monkeypatch, service, method="GET")
+    data = json.loads((await api.templates_hub_key()).body)["data"]
+    assert data["configured"] is True
+    assert "abcdefghijklmnop" not in data["masked"]
+
+
+@pytest.mark.asyncio
+async def test_hub_key_test_requires_key(tmp_path):
+    service = _service(tmp_path)
+    service._hub_key = ""
+    with pytest.raises(StudioServiceError) as error:
+        await service.hub_key_test()
+    assert error.value.status_code == 400
