@@ -1027,7 +1027,7 @@ defineExpose({
 
 <template>
   <div class="workbench-view">
-    <div v-show="bannerVisible" class="banner banner--warning" role="alert">{{ bannerText }}</div>
+    <div v-show="bannerVisible" class="comic-banner banner-container" role="alert">{{ bannerText }}</div>
 
     <div class="composer">
       <!-- 模式切换 -->

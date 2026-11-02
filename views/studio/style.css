@@ -248,7 +248,7 @@ code, kbd, samp, pre, .mono {
   border: 1px solid var(--ink);
 }
 
-/* 全局横幅通知 */
+/* 全局状态横幅（创作台能力横幅复用） */
 .banner-container {
   margin-bottom: 16px;
 }
@@ -263,12 +263,6 @@ code, kbd, samp, pre, .mono {
   box-shadow: var(--shadow-comic);
   color: var(--pop-ink);
   font-weight: 700;
-}
-
-.banner-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
 }
 
 /* 5. 机械按压按键规范 (Buttons) */

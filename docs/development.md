@@ -54,6 +54,8 @@ ruff format --check . --line-length 88 --exclude plans,docs,templates
 - 依赖安装、构建与单测：`cd frontend && vp i`、`vp build`、`pnpm test:unit`。
 - 改动 `frontend/` 源码后必须重新 `vp build` 并一并提交 `views/studio/`；CI 会重新构建并校验产物与提交一致（`git diff --exit-code -- views/studio`）。
 - 同步到实例时排除 `frontend/`，实例只需要 `views/studio/` 构建产物。
+- 迁移状态（已完成）：五个视图（工作台/任务进度/画廊/限流/供应商/提示词广场）全部为 Vue SFC，位于 `frontend/src/{workbench,progress,gallery,limits,provider-config,templates}`；`frontend/src/app.js` 仅保留基建（BridgeClient/Store/SSE/SafeDOM/ImageLoader/Lightbox/Toast/Clipboard 等）与 StudioApp 壳（页签路由、refill 编排、上下文同步），经 `frontend/src/main.js` 挂载各视图工厂。
+- 静态壳文案（页签/模态框/灯箱框架）仍用 `index.html` 的 `data-i18n-*` + `I18n.applyDom()` 运行时翻译；视图内文案一律 `t()`。语言切换整页 reload 机制不变。
 
 ## 提交约定
 

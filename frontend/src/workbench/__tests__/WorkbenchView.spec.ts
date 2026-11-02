@@ -119,7 +119,7 @@ describe('WorkbenchView', () => {
     await (wrapper.vm as unknown as { loadCapabilities: () => Promise<void> }).loadCapabilities()
     await flushPromises()
 
-    const banner = document.querySelector('.banner--warning') as HTMLElement
+    const banner = document.querySelector('.comic-banner') as HTMLElement
     expect(banner).toBeTruthy()
     // 与 vanilla 一致：limits 缺失在控制台抛具体错误，横幅展示通用失败文案
     expect(banner.textContent).toContain('加载模型能力失败，请检查插件状态或网络连接')
