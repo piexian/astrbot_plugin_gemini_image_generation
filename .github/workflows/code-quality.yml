@@ -20,18 +20,18 @@ jobs:
         python-version: ["3.12"]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: "24"
 
       - name: Install test dependencies
         run: |
@@ -44,47 +44,52 @@ jobs:
         run: pytest -q
 
   frontend:
-    name: Frontend (pnpm build & test)
+    name: Frontend (Vue & Vite+)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - name: Set up Vite+
+        uses: voidzero-dev/setup-vp@v1.22.0
         with:
+          working-directory: frontend
           node-version: "24"
+          cache: true
 
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: "12.16.1"
-
-      - name: Install dependencies
+      - name: Format & Lint check
         working-directory: frontend
-        run: pnpm install --frozen-lockfile
+        run: |
+          vp check
+          vp lint --deny-warnings
 
-      - name: Unit tests
+      - name: Vue & TypeScript type-check
         working-directory: frontend
-        run: pnpm test:unit
+        run: pnpm run type-check
 
-      - name: Build
+      - name: Vue component unit tests
         working-directory: frontend
-        run: pnpm build
+        run: vp test run
 
-      # views/studio 是提交进仓库的构建产物，构建后必须与提交完全一致。
+      - name: Build Studio bundle
+        working-directory: frontend
+        run: vp build
+
+      # views/studio 是提交进仓库的构建产物，构建后必须与提交完全一致（含未跟踪哈希块检查）。
       - name: Verify committed build output is up to date
-        run: git diff --exit-code -- views/studio
+        run: |
+          git diff --exit-code -- views/studio
+          test -z "$(git status --porcelain -- views/studio)"
 
   lint:
     name: Lint & Format
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -113,10 +118,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -128,10 +133,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 

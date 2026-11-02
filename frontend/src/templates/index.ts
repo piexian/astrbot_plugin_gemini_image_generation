@@ -1,10 +1,10 @@
-import { createApp } from 'vue'
-import TemplatesView from './TemplatesView.vue'
-import type { BridgeClientLike, ModalLike, StudioTemplate, Translator } from './types'
+import { createApp } from "vue";
+import TemplatesView from "./TemplatesView.vue";
+import type { BridgeClientLike, ModalLike, StudioTemplate, Translator } from "./types";
 
 export interface TemplatesViewController {
-  open: () => Promise<void>
-  destroy: () => void
+  open: () => Promise<void>;
+  destroy: () => void;
 }
 
 /** 把提示词广场挂载到给定容器；返回兼容旧调用方式的 open/destroy 控制器。 */
@@ -16,15 +16,15 @@ export function createTemplatesView(
     t,
     clipboard,
     onUsed,
-    onSaved
+    onSaved,
   }: {
-    bridge: BridgeClientLike
-    modal: ModalLike
-    t: Translator
-    clipboard: { copy: (text: string, message?: string) => Promise<void> | void }
-    onUsed: (payload: { prompt?: string; template?: StudioTemplate }) => void
-    onSaved?: () => Promise<void>
-  }
+    bridge: BridgeClientLike;
+    modal: ModalLike;
+    t: Translator;
+    clipboard: { copy: (text: string, message?: string) => Promise<void> | void };
+    onUsed: (payload: { prompt?: string; template?: StudioTemplate }) => void;
+    onSaved?: () => Promise<void>;
+  },
 ): TemplatesViewController {
   const app = createApp(TemplatesView, {
     bridge,
@@ -32,11 +32,11 @@ export function createTemplatesView(
     t,
     clipboard,
     onUsed,
-    onSaved
-  })
-  const instance = app.mount(container) as unknown as { loadOnce: () => Promise<void> }
+    onSaved,
+  });
+  const instance = app.mount(container) as unknown as { loadOnce: () => Promise<void> };
   return {
     open: () => instance.loadOnce(),
-    destroy: () => app.unmount()
-  }
+    destroy: () => app.unmount(),
+  };
 }
