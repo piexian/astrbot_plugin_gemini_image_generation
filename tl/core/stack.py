@@ -101,6 +101,7 @@ def build_generation_stack(
     limiter: Any = None,
     artifact_store: Any = None,
     delivery_store: Any = None,
+    observers: Sequence[Any] = (),
 ) -> GenerationService:
     """装配 PathPolicy→Fetch→Reference→JobStore→Router→Scheduler→Service。"""
 
@@ -111,13 +112,13 @@ def build_generation_stack(
     if data_dir is None:
         raise ValueError("data_dir 不能为空")
 
-    policy = PathPolicy(tuple(allowed_local_roots), allow_private_networks=False)
+    policy = PathPolicy(tuple(allowed_local_roots))
     fetch_options: dict[str, Any] = {}
     if max_body_bytes is not None:
         fetch_options["max_body_bytes"] = max_body_bytes
     if connect_timeout is not None:
         fetch_options["connect_timeout"] = connect_timeout
-    fetcher = RemoteFetchService(policy, **fetch_options)
+    fetcher = RemoteFetchService(**fetch_options)
 
     reference_options: dict[str, Any] = {}
     if max_pixels is not None:
@@ -137,6 +138,7 @@ def build_generation_stack(
             limiter=limiter,
             artifact_store=artifact_store,
             delivery_store=delivery_store,
+            observers=observers,
         )
     except BaseException:
         store.close_sync()

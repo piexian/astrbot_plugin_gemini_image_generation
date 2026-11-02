@@ -239,6 +239,7 @@ async def test_proxy_for_archived_result_uses_successful_candidate(
     monkeypatch.setattr(ProxyConnector, "from_url", lambda proxy: connector)
 
     class Response:
+        status = 200
         content_length = None
         content = SimpleNamespace()
 

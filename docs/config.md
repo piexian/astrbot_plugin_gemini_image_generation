@@ -97,7 +97,7 @@ google / gemini_interactions / vertex / openai / agnes_ai / xai / minimax / step
 | `llm_tool_reference_path_mode` | `whitelist` | LLM 工具 `reference_image_paths` 的本地路径权限模式 |
 | `llm_tool_reference_allowed_dirs` | `[]` | `whitelist` 模式下额外允许的参考图目录 |
 | `batch_max_images_per_task` | `10` | 单个命名提示词的目标图片数量上限；供应商原生单次上限更小时自动拆分补齐 |
-| `batch_max_tasks` | `20` | 一次 `batch_tasks` 允许的命名任务条目上限 |
+| `batch_max_tasks` | `20` | 一次 `gemini_image_batch` 的 `tasks` 允许的命名任务条目上限 |
 | `batch_concurrency` | `3` | 后台批量生成并发数；每个条目内部按供应商单次上限顺序补齐 |
 | `generation_max_concurrency` | `3` | 指令、LLM、Studio 与外部插件共用的生成执行槽上限；重载生效 |
 | `generation_max_queue_size` | `100` | 全入口等待队列容量，不含执行请求；排队不占供应商请求超时，满时拒绝提交；重载生效 |
@@ -136,7 +136,8 @@ avatar / poster / wallpaper / card / mobile / figure / sticker
 | `max_attempts_per_key` | `3` | 每个密钥最大重试次数 |
 | `enable_smart_retry` | `true` | 按错误类型智能重试 |
 | `total_timeout` | `120` | 单次调用总超时，单位秒 |
-| `scheduler_v2` | `false` | 实验功能：开启后命令入口生成任务改走 v2 调度器（任务持久化、deadline 治理）；内联参考图（消息图片、头像等）先转临时句柄，带图命令可用 |
+| `scheduler_v2` | `false` | 实验功能：开启后命令入口、LLM 工具、WebUI 创作台与公开 SDK 改走 v2 调度器；WebUI 及无 umo 的 SDK 调用仅在灰度名单为空时接入；内联参考图先转临时句柄 |
+| `scheduler_v2_sessions` | `[]` | v2 调度器灰度会话：填会话的 unified_msg_origin（可用 AstrBot `/sid` 查看）；非空时仅这些会话的聊天命令、LLM 工具与带对应 umo 的 SDK 调用走 v2，WebUI 及无 umo 的 SDK 调用保持旧路径；为空时总开关作用于全部已接入入口 |
 
 ## service_settings
 
@@ -144,6 +145,10 @@ avatar / poster / wallpaper / card / mobile / figure / sticker
 |--------|--------|------|
 | `napcat_stream_threshold_mb` | `2.0` | 本地图片原始发送失败后，达到该大小才使用 NapCat Stream API 兜底重试；`0` 表示禁用 |
 | `auto_avatar_reference` | `false` | 自动获取头像作为参考图 |
+| `reference_cross_session` | `false` | 开启后，同一机器人下所有会话的生成记录都可以被 `gen:` 引用；关闭时只有同一会话或已共享的记录可以。语法见 [内部引用](references.md) |
+| `template_hub_mode` | `cache` | 在线模板使用方式：`cache` 按哈希同步到插件本地缓存（检索和生成都不联网）、`online` 额外实时检索在线服务、`off` 完全不连接在线服务 |
+| `template_hub_url` | 空 | 在线模板服务地址，必须是 https；留空用官方地址 `https://image-hub.alxy.app` |
+| `template_hub_key` | 空 | 在线模板服务密钥，用于上传、修改和删除自己上传的模板；不填只能浏览和导入。在提示词广场的在线页申请，打开密钥框会自动回填并保持密码隐藏 |
 | `show_duration_stats` | `true` | 生成完成后是否展示耗时统计 |
 | `show_retry_stats` | `true` | 生成完成后是否展示重试次数 |
 | `show_token_usage_stats` | `true` | 生成完成后是否展示上游返回的 token 用量 |
@@ -320,7 +325,7 @@ GPT Image 编辑使用 `image[]` 上传，最多 16 张参考图，PNG/JPEG/WebP
 |----------|-------------|
 | 普通生图/改图 | 直接使用配置中的 `custom_size` |
 | 快速模式 | 根据模式预设的 `resolution + aspect_ratio` 自动换算，例如 `2K + 16:9 -> 2048x1152` |
-| LLM 工具调用 | 固定接收 `resolution` / `aspect_ratio`，未传入时使用配置中的 `custom_size` |
+| LLM 工具调用 | 只接收 `resolution` / `aspect_ratio`（传入的 `size` 忽略），未传入时使用配置中的 `custom_size` |
 
 WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会自动隐藏，仅保留 `custom_size`；切回 `preset` 后再显示预设分辨率和长宽比。
 

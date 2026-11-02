@@ -8,6 +8,7 @@ import binascii
 import hashlib
 import io
 import re
+import struct
 import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import datetime
@@ -24,6 +25,7 @@ except ImportError:  # pragma: no cover - 取决于运行环境可选依赖
 
 from ..api.reference_pipeline import transcode_to_supported_mime
 from ..api_types import APIError
+from ..file_uri import file_uri_to_path
 from ..reference_image import (
     REFERENCE_IMAGE_CACHE_DIR,
     build_reference_image_headers,
@@ -64,6 +66,44 @@ _TRANSCODE_MAGIC_PREFIXES: tuple[tuple[str, tuple[bytes, ...]], ...] = (
     ("image/bmp", (b"BM",)),
     ("image/tiff", (b"II*\x00", b"MM\x00*")),
 )
+
+# PNG 可剥离的辅助块：只影响体积，与像素和色彩无关。
+# 关键块（IHDR/PLTE/IDAT/IEND）、透明（tRNS）、色彩空间（sRGB/iCCP/gAMA/sBIT）
+# 与动画（acTL/fcTL/fdAT）一律保留——删 tRNS 会丢透明，删 acTL 会让动图变静图。
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_PNG_DROPPABLE_CHUNKS = frozenset(
+    {"tEXt", "zTXt", "iTXt", "tIME", "eXIf", "pHYS", "bKGD"}
+)
+_PNG_CHUNK_HEADER = struct.Struct(">I4s")
+
+
+def strip_png_metadata(raw: bytes) -> bytes:
+    """Drop size-only PNG ancillary chunks, carrying every other chunk verbatim.
+
+    Surgical: bytes are moved, never re-encoded, so bit depth, APNG frames,
+    tRNS transparency and ICC colour data all survive. A structurally invalid
+    stream is returned untouched and left to the format and pixel checks.
+    """
+
+    if not raw.startswith(_PNG_SIGNATURE):
+        return raw
+    header = _PNG_CHUNK_HEADER.size
+    out = bytearray(_PNG_SIGNATURE)
+    pos = len(_PNG_SIGNATURE)
+    total = len(raw)
+    while pos + header + 4 <= total:
+        length, kind = _PNG_CHUNK_HEADER.unpack_from(raw, pos)
+        chunk_type = kind.decode("latin-1")
+        end = pos + header + length + 4
+        # 长度越界或缺少 IEND 都视为结构损坏，原样交回，由后续校验处理。
+        if end > total:
+            return raw
+        if chunk_type not in _PNG_DROPPABLE_CHUNKS:
+            out += raw[pos:end]
+        pos = end
+        if chunk_type == "IEND":
+            return bytes(out)
+    return raw
 
 
 def _ensure_deadline(deadline_at: datetime | None) -> None:
@@ -118,6 +158,20 @@ def classify_reference(
         return "local"
     # 歧义输入与共享管道一致：非本地文件时按裸 base64 处理。
     return "inline"
+
+
+def _trusted_local_path(text: str) -> Path:
+    """local / file: 形态的参考图转本地绝对路径；file URI 复用 file_uri_to_path。"""
+
+    if text.lower().startswith("file:"):
+        path = file_uri_to_path(text)
+        if path is None:
+            raise ReferenceResolveError("本地参考图 file URI 不是本机路径")
+    else:
+        path = Path(text)
+    if not path.is_absolute():
+        raise ReferenceResolveError("本地参考图必须是绝对路径")
+    return path
 
 
 def _detect_transcodable_mime(raw: bytes) -> str | None:
@@ -276,9 +330,18 @@ class ReferenceService:
             self._tmp_store.release(match.group(2))
 
     async def ingest_inline(
-        self, references: Sequence[str], *, requester: Mapping[str, str]
+        self,
+        references: Sequence[str],
+        *,
+        requester: Mapping[str, str],
+        trusted_local: bool = False,
     ) -> tuple[str, ...]:
         """内联形态转句柄、其余原样保留并保持顺序；失败立即抛出。
+
+        ``trusted_local`` 表示调用方已按自己的规则校验过 local / file: 形态的
+        本地路径（如 LLM 工具的 tool_path_guard）：这些文件在此读取并换成句柄，
+        只套用大小、格式与像素边界；PathPolicy 的本地根不因此放宽，默认 False
+        时本地路径仍原样保留，留给执行阶段按 PathPolicy 校验。
 
         已落盘的前几张句柄不回滚，留给 tmp store 的 TTL/容量清理。
         """
@@ -286,11 +349,33 @@ class ReferenceService:
         prepared: list[str] = []
         for item in references:
             text = str(item or "").strip()
-            if classify_reference(text) == "inline":
+            shape = classify_reference(text)
+            if shape == "inline":
                 prepared.append(await self.ingest(text, requester=requester))
+            elif trusted_local and shape in ("local", "file"):
+                raw = await asyncio.to_thread(self._read_trusted_local, text)
+                prepared.append(await self.ingest(raw, requester=requester))
             else:
                 prepared.append(text)
         return tuple(prepared)
+
+    def _read_trusted_local(self, text: str) -> bytes:
+        """读取调用方已校验过的本地文件；先 stat 判大小，读取量也以上限封顶。"""
+
+        path = _trusted_local_path(text)
+        limit = self.max_reference_bytes
+        try:
+            if path.stat().st_size > limit:
+                raise ReferenceTooLargeError(f"参考图超过 {limit} 字节上限")
+            with path.open("rb") as handle:
+                raw = handle.read(limit + 1)
+        except (OSError, ValueError) as exc:
+            logger.error("读取本地参考图失败: %s", exc)
+            raise ReferenceResolveError(f"读取本地参考图失败: {path.name}") from exc
+        if len(raw) > limit:
+            # stat 之后文件又变大：与 stat 判定同口径拒绝。
+            raise ReferenceTooLargeError(f"参考图超过 {limit} 字节上限")
+        return raw
 
     def _load_local(self, text: str) -> tuple[bytes, str]:
         try:
@@ -310,10 +395,7 @@ class ReferenceService:
         return raw, resolved.as_uri()
 
     async def _load_url(self, url: str, deadline_at: datetime | None) -> Artifact:
-        try:
-            await self.fetcher.check_url(url, deadline_at)
-        except RemoteFetchTimeoutError as exc:
-            raise ReferenceTimeoutError("参考图 URL 安全校验超时") from exc
+        self.fetcher.check_url(url)
         host = urlsplit(url).hostname or ""
         headers = (
             build_reference_image_headers(host, for_qq=True)
@@ -339,7 +421,10 @@ class ReferenceService:
                     return self._materialize(raw, source=redact_url(url))
                 try:
                     raw = await self.fetcher.fetch(
-                        url, deadline_at=deadline_at, headers=headers
+                        url,
+                        deadline_at=deadline_at,
+                        headers=headers,
+                        probe=self._probe_bytes,
                     )
                 except RemoteFetchTimeoutError as exc:
                     logger.error("参考图抓取超时: %s", redact_url(url))
@@ -347,7 +432,7 @@ class ReferenceService:
                         f"参考图抓取超时: {redact_url(url)}"
                     ) from exc
                 except PathPolicyError:
-                    logger.warning("参考图抓取目标被安全策略拒绝: %s", redact_url(url))
+                    logger.warning("参考图抓取目标被拒绝: %s", redact_url(url))
                     raise
                 except RemoteFetchError as exc:
                     logger.error("参考图抓取失败: %s", redact_url(url))
@@ -389,20 +474,41 @@ class ReferenceService:
             raise ReferenceTooLargeError(
                 f"参考图超过 {self.max_reference_bytes} 字节上限"
             )
-        mime_type = detect_reference_image_mime(raw)
-        if mime_type:
-            # 透传格式不做转码，像素校验后原样落盘。
-            self._check_pixels(raw, mime_type)
-            return raw, mime_type
-        transcode_mime = _detect_transcodable_mime(raw)
-        if not transcode_mime:
+        mime_type = self._identify(raw)
+        if mime_type is None:
             logger.warning("参考图格式无法识别（文件头不匹配）")
             raise ReferenceResolveError(
                 "无法识别参考图格式（仅支持 PNG/JPEG/WebP/HEIC/HEIF/GIF/BMP/TIFF）"
             )
+        if mime_type == "image/png":
+            # 剥离必须先于 PIL：PIL 会解析 tEXt/zTXt/iTXt 并受 MAX_TEXT_MEMORY(64MB)
+            # 约束，大文本块会在像素校验阶段就吃内存或直接 ValueError。
+            raw = strip_png_metadata(raw)
+        if mime_type in _PASSTHROUGH_MIMES:
+            # 透传格式不做转码，像素校验后原样落盘。
+            self._check_pixels(raw, mime_type)
+            return raw, mime_type
         # 像素数在解码前读取：超限的 GIF/BMP/TIFF 不进入转码。
-        self._check_pixels(raw, transcode_mime)
-        return self._transcode(raw, transcode_mime)
+        self._check_pixels(raw, mime_type)
+        return self._transcode(raw, mime_type)
+
+    @staticmethod
+    def _identify(raw: bytes) -> str | None:
+        """识别参考图 MIME：透传格式或需转码格式，无法识别返回 None。"""
+
+        return detect_reference_image_mime(raw) or _detect_transcodable_mime(raw)
+
+    def _probe_bytes(self, raw: bytes) -> None:
+        """用已下载的文件头提前判定格式与像素，不合格就不再读下去。"""
+
+        mime_type = self._identify(raw)
+        if mime_type is None:
+            raise ReferenceResolveError(
+                "无法识别参考图格式（仅支持 PNG/JPEG/WebP/HEIC/HEIF/GIF/BMP/TIFF）"
+            )
+        # 像素尽力而为：WEBP 等需完整内容才能读尺寸，读不出就交回主体再判。
+        if size := self._pixel_size(raw, mime_type):
+            self._enforce_pixels(size)
 
     def _transcode(self, raw: bytes, mime_type: str) -> tuple[bytes, str]:
         """GIF/BMP/TIFF 复用共享管道转 PNG（动图取首帧），不在本地另写转码。"""
@@ -423,7 +529,9 @@ class ReferenceService:
             raise ReferenceResolveError(f"参考图转码失败（{mime_type}）") from exc
         return base64.b64decode(encoded), out_mime
 
-    def _check_pixels(self, raw: bytes, mime_type: str) -> None:
+    def _pixel_size(self, raw: bytes, mime_type: str) -> tuple[int, int] | None:
+        """读声明尺寸；None = 字节不足或无法本地解码，需完整内容再判。"""
+
         if PILImage is None:  # pragma: no cover - Pillow 缺失时拒绝而非放行
             raise ReferenceResolveError("Pillow 不可用，无法校验参考图像素数")
         try:
@@ -433,21 +541,30 @@ class ReferenceService:
             raise ReferenceTooLargeError(
                 f"参考图像素数超过 PIL 安全上限（{mime_type}）"
             ) from exc
-        except PILImage.UnidentifiedImageError as exc:
-            if mime_type in {"image/heic", "image/heif"}:
-                # Pillow 缺 libheif 解不开 HEIC/HEIF；文件头已确认格式，
-                # 与旧管道一致透传给供应商解码，字节上限仍然生效。
-                logger.warning("参考图 %s 无法本地解码，跳过像素校验", mime_type)
-                return
-            logger.warning("参考图解码失败（%s）", mime_type)
-            raise ReferenceResolveError(f"参考图解码失败（{mime_type}）") from exc
-        except Exception as exc:
-            logger.warning("参考图解码失败（%s）: %s", mime_type, exc)
-            raise ReferenceResolveError(f"参考图解码失败（{mime_type}）") from exc
+        except Exception:
+            # 前缀不完整（WEBP 需完整文件）、HEIC 缺 libheif、或内容损坏。
+            return None
+        return width, height
+
+    def _enforce_pixels(self, size: tuple[int, int]) -> None:
+        width, height = size
         if width * height > self.max_pixels:
             raise ReferenceTooLargeError(
                 f"参考图像素数超限: {width}x{height} > {self.max_pixels}"
             )
+
+    def _check_pixels(self, raw: bytes, mime_type: str) -> None:
+        """校验完整内容的像素数。"""
+
+        size = self._pixel_size(raw, mime_type)
+        if size is None:
+            if mime_type in {"image/heic", "image/heif"}:
+                # 文件头已确认格式；Pillow 缺 libheif 解不开时按旧管道透传给
+                # 供应商解码，字节上限仍然生效。
+                logger.warning("参考图 %s 无法本地解码，跳过像素校验", mime_type)
+                return
+            raise ReferenceResolveError("参考图解码失败")
+        self._enforce_pixels(size)
 
     def _write_cache(self, raw: bytes, mime_type: str) -> Path:
         digest = hashlib.sha256(raw).hexdigest()

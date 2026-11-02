@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import json
+import os
 import shlex
 import sys
 import time
@@ -20,10 +21,40 @@ from tests.test_web_studio_service import _config, _png, _SequenceClient
 from tl import enhanced_prompts, llm_tools
 from tl.api_types import ApiRequestConfig
 from tl.background_tasks import BackgroundTaskManager
-from tl.generation_tracker import GenerationTracker, ReferenceImageUnavailableError
-from tl.llm_tools import GeminiImageGenerationTool
-from tl.provider_capabilities import select_candidates
+from tl.core.errors import QueueFullError, QuotaExceededError, ServiceClosedError
+from tl.core.stack import build_generation_stack
+from tl.core.states import JobState
+from tl.format_error import format_error_message
+from tl.generation_errors import api_failure_message
+from tl.generation_tracker import (
+    GenerationTracker,
+    ReferenceImageUnavailableError,
+    record_generation_success,
+)
+from tl.llm_tools import GeminiImageBatchTool, GeminiImageGenerationTool
+from tl.prompt_templates import builtin_template, render_template
+from tl.provider_capabilities import parse_model_selector, select_candidates
 from tl.rate_limiter import RateLimiter
+from tl.reference_image import REFERENCE_IMAGE_CACHE_DIR
+from tl.v2_admission import (
+    CompositeAdmissionLimiter,
+    LegacyFifoLimiter,
+    RateLimiterQuota,
+    StudioAdmissionLimiter,
+)
+from tl.v2_bridge import (
+    apply_result_to_config as v2_apply_result_to_config,
+)
+from tl.v2_bridge import (
+    command_request as v2_command_request,
+)
+from tl.v2_bridge import (
+    split_artifacts as v2_split_artifacts,
+)
+from tl.v2_bridge import (
+    v2_failure_message,
+)
+from tl.v2_tracking import TrackerProjection
 from tl.web_studio_service import StudioServiceError, WebStudioService
 
 
@@ -272,6 +303,7 @@ def _tool_plugin(tmp_path):
         rate_limiter=limiter,
         background_task_manager=manager,
         _check_and_consume_limit=limiter.check_and_consume,
+        _v2_service_for=lambda umo: None,
         _fetch_images_from_event=AsyncMock(return_value=([], [])),
         get_tool_timeout=lambda event: 1,
         image_generator=SimpleNamespace(get_request_stats=lambda: {}),
@@ -282,33 +314,27 @@ def _tool_plugin(tmp_path):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "failure",
-    ["api", "empty", "route", "conflict", "batch", "empty_batch", "malformed_batch"],
+    ["api", "empty", "route", "batch", "empty_batch", "malformed_batch"],
 )
 async def test_llm_invalid_requests_do_not_consume(tmp_path, failure):
     plugin = _tool_plugin(tmp_path)
-    kwargs = {"prompt": "draw"}
+    # 单图失败只走单图工具；批量失败只走独立批量工具。
+    batch_failure = failure in {"batch", "empty_batch", "malformed_batch"}
     if failure == "api":
         plugin.api_client = None
+        kwargs = {"prompt": "draw"}
     elif failure == "empty":
-        kwargs["prompt"] = " "
+        kwargs = {"prompt": " "}
     elif failure == "route":
-        kwargs["model"] = "unknown"
-    elif failure == "conflict":
-        plugin._fetch_images_from_event.return_value = (["ref.png"], [])
-        kwargs.update(
-            use_reference_images=True,
-            preserve_reference_image_size=True,
-            resolution="1K",
-        )
+        kwargs = {"prompt": "draw", "model": "unknown"}
     elif failure == "empty_batch":
-        kwargs["batch_tasks"] = []
+        kwargs = {"tasks": []}
     elif failure == "malformed_batch":
-        kwargs["batch_tasks"] = "bad"
+        kwargs = {"tasks": "bad"}
     else:
-        kwargs["batch_tasks"] = [{"name": "a", "prompt": "draw", "image_count": 2}]
-    result = await GeminiImageGenerationTool(plugin=plugin).call(
-        _context(_Event()), **kwargs
-    )
+        kwargs = {"tasks": [{"prompt": "draw", "image_count": 2}]}
+    tool_cls = GeminiImageBatchTool if batch_failure else GeminiImageGenerationTool
+    result = await tool_cls(plugin=plugin).call(_context(_Event()), **kwargs)
     assert "❌" in result
     assert plugin.rate_limiter.calls == []
     await plugin.background_task_manager.close()
@@ -331,8 +357,8 @@ async def test_llm_batch_charges_prepared_task_count_once(
         {"name": name, "prompt": name, "image_count": count, "provider": "google"}
         for name, count in (("a", 3), ("b", 2))
     ]
-    result = await GeminiImageGenerationTool(plugin=plugin).call(
-        _context(_Event()), batch_tasks=items
+    result = await GeminiImageBatchTool(plugin=plugin).call(
+        _context(_Event()), tasks=items
     )
     if allowed:
         task_id = json.loads(result)["task_id"]
@@ -423,11 +449,20 @@ def _command_class():
         "_check_command_generation_limit",
         "_check_and_consume_limit",
         "_quick_generate_image",
+        "_ensure_v2_service",
+        "_v2_service_for",
         "generate_image",
         "modify_image",
         "change_style",
         "_handle_quick_mode",
+        "_quick_template",
+        "_quick_dimensions",
         "quick_avatar",
+        "quick_poster",
+        "quick_wallpaper",
+        "quick_card",
+        "quick_mobile",
+        "quick_figure",
         "quick_sticker",
         "_parse_generation_route",
         "_extract_prompt_from_message",
@@ -456,15 +491,37 @@ def _command_class():
     ]
     namespace = {
         **vars(enhanced_prompts),
+        "render_template": render_template,
+        "builtin_template": builtin_template,
         "asyncio": asyncio,
         "shlex": shlex,
         "time": time,
         "logger": logger,
         "ApiRequestConfig": ApiRequestConfig,
+        "QuotaExceededError": QuotaExceededError,
+        "QueueFullError": QueueFullError,
+        "ServiceClosedError": ServiceClosedError,
+        "format_error_message": format_error_message,
         "select_candidates": select_candidates,
+        "parse_model_selector": parse_model_selector,
         "requester_from_event": lambda event: {},
-        "format_error_message": str,
         "_build_no_ref_msg": lambda mode, suggestion: f"{mode}: {suggestion}",
+        "JobState": JobState,
+        "record_generation_success": staticmethod(record_generation_success),
+        "v2_failure_message": v2_failure_message,
+        "api_failure_message": api_failure_message,
+        "v2_command_request": v2_command_request,
+        "v2_split_artifacts": v2_split_artifacts,
+        "v2_apply_result_to_config": v2_apply_result_to_config,
+        # _ensure_v2_service 装配 v2 栈所需。
+        "os": os,
+        "build_generation_stack": build_generation_stack,
+        "REFERENCE_IMAGE_CACHE_DIR": REFERENCE_IMAGE_CACHE_DIR,
+        "RateLimiterQuota": RateLimiterQuota,
+        "LegacyFifoLimiter": LegacyFifoLimiter,
+        "CompositeAdmissionLimiter": CompositeAdmissionLimiter,
+        "StudioAdmissionLimiter": StudioAdmissionLimiter,
+        "TrackerProjection": TrackerProjection,
     }
     exec(
         compile(ast.fix_missing_locations(source), str(source_path), "exec"), namespace
@@ -611,6 +668,7 @@ async def test_plugin_closes_limiter_after_request_producers(command_plugin):
     plugin.background_task_manager = module("background")
     plugin.api_client = module("api")
     plugin.rate_limiter = module("limiter")
+    plugin._v2_service = module("v2")
     await plugin.terminate()
     assert plugin._web_closed
     assert closed[-1] == "limiter"
@@ -620,10 +678,15 @@ async def test_plugin_closes_limiter_after_request_producers(command_plugin):
         "studio",
         "tracker",
         "background",
+        "v2",
         "api",
         "limiter",
     }
-    assert closed.index("background") < closed.index("tracker")
+    # v2 栈在后台任务之后、生成历史之前关闭（投影取消 Job 时 tracker 仍开放），
+    # 并早于 legacy client。
+    assert closed.index("background") < closed.index("v2")
+    assert closed.index("v2") < closed.index("tracker")
+    assert closed.index("v2") < closed.index("api")
 
 
 @pytest.mark.asyncio
@@ -662,7 +725,7 @@ async def test_studio_llm_and_command_share_real_global_limiter(
         llm_event = _Event()
         llm_event.unified_msg_origin = "platform:FriendMessage:user-1"
         result = await GeminiImageGenerationTool(plugin=plugin).call(
-            _context(llm_event), prompt="draw", for_forum=True
+            _context(llm_event), prompt="draw", deliver="return"
         )
         assert "provider failed" in result
         with pytest.raises(StudioServiceError) as caught:

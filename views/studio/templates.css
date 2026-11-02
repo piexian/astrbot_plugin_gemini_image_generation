@@ -1,0 +1,135 @@
+/* 提示词广场：卡片网格与编辑表单，沿用 Studio 主题令牌。 */
+.templates-view {
+  min-width: 0;
+  color: var(--ink);
+}
+.templates-view .tpl-heading {
+  margin-bottom: 12px;
+}
+.templates-view .tpl-note {
+  color: var(--ink-muted);
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+.templates-view .tpl-status {
+  padding: 10px 12px;
+  margin: 0 0 12px;
+  border: 1px solid var(--control-border);
+  background: var(--surface-alt);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.templates-view .tpl-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.templates-view .tpl-search {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+.templates-view .tpl-toolbar > .comic-select {
+  flex: 0 1 180px;
+  width: auto;
+}
+.templates-view .tpl-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}
+.templates-view .tpl-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+.templates-view .tpl-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  min-width: 0;
+}
+.templates-view .tpl-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.templates-view .tpl-card-title {
+  font-size: 15px;
+  font-weight: 800;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.templates-view .tpl-card-desc {
+  font-size: 12px;
+  color: var(--ink-muted);
+  line-height: 1.6;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.templates-view .tpl-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.templates-view .tpl-card-meta {
+  font-size: 12px;
+  color: var(--ink-muted);
+  margin: 0;
+}
+.templates-view .tpl-card-ai {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.templates-view .tpl-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: auto;
+}
+.templates-view .tpl-empty {
+  grid-column: 1 / -1;
+  padding: 24px;
+  text-align: center;
+  color: var(--ink-muted);
+  font-size: 13px;
+}
+.templates-view .tpl-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+  min-width: 0;
+}
+.templates-view .tpl-field-label {
+  font-size: 12px;
+  font-weight: 700;
+}
+.templates-view .tpl-package-input {
+  width: 100%;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.templates-view .tpl-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.templates-view .tpl-hub-state {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}

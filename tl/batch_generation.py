@@ -81,6 +81,7 @@ async def _generate_batch_item(
                 quality=item.get("quality"),
                 image_count=remaining,
                 suppress_resolution=bool(item.get("suppress_resolution", False)),
+                template_id=item.get("template_id"),
             )
             last_stats = plugin.image_generator.get_request_stats()
             if not success or not isinstance(result_data, tuple):
@@ -132,12 +133,7 @@ def _public_item(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def _send_batch_results(
-    plugin: Any,
-    event: Any,
-    task_id: str,
-    results: list[dict[str, Any]],
-) -> bool:
+def _batch_summary(task_id: str, results: list[dict[str, Any]]) -> str:
     summary_lines = [f"批量生图任务 {task_id} 已完成："]
     for result in results:
         if result["success"]:
@@ -150,7 +146,16 @@ async def _send_batch_results(
                 f"{result['generated_images']}/{result['requested_images']} 张，"
                 f"{result.get('error') or '未知错误'}"
             )
-    summary = "\n".join(summary_lines)
+    return "\n".join(summary_lines)
+
+
+async def _send_batch_results(
+    plugin: Any,
+    event: Any,
+    task_id: str,
+    results: list[dict[str, Any]],
+) -> bool:
+    summary = _batch_summary(task_id, results)
     if not any(result["image_urls"] or result["image_paths"] for result in results):
         return await report_background_failure(
             plugin, event, summary, scene=f"批量任务/{task_id}", task_id=task_id
@@ -172,7 +177,7 @@ async def run_batch_job(
     *,
     parent_job_id: str | None = None,
 ) -> None:
-    """Generate named items with flat configured concurrency and one final delivery."""
+    """旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
     manager = plugin.background_task_manager
     semaphore = asyncio.Semaphore(max(int(plugin.cfg.batch_concurrency), 1))
     progress_lock = asyncio.Lock()

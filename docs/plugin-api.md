@@ -181,6 +181,7 @@ class ImageConsumer:
 
 提交和服务错误为 `RuntimeError` 的子类，提供稳定 `code`，如 `invalid_request`、`not_ready`、`not_configured`、`queue_full`、`rate_limited`、`service_closed`、`task_not_found`。版本不匹配为 `unsupported_version`；访问其他插件任务会抛出 `PermissionError`。生成开始后的失败写入任务 `status/error`，不要求解析用户提示文本来判断成功。
 
+开启 `scheduler_v2` 且调用命中灰度范围时，生成由 v2 调度器执行；`umo` 为空时仅在灰度名单为空时启用。HTTP(S) 参考图在执行时经过 SSRF 策略校验，私网与 loopback 地址会被拒绝；本地文件建议传存在的绝对路径或 `file://` URI，提交前转为临时句柄。生成队列满时抛出带 `code="queue_full"` 的服务错误，任务记录、回调、等待与取消语义不变。
 ## WebUI 来源记录
 
 任务列表、历史画廊及图片详情显示“插件调用 · 插件名称”和稳定插件标识。可按“插件调用”来源、插件标识筛选，或搜索插件名称／标识。仅显示调用方提供的会话和使用者信息；无需填写群号或用户才能记录来源。

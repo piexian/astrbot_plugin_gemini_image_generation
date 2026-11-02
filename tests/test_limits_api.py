@@ -51,8 +51,8 @@ async def test_limits_auth_and_envelope(api, monkeypatch):
     response = await api.limits()
     assert json.loads(response.body) == {"status": "ok", "data": {"revision": "v1"}}
     monkeypatch.setattr(module.request, "username", "")
-    assert (await api.limits()).status_code == 401
-    assert (await api.sessions()).status_code == 401
+    assert (await api.limits()).status_code == 403
+    assert (await api.sessions()).status_code == 403
     api.limits_service.load_limits.assert_awaited_once()
 
 

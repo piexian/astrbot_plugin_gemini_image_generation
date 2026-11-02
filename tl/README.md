@@ -32,8 +32,8 @@ main.py
 | `get_api_client()` / `clear_api_client()` | `tl_api.py` | API 客户端单例管理 |
 | `ImageGenerator.generate_image_core()` | `image_generator.py` | 指令与 LLM Tool 共用的核心生图逻辑 |
 | `GeminiImageGenerationTool.call()` | `llm_tools.py` | AstrBot FunctionTool 调用入口 |
-| `ProviderModelQueryTool.call()` | `llm_query_tools.py` | 查询已配置供应商、模型、别名、生成模式和可选参数 |
-| `BackgroundTaskStatusTool.call()` | `llm_query_tools.py` | 按会话查询后台任务状态 |
+| `GeminiImageLookupTool.call()` | `llm_query_tools.py` | 按 kind 查询模型、模板、生成记录和后台任务 |
+| `GeminiImageShareTool.call()` | `llm_query_tools.py` | 由请求者本人共享或取消共享自己的生成记录 |
 | `BackgroundTaskManager` | `background_tasks.py` | 持久化、隔离和清理后台任务记录 |
 | `run_batch_job()` | `batch_generation.py` | 按配置并发执行命名批量任务并顺序发送结果 |
 | `execute_image_generation_tool()` | `llm_tools.py` | 兼容旧调用方式的工具入口 |
@@ -350,19 +350,21 @@ StepFun provider。
 
 | 接口 | 说明 |
 |------|------|
-| `GeminiImageGenerationTool` | AstrBot FunctionTool 实现 |
+| `GeminiImageGenerationTool` | AstrBot FunctionTool 实现（单图） |
+| `GeminiImageBatchTool` | AstrBot FunctionTool 实现（批量，参数 `tasks`） |
 | `GeminiImageGenerationTool.refresh_from_plugin()` | 根据当前插件配置刷新工具描述和参数 schema |
 | `GeminiImageGenerationTool.call()` | LLM Tool 调用入口 |
 | `execute_image_generation_tool()` | 兼容旧路径的执行入口 |
-| `_build_call_tool_result()` | 将图片结果封装为 `CallToolResult`，包含 `ImageContent` / `TextContent` |
+| `_build_call_tool_result()` | 将图片结果封装为仅文本的 `CallToolResult`，只列本地路径或 URL，不内联图片数据 |
 | `_await_generation_task_and_send()` | LLM 后台生成完成后反向激活主 Agent，提供图片 URL/路径并要求调用主动发送工具 |
 
 核心工具参数包括：
 
 ```text
-prompt + provider + model + negative_prompt + watermark + quality
-+ use_reference_images + include_user_avatar + reference_image_paths
-+ preserve_reference_image_size + resolution + aspect_ratio + batch_tasks + for_forum
+单图：prompt + template + references + model + resolution + aspect_ratio + options + deliver
+
+批量（gemini_image_batch）：tasks[].name/prompt/image_count
++ 顶层默认值（model、template、references、resolution、aspect_ratio、options）
 ```
 
 ### `provider_capabilities.py` / `llm_query_tools.py`
@@ -379,18 +381,21 @@ prompt + provider + model + negative_prompt + watermark + quality
 
 ### WebUI 创作台（`generation_tracker.py` / `web_studio_service.py` / `web_api.py`）
 
-- `GenerationTracker`：全来源（指令/LLM 工具/LLM 批量/工作台）生成记录，创建即落盘 `generation_history.json`，SSE 有界队列扇出（快照+增量+resync）；`begin/update/complete/fail` + `import_legacy`（启动迁入存量图）+ `tracking_context`（ContextVar 传播批量父子关系）。记录含 `source_urls`：持久 http(s) 源链接经 `is_temp_cache_url` 过滤、去重、上限 20 条/2048 字符，由 `complete(source_urls=…)`/`update` 写入，旧记录缺字段仍可加载。
-- `WebStudioService`：工作台生成编排（全局并发准入、循环补足目标张数、partial_success）、gallery 归档（本地复制/远程流式下载、容量整组淘汰）、上传校验与运行租约（流式截断+魔数+像素+配额，父子任务引用计数保护过期清理和容量淘汰）、`capabilities()` 扁平候选列表（白名单字段）。工作台任务归档成功或失败都记录源 URL（失败时经 `update` 补录，便于手动取回）；批量父任务聚合子任务 `source_urls`。
-- 指令/LLM 路径的归档只是历史副本（图片按原始来源发送）：`ImageGenerator._complete_tracking` 与 `_quick_generate_image` 在归档异常或不完整时记 `partial_success` 并用 `update(error=…)` 注明原因，不再 fail，同时把交付源里的 http(s) URL 写入 `source_urls`；仅工作台路径（投递依赖画廊）归档失败才 fail。归档远程下载超时 30s（与发送侧网络条件一致）。
-- `WebStudioAPI`：薄 HTTP 适配层，路由前缀 `/astrbot_plugin_gemini_image_generation/webui/`，标准 `{status/data}` 信封；图片经 `image_b64` 端点走 bridge 传输（插件页 iframe 为不透明源沙箱，`<img>` 直连不带 Cookie 必 401）。
+- `GenerationTracker`：全来源（指令/LLM 工具/LLM 批量/工作台）生成记录，创建即落盘 `generation_history.json`，SSE 有界队列扇出（快照+增量+resync）；`begin/update/complete/fail` + `import_legacy`（启动迁入存量图）+ `tracking_context`（ContextVar 传播批量父子关系）。记录含 `source_urls`：持久 http(s) 源链接经 `is_temp_cache_url` 过滤、去重、上限 20 条/2048 字符；写入及 API 读取均去掉 query、fragment 与 userinfo，旧记录只在响应中脱敏、不回写磁盘。
+- `WebStudioService`：工作台生成编排（全局并发准入、循环补足目标张数、partial_success）、gallery 归档（本地复制/远程流式下载、容量整组淘汰）、上传校验与运行租约（流式截断+魔数+像素+配额，父子任务引用计数保护过期清理和容量淘汰）、`capabilities()` 扁平候选列表（白名单字段）。工作台任务归档成功或失败都记录脱敏源 URL（仅供追溯，签名参数不再保留）；批量父任务聚合子任务 `source_urls`。
+- 指令/LLM 路径的归档只是历史副本（图片按原始来源发送）：`ImageGenerator._complete_tracking` 与 `_quick_generate_image` 在归档异常或不完整时记 `partial_success` 并用 `update(error=…)` 注明原因，不再 fail，同时把交付源里的 http(s) URL 写入 `source_urls`；仅工作台路径（投递依赖画廊）归档失败才 fail。归档远程下载超时 30s（与发送侧网络条件一致），逐跳执行出站检查，最多手动重定向 3 次。
+- `WebStudioAPI`：薄 HTTP 适配层，路由前缀 `/astrbot_plugin_gemini_image_generation/webui/`，标准 `{status/data}` 信封；注册时统一检查宿主身份、面板/API Key 授权与 POST CSRF 头；图片经 `image_b64` 端点走 bridge 传输（插件页 iframe 为不透明源沙箱，`<img>` 直连不带 Cookie 必 401）。
 - JSON 请求体超限由端点经 `_service_error()` 保留 413（生成、偏好保存、历史删除）；JSON 解析或结构校验失败仍为 400。
 - 工作台参数弹窗使用独立 `GenerationSettingsEditor` 草稿，确认后才替换已应用参数并记忆；关闭、取消、模型切换或销毁均丢弃草稿。确认态编辑器离屏保存，不随长表单撑开侧栏；旧 `expanded` 偏好不再控制界面。
 - `ProviderConfigService`（`studio_providers.py`）：`GET/POST webui/providers` 只读写供应商配置，schema 驱动表单与按条目身份保留密钥，和限流页共用保存锁；不把缺省值补写到原始条目。
-- 配置响应使用 `Cache-Control: no-store`，仅该已鉴权接口的 `values.api_keys` 回显 Key；兼容旧密钥操作，新增 `append` 与直接数组编辑，合并后检查上限并稳定去重。
+- 配置响应使用 `Cache-Control: no-store`，`values` 不返回 Key 原文，`secrets.api_keys` 仅提供数量与末 4 位掩码预览；修改统一走 keep/replace/append/clear，后端仍兼容旧数组提交并稳定去重。
 - `VisionProviderDirectory`（`studio_vision_providers.py`）只投影本体 LLM 配置的 ID/模型/来源/加载状态，`GET webui/vision-providers` 支持独立刷新，不返回本体凭据。
-- `ModelCatalogService`（`model_catalog.py`）由 `ProviderSpec.model_catalog_kind` 声明协议，独立会话与任务负责限时、限流、分页、响应边界及卸载取消；`POST webui/providers/models` 使用连接草稿，视觉查询只借用本体实例。
+- `ModelCatalogService`（`model_catalog.py`）由 `ProviderSpec.model_catalog_kind` 声明协议，独立会话与任务负责限时、限流、分页、响应边界及卸载取消；`POST webui/providers/models` 使用连接草稿并在发请求前执行共享出站检查，视觉查询只借用本体实例。
 - 本体 bridge 错误只传字符串；模型查询的目标确认以成功信封中的 `confirmation_required`/`target` 传递，未确认不发请求。输入的重复 blur/change 不重建目录按钮，避免首次点击失效。
 - `ProviderRuntime`（`provider_runtime.py`）：命令、LLM、Studio 与 API 生成的同步准入门，兼顾已挂入但尚未执行的后台任务；卸载先封门并等待配置事务。
+- `StudioTemplateService`（`studio_templates.py`）：提示词广场的模板增删改、恢复内置默认、AI 可用开关与 JSON 包导入导出，以及在线检索、同步、导入为本地副本、上传（先预览后发送）与密钥操作；预览图由画廊图复制进 `template_assets/`，不参与画廊容量清理，删除模板时一并清理。
+- `HubTemplateSource`（`template_hub.py`）：在线模板源客户端，只实现 `TemplateSource` 协议与目录快照下载；URL 拼接强制 https 并丢弃空查询值，请求经 `check_outbound_url`，错误按 429/401/403/5xx/其他 4xx 分别映射，密钥只进 `Authorization` 头。
+- `TemplateHubCache`（`template_cache.py`）：目录快照本地缓存，按 ETag 哈希增量同步（首次直连下载、以响应自带 ETag 为准）、原子写 `template_hub_cache.json`、坏记录逐条跳过；本地加权检索（名称/标签/说明/正文 = 3/2/1.5/1，中文子串匹配），解析 `hub:<id>`。
 - `ProviderApplication`（`provider_application.py`）：空闲窗口预构建配置和工具能力，关闭闲置会话后保存、应用或回滚客户端及模块引用，保留共享 `cfg` 身份。
 - `KeyManager.clone_for_config()`：先严格恢复并持久化用量检查点，再重建候选索引；`api_key_usage.__shared_keys_v1` 按供应商类型、Key 保存计数，兼容原候选桶，排序和重启不会重置用量。
 - `pages/studio/provider-config.js/css`：独立、懒加载的二级 Tab 配置视图；表格与弹窗分离，密钥草稿只留内存，Pointer Events 手柄提供鼠标／触摸排序及键盘替代。

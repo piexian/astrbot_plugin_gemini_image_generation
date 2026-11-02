@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title data-i18n="Gemini 图像生成 Studio">Gemini 图像生成 Studio</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/provider-config.css">
+  <link rel="stylesheet" href="/templates.css">
+</head>
+<body class="studio-body">
+  <div class="studio-shell">
+    <!-- 顶栏：标题与全局连接状态 -->
+    <header class="studio-header">
+      <div class="header-brand">
+        <span class="brand-badge">STUDIO</span>
+        <div>
+          <h1 class="brand-title" data-i18n="图像生成创作台">图像生成创作台</h1>
+          <p class="brand-desc" data-i18n="写下灵感，让画面发生。">写下灵感，让画面发生。</p>
+        </div>
+      </div>
+      <div class="header-status">
+        <div id="sse-indicator" class="status-pill status-pill--idle" role="status" aria-live="polite">
+          <span class="status-dot"></span>
+          <span class="status-text" id="sse-indicator-text" data-i18n="已就绪">已就绪</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- 导航切换：极简漫画风格 Tab 条 -->
+    <nav class="studio-nav" role="tablist" aria-label="页面导航" data-i18n-aria-label="页面导航">
+      <button type="button" class="tab-btn tab-btn--active" id="tab-btn-workbench"
+              role="tab" aria-selected="true" aria-controls="panel-workbench" tabindex="0">
+        <span class="tab-icon" data-icon="brush"></span>
+        <span class="tab-label" data-i18n="工作台">工作台</span>
+      </button>
+      <button type="button" class="tab-btn" id="tab-btn-progress"
+              role="tab" aria-selected="false" aria-controls="panel-progress" tabindex="-1">
+        <span class="tab-icon" data-icon="clock"></span>
+        <span class="tab-label" data-i18n="任务进度">任务进度</span>
+        <span class="tab-badge" id="active-jobs-count" style="display: none;">0</span>
+      </button>
+      <button type="button" class="tab-btn" id="tab-btn-gallery"
+              role="tab" aria-selected="false" aria-controls="panel-gallery" tabindex="-1">
+        <span class="tab-icon" data-icon="grid"></span>
+        <span class="tab-label" data-i18n="历史画廊">历史画廊</span>
+      </button>
+      <button type="button" class="tab-btn" id="tab-btn-limits"
+              role="tab" aria-selected="false" aria-controls="panel-limits" tabindex="-1">
+        <span class="tab-icon" data-icon="sliders"></span>
+        <span class="tab-label" data-i18n="限流控制">限流控制</span>
+      </button>
+      <button type="button" class="tab-btn" id="tab-btn-providers"
+              role="tab" aria-selected="false" aria-controls="panel-providers" tabindex="-1">
+        <span class="tab-icon" data-icon="sliders"></span>
+        <span class="tab-label" data-i18n="供应商配置">供应商配置</span>
+      </button>
+      <button type="button" class="tab-btn" id="tab-btn-templates"
+              role="tab" aria-selected="false" aria-controls="panel-templates" tabindex="-1">
+        <span class="tab-icon" data-icon="brush"></span>
+        <span class="tab-label" data-i18n="提示词广场">提示词广场</span>
+      </button>
+    </nav>
+
+
+    </div>
+
+    <!-- 主视图容器 -->
+    <main class="studio-main">
+      <!-- 1. 工作台面板 -->
+      <section id="panel-workbench" class="studio-panel studio-panel--active"
+               role="tabpanel" aria-labelledby="tab-btn-workbench" aria-hidden="false">
+        <!-- 创作台视图由 Vue 挂载渲染（src/workbench/WorkbenchView.vue） -->
+      </section>
+
+      <!-- 2. 任务进度面板 -->
+      <section id="panel-progress" class="studio-panel"
+               role="tabpanel" aria-labelledby="tab-btn-progress" aria-hidden="true" hidden>
+        <!-- 任务进度视图由 Vue 挂载渲染（src/progress/ProgressView.vue） -->
+      </section>
+
+      <!-- 3. 历史画廊面板 -->
+      <section id="panel-gallery" class="studio-panel"
+               role="tabpanel" aria-labelledby="tab-btn-gallery" aria-hidden="true" hidden>
+        <!-- 画廊视图由 Vue 挂载渲染（src/gallery/GalleryView.vue） -->
+      </section>
+      <!-- 4. 限流控制：首次打开时独立加载，不影响创作与 SSE -->
+      <section id="panel-limits" class="studio-panel"
+               role="tabpanel" aria-labelledby="tab-btn-limits" aria-hidden="true" hidden>
+        <!-- 限流视图由 Vue 挂载渲染（src/limits/LimitsView.vue） -->
+      </section>
+      <section id="panel-providers" class="studio-panel"
+               role="tabpanel" aria-labelledby="tab-btn-providers" aria-hidden="true" hidden>
+        <div id="provider-config-root"></div>
+      </section>
+      <section id="panel-templates" class="studio-panel"
+               role="tabpanel" aria-labelledby="tab-btn-templates" aria-hidden="true" hidden>
+        <div id="templates-root" class="templates-view"></div>
+      </section>
+    </main>
+
+    <!-- 全局自绘模态层 (Modal) -->
+    <div id="app-modal-backdrop" class="comic-modal-backdrop" style="display: none;" aria-hidden="true">
+      <div class="comic-modal-window" role="dialog" aria-modal="true" aria-labelledby="modal-title" tabindex="-1">
+        <div class="modal-header">
+          <h3 id="modal-title" class="modal-title" data-i18n="确认操作">确认操作</h3>
+          <button type="button" id="modal-close-btn" class="modal-close-btn" aria-label="关闭" data-i18n-aria-label="关闭">&times;</button>
+        </div>
+        <div id="modal-body" class="modal-body"></div>
+        <div class="modal-footer" id="modal-footer"></div>
+      </div>
+    </div>
+
+    <!-- 全局全屏灯箱 (Lightbox) -->
+    <div id="app-lightbox" class="comic-lightbox" style="display: none;" role="dialog" aria-modal="true" aria-label="图片大图查看" data-i18n-aria-label="图片大图查看" aria-hidden="true">
+      <div class="lightbox-overlay" id="lightbox-backdrop"></div>
+      <div class="lightbox-container">
+        <button type="button" class="lightbox-close-btn" id="lightbox-close-btn" aria-label="关闭灯箱" data-i18n-aria-label="关闭灯箱">&times;</button>
+        <button type="button" class="lightbox-nav-btn lightbox-nav-btn--prev" id="lightbox-prev-btn" aria-label="上一张" data-i18n-aria-label="上一张">&lt;</button>
+        <button type="button" class="lightbox-nav-btn lightbox-nav-btn--next" id="lightbox-next-btn" aria-label="下一张" data-i18n-aria-label="下一张">&gt;</button>
+        <div class="lightbox-img-wrap">
+          <img id="lightbox-img" src="" alt="大图预览" data-i18n-alt="大图预览">
+        </div>
+        <div class="lightbox-meta-bar" id="lightbox-meta-bar">
+          <p id="lightbox-prompt" class="lightbox-prompt-text"></p>
+          <div class="lightbox-info-tags" id="lightbox-tags"></div>
+          <div class="lightbox-actions">
+            <p id="lightbox-preview-notice" class="lightbox-preview-notice" role="status" hidden data-i18n="当前为压缩预览，原图超过显示限制，请下载查看。">当前为压缩预览，原图超过显示限制，请下载查看。</p>
+            <button type="button" id="lightbox-download-btn" class="comic-btn comic-btn--sm comic-btn--outline" data-i18n="下载原图">下载原图</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 全局 Toast 提示容器 -->
+    <div id="toast-container" class="comic-toast-container" aria-live="assertive"></div>
+  </div>
+
+  <script src="/api/plugin/page/bridge-sdk.js"></script>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

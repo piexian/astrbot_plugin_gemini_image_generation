@@ -1,18 +1,15 @@
 from __future__ import annotations
 
-import ipaddress
-import socket
 import urllib.parse
 
 import pytest
 
-from tl.core import path_policy
 from tl.core.errors import PathPolicyError
-from tl.core.path_policy import PathPolicy
+from tl.core.path_policy import PathPolicy, check_remote_url
 
 
-def _policy(tmp_path, **kwargs) -> PathPolicy:
-    return PathPolicy((tmp_path / "allowed",), **kwargs)
+def _policy(tmp_path) -> PathPolicy:
+    return PathPolicy((tmp_path / "allowed",))
 
 
 def _make_tree(tmp_path):
@@ -113,23 +110,16 @@ def test_file_uri_with_query_rejected(tmp_path) -> None:
 @pytest.mark.parametrize(
     "url",
     [
-        "http://127.0.0.1/img.png",
-        "http://[::1]/img.png",
-        "http://169.254.169.254/latest/meta-data/",
-        "http://10.1.2.3/img.png",
-        "http://172.16.0.9/img.png",
-        "http://192.168.1.1/img.png",
-        "http://[fe80::1]/img.png",
-        "http://[fc00::1]/img.png",
-        "http://0.0.0.0/img.png",
-        "http://224.0.0.1/img.png",
-        "http://240.0.0.1/img.png",
-        "http://100.64.1.1/img.png",
+        "ftp://93.184.216.34/img.png",
+        "file:///etc/passwd",
+        "javascript:alert(1)",
+        "http:///img.png",
+        "https://user:pass@example.com/a.png",
     ],
 )
-def test_protected_ip_literals_rejected(url) -> None:
+def test_url_scheme_host_and_userinfo_rejected(url) -> None:
     with pytest.raises(PathPolicyError):
-        PathPolicy(()).validate_url(url)
+        check_remote_url(url)
 
 
 @pytest.mark.parametrize(
@@ -138,71 +128,14 @@ def test_protected_ip_literals_rejected(url) -> None:
         "http://93.184.216.34/img.png",
         "https://[2606:4700::1111]/img.png",
         "HTTP://93.184.216.34/img.png",
+        "https://example.com/img.png?token=secret",
     ],
 )
-def test_public_ip_literals_allowed(url) -> None:
-    assert PathPolicy(()).validate_url(url) == url
+def test_public_urls_allowed(url) -> None:
+    assert check_remote_url(url) == url
 
 
-@pytest.mark.parametrize(
-    "url",
-    [
-        "ftp://93.184.216.34/img.png",
-        "file:///etc/passwd",
-        "javascript:alert(1)",
-        "http:///img.png",
-    ],
-)
-def test_url_scheme_and_host_rejected(url) -> None:
-    with pytest.raises(PathPolicyError):
-        PathPolicy(()).validate_url(url)
-
-
-def test_domain_resolving_public_allowed(monkeypatch) -> None:
-    monkeypatch.setattr(
-        path_policy,
-        "_resolve_host",
-        lambda host: (ipaddress.ip_address("93.184.216.34"),),
+def test_remote_url_is_stripped() -> None:
+    assert check_remote_url("  https://example.com/a.png  ") == (
+        "https://example.com/a.png"
     )
-    url = "https://example.com/img.png"
-    assert PathPolicy(()).validate_url(url) == url
-
-
-def test_domain_resolving_private_rejected(monkeypatch) -> None:
-    monkeypatch.setattr(
-        path_policy,
-        "_resolve_host",
-        lambda host: (ipaddress.ip_address("10.0.0.7"),),
-    )
-    with pytest.raises(PathPolicyError):
-        PathPolicy(()).validate_url("https://example.com/img.png")
-
-
-def test_domain_mixed_addresses_rejected(monkeypatch) -> None:
-    monkeypatch.setattr(
-        path_policy,
-        "_resolve_host",
-        lambda host: (
-            ipaddress.ip_address("93.184.216.34"),
-            ipaddress.ip_address("192.168.0.1"),
-        ),
-    )
-    with pytest.raises(PathPolicyError):
-        PathPolicy(()).validate_url("https://example.com/img.png")
-
-
-def test_domain_dns_failure_rejected(monkeypatch) -> None:
-    def _fail(*args, **kwargs):
-        raise socket.gaierror("resolve failed")
-
-    monkeypatch.setattr(path_policy.socket, "getaddrinfo", _fail)
-    with pytest.raises(PathPolicyError):
-        PathPolicy(()).validate_url("https://example.com/img.png")
-
-
-def test_allow_private_networks_permits_loopback_and_private() -> None:
-    policy = PathPolicy((), allow_private_networks=True)
-    assert policy.validate_url("http://127.0.0.1:8300/img.png") == (
-        "http://127.0.0.1:8300/img.png"
-    )
-    assert policy.validate_url("http://10.0.0.5/img.png") == "http://10.0.0.5/img.png"

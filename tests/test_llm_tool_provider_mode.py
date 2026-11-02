@@ -50,6 +50,7 @@ sys.modules["astrbot.core.agent.tool"] = tool_module
 sys.modules["astrbot.core.astr_agent_context"] = context_module
 
 from tl.llm_tools import (  # noqa: E402
+    _build_batch_tool_parameters,
     _build_tool_parameters,
     _first_provider_candidate,
     _is_custom_size_tool_mode,
@@ -113,5 +114,38 @@ def test_explicit_unmatched_route_does_not_fallback_to_first_candidate() -> None
     assert _resolve_tool_size_params(
         plugin,
         provider="missing",
-        size="1024x1024",
     ) == (None, None, None)
+
+
+def test_tool_schema_omits_legacy_size() -> None:
+    plugin = _plugin_with_candidates()
+    params = _build_batch_tool_parameters(plugin)
+    batch_properties = params["properties"]["tasks"]["items"]["properties"]
+    description = (
+        params["properties"]["resolution"]["description"]
+        + params["properties"]["aspect_ratio"]["description"]
+    )
+
+    assert "size" not in params["properties"]
+    assert "template" in params["properties"]
+    assert "references" in params["properties"]
+    assert "size" not in batch_properties
+    assert "size" not in description
+    assert "分辨率" in description
+    assert "长宽比" in description
+
+
+def test_custom_size_mode_keeps_resolution_and_configured_default() -> None:
+    plugin = _plugin_with_candidates(
+        _candidate(
+            "openai_images",
+            {"size_mode": "custom", "custom_size": "1536x1024"},
+        ),
+    )
+
+    assert _resolve_tool_size_params(plugin) == ("1536x1024", None, None)
+    assert _resolve_tool_size_params(plugin, resolution="2K", aspect_ratio="16:9") == (
+        "2K",
+        "16:9",
+        None,
+    )

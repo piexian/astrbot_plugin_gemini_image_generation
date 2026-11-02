@@ -22,6 +22,7 @@ from typing import Any
 from astrbot.api import logger
 
 from .api.reference_pipeline import select_persistent_source_urls
+from .core.errors import redact_url
 from .studio_parameters import clean_history_settings
 
 TERMINAL_STATUSES = {
@@ -43,6 +44,7 @@ _PARAM_KEYS = (
     "seed",
     "negative_prompt",
     "generation_settings",
+    "template_id",
 )
 
 
@@ -170,12 +172,147 @@ def requester_from_event(event: Any) -> dict[str, str]:
     if chat_type == "unknown" and group_id:
         chat_type = "group"
 
-    return {
+    try:
+        umo = getattr(event, "unified_msg_origin", None)
+    except Exception:
+        umo = None
+    payload = {
         "user_id": _bounded_text(user_id, 128),
         "user_name": _bounded_text(user_name, 200),
         "group_id": _bounded_text(group_id, 128),
         "chat_type": chat_type,
     }
+    umo_text = _bounded_text(umo, 1024)
+    if umo_text:
+        payload["umo"] = umo_text
+    return payload
+
+
+def without_session_origin(value: Any) -> Any:
+    """去掉对外结果里的会话标识。内部记录仍保留 ``umo``。"""
+
+    if isinstance(value, dict):
+        return {
+            key: without_session_origin(item)
+            for key, item in value.items()
+            if key != "umo"
+        }
+    if isinstance(value, list):
+        return [without_session_origin(item) for item in value]
+    return value
+
+
+async def record_generation_success(
+    tracker: Any,
+    job_id: str | None,
+    *,
+    image_urls: list[str] | None,
+    image_paths: list[str] | None,
+    text_content: str | None,
+    stats: dict[str, Any],
+    archive_images_fn: Any = None,
+    candidate_id: Any = None,
+    completion_policy: str | None = None,
+    requested_images: int | None = None,
+    generation_error: str | None = None,
+) -> None:
+    """入口共享的记录完成路径：归档 → succeeded/partial_success → 失败降级。
+
+    行为与 ImageGenerator 旧实现一致：归档不完整只降级部分成功；无图且
+    无文本直接记失败；任一步异常转为 tracker.fail，不影响结果返回。
+    """
+
+    if not job_id or tracker is None:
+        return
+    delivered = list(
+        dict.fromkeys(
+            str(item) for item in (image_urls or []) + (image_paths or []) if item
+        )
+    )
+    try:
+        image_files: list[str] = []
+        archive_note = ""
+        archive_attempted = bool(delivered) and archive_images_fn is not None
+        if archive_attempted:
+            try:
+                image_files = await archive_images_fn(
+                    image_urls,
+                    image_paths,
+                    candidate_id=candidate_id,
+                    job_id=job_id,
+                )
+            except Exception as archive_error:
+                # 图片仍按原始来源发送，归档失败只降级为部分成功。
+                archive_note = (
+                    f"{type(archive_error).__name__}: {archive_error}".strip()
+                )
+                logger.warning(
+                    f"[生成追踪] 归档异常，不影响结果发送: {archive_note or '无详细信息'}"
+                )
+        if archive_attempted and len(image_files) < len(delivered):
+            archive_note = f"画廊归档不完整（{len(image_files)}/{len(delivered)}）" + (
+                f"：{archive_note}" if archive_note else ""
+            )
+        source_urls = [
+            item for item in delivered if item.startswith(("http://", "https://"))
+        ]
+        if completion_policy == "studio":
+            target = max(int(requested_images or len(delivered) or 1), 1)
+            if not image_files:
+                await tracker.fail(
+                    job_id,
+                    error=generation_error or "生成结果归档失败",
+                )
+                if source_urls:
+                    await tracker.update(job_id, source_urls=source_urls)
+                return
+            status = "succeeded" if len(image_files) >= target else "partial_success"
+            image_files = image_files[:target]
+        else:
+            if not delivered and not text_content:
+                await tracker.fail(job_id, error="供应商未返回图片或文本内容")
+                logger.debug(f"[生成追踪] 失败: job_id={job_id}, 原因=无图片或文本内容")
+                return
+            # 有图看归档完整性（未接归档函数视为成功）；只有文本按部分成功记录，
+            # 同时保住两个入口旧路径的可观测行为。
+            if delivered and (
+                archive_images_fn is None or len(image_files) >= len(delivered)
+            ):
+                status = "succeeded"
+            else:
+                status = "partial_success"
+        await tracker.complete(
+            job_id,
+            image_files=image_files,
+            text_content=text_content,
+            stats=stats,
+            status=status,
+            source_urls=source_urls,
+        )
+        if generation_error or archive_note:
+            update = getattr(tracker, "update", None)
+            if update is not None:
+                try:
+                    await update(job_id, error=generation_error or archive_note)
+                except Exception:
+                    pass
+        logger.debug(
+            f"[生成追踪] 完成: job_id={job_id}, 状态={status}, "
+            f"归档张数={len(image_files)}/{len(delivered)}, "
+            f"供应商={stats.get('successful_provider') or stats.get('provider') or '未记录'}, "
+            f"模型={stats.get('successful_model') or stats.get('model') or '未记录'}"
+        )
+    except Exception as exc:
+        logger.warning(
+            f"[生成追踪] 完成记录失败，不影响结果返回: {type(exc).__name__}: {exc}"
+        )
+        try:
+            await tracker.fail(job_id, error=f"结果记录失败: {exc}")
+            logger.debug(
+                f"[生成追踪] 转为失败: job_id={job_id}, 异常类型={type(exc).__name__}"
+            )
+        except Exception:
+            pass
 
 
 class ReferenceImageUnavailableError(ValueError):
@@ -232,6 +369,9 @@ class GenerationTracker:
                 continue
             job_id = str(record.get("job_id") or "").strip()
             if job_id:
+                record["shared"] = record.get("shared") is True
+                if not record["shared"] or not isinstance(record.get("shared_at"), str):
+                    record["shared_at"] = None
                 records[job_id] = record
         return records
 
@@ -366,6 +506,7 @@ class GenerationTracker:
             "model",
             "candidate_id",
             "quality",
+            "template_id",
         ):
             value = cleaned.get(key)
             cleaned[key] = _bounded_text(value, 128) or None
@@ -419,7 +560,7 @@ class GenerationTracker:
     @staticmethod
     def _clean_source_urls(value: Any) -> list[str]:
         """只保留可能长期有效的 http(s) 源链接，委托共享管道过滤。"""
-        return select_persistent_source_urls(value)
+        return [redact_url(item) for item in select_persistent_source_urls(value)]
 
     async def begin(
         self,
@@ -433,11 +574,24 @@ class GenerationTracker:
         requested_images: int = 1,
         caller: dict[str, str] | None = None,
         reference_names: list[str] | None = None,
+        job_id: str | None = None,
     ) -> dict[str, Any]:
         if self._closed:
             raise RuntimeError("生成追踪器已关闭")
+        if job_id is not None and (
+            not isinstance(job_id, str)
+            or not job_id
+            or len(job_id) > 128
+            or not _SAFE_FILE_NAME.fullmatch(job_id)
+        ):
+            raise ValueError(
+                "job_id 必须是非空字符串（字母数字与 _. - ，长度不超过 128）"
+            )
         async with self._lock:
-            job_id = f"job-{uuid.uuid4().hex[:12]}"
+            if job_id is None:
+                job_id = f"job-{uuid.uuid4().hex[:12]}"
+            elif job_id in self._jobs:
+                raise ValueError(f"job_id 已存在: {job_id}")
             record = {
                 "job_id": job_id,
                 "parent_job_id": _bounded_text(parent_job_id, 128) or None,
@@ -466,15 +620,12 @@ class GenerationTracker:
                 "text_content": "",
                 "error": None,
                 "stats": self._clean_stats({}),
+                "shared": False,
+                "shared_at": None,
             }
             with self.gallery_lock:
                 names = set(record["reference_names"])
-                root = self.gallery_dir.resolve()
-                if names & self._pending_image_deletions or any(
-                    (self.gallery_dir / name).resolve().parent != root
-                    or not (self.gallery_dir / name).is_file()
-                    for name in names
-                ):
+                if any(self.gallery_image_path(name) is None for name in names):
                     raise ReferenceImageUnavailableError(
                         "参考图片不存在或正在清理，请重新选择"
                     )
@@ -641,6 +792,53 @@ class GenerationTracker:
                 f"[生成历史] 失败记录: job_id={job_id}, "
                 f"状态={previous_status}->failed, 记录总数={len(self._jobs)}"
             )
+
+    async def set_shared(
+        self, job_id: str, shared: bool, *, user_id: str, umo: str
+    ) -> dict[str, Any]:
+        """只允许请求者本人修改共享状态。"""
+
+        if type(shared) is not bool:
+            raise ValueError("shared 必须是布尔值")
+        owner_id = str(user_id or "").strip()
+        owner_umo = str(umo or "").strip()
+        if not owner_id or not owner_umo:
+            raise ValueError("只有请求者本人可以修改共享状态")
+        async with self._lock:
+            record = self._jobs.get(str(job_id or ""))
+            if record is None:
+                raise ValueError("生成记录不存在")
+            requester = record.get("requester") or {}
+            if (
+                str(requester.get("user_id") or "") != owner_id
+                or str(requester.get("umo") or "") != owner_umo
+            ):
+                raise ValueError("只有请求者本人可以修改共享状态")
+            if record.get("status") not in {
+                "succeeded",
+                "partial_success",
+            } or not record.get("images"):
+                raise ValueError("只有已完成且有图片的记录可以共享")
+            record["shared"] = shared
+            record["shared_at"] = _timestamp() if shared else None
+            self._prune_locked()
+            await self._save()
+            self._broadcast(record)
+            return self._snapshot(record)
+
+    def gallery_image_path(self, name: str) -> Path | None:
+        """画廊里仍可引用的图片。待删除、越出目录或不存在时返回空。"""
+
+        if not isinstance(name, str) or not _SAFE_FILE_NAME.fullmatch(name):
+            return None
+        with self.gallery_lock:
+            if name in self._pending_image_deletions:
+                return None
+            root = self.gallery_dir.resolve()
+            path = (self.gallery_dir / name).resolve()
+            if path.parent != root or not path.is_file():
+                return None
+            return path
 
     @staticmethod
     def _duration_ms(record: dict[str, Any], finished_at: Any) -> int:

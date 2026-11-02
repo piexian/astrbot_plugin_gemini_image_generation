@@ -219,7 +219,7 @@ async def test_reference_lease_retains_and_releases_tmp_handle(tmp_path):
 
     policy = PathPolicy(())
     reference_service = ReferenceService(
-        policy, RemoteFetchService(policy), tmp_path / "cache"
+        policy, RemoteFetchService(), tmp_path / "cache"
     )
     handle = await reference_service.ingest(_png_bytes(), requester={"user_id": "u"})
     ref_id = handle.rsplit(":", 1)[1]

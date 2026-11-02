@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from tl.api_types import APIError
 from tl.core.dispatch import dispatch_provider
 from tl.core.errors import LegacyProviderError
 from tl.core.legacy_adapter import LegacyClientAdapter
@@ -75,15 +76,120 @@ async def test_contract_via_dispatch_merges_urls_and_paths():
 
 
 @pytest.mark.asyncio
-async def test_error_response_raises_non_retryable_legacy_error():
-    client = FakeClient(([], [], None, "配额耗尽"))
+async def test_thought_signature_still_succeeds():
+    """legacy 4 元组的第 4 项是思维签名：非空不判失败，结果照常成功。"""
+
+    client = FakeClient((["u"], [], "好的", "signature-1"))
+    adapter = LegacyClientAdapter(client, provider="gemini", model="gemini-x")
+    result = await dispatch_provider(adapter, make_job(make_request()))
+    assert result.artifacts == ("u",)
+    assert result.text == "好的"
+
+
+@pytest.mark.asyncio
+async def test_empty_output_raises_non_retryable_legacy_error():
+    """空产出（无图且文本为空白）报 provider_empty_result，不重试。"""
+
+    client = FakeClient(([], [], None, None))
     adapter = LegacyClientAdapter(client, provider="gemini", model="gemini-x")
     with pytest.raises(LegacyProviderError) as exc_info:
         await dispatch_provider(adapter, make_job(make_request()))
     assert exc_info.value.retryable is False
-    assert exc_info.value.code == "legacy_provider_failed"
+    assert exc_info.value.code == "provider_empty_result"
     # 不可重试错误不应在 dispatch 层重复调用 legacy client。
     assert len(client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_text_only_result_succeeds_without_require_images():
+    """未声明 require_images（命令快捷路径）：只有文本仍按成功返回。"""
+
+    client = FakeClient(([], [], "只有文本", None))
+    adapter = LegacyClientAdapter(client, provider="gemini", model="gemini-x")
+
+    for metadata in ({}, {"require_images": False}):
+        result = await dispatch_provider(
+            adapter, make_job(make_request(metadata=metadata))
+        )
+        assert result.artifacts == ()
+        assert result.text == "只有文本"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", ["只有文本", None])
+async def test_require_images_rejects_results_without_any_image(text):
+    """require_images（生成核心路径）：没有图片就失败，哪怕带了文本；不重试。"""
+
+    client = FakeClient(([], [], text, None))
+    adapter = LegacyClientAdapter(client, provider="gemini", model="gemini-x")
+    request = make_request(metadata={"require_images": True})
+
+    with pytest.raises(LegacyProviderError) as exc_info:
+        await dispatch_provider(adapter, make_job(request))
+
+    assert exc_info.value.code == "provider_no_image"
+    assert exc_info.value.retryable is False
+    assert exc_info.value.message == "供应商未返回图片"
+    assert len(client.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response",
+    [
+        (["https://img.test/a.png"], [], None, None),
+        ([], ["/tmp/out/a.png"], "带文本", None),
+    ],
+)
+async def test_require_images_accepts_results_with_an_image(response):
+    client = FakeClient(response)
+    adapter = LegacyClientAdapter(client, provider="gemini", model="gemini-x")
+    request = make_request(metadata={"require_images": True})
+
+    result = await dispatch_provider(adapter, make_job(request))
+
+    assert result.artifacts == tuple(sorted({*response[0], *response[1]}))
+
+
+class _FailingClient:
+    """按预设异常失败的 legacy client，统计调用次数。"""
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+        self.calls = 0
+
+    async def generate_image(self, config, **kwargs):
+        self.calls += 1
+        raise self.error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("api_error", "expected_code"),
+    [
+        (APIError("上游超时", None, "timeout"), "provider_timeout"),
+        (APIError("已取消", None, "cancelled"), "provider_timeout"),
+        (APIError("网络异常", None, "network"), "provider_network"),
+        (
+            APIError("工作区不可用", None, "workspace_unavailable"),
+            "provider_workspace_unavailable",
+        ),
+        (APIError("限流", 429, None), "provider_http_429"),
+        (APIError("未知失败"), "legacy_provider_failed"),
+    ],
+)
+async def test_api_error_maps_to_non_retryable_legacy_error(api_error, expected_code):
+    """旧客户端 APIError 按类型/状态码映射 code，转不可重试并保留原因链。"""
+
+    client = _FailingClient(api_error)
+    adapter = LegacyClientAdapter(client, provider="gemini", model="gemini-x")
+    with pytest.raises(LegacyProviderError) as exc_info:
+        await dispatch_provider(adapter, make_job(make_request()))
+    assert exc_info.value.code == expected_code
+    assert exc_info.value.retryable is False
+    assert exc_info.value.__cause__ is api_error
+    # legacy client 内部已重试过，Router/dispatch 不再重复调用。
+    assert client.calls == 1
 
 
 @pytest.mark.asyncio
@@ -340,3 +446,153 @@ async def test_fallback_candidate_gets_its_own_route_values():
     assert config.requested_provider == "beta"
     assert config.requested_model == "beta-x"
     assert config.model == "beta-x"
+
+
+class SequenceClient:
+    """按轮次返回不同结果，记录每轮请求张数。"""
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.counts = []
+
+    async def generate_image(self, config, **kwargs):
+        self.counts.append(config.image_count)
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+async def run_fill(client, target=3, enabled=True):
+    adapter = LegacyClientAdapter(client, provider="gemini", model="gemini-x")
+    metadata = {"fill_image_count": enabled, "require_images": True}
+    return await dispatch_provider(
+        adapter, make_job(make_request(image_count=target, metadata=metadata))
+    )
+
+
+@pytest.mark.asyncio
+async def test_fill_image_count_accumulates_until_target():
+    client = SequenceClient(
+        [(["a"], [], "第一轮", None), (["b", "c"], [], "第二轮", None)]
+    )
+
+    result = await run_fill(client)
+
+    assert result.artifacts == ("a", "b", "c")
+    assert result.text == "第一轮\n第二轮"
+    assert result.partial is False
+    assert client.counts == [3, 2]
+
+
+@pytest.mark.asyncio
+async def test_fill_image_count_stops_when_no_new_image():
+    client = SequenceClient([(["a"], [], None, None), (["a"], [], None, None)])
+
+    result = await run_fill(client)
+
+    assert result.artifacts == ("a",)
+    assert result.partial is True
+    assert result.stats["fill_error"] == "供应商未返回新的图片"
+    assert client.counts == [3, 2]
+
+
+@pytest.mark.asyncio
+async def test_fill_image_count_preserves_output_after_later_error():
+    client = SequenceClient(
+        [(["a"], [], None, None), APIError("后续限流", 429, "rate_limit")]
+    )
+
+    result = await run_fill(client)
+
+    assert result.artifacts == ("a",)
+    assert result.partial is True
+    assert "后续限流" in result.stats["fill_error"]
+    assert client.counts == [3, 2]
+
+
+@pytest.mark.asyncio
+async def test_fill_image_count_first_error_is_not_downgraded():
+    client = SequenceClient([APIError("首次失败", 500, "server")])
+
+    with pytest.raises(LegacyProviderError, match="首次失败"):
+        await run_fill(client)
+
+    assert client.counts == [3]
+
+
+@pytest.mark.asyncio
+async def test_fill_image_count_disabled_keeps_single_call():
+    client = SequenceClient([(["a"], [], None, None)])
+
+    result = await run_fill(client, enabled=False)
+
+    assert result.artifacts == ("a",)
+    assert result.partial is False
+    assert client.counts == [3]
+
+
+@pytest.mark.asyncio
+async def test_fill_image_count_deduplicates_and_truncates():
+    client = SequenceClient([(["a", "a", "b", "c"], [], None, None)])
+
+    result = await run_fill(client, target=2)
+
+    assert result.artifacts == ("a", "b")
+    assert result.partial is False
+    assert client.counts == [2]
+
+
+@pytest.mark.asyncio
+async def test_studio_route_fields_flow_without_candidate_filtering():
+    client = FakeClient((["u"], [], None, None))
+    adapter = LegacyClientAdapter(client, provider="legacy", model="auto")
+    settings = {"size": "1024x1024"}
+    request = make_request(
+        candidate_id="studio#1",
+        metadata={
+            "requested_candidate_id": "studio#1",
+            "route_all_candidates": True,
+            "seed": 42,
+            "generation_settings": settings,
+        },
+    )
+
+    result = await dispatch_provider(adapter, make_job(request))
+
+    assert result.artifacts == ("u",)
+    config = client.calls[-1]["config"]
+    assert config.candidate_id is None
+    assert config.requested_candidate_id == "studio#1"
+    assert config.route_all_candidates is True
+    assert config.seed == 42
+    assert config.generation_settings == settings
+
+
+@pytest.mark.asyncio
+async def test_fill_reports_generated_count_and_legacy_stats(monkeypatch):
+    client = SequenceClient([(["a"], [], None, None), (["b"], [], None, None)])
+    calls = []
+
+    async def emit(count, stats):
+        calls.append((count, stats))
+
+    monkeypatch.setattr("tl.core.legacy_adapter.emit_generation_count", emit)
+
+    result = await run_fill(client, target=2)
+
+    assert result.artifacts == ("a", "b")
+    assert [count for count, _ in calls] == [1, 2]
+    assert calls[-1][1] == {
+        "provider": "gemini",
+        "model": "gemini-x",
+        "alias": None,
+        "retry_count": 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_emit_generation_count_without_scope_is_noop():
+    from tl.generation_scheduler import emit_generation_count
+
+    await emit_generation_count(1, {})

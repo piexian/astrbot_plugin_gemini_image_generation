@@ -46,6 +46,20 @@ class AvatarHandler:
         """更新配置"""
         self.auto_avatar_reference = auto_avatar_reference
 
+    async def download_user_avatar(
+        self, user_id: str, event: AstrMessageEvent
+    ) -> str | None:
+        """下载指定用户的头像。失败时返回空，不改变自动头像的旧入口。"""
+
+        try:
+            result = await download_qq_avatar(
+                str(user_id), f"ref_{user_id}", event=event
+            )
+        except Exception as exc:
+            logger.warning("头像下载失败: %s", exc)
+            return None
+        return result if isinstance(result, str) and result else None
+
     async def get_avatar_reference(self, event: AstrMessageEvent) -> list[str]:
         """
         获取头像作为参考图像，支持用户头像（直接HTTP下载）

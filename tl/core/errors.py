@@ -142,13 +142,32 @@ class InvalidRequestError(CoreError):
     retryable = False
 
 
+class StudioBusyError(CoreError):
+    code = "studio_busy"
+    retryable = False
+
+
 class QueueFullError(CoreError):
     code = "queue_full"
     retryable = True
 
 
+class QuotaExceededError(CoreError):
+    """submit 准入时额度不足（或会话/名单校验拒绝），不可重试。"""
+
+    code = "quota_exceeded"
+    retryable = False
+
+
 class ServiceClosedError(CoreError):
     code = "service_closed"
+    retryable = False
+
+
+class BatchAllFailedError(CoreError):
+    """批量父 Job 的全部子 Job 都没有产出。"""
+
+    code = "batch_all_failed"
     retryable = False
 
 

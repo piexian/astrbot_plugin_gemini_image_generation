@@ -8,13 +8,17 @@ import math
 import mimetypes
 import re
 import secrets
+import time
 from collections.abc import Callable
 from contextlib import contextmanager
 from typing import Any
+from urllib.parse import urlsplit
 
 from astrbot.api import logger
 
-from .generation_tracker import GenerationTracker
+from .core.errors import redact_url
+from .generation_tracker import GenerationTracker, without_session_origin
+from .prompt_templates import TemplateValidationError
 from .studio_parameters import clean_browser_preferences
 from .web_studio_service import StudioServiceError, WebStudioService
 
@@ -42,6 +46,26 @@ _SAFE_FILE_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 _JSON_MAX_BYTES = 2 * 1024 * 1024
 _PREFERENCES_COOKIE = "gemini_studio_browser"
 _BROWSER_ID = re.compile(r"^[0-9a-f]{32}$")
+
+_PANEL_ONLY_METHODS = {
+    "/providers": frozenset({"GET", "POST"}),
+    "/providers/models": frozenset({"POST"}),
+    "/vision-providers": frozenset({"GET"}),
+    "/history/delete": frozenset({"POST"}),
+    "/limits": frozenset({"GET", "POST"}),
+    "/sessions": frozenset({"GET"}),
+    "/upload": frozenset({"POST"}),
+    "/preferences": frozenset({"POST"}),
+    "/templates": frozenset({"GET", "POST"}),
+    "/templates/import": frozenset({"POST"}),
+    "/templates/export": frozenset({"GET"}),
+    "/templates/hub": frozenset({"GET", "POST"}),
+    "/templates/hub/sync": frozenset({"POST"}),
+    "/templates/hub/import": frozenset({"POST"}),
+    "/templates/hub/key": frozenset({"GET", "POST", "DELETE"}),
+    "/templates/hub/mine": frozenset({"GET"}),
+    "/templates/hub/tags": frozenset({"GET"}),
+}
 
 
 @contextmanager
@@ -97,6 +121,26 @@ def _valid_json_value(value: Any, depth: int = 0) -> bool:
     return True
 
 
+def _redact_source_urls(value: Any) -> Any:
+    value = without_session_origin(value)
+    if isinstance(value, dict):
+        return {
+            key: (
+                [redact_url(str(item)) for item in item_value]
+                if key == "source_urls" and isinstance(item_value, list)
+                else _redact_source_urls(item_value)
+            )
+            for key, item_value in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_source_urls(item) for item in value]
+    return value
+
+
+def _is_truthy(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true"}
+
+
 class WebStudioAPI:
     """将 tracker/service 映射为 AstrBot 标准信封和流式响应。"""
 
@@ -117,6 +161,32 @@ class WebStudioAPI:
         ("/vision-providers", "vision_providers", ["GET"], "本体视觉检测提供商配置"),
         ("/providers/models", "provider_models", ["POST"], "拉取供应商模型目录"),
         ("/sessions", "sessions", ["GET"], "WebUI 已有 UMO 会话"),
+        ("/templates", "templates", ["GET", "POST"], "WebUI 提示词模板"),
+        ("/templates/import", "templates_import", ["POST"], "WebUI 导入模板包"),
+        ("/templates/export", "templates_export", ["GET"], "WebUI 导出模板包"),
+        ("/templates/asset", "template_asset", ["POST"], "WebUI 保存模板预览图"),
+        ("/template_asset/<name>", "template_asset_file", ["GET"], "读取模板预览图"),
+        (
+            "/templates/hub",
+            "templates_hub",
+            ["GET", "POST"],
+            "WebUI 在线模板检索与上传",
+        ),
+        ("/templates/hub/mine", "templates_hub_mine", ["GET"], "WebUI 我的在线模板"),
+        ("/templates/hub/tags", "templates_hub_tags", ["GET"], "WebUI 在线模板标签"),
+        ("/templates/hub/sync", "templates_hub_sync", ["POST"], "WebUI 在线模板同步"),
+        (
+            "/templates/hub/import",
+            "templates_hub_import",
+            ["POST"],
+            "WebUI 导入在线模板",
+        ),
+        (
+            "/templates/hub/key",
+            "templates_hub_key",
+            ["GET", "POST", "DELETE"],
+            "WebUI 在线模板密钥",
+        ),
     )
 
     def __init__(
@@ -126,16 +196,86 @@ class WebStudioAPI:
         *,
         limits_service: Any = None,
         providers_service: Any = None,
+        templates_service: Any = None,
         is_closed: Callable[[], bool] | None = None,
     ) -> None:
         self.tracker = tracker
         self.service = service
         self.limits_service = limits_service
         self.providers_service = providers_service
+        self.templates_service = templates_service
         self._web_closed = False
         self._is_closed = is_closed or (lambda: self._web_closed)
         self._registered_entries: list[tuple[Any, ...]] = []
         self._upload_request_lock = asyncio.Lock()
+
+    def _guarded(self, handler: Callable, suffix: str) -> Callable:
+        async def call(*args, **kwargs):
+            started = time.monotonic()
+            response = None
+            try:
+                if denied := self._access_guard(suffix):
+                    response = denied
+                    return response
+                response = await handler(*args, **kwargs)
+                return response
+            finally:
+                logger.debug(
+                    "[WebUI] %s %s status=%s elapsed=%.1fms",
+                    request.method,
+                    getattr(request, "path", ""),
+                    getattr(response, "status_code", None),
+                    (time.monotonic() - started) * 1000,
+                )
+
+        return call
+
+    @staticmethod
+    def _access_guard(suffix: str):
+        username = str(getattr(request, "username", "") or "")
+        if not username:
+            logger.info(
+                "[WebUI] 拒绝未登录请求: %s %s",
+                request.method,
+                getattr(request, "path", ""),
+            )
+            return error_response("请登录 AstrBot Dashboard 后操作", status_code=403)
+        if username.startswith("api_key:") and request.method.upper() in (
+            _PANEL_ONLY_METHODS.get(suffix) or ()
+        ):
+            logger.info(
+                "[WebUI] 拒绝 API Key 面板操作: %s %s",
+                request.method,
+                getattr(request, "path", ""),
+            )
+            return error_response("API Key 无权执行此操作", status_code=403)
+        if request.method.upper() == "POST":
+            headers = request.headers
+            origin = headers.get("Origin")
+            if origin:
+                origin_host = urlsplit(origin).netloc
+                if (
+                    not origin_host
+                    or origin_host.lower() != headers.get("Host", "").lower()
+                ):
+                    logger.info(
+                        "[WebUI] 拒绝跨站来源: %s %s origin=%s host=%s",
+                        request.method,
+                        getattr(request, "path", ""),
+                        origin,
+                        headers.get("Host", ""),
+                    )
+                    return error_response("跨站请求来源不一致", status_code=403)
+            if headers.get("Sec-Fetch-Site", "").strip().lower() == "cross-site":
+                logger.info(
+                    "[WebUI] 拒绝跨站请求头: %s %s sec_fetch_site=%s",
+                    request.method,
+                    getattr(request, "path", ""),
+                    headers.get("Sec-Fetch-Site", ""),
+                )
+                return error_response("拒绝跨站请求", status_code=403)
+        # 单用户面板可操作全部记录；历史读取对宿主已鉴权的面板与 API Key 开放。
+        return None
 
     def register(self, context: Any) -> list[tuple[Any, ...]]:
         if not WEB_API_AVAILABLE:
@@ -144,7 +284,7 @@ class WebStudioAPI:
         registered = getattr(context, "registered_web_apis", [])
         for suffix, method_name, methods, description in self.ROUTES:
             route = f"{WEBUI_PREFIX}{suffix}"
-            handler = getattr(self, method_name)
+            handler = self._guarded(getattr(self, method_name), suffix)
             context.register_web_api(route, handler, methods, description)
             entry = next(
                 (
@@ -195,9 +335,14 @@ class WebStudioAPI:
     def _limits_guard(self):
         if closed := self._closed_response():
             return closed
-        # 路由由宿主鉴权；同时拒绝没有宿主身份的调用，不读取或转发凭据。
+        # 身份、授权与 CSRF 由注册时的统一守卫处理。
         if not getattr(request, "username", None):
-            return error_response("请登录 AstrBot Dashboard 后操作", status_code=401)
+            logger.info(
+                "[WebUI] 拒绝未登录限流请求: %s %s",
+                request.method,
+                getattr(request, "path", ""),
+            )
+            return error_response("请登录 AstrBot Dashboard 后操作", status_code=403)
         if self.limits_service is None:
             return error_response("限流管理服务不可用", status_code=503)
         return None
@@ -244,13 +389,13 @@ class WebStudioAPI:
     async def jobs(self):
         if closed := self._closed_response():
             return closed
-        return self._ok(self.tracker.active_and_recent())
+        return self._ok(_redact_source_urls(self.tracker.active_and_recent()))
 
     async def jobs_stream(self):
         if closed := self._closed_response():
             return closed
         queue = self.tracker.subscribe()
-        snapshot = self.tracker.active_and_recent()
+        snapshot = _redact_source_urls(self.tracker.active_and_recent())
 
         async def events():
             try:
@@ -268,7 +413,7 @@ class WebStudioAPI:
                         continue
                     if self._is_closed() or self._web_closed:
                         break
-                    yield self._sse(event)
+                    yield self._sse(_redact_source_urls(event))
             finally:
                 self.tracker.unsubscribe(queue)
 
@@ -299,14 +444,16 @@ class WebStudioAPI:
         except StudioServiceError as exc:
             return self._service_error(exc)
         return self._ok(
-            self.tracker.query_history(
-                page=page,
-                size=size,
-                keyword=keyword,
-                source=source,
-                group_id=group_id,
-                user_id=user_id,
-                **({"plugin_id": plugin_id} if plugin_id else {}),
+            _redact_source_urls(
+                self.tracker.query_history(
+                    page=page,
+                    size=size,
+                    keyword=keyword,
+                    source=source,
+                    group_id=group_id,
+                    user_id=user_id,
+                    **({"plugin_id": plugin_id} if plugin_id else {}),
+                )
             )
         )
 
@@ -337,7 +484,7 @@ class WebStudioAPI:
         references = await asyncio.to_thread(
             self.service.reference_status, record.get("reference_names") or []
         )
-        return self._ok({**record, **references})
+        return self._ok(_redact_source_urls({**record, **references}))
 
     async def delete_history(self):
         if closed := self._closed_response():
@@ -548,3 +695,257 @@ class WebStudioAPI:
         if not _valid_json_value(payload):
             return None
         return payload
+
+    def _templates_guard(self):
+        if closed := self._closed_response():
+            return closed
+        if self.templates_service is None:
+            return error_response("提示词模板服务不可用", status_code=503)
+        return None
+
+    async def templates(self):
+        if denied := self._templates_guard():
+            return denied
+        try:
+            if request.method == "POST":
+                payload = await self._json_body()
+                if payload is None:
+                    return error_response(
+                        "请求体必须是有效的 JSON 对象", status_code=400
+                    )
+                result = await self._templates_write(payload)
+            else:
+                result = {"templates": self.templates_service.list_templates()}
+            return json_response(
+                {"status": "ok", "data": result}, headers={"Cache-Control": "no-store"}
+            )
+        except StudioServiceError as exc:
+            return self._service_error(exc)
+        except TemplateValidationError as exc:
+            return error_response(str(exc), status_code=400)
+        except Exception:
+            logger.error("[模板广场] 模板请求失败", exc_info=True)
+            return error_response("提示词模板暂时不可用", status_code=500)
+
+    async def _templates_write(self, payload: dict[str, Any]) -> dict[str, Any]:
+        action = str(payload.get("action") or "").strip()
+        if action == "delete":
+            template_id = payload.get("id")
+            target = self.templates_service.get(template_id)
+            await self.templates_service.save(payload)
+            await self.templates_service.drop_asset((target or {}).get("preview"))
+            return {"id": template_id}
+        return await self.templates_service.save(payload)
+
+    async def templates_export(self):
+        if denied := self._templates_guard():
+            return denied
+        try:
+            package = self.templates_service.export_package()
+        except Exception:
+            logger.error("[模板广场] 导出模板包失败", exc_info=True)
+            return error_response("导出模板包失败", status_code=500)
+        return json_response({"status": "ok", "data": package})
+
+    async def templates_import(self):
+        if denied := self._templates_guard():
+            return denied
+        try:
+            payload = await self._json_body()
+            if payload is None:
+                return error_response("请求体必须是有效的 JSON 对象", status_code=400)
+            result = await self.templates_service.import_package(payload)
+            return self._ok(result)
+        except StudioServiceError as exc:
+            return self._service_error(exc)
+        except TemplateValidationError as exc:
+            return error_response(str(exc), status_code=400)
+        except Exception:
+            logger.error("[模板广场] 导入模板包失败", exc_info=True)
+            return error_response("导入模板包失败", status_code=500)
+
+    async def template_asset(self):
+        if denied := self._templates_guard():
+            return denied
+        try:
+            payload = await self._json_body()
+            if payload is None:
+                return error_response("请求体必须是有效的 JSON 对象", status_code=400)
+            name = await self.templates_service.save_asset_from_gallery(
+                str(payload.get("image_name") or "")
+            )
+        except StudioServiceError as exc:
+            return self._service_error(exc)
+        except Exception:
+            logger.error("[模板广场] 保存模板预览图失败", exc_info=True)
+            return error_response("保存模板预览图失败", status_code=500)
+        return self._ok({"name": name})
+
+    async def template_asset_file(self, name: str):
+        if closed := self._closed_response():
+            return closed
+        if self.templates_service is None:
+            return error_response("提示词模板服务不可用", status_code=503)
+        try:
+            path = self.templates_service.asset_file(name)
+        except StudioServiceError as exc:
+            return self._service_error(exc)
+        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        return file_response(
+            path,
+            content_type=content_type,
+            headers={"X-Content-Type-Options": "nosniff"},
+        )
+
+    async def templates_hub(self):
+        if denied := self._templates_guard():
+            return denied
+        try:
+            if request.method == "POST":
+                payload = await self._json_body()
+                if payload is None:
+                    return error_response(
+                        "请求体必须是有效的 JSON 对象", status_code=400
+                    )
+                action = str(payload.get("action") or "").strip()
+                if action == "upload":
+                    result = await self.templates_service.hub_upload(payload.get("id"))
+                elif action == "preview":
+                    result = self.templates_service.hub_upload_preview(
+                        payload.get("id")
+                    )
+                elif action == "report":
+                    result = await self.templates_service.hub_report(
+                        payload.get("remote_id") or payload.get("id"),
+                        payload.get("reason"),
+                    )
+                elif action == "update":
+                    result = await self.templates_service.hub_update(
+                        payload.get("remote_id") or payload.get("id"),
+                        payload.get("changes"),
+                    )
+                elif action == "delete":
+                    result = await self.templates_service.hub_delete(
+                        payload.get("remote_id") or payload.get("id")
+                    )
+                else:
+                    return error_response("不支持的在线操作", status_code=400)
+            elif _is_truthy(self._query_text("state_only", 8)):
+                # 只读状态：状态预检不触发上游实时检索。
+                result = {
+                    "templates": [],
+                    "notice": "",
+                    "state": self.templates_service.hub_state(),
+                }
+            else:
+                result = await self.templates_service.hub_search(
+                    self._query_text("q", 200),
+                    tag=self._query_text("tag", 64) or None,
+                    limit=self._query_int("limit", 20, minimum=1, maximum=200),
+                )
+            return json_response(
+                {"status": "ok", "data": result}, headers={"Cache-Control": "no-store"}
+            )
+        except StudioServiceError as exc:
+            return self._service_error(exc)
+        except Exception:
+            logger.error("[模板广场] 在线模板请求失败", exc_info=True)
+            return error_response("在线模板暂时不可用", status_code=500)
+
+    async def templates_hub_mine(self):
+        if denied := self._templates_guard():
+            return denied
+        try:
+            result = await self.templates_service.hub_mine(
+                limit=self._query_int("limit", 50, minimum=1, maximum=50)
+            )
+        except StudioServiceError as exc:
+            return self._service_error(exc)
+        except Exception:
+            logger.error("[模板广场] 我的在线模板读取失败", exc_info=True)
+            return error_response("我的在线模板暂时不可用", status_code=500)
+        return self._ok(result)
+
+    async def templates_hub_tags(self):
+        if denied := self._templates_guard():
+            return denied
+        try:
+            result = await self.templates_service.hub_tags(
+                query=self._query_text("q", 64),
+                limit=self._query_int("limit", 20, minimum=1, maximum=50),
+            )
+        except StudioServiceError as exc:
+            return self._service_error(exc)
+        except Exception:
+            logger.error("[模板广场] 在线标签读取失败", exc_info=True)
+            return error_response("在线标签暂时不可用", status_code=500)
+        return self._ok(result)
+
+    async def templates_hub_sync(self):
+        if denied := self._templates_guard():
+            return denied
+        try:
+            payload = await self._json_body() or {}
+            result = await self.templates_service.sync_hub(
+                force=payload.get("force") is True
+            )
+            return self._ok(result)
+        except StudioServiceError as exc:
+            return self._service_error(exc)
+        except Exception:
+            logger.error("[模板广场] 在线模板同步失败", exc_info=True)
+            return error_response("在线模板同步失败", status_code=500)
+
+    async def templates_hub_import(self):
+        if denied := self._templates_guard():
+            return denied
+        try:
+            payload = await self._json_body()
+            if payload is None:
+                return error_response("请求体必须是有效的 JSON 对象", status_code=400)
+            result = await self.templates_service.hub_import(payload.get("ids"))
+            return self._ok(result)
+        except StudioServiceError as exc:
+            return self._service_error(exc)
+        except Exception:
+            logger.error("[模板广场] 导入在线模板失败", exc_info=True)
+            return error_response("导入在线模板失败", status_code=500)
+
+    async def templates_hub_key(self):
+        if denied := self._templates_guard():
+            return denied
+        try:
+            if request.method == "GET":
+                info = self.templates_service.hub_key_info()
+                state = self.templates_service.hub_state()
+                result = {
+                    **info,
+                    "mode": state["mode"],
+                }
+            elif request.method == "DELETE":
+                result = await self.templates_service.hub_key_revoke()
+            else:
+                payload = await self._json_body()
+                if payload is None:
+                    return error_response(
+                        "请求体必须是有效的 JSON 对象", status_code=400
+                    )
+                action = str(payload.get("action") or "request").strip()
+                if action == "save":
+                    result = await self.templates_service.save_hub_key(
+                        payload.get("key")
+                    )
+                elif action == "test":
+                    result = await self.templates_service.hub_key_test()
+                else:
+                    result = await self.templates_service.hub_key_request(
+                        str(payload.get("email") or "")
+                    )
+            return json_response(
+                {"status": "ok", "data": result}, headers={"Cache-Control": "no-store"}
+            )
+        except StudioServiceError as exc:
+            return self._service_error(exc)
+        except Exception:
+            logger.error("[模板广场] 在线密钥操作失败", exc_info=True)
+            return error_response("在线密钥操作失败", status_code=500)

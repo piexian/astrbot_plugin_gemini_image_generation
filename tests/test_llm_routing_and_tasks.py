@@ -45,7 +45,7 @@ sys.modules["astrbot.core.astr_agent_context"].AstrAgentContext = type(
 
 from tl.background_tasks import BackgroundTaskManager  # noqa: E402
 from tl.batch_generation import run_batch_job  # noqa: E402
-from tl.llm_query_tools import BackgroundTaskStatusTool  # noqa: E402
+from tl.llm_query_tools import GeminiImageLookupTool  # noqa: E402
 from tl.llm_tools import _resolve_foreground_wait_seconds  # noqa: E402
 from tl.plugin_config import get_session_tool_timeout  # noqa: E402
 
@@ -204,15 +204,17 @@ async def test_task_status_tool_enforces_session_ownership(tmp_path) -> None:
         routing_mode="full_polling",
         message="running",
     )
-    tool = BackgroundTaskStatusTool(
+    tool = GeminiImageLookupTool(
         plugin=SimpleNamespace(background_task_manager=manager)
     )
 
-    owned = json.loads(await tool.call(_context(_Event()), task_id=record["task_id"]))
+    owned = json.loads(
+        await tool.call(_context(_Event()), kind="tasks", query=record["task_id"])
+    )
     foreign_event = _Event()
     foreign_event.unified_msg_origin = "platform:friend:user-2"
     foreign = json.loads(
-        await tool.call(_context(foreign_event), task_id=record["task_id"])
+        await tool.call(_context(foreign_event), kind="tasks", query=record["task_id"])
     )
 
     assert owned["task_id"] == record["task_id"]

@@ -6,9 +6,34 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-APP = (ROOT / "views/studio/app.js").read_text(encoding="utf-8")
-PC = (ROOT / "views/studio/provider-config.js").read_text(encoding="utf-8")
-HTML = (ROOT / "views/studio/index.html").read_text(encoding="utf-8")
+APP = (ROOT / "frontend/src/app.js").read_text(encoding="utf-8")
+PC = "\n".join(
+    q.read_text(encoding="utf-8")
+    for q in sorted((ROOT / "frontend/src/provider-config").glob("*.vue"))
+)
+TPL = "\n".join(
+    p.read_text(encoding="utf-8")
+    for p in sorted((ROOT / "frontend/src/templates").glob("*.vue"))
+)
+LIMITS = "\n".join(
+    p.read_text(encoding="utf-8")
+    for p in sorted((ROOT / "frontend/src/limits").glob("*.vue"))
+)
+GALLERY = "\n".join(
+    p.read_text(encoding="utf-8")
+    for p in sorted((ROOT / "frontend/src/gallery").glob("*.vue"))
+)
+PROGRESS = "\n".join(
+    p.read_text(encoding="utf-8")
+    for p in sorted((ROOT / "frontend/src/progress").glob("*.vue"))
+)
+WORKBENCH = "\n".join(
+    p.read_text(encoding="utf-8")
+    for pattern in ("*.vue", "*.ts")
+    for p in sorted((ROOT / "frontend/src/workbench").glob(pattern))
+    if "__tests__" not in p.parts
+)
+HTML = (ROOT / "frontend/index.html").read_text(encoding="utf-8")
 I18N_DIR = ROOT / ".astrbot-plugin/i18n"
 
 ZH = re.compile(r"[\u4e00-\u9fff]")
@@ -22,7 +47,17 @@ def _collect_keys():
     keys = set()
     for m in re.finditer(r"\bt\((['\"])(.+?)\1", APP):
         keys.add(m.group(2))
-    for m in re.finditer(r"this\.t\((['\"])(.+?)\1", PC):
+    for m in re.finditer(r"\bt\((['\"])(.+?)\1", PC):
+        keys.add(m.group(2))
+    for m in re.finditer(r"\bt\((['\"])(.+?)\1", TPL):
+        keys.add(m.group(2))
+    for m in re.finditer(r"\bt\((['\"])(.+?)\1", LIMITS):
+        keys.add(m.group(2))
+    for m in re.finditer(r"\bt\((['\"])(.+?)\1", GALLERY):
+        keys.add(m.group(2))
+    for m in re.finditer(r"\bt\((['\"])(.+?)\1", PROGRESS):
+        keys.add(m.group(2))
+    for m in re.finditer(r"\bt\((['\"])(.+?)\1", WORKBENCH):
         keys.add(m.group(2))
     keys |= set(re.findall(r'data-i18n(?:-[a-z-]+)?="([^"]+)"', HTML))
     return keys
@@ -73,7 +108,15 @@ def test_first_render_waits_on_real_bridge_readiness():
 
 def test_no_bare_chinese_display_strings_in_js():
     leftovers = []
-    for fname, src in (("app.js", APP), ("provider-config.js", PC)):
+    for fname, src in (
+        ("app.js", APP),
+        ("provider-config/*.vue", PC),
+        ("templates/*.vue", TPL),
+        ("limits/*.vue", LIMITS),
+        ("gallery/*.vue", GALLERY),
+        ("progress/*.vue", PROGRESS),
+        ("workbench/*", WORKBENCH),
+    ):
         for i, line in enumerate(src.split("\n"), 1):
             if SKIP_LINE.search(line) or COMMENT_LINE.match(line):
                 continue

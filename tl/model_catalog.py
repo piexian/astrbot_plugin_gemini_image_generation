@@ -282,7 +282,7 @@ class _ModelResults:
 class ModelCatalogService:
     """Own workers/sessions only; queue time is part of the total deadline."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._semaphore = asyncio.Semaphore(2)
         self._workers: set[asyncio.Task] = set()
         self._closed = False
@@ -367,6 +367,7 @@ class ModelCatalogService:
         _parse_url(request.url)
         connector = None
         proxy = request.proxy
+
         if proxy:
             parsed_proxy = _parse_url(proxy, proxy=True)
             if parsed_proxy.scheme.startswith("socks"):
@@ -384,6 +385,8 @@ class ModelCatalogService:
                     urlunsplit(parsed_proxy._replace(scheme=scheme)), rdns=True
                 )
                 proxy = None
+        else:
+            connector = aiohttp.TCPConnector()
         async with aiohttp.ClientSession(
             connector=connector,
             timeout=aiohttp.ClientTimeout(total=_TIMEOUT),
@@ -392,7 +395,10 @@ class ModelCatalogService:
             return await self._fetch_pages(session, request, proxy)
 
     async def _fetch_pages(
-        self, session: aiohttp.ClientSession, request: CatalogRequest, proxy: str | None
+        self,
+        session: aiohttp.ClientSession,
+        request: CatalogRequest,
+        proxy: str | None,
     ) -> dict[str, Any]:
         results = _ModelResults(_secrets(request))
         url = request.url

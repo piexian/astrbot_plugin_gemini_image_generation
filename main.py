@@ -41,28 +41,32 @@ from .tl import (
     split_image,
 )
 from .tl.background_tasks import BackgroundTaskManager
+from .tl.core.errors import (
+    CoreError,
+    QueueFullError,
+    QuotaExceededError,
+    ServiceClosedError,
+)
 from .tl.core.stack import build_generation_stack
 from .tl.core.states import JobState
 from .tl.enhanced_prompts import (
-    get_avatar_prompt,
-    get_card_prompt,
-    get_figure_prompt,
     get_generation_prompt,
-    get_mobile_prompt,
     get_modification_prompt,
-    get_poster_prompt,
-    get_q_version_sticker_prompt,
-    get_sticker_prompt,
     get_style_change_prompt,
-    get_wallpaper_prompt,
 )
+from .tl.generation_errors import api_failure_message
 from .tl.generation_scheduler import GenerationScheduler
-from .tl.generation_tracker import GenerationTracker, requester_from_event
-from .tl.llm_query_tools import BackgroundTaskStatusTool, ProviderModelQueryTool
-from .tl.llm_tools import GeminiImageGenerationTool
+from .tl.generation_tracker import (
+    GenerationTracker,
+    record_generation_success,
+    requester_from_event,
+)
+from .tl.llm_query_tools import GeminiImageLookupTool, GeminiImageShareTool
+from .tl.llm_tools import GeminiImageBatchTool, GeminiImageGenerationTool
 from .tl.plugin_config import get_session_tool_timeout, max_configured_reference_images
 from .tl.plugin_service import ImageGenerationService
-from .tl.provider_capabilities import select_candidates
+from .tl.prompt_templates import PromptTemplateStore, builtin_template, render_template
+from .tl.provider_capabilities import parse_model_selector, select_candidates
 from .tl.provider_runtime import ProviderRuntime, provider_operation
 from .tl.provider_settings import candidate_is_keyless
 from .tl.reference_image import REFERENCE_IMAGE_CACHE_DIR
@@ -73,6 +77,12 @@ from .tl.tl_utils import (
     set_image_cache_max_size_mb,
 )
 from .tl.tool_permission import ensure_admin_default_tool_permission
+from .tl.v2_admission import (
+    CompositeAdmissionLimiter,
+    LegacyFifoLimiter,
+    RateLimiterQuota,
+    StudioAdmissionLimiter,
+)
 from .tl.v2_bridge import (
     apply_result_to_config as v2_apply_result_to_config,
 )
@@ -83,8 +93,10 @@ from .tl.v2_bridge import (
     split_artifacts as v2_split_artifacts,
 )
 from .tl.v2_bridge import (
-    v2_failure_error,
+    v2_failure_message,
+    v2_failure_text,
 )
+from .tl.v2_tracking import TrackerProjection
 from .tl.web_studio_service import WebStudioService
 
 
@@ -114,8 +126,9 @@ class GeminiImageGenerationPlugin(Star):
         # v2 调度器（灰度）：scheduler_v2 开启且首次使用时装配。
         self._v2_service = None
         self.llm_image_tool: GeminiImageGenerationTool | None = None
-        self.llm_provider_query_tool: ProviderModelQueryTool | None = None
-        self.llm_task_status_tool: BackgroundTaskStatusTool | None = None
+        self.llm_batch_tool: GeminiImageBatchTool | None = None
+        self.llm_lookup_tool: GeminiImageLookupTool | None = None
+        self.llm_share_tool: GeminiImageShareTool | None = None
 
         # 获取插件数据目录
         self._plugin_data_dir = os.path.join(
@@ -143,11 +156,13 @@ class GeminiImageGenerationPlugin(Star):
             self.cfg.webui_history_max_records,
             enabled=self.cfg.webui_history_enabled,
         )
+        self.prompt_templates = PromptTemplateStore(self._plugin_data_dir)
         self.web_studio_service = WebStudioService(
             self.api_client,
             self.generation_tracker,
             self.cfg,
             self._plugin_data_dir,
+            v2_service_provider=lambda: self._v2_service_for(None),
         )
         try:
             self.web_studio_service.import_legacy_images()
@@ -155,6 +170,7 @@ class GeminiImageGenerationPlugin(Star):
             logger.warning(f"[WebUI] 历史生成图纳入画廊失败（不影响启动）: {e}")
         self._web_api = None
         self.studio_providers = None
+        self.studio_templates = None
         self._web_routes: list[tuple[Any, ...]] = []
         self._web_closed = False
 
@@ -360,17 +376,21 @@ class GeminiImageGenerationPlugin(Star):
         """注册 LLM 工具到 Context"""
         try:
             tool = GeminiImageGenerationTool(plugin=self)
+            batch_tool = GeminiImageBatchTool(plugin=self)
             tool.refresh_from_plugin()
-            provider_query_tool = ProviderModelQueryTool(plugin=self)
-            task_status_tool = BackgroundTaskStatusTool(plugin=self)
+            batch_tool.refresh_from_plugin()
+            lookup_tool = GeminiImageLookupTool(plugin=self)
+            share_tool = GeminiImageShareTool(plugin=self)
             self.llm_image_tool = tool
-            self.llm_provider_query_tool = provider_query_tool
-            self.llm_task_status_tool = task_status_tool
-            for registered_tool in (tool, provider_query_tool, task_status_tool):
+            self.llm_batch_tool = batch_tool
+            self.llm_lookup_tool = lookup_tool
+            self.llm_share_tool = share_tool
+            for registered_tool in (tool, batch_tool, lookup_tool, share_tool):
                 self.context.add_llm_tools(registered_tool)
             if self.cfg.llm_tool_reference_path_mode == "global":
                 ensure_admin_default_tool_permission(tool.name)
-            logger.debug("已注册生图、供应商查询和后台任务查询 LLM 工具")
+                ensure_admin_default_tool_permission(batch_tool.name)
+            logger.debug("已注册生图、查询和共享 LLM 工具")
         except Exception as e:
             logger.warning(f"注册 LLM 工具失败: {e}，将使用装饰器方式")
 
@@ -398,6 +418,7 @@ class GeminiImageGenerationPlugin(Star):
             from .tl.provider_application import ProviderApplication
             from .tl.studio_limits import StudioLimitsService
             from .tl.studio_providers import ProviderConfigService
+            from .tl.studio_templates import StudioTemplateService
 
             self.studio_limits = StudioLimitsService(
                 self.raw_config,
@@ -405,6 +426,17 @@ class GeminiImageGenerationPlugin(Star):
                 self.rate_limiter,
                 self.context,
                 self._plugin_data_dir,
+                config_lock=self.configuration_lock,
+                is_closed=lambda: self._web_closed,
+            )
+            self.studio_templates = StudioTemplateService(
+                self.prompt_templates,
+                self._plugin_data_dir,
+                gallery_dir=self.web_studio_service.gallery_dir,
+                hub_mode=self.cfg.template_hub_mode,
+                hub_url=self.cfg.template_hub_url,
+                hub_key=self.cfg.template_hub_key,
+                raw_config=self.raw_config,
                 config_lock=self.configuration_lock,
                 is_closed=lambda: self._web_closed,
             )
@@ -423,6 +455,7 @@ class GeminiImageGenerationPlugin(Star):
                 self.web_studio_service,
                 limits_service=self.studio_limits,
                 providers_service=self.studio_providers,
+                templates_service=self.studio_templates,
                 is_closed=lambda: self._web_closed,
             )
             self._web_routes = self._web_api.register(self.context)
@@ -438,6 +471,8 @@ class GeminiImageGenerationPlugin(Star):
         await self.generation_scheduler.close()
         if self.studio_providers is not None:
             await self.studio_providers.close()
+        if getattr(self, "studio_templates", None) is not None:
+            await self.studio_templates.close()
         # 已开始的配置事务先完成，避免关闭资源时仍在切换客户端。
         async with self.configuration_lock:
             pass
@@ -457,11 +492,8 @@ class GeminiImageGenerationPlugin(Star):
             await self.background_task_manager.close()
         except Exception as e:
             logger.debug(f"关闭后台任务管理器失败: {e}")
-        try:
-            await self.generation_tracker.close()
-        except Exception as e:
-            logger.debug(f"关闭生成历史追踪器失败: {e}")
-        # v2 栈先于 legacy client 关闭，避免关闭期间仍有任务引用会话。
+        # v2 栈在后台任务之后、生成历史之前关闭：取消 v2 Job 时投影仍要写
+        # tracker；并保持早于 legacy client，避免关闭期间仍有任务引用会话。
         v2_service = getattr(self, "_v2_service", None)
         if v2_service is not None:
             try:
@@ -469,6 +501,10 @@ class GeminiImageGenerationPlugin(Star):
             except Exception as e:
                 logger.warning(f"[v2] 关闭调度器失败: {e}")
             self._v2_service = None
+        try:
+            await self.generation_tracker.close()
+        except Exception as e:
+            logger.debug(f"关闭生成历史追踪器失败: {e}")
         if self.api_client and hasattr(self.api_client, "close"):
             try:
                 await self.api_client.close()
@@ -511,12 +547,36 @@ class GeminiImageGenerationPlugin(Star):
                 candidates=[{"provider": "legacy", "model": "auto"}],
                 data_dir=os.path.join(self._plugin_data_dir, "v2"),
                 allowed_local_roots=(REFERENCE_IMAGE_CACHE_DIR,),
+                # submit 准入：共享额度、WebUI 名额与旧 FIFO 生成队列由调度器统一预留。
+                quota=RateLimiterQuota(lambda: self.rate_limiter),
+                limiter=CompositeAdmissionLimiter(
+                    StudioAdmissionLimiter(
+                        lambda: getattr(self.cfg, "webui_max_concurrent_jobs", 2)
+                    ),
+                    LegacyFifoLimiter(lambda: self.generation_scheduler),
+                ),
+                observers=(
+                    TrackerProjection(
+                        self.generation_tracker,
+                        self.web_studio_service.archive_images,
+                    ),
+                ),
             )
         except Exception as e:
             logger.warning(f"[v2] 调度器装配失败，本次回退 legacy 路径: {e}")
             return None
         self._v2_service = service
         return service
+
+    def _v2_service_for(self, umo: str | None):
+        """会话灰度过滤后的 v2 服务；总开关关闭或会话不在名单时走旧路径。"""
+
+        if not getattr(self.cfg, "scheduler_v2", False):
+            return None
+        sessions = getattr(self.cfg, "scheduler_v2_sessions", None) or ()
+        if sessions and umo not in sessions:
+            return None
+        return self._ensure_v2_service()
 
     def _load_api_client_from_config(self, *, quiet: bool = False):
         """从插件配置读取模型/密钥并初始化客户端"""
@@ -609,6 +669,8 @@ class GeminiImageGenerationPlugin(Star):
         self._load_api_client_from_config(quiet=True)
         if self.llm_image_tool:
             self.llm_image_tool.refresh_from_plugin()
+        if self.llm_batch_tool:
+            self.llm_batch_tool.refresh_from_plugin()
         if self.cfg.help_render_mode == "local":
             asyncio.create_task(self._ensure_font_for_local_mode())
 
@@ -616,7 +678,8 @@ class GeminiImageGenerationPlugin(Star):
             self._load_api_client_from_config()
             if self.llm_image_tool:
                 self.llm_image_tool.refresh_from_plugin()
-
+            if self.llm_batch_tool:
+                self.llm_batch_tool.refresh_from_plugin()
         if self.api_client:
             logger.info("Gemini 图像生成插件已加载")
         else:
@@ -638,8 +701,13 @@ class GeminiImageGenerationPlugin(Star):
         requested_provider: str | None = None,
         requested_model: str | None = None,
         has_reference_images: bool = False,
+        consume_quota: bool = True,
     ) -> tuple[bool, str | None]:
-        """命令在输入准备完成后检查 API/路由，再扣减一次额度。"""
+        """命令在输入准备完成后检查 API/路由，再扣减一次额度。
+
+        v2 路径的额度由调度器在 submit 准入时扣减，调用方传 consume_quota=False，
+        入口只做 API 客户端与路由能力检查。
+        """
         if not self._ensure_api_client():
             return False, "❌ API 客户端未初始化，请检查插件供应商配置。"
         if not select_candidates(
@@ -649,6 +717,8 @@ class GeminiImageGenerationPlugin(Star):
             has_reference_images=has_reference_images,
         ):
             return False, "❌ 没有匹配本次请求能力的供应商或模型"
+        if not consume_quota:
+            return True, None
         return await self._check_and_consume_limit(event)
 
     async def _quick_generate_image(
@@ -663,8 +733,9 @@ class GeminiImageGenerationPlugin(Star):
         override_aspect_ratio: str | None = None,
         requested_provider: str | None = None,
         requested_model: str | None = None,
+        template_id: str | None = None,
     ):
-        """快捷图像生成"""
+        """快捷图像生成。旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
         if not str(prompt or "").strip():
             yield event.plain_result("❌ 图像描述不能为空")
             return
@@ -707,11 +778,14 @@ class GeminiImageGenerationPlugin(Star):
                 )
                 return
 
+            # v2 会话灰度须在额度检查前判定：走 v2 时额度由调度器 submit 准入扣减。
+            service = self._v2_service_for(getattr(event, "unified_msg_origin", None))
             allowed, limit_message = await self._check_command_generation_limit(
                 event,
                 requested_provider=requested_provider,
                 requested_model=requested_model,
                 has_reference_images=bool(all_ref_images),
+                consume_quota=service is None,
             )
             if not allowed:
                 if limit_message:
@@ -747,70 +821,127 @@ class GeminiImageGenerationPlugin(Star):
                 requested_model=requested_model,
             )
 
-            try:
-                tracking_record = await self.generation_tracker.begin(
-                    source="command",
-                    prompt=enhanced_prompt,
-                    params={
-                        "resolution": effective_resolution,
-                        "aspect_ratio": effective_aspect_ratio,
-                        "provider": requested_provider,
-                        "model": requested_model,
-                        "image_count": 1,
-                        "quality": None,
-                    },
-                    requester=requester_from_event(event),
-                    requested_images=1,
-                )
-                tracking_job_id = tracking_record["job_id"]
-                logger.debug(
-                    f"[生成追踪] 快捷生成开始: job_id={tracking_job_id}, "
-                    f"来源=command, 目标张数=1, prompt={enhanced_prompt[:30]!r}"
-                )
-            except Exception as tracking_error:
-                logger.warning(f"[生成追踪] 快捷生成创建记录失败: {tracking_error}")
+            # 灰度：scheduler_v2 开启时命令入口改走 v2 调度器（生命周期/持久化/
+            # deadline 治理/准入）；内联参考图先经 prepare_references 落成短句柄，
+            # 避免 base64 撞请求引用长度上限。
+            deadline = self.cfg.total_timeout * 2
+            handle = None
+            if service is not None:
+                # 额度与队列准入在 submit 内完成，拒绝提示必须先于"生成中"发出。
+                v2_requester = requester_from_event(event)
+                umo = getattr(event, "unified_msg_origin", None)
+                if umo:
+                    v2_requester["umo"] = umo
+                try:
+                    prepared_refs = await service.prepare_references(
+                        all_ref_images, requester=v2_requester
+                    )
+                except CoreError as error:
+                    yield event.plain_result(
+                        v2_failure_text(
+                            str(error.code),
+                            error.message,
+                            total_timeout=self.cfg.total_timeout,
+                        )
+                    )
+                    return
+                try:
+                    handle = await service.submit(
+                        v2_command_request(
+                            prompt=enhanced_prompt,
+                            resolution=effective_resolution,
+                            aspect_ratio=effective_aspect_ratio,
+                            requested_provider=requested_provider,
+                            requested_model=requested_model,
+                            reference_images=prepared_refs,
+                            requester=v2_requester,
+                            deadline_seconds=deadline,
+                            metadata={
+                                "suppress_resolution": suppress_resolution,
+                                "enable_smart_retry": self.cfg.enable_smart_retry,
+                                "max_attempts_per_key": self.cfg.max_attempts_per_key,
+                                "total_timeout": self.cfg.total_timeout,
+                                "quota": {"cost": 1},
+                                "template_id": template_id,
+                            },
+                        ),
+                        admission={"event": event},
+                    )
+                except QuotaExceededError as error:
+                    # 消息为空对应群名单不通过：与旧路径一致，静默不回复。
+                    if not error.details.get("silent"):
+                        yield event.plain_result(error.message)
+                    return
+                except (QueueFullError, ServiceClosedError) as error:
+                    # 旧路径里这是被装饰调用抛出的 APIError，经同一格式化函数回复。
+                    yield event.plain_result(format_error_message(error.message))
+                    return
+            else:
+                try:
+                    tracking_record = await self.generation_tracker.begin(
+                        source="command",
+                        prompt=enhanced_prompt,
+                        params={
+                            "resolution": effective_resolution,
+                            "aspect_ratio": effective_aspect_ratio,
+                            "provider": requested_provider,
+                            "model": requested_model,
+                            "image_count": 1,
+                            "quality": None,
+                            "template_id": template_id,
+                        },
+                        requester=requester_from_event(event),
+                        requested_images=1,
+                    )
+                    tracking_job_id = tracking_record["job_id"]
+                    logger.debug(
+                        f"[生成追踪] 快捷生成开始: job_id={tracking_job_id}, "
+                        f"来源=command, 目标张数=1, prompt={enhanced_prompt[:30]!r}"
+                    )
+                except Exception as tracking_error:
+                    logger.warning(f"[生成追踪] 快捷生成创建记录失败: {tracking_error}")
 
-            yield event.plain_result("🎨  生成中...")
+            try:
+                yield event.plain_result("🎨  生成中...")
+            except (asyncio.CancelledError, GeneratorExit):
+                # Job 已在上面提交：此处被取消或关闭，同样要取消生成。
+                if handle is not None:
+                    await asyncio.shield(service.cancel(handle.job_id))
+                raise
 
             api_start = time.perf_counter()
-            # 灰度：scheduler_v2 开启时命令入口改走 v2 调度器（生命周期/持久化/
-            # deadline 治理）；内联参考图先经 prepare_references 落成短句柄，
-            # 避免 base64 撞请求引用长度上限；候选路由与限流仍由入口
-            # 检查和 legacy client 承担。
-            deadline = self.cfg.total_timeout * 2
-            service = None
-            if getattr(self.cfg, "scheduler_v2", False):
-                service = self._ensure_v2_service()
             if service is not None:
-                v2_requester = requester_from_event(event)
-                prepared_refs = await service.prepare_references(
-                    all_ref_images, requester=v2_requester
-                )
-                handle = await service.submit(
-                    v2_command_request(
-                        prompt=enhanced_prompt,
-                        resolution=effective_resolution,
-                        aspect_ratio=effective_aspect_ratio,
-                        requested_provider=requested_provider,
-                        requested_model=requested_model,
-                        reference_images=prepared_refs,
-                        requester=v2_requester,
-                        deadline_seconds=deadline,
-                        metadata={
-                            "suppress_resolution": suppress_resolution,
-                            "enable_smart_retry": self.cfg.enable_smart_retry,
-                            "max_attempts_per_key": self.cfg.max_attempts_per_key,
-                            "total_timeout": self.cfg.total_timeout,
-                        },
+                # 等待上限由调度器给出（deadline 之外还容纳观察者钩子时间）；
+                # 调用方被取消或等待超时都先取消 Job，与旧路径取消语义一致。
+                try:
+                    job_result = await service.wait(
+                        handle.job_id, timeout=service.result_wait_timeout(deadline)
                     )
-                )
-                # wait 超时多留 10 秒，防调度器异常挂死入口。
-                job_result = await service.wait(handle.job_id, timeout=deadline + 10)
-                if job_result.state not in (JobState.SUCCEEDED, JobState.PARTIAL):
-                    raise v2_failure_error(job_result)
+                except asyncio.CancelledError:
+                    await asyncio.shield(service.cancel(handle.job_id))
+                    raise
+                except asyncio.TimeoutError:
+                    await asyncio.shield(service.cancel(handle.job_id))
+                    yield event.plain_result(
+                        api_failure_message(
+                            message="生成等待超时",
+                            status_code=None,
+                            error_type="timeout",
+                            total_timeout=self.cfg.total_timeout,
+                        )
+                    )
+                    return
+                if (
+                    job_result.state not in (JobState.SUCCEEDED, JobState.PARTIAL)
+                    or job_result.result is None
+                ):
+                    yield event.plain_result(
+                        v2_failure_message(
+                            job_result, total_timeout=self.cfg.total_timeout
+                        )
+                    )
+                    return
                 v2_result = job_result.result
-                if v2_result is None:
-                    raise v2_failure_error(job_result)
                 image_urls, image_paths = v2_split_artifacts(v2_result.artifacts)
                 text_content = v2_result.text
                 thought_signature = None
@@ -830,98 +961,21 @@ class GeminiImageGenerationPlugin(Star):
             api_duration = time.perf_counter() - api_start
 
             if tracking_job_id:
-                delivered = list(
-                    dict.fromkeys(
-                        str(item)
-                        for item in (image_urls or []) + (image_paths or [])
-                        if item
-                    )
+                await record_generation_success(
+                    self.generation_tracker,
+                    tracking_job_id,
+                    image_urls=image_urls,
+                    image_paths=image_paths,
+                    text_content=text_content,
+                    stats={
+                        "provider": config.successful_provider,
+                        "model": config.successful_model,
+                        "alias": config.successful_model_alias,
+                        "retry_count": config.retry_count,
+                    },
+                    archive_images_fn=self.web_studio_service.archive_images,
+                    candidate_id=config.successful_candidate_id,
                 )
-                archived: list[str] = []
-                archive_note = ""
-                try:
-                    if delivered:
-                        try:
-                            archived = await self.web_studio_service.archive_images(
-                                image_urls,
-                                image_paths,
-                                candidate_id=config.successful_candidate_id,
-                                job_id=tracking_job_id,
-                            )
-                        except Exception as archive_error:
-                            # 图片仍会按原始来源发送，归档失败只降级记录，不算生成失败。
-                            archive_note = f"{type(archive_error).__name__}: {archive_error}".strip()
-                            logger.warning(
-                                f"[生成追踪] 快捷生成归档异常: {archive_note or '无详细信息'}"
-                            )
-                    if delivered and len(archived) < len(delivered):
-                        archive_note = (
-                            f"画廊归档不完整（{len(archived)}/{len(delivered)}）"
-                            + (f"：{archive_note}" if archive_note else "")
-                        )
-                    if delivered or text_content:
-                        status = (
-                            "succeeded"
-                            if delivered and len(archived) >= len(delivered)
-                            else "partial_success"
-                        )
-                        source_urls = [
-                            item
-                            for item in delivered
-                            if item.startswith(("http://", "https://"))
-                        ]
-                        await self.generation_tracker.complete(
-                            tracking_job_id,
-                            image_files=archived,
-                            text_content=text_content,
-                            stats={
-                                "provider": config.successful_provider,
-                                "model": config.successful_model,
-                                "alias": config.successful_model_alias,
-                                "retry_count": config.retry_count,
-                            },
-                            status=status,
-                            source_urls=source_urls,
-                        )
-                        if archive_note:
-                            update = getattr(self.generation_tracker, "update", None)
-                            if update is not None:
-                                try:
-                                    await update(tracking_job_id, error=archive_note)
-                                except Exception:
-                                    pass
-                        logger.debug(
-                            f"[生成追踪] 快捷生成完成: job_id={tracking_job_id}, "
-                            f"状态={status}, 归档张数={len(archived)}/{len(delivered)}, "
-                            f"供应商={config.successful_provider or '未记录'}, "
-                            f"模型={config.successful_model or '未记录'}"
-                        )
-                    else:
-                        await self.generation_tracker.fail(
-                            tracking_job_id,
-                            error="供应商未返回图片或文本内容",
-                        )
-                        logger.debug(
-                            f"[生成追踪] 快捷生成失败: job_id={tracking_job_id}, "
-                            "原因=无图片或文本内容"
-                        )
-                except Exception as tracking_error:
-                    logger.warning(
-                        f"[生成追踪] 快捷生成结果记录失败: "
-                        f"{type(tracking_error).__name__}: {tracking_error}"
-                    )
-                    try:
-                        await self.generation_tracker.fail(
-                            tracking_job_id,
-                            error=f"结果记录失败: {tracking_error}",
-                        )
-                        logger.debug(
-                            f"[生成追踪] 快捷生成转为失败: job_id={tracking_job_id}, "
-                            f"异常类型={type(tracking_error).__name__}"
-                        )
-                    except Exception:
-                        pass
-
             send_start = time.perf_counter()
             await self.message_sender.send_results_with_stream_retry(
                 event=event,
@@ -1037,37 +1091,38 @@ class GeminiImageGenerationPlugin(Star):
             tokens = text.split()
         if not tokens:
             return text, None, None
-
-        selector = tokens[0]
-        configured_candidates = list(getattr(self.cfg, "provider_candidates", []) or [])
-        provider: str | None = None
-        model: str | None = None
-        consumed = False
-        if "/" in selector:
-            provider_part, model_part = selector.split("/", 1)
-            provider_matches = select_candidates(
-                configured_candidates,
-                provider=provider_part,
-            )
-            if provider_part and provider_matches:
-                provider = provider_part
-                model = model_part or None
-                consumed = True
-            elif select_candidates(configured_candidates, model=selector):
-                model = selector
-                consumed = True
-        else:
-            candidates = select_candidates(
-                configured_candidates,
-                model=selector,
-            )
-            if candidates:
-                model = selector
-                consumed = True
-
+        provider, model, consumed = parse_model_selector(
+            tokens[0], list(getattr(self.cfg, "provider_candidates", []) or [])
+        )
         if not consumed:
             return text, None, None
         return " ".join(tokens[1:]).strip(), provider, model
+
+    def _quick_template(self, template_id: str):
+        store = getattr(self, "prompt_templates", None)
+        if store is not None:
+            try:
+                found = store.get(template_id)
+                if found is not None:
+                    return found
+            except Exception as exc:
+                logger.warning("[模板库] 读取模板失败，改用内置定义: %s", exc)
+        return builtin_template(template_id)
+
+    def _quick_dimensions(self, template: Any, mode_key: str) -> tuple[str, str]:
+        base = builtin_template(template.id)
+        resolution, aspect_ratio = self._resolve_quick_mode_params(
+            mode_key,
+            str(base.defaults.get("resolution") or ""),
+            str(base.defaults.get("aspect_ratio") or ""),
+        )
+        store = getattr(self, "prompt_templates", None)
+        override = store.builtin_override(template.id) if store is not None else {}
+        defaults = override.get("defaults") if isinstance(override, dict) else None
+        if isinstance(defaults, dict):
+            resolution = str(defaults.get("resolution") or resolution)
+            aspect_ratio = str(defaults.get("aspect_ratio") or aspect_ratio)
+        return self._resolve_quick_mode_custom_size_overrides(resolution, aspect_ratio)
 
     @provider_operation("command")
     async def _handle_quick_mode(
@@ -1090,9 +1145,7 @@ class GeminiImageGenerationPlugin(Star):
             prompt, requested_provider, requested_model = self._parse_generation_route(
                 prompt
             )
-        effective_resolution, effective_aspect_ratio = self._resolve_quick_mode_params(
-            mode_key, resolution, aspect_ratio
-        )
+        effective_resolution, effective_aspect_ratio = resolution, aspect_ratio
         effective_resolution, effective_aspect_ratio = (
             self._resolve_quick_mode_custom_size_overrides(
                 effective_resolution,
@@ -1161,8 +1214,17 @@ class GeminiImageGenerationPlugin(Star):
     async def quick_avatar(self, event: AstrMessageEvent, prompt: str = ""):
         """头像快速模式 - 1K分辨率，1:1比例"""
         prompt = self._extract_prompt_from_message(event, prompt, ("快速",), ("头像",))
+        template = self._quick_template("avatar")
+        resolution, aspect_ratio = self._quick_dimensions(template, "avatar")
         async for result in self._handle_quick_mode(
-            event, prompt, "1K", "1:1", "头像", "avatar", get_avatar_prompt
+            event,
+            prompt,
+            resolution,
+            aspect_ratio,
+            "头像",
+            "avatar",
+            lambda text, template=template: render_template(template, text),
+            template_id=template.id,
         ):
             yield result
 
@@ -1170,8 +1232,17 @@ class GeminiImageGenerationPlugin(Star):
     async def quick_poster(self, event: AstrMessageEvent, prompt: str = ""):
         """海报快速模式 - 2K分辨率，16:9比例"""
         prompt = self._extract_prompt_from_message(event, prompt, ("快速",), ("海报",))
+        template = self._quick_template("poster")
+        resolution, aspect_ratio = self._quick_dimensions(template, "poster")
         async for result in self._handle_quick_mode(
-            event, prompt, "2K", "16:9", "海报", "poster", get_poster_prompt
+            event,
+            prompt,
+            resolution,
+            aspect_ratio,
+            "海报",
+            "poster",
+            lambda text, template=template: render_template(template, text),
+            template_id=template.id,
         ):
             yield result
 
@@ -1179,8 +1250,17 @@ class GeminiImageGenerationPlugin(Star):
     async def quick_wallpaper(self, event: AstrMessageEvent, prompt: str = ""):
         """壁纸快速模式 - 4K分辨率，16:9比例"""
         prompt = self._extract_prompt_from_message(event, prompt, ("快速",), ("壁纸",))
+        template = self._quick_template("wallpaper")
+        resolution, aspect_ratio = self._quick_dimensions(template, "wallpaper")
         async for result in self._handle_quick_mode(
-            event, prompt, "4K", "16:9", "壁纸", "wallpaper", get_wallpaper_prompt
+            event,
+            prompt,
+            resolution,
+            aspect_ratio,
+            "壁纸",
+            "wallpaper",
+            lambda text, template=template: render_template(template, text),
+            template_id=template.id,
         ):
             yield result
 
@@ -1188,8 +1268,17 @@ class GeminiImageGenerationPlugin(Star):
     async def quick_card(self, event: AstrMessageEvent, prompt: str = ""):
         """卡片快速模式 - 1K分辨率，3:2比例"""
         prompt = self._extract_prompt_from_message(event, prompt, ("快速",), ("卡片",))
+        template = self._quick_template("card")
+        resolution, aspect_ratio = self._quick_dimensions(template, "card")
         async for result in self._handle_quick_mode(
-            event, prompt, "1K", "3:2", "卡片", "card", get_card_prompt
+            event,
+            prompt,
+            resolution,
+            aspect_ratio,
+            "卡片",
+            "card",
+            lambda text, template=template: render_template(template, text),
+            template_id=template.id,
         ):
             yield result
 
@@ -1197,8 +1286,17 @@ class GeminiImageGenerationPlugin(Star):
     async def quick_mobile(self, event: AstrMessageEvent, prompt: str = ""):
         """手机快速模式 - 2K分辨率，9:16比例"""
         prompt = self._extract_prompt_from_message(event, prompt, ("快速",), ("手机",))
+        template = self._quick_template("mobile")
+        resolution, aspect_ratio = self._quick_dimensions(template, "mobile")
         async for result in self._handle_quick_mode(
-            event, prompt, "2K", "9:16", "手机", "mobile", get_mobile_prompt
+            event,
+            prompt,
+            resolution,
+            aspect_ratio,
+            "手机",
+            "mobile",
+            lambda text, template=template: render_template(template, text),
+            template_id=template.id,
         ):
             yield result
 
@@ -1230,18 +1328,22 @@ class GeminiImageGenerationPlugin(Star):
                     tokens = tokens[1:]
                 clean_prompt = " ".join(tokens).strip()
 
-        full_prompt = get_figure_prompt(clean_prompt, style_type)
+        template = self._quick_template(
+            "figure-gk" if style_type == 2 else "figure-pvc"
+        )
+        resolution, aspect_ratio = self._quick_dimensions(template, "figure")
 
         async for result in self._handle_quick_mode(
             event,
-            full_prompt,
-            "2K",
-            "3:2",
+            render_template(template, clean_prompt),
+            resolution,
+            aspect_ratio,
             "手办化",
             "figure",
             None,
             requested_provider=requested_provider,
             requested_model=requested_model,
+            template_id=template.id,
         ):
             yield result
 
@@ -1281,8 +1383,13 @@ class GeminiImageGenerationPlugin(Star):
         stripped_prompt = (prompt or "").strip()
         simple_mode = stripped_prompt.startswith("简单")
         user_prompt = stripped_prompt[len("简单") :].strip() if simple_mode else prompt
+        template = self._quick_template("sticker-simple" if simple_mode else "sticker")
 
-        if not valid_reference_images and not valid_avatar_reference:
+        if (
+            template.reference == "required"
+            and not valid_reference_images
+            and not valid_avatar_reference
+        ):
             yield event.plain_result(
                 _build_no_ref_msg(
                     "表情包",
@@ -1291,30 +1398,17 @@ class GeminiImageGenerationPlugin(Star):
             )
             return
 
-        sticker_resolution, sticker_aspect_ratio = self._resolve_quick_mode_params(
-            "sticker", "4K", "16:9"
+        sticker_resolution, sticker_aspect_ratio = self._quick_dimensions(
+            template, "sticker"
         )
-        sticker_resolution, sticker_aspect_ratio = (
-            self._resolve_quick_mode_custom_size_overrides(
-                sticker_resolution,
-                sticker_aspect_ratio,
-            )
+        full_prompt = render_template(
+            template,
+            user_prompt,
+            rows=self.cfg.sticker_grid_rows,
+            cols=self.cfg.sticker_grid_cols,
         )
 
         if not self.cfg.enable_sticker_split:
-            full_prompt = (
-                get_q_version_sticker_prompt(
-                    user_prompt,
-                    rows=self.cfg.sticker_grid_rows,
-                    cols=self.cfg.sticker_grid_cols,
-                )
-                if simple_mode
-                else get_sticker_prompt(
-                    user_prompt,
-                    rows=self.cfg.sticker_grid_rows,
-                    cols=self.cfg.sticker_grid_cols,
-                )
-            )
             async for result in self._quick_generate_image(
                 event,
                 full_prompt,
@@ -1323,15 +1417,19 @@ class GeminiImageGenerationPlugin(Star):
                 override_aspect_ratio=sticker_aspect_ratio,
                 requested_provider=requested_provider,
                 requested_model=requested_model,
+                template_id=template.id,
             ):
                 yield result
             return
 
+        # v2 会话灰度须在额度检查前判定：走 v2 时额度由调度器 submit 准入扣减。
+        v2_service = self._v2_service_for(event.unified_msg_origin)
         allowed, limit_message = await self._check_command_generation_limit(
             event,
             requested_provider=requested_provider,
             requested_model=requested_model,
             has_reference_images=True,
+            consume_quota=v2_service is None,
         )
         if not allowed:
             if limit_message:
@@ -1339,34 +1437,58 @@ class GeminiImageGenerationPlugin(Star):
             return
 
         # 启用切割的表情包生成
-        full_prompt = (
-            get_q_version_sticker_prompt(
-                user_prompt,
-                rows=self.cfg.sticker_grid_rows,
-                cols=self.cfg.sticker_grid_cols,
-            )
-            if simple_mode
-            else get_sticker_prompt(
-                user_prompt,
-                rows=self.cfg.sticker_grid_rows,
-                cols=self.cfg.sticker_grid_cols,
-            )
-        )
 
         api_start_time = time.perf_counter()
         try:
-            yield event.plain_result("🎨  生成中...")
+            submission = None
+            if v2_service is not None:
+                # 额度与队列准入在 submit 内完成，拒绝提示必须先于"生成中"发出。
+                submission = await self.image_generator.submit_v2(
+                    event=event,
+                    v2_service=v2_service,
+                    prompt=full_prompt,
+                    reference_images=valid_reference_images,
+                    avatar_reference=valid_avatar_reference,
+                    override_resolution=sticker_resolution,
+                    override_aspect_ratio=sticker_aspect_ratio,
+                    requested_provider=requested_provider,
+                    requested_model=requested_model,
+                    admission={"event": event},
+                    quota={"cost": 1},
+                    template_id=template.id,
+                )
+                if submission.handle is None:
+                    if not submission.silent:
+                        yield event.plain_result(submission.message)
+                    return
 
-            success, result_data = await self.image_generator.generate_image_core(
-                event=event,
-                prompt=full_prompt,
-                reference_images=valid_reference_images,
-                avatar_reference=valid_avatar_reference,
-                override_resolution=sticker_resolution,
-                override_aspect_ratio=sticker_aspect_ratio,
-                requested_provider=requested_provider,
-                requested_model=requested_model,
-            )
+            try:
+                yield event.plain_result("🎨  生成中...")
+            except (asyncio.CancelledError, GeneratorExit):
+                # Job 已在上面提交：此处被取消或关闭，同样要取消生成。
+                if submission is not None:
+                    await asyncio.shield(v2_service.cancel(submission.handle.job_id))
+                raise
+
+            if submission is not None:
+                success, result_data = await self.image_generator.wait_v2(
+                    v2_service=v2_service,
+                    handle=submission.handle,
+                    requested_provider=requested_provider,
+                    requested_model=requested_model,
+                )
+            else:
+                success, result_data = await self.image_generator.generate_image_core(
+                    event=event,
+                    prompt=full_prompt,
+                    reference_images=valid_reference_images,
+                    avatar_reference=valid_avatar_reference,
+                    override_resolution=sticker_resolution,
+                    override_aspect_ratio=sticker_aspect_ratio,
+                    requested_provider=requested_provider,
+                    requested_model=requested_model,
+                    template_id=template.id,
+                )
             api_duration = time.perf_counter() - api_start_time
 
             if not success or not isinstance(result_data, tuple):
@@ -1905,28 +2027,64 @@ class GeminiImageGenerationPlugin(Star):
             )
             return
 
+        # v2 会话灰度须在额度检查前判定：走 v2 时额度由调度器 submit 准入扣减。
+        v2_service = self._v2_service_for(event.unified_msg_origin)
         allowed, limit_message = await self._check_command_generation_limit(
             event,
             requested_provider=requested_provider,
             requested_model=requested_model,
             has_reference_images=True,
+            consume_quota=v2_service is None,
         )
         if not allowed:
             if limit_message:
                 yield event.plain_result(limit_message)
             return
 
-        yield event.plain_result("🎨 开始转换风格...")
+        submission = None
+        if v2_service is not None:
+            # 额度与队列准入在 submit 内完成，拒绝提示必须先于"开始转换风格"发出。
+            submission = await self.image_generator.submit_v2(
+                event=event,
+                v2_service=v2_service,
+                prompt=full_prompt,
+                reference_images=reference_images,
+                avatar_reference=avatar_reference,
+                requested_provider=requested_provider,
+                requested_model=requested_model,
+                admission={"event": event},
+                quota={"cost": 1},
+            )
+            if submission.handle is None:
+                if not submission.silent:
+                    yield event.plain_result(submission.message)
+                return
+
+        try:
+            yield event.plain_result("🎨 开始转换风格...")
+        except (asyncio.CancelledError, GeneratorExit):
+            # Job 已在上面提交：此处被取消或关闭，同样要取消生成。
+            if submission is not None:
+                await asyncio.shield(v2_service.cancel(submission.handle.job_id))
+            raise
 
         api_start = time.perf_counter()
-        success, result_data = await self.image_generator.generate_image_core(
-            event=event,
-            prompt=full_prompt,
-            reference_images=reference_images,
-            avatar_reference=avatar_reference,
-            requested_provider=requested_provider,
-            requested_model=requested_model,
-        )
+        if submission is not None:
+            success, result_data = await self.image_generator.wait_v2(
+                v2_service=v2_service,
+                handle=submission.handle,
+                requested_provider=requested_provider,
+                requested_model=requested_model,
+            )
+        else:
+            success, result_data = await self.image_generator.generate_image_core(
+                event=event,
+                prompt=full_prompt,
+                reference_images=reference_images,
+                avatar_reference=avatar_reference,
+                requested_provider=requested_provider,
+                requested_model=requested_model,
+            )
         api_duration = time.perf_counter() - api_start
 
         send_start = time.perf_counter()
@@ -2012,6 +2170,7 @@ class GeminiImageGenerationPlugin(Star):
         quality: str | None = None,
         image_count: int = 1,
         suppress_resolution: bool = False,
+        template_id: str | None = None,
     ) -> tuple[bool, tuple[list[str], list[str], str | None, str | None] | str]:
         """兼容旧 API：核心图像生成方法"""
         return await self.image_generator.generate_image_core(
@@ -2029,6 +2188,7 @@ class GeminiImageGenerationPlugin(Star):
             quality=quality,
             image_count=image_count,
             suppress_resolution=suppress_resolution,
+            template_id=template_id,
         )
 
     async def _dispatch_send_results(

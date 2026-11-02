@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.test_web_studio_service import _png
 from tl.background_tasks import BackgroundTaskManager
 from tl.generation_scheduler import GenerationScheduler, scheduled_generation
 from tl.generation_tracker import GenerationTracker
@@ -114,3 +115,58 @@ async def test_partial_generation_preserves_images_and_restart_does_not_replay_c
     restored = await reloaded.get_for_plugin(accepted["task_id"], "a")
     assert restored["status"] == "partial_success"
     assert restored["callback_status"] == "interrupted"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_file_uri", [False, True])
+async def test_local_reference_survives_real_image_handler_filter(
+    tmp_path, use_file_uri, monkeypatch
+):
+    service, _ = make_service(tmp_path)
+    import sys
+    import types
+
+    components = types.ModuleType("astrbot.api.message_components")
+    components.At = type("At", (), {})
+    components.Image = type("Image", (), {})
+    components.Reply = type("Reply", (), {})
+    monkeypatch.setitem(sys.modules, "astrbot.api.message_components", components)
+    tl_utils = sys.modules["tl.tl_utils"]
+    monkeypatch.setattr(
+        tl_utils, "AvatarManager", type("AvatarManager", (), {}), raising=False
+    )
+    monkeypatch.setattr(
+        tl_utils, "encode_file_to_base64", lambda value: "", raising=False
+    )
+    monkeypatch.setattr(
+        tl_utils, "is_valid_base64_image_str", lambda value: False, raising=False
+    )
+    from tl.image_handler import ImageHandler
+
+    path = _png(tmp_path / "reference.png")
+    service.plugin.image_generator._filter_valid_fn = (
+        ImageHandler().filter_valid_reference_images
+    )
+    captured = []
+    original = service.plugin.api_client.generate_image
+
+    async def generate(config, **kwargs):
+        captured.append(config)
+        return await original(config, **kwargs)
+
+    service.plugin.api_client.generate_image = generate
+    try:
+        accepted = await service.submit(
+            plugin_id="a",
+            prompt="edit",
+            reference_images=[path.as_uri() if use_file_uri else str(path)],
+        )
+        result = await service.wait_task(accepted["task_id"], plugin_id="a")
+        assert result["status"] == "succeeded"
+        assert len(captured) == 1
+        assert captured[0].reference_images == [path.as_uri()]
+    finally:
+        await service.close()
+        await service.plugin.background_task_manager.close()
+        await service.plugin.generation_tracker.close()
+        await service.plugin.rate_limiter.close()

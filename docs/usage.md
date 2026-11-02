@@ -39,6 +39,8 @@ v2.0.0 起，插件只使用 `供应商配置` 中配置的生图供应商。
 
 所有快速模式均自带提示词，额外描述可省略，例如发送图片并输入 `/快速 头像`、`/快速 壁纸` 或 `/快速 手办化`。普通 `/生图`、`/改图` 仍需提供描述；`/换风格` 需指定风格，附加描述可选。
 
+这些提示词来自模板库中的内置模板，字段和渲染规则见 [提示词模板库](templates.md)。
+
 ## 智能头像功能
 
 启用 `auto_avatar_reference` 后，插件会根据自然语言自动获取头像作为参考图：
@@ -80,11 +82,12 @@ v2.0.0 起，插件只使用 `供应商配置` 中配置的生图供应商。
 
 ## LLM 工具集成
 
-插件注册以下三个工具：
+插件注册以下工具：
 
-- `gemini_image_generation`：单次或批量生图。
-- `gemini_image_provider_models`：查询供应商、原始模型、别名、生成模式；设置 `detail=true` 时返回该模型在生图工具中实际支持的参数。
-- `gemini_image_task_status`：按任务号查询当前会话的后台进度和结果摘要。
+- `gemini_image_generation`：单次生图或改图。
+- `gemini_image_batch`：一次生成多项；每项用唯一 `name` 和 `tasks` 数组提交。
+- `gemini_image_lookup`：按 `kind` 查询模型、可用提示词模板、可引用的生成记录和当前会话的后台任务。
+- `gemini_image_share`：用户明确要求把自己的生成图用到其他会话后，共享或取消共享该记录。
 
 模型可以用自然语言触发生图：
 
@@ -112,19 +115,22 @@ LLM 工具会根据当前 `tool_call_timeout` 和 `llm_tool_timeout_reserve_perc
 
 ### 工具参数
 
-LLM 工具支持可选 `provider` / `model` 路由参数。二者都不传时完整轮询；只传供应商时仅在该供应商内重试；只传模型或别名时跨供应商保持原轮询顺序；两者都传时只使用交集候选。
+单图参数：
 
-工具还暴露以下可选生成参数：
+- `prompt`：不用模板时必填；使用 `template` 时只写主体或附加要求。
+- `template`：模板 id。不存在或未对模型开放时，先用 `gemini_image_lookup`（`kind=templates`）查询。
+- `references`：要使用的图片。改图用 `["current"]`，发送者头像用 `["avatar:sender"]`，在上一张图上继续改用 `["gen:last"]`。写法见 [内部引用](references.md)。
+- `resolution`、`aspect_ratio`：可选。未传入时使用模板默认值、插件配置或供应商默认值；显式传入时以显式尺寸为准。
+- `model`：可选，写法与命令相同，可以是 `供应商/模型`、`供应商/`、模型名或别名。无法识别时先查询 `kind=models`，不会改用默认路由。
+- `options`：可选对象，只包含当前已配置模型声明过的 `quality`、`negative_prompt`、`watermark`。一个都没有时，这个参数不出现。
+- `deliver`：`user`（默认）发给用户；`return` 不发给用户，只返回图片路径；`forum` 同步返回图片位置并提示调用 `upload_image` 上传论坛图床。
 
-- `resolution`：仅支持 `1K` / `2K` / `4K`。
-- `aspect_ratio`：仅支持 `1:1` / `16:9` / `4:3` / `3:2` / `9:16` / `4:5` / `5:4` / `21:9` / `3:4` / `2:3`。
-- 未传入时使用插件配置或供应商默认值。
-- `negative_prompt` / `watermark` / `quality`：只允许支持对应参数的候选参与生成；可通过模型查询工具的详细模式获取合法参数和枚举。
-- `preserve_reference_image_size`：有参考图时保留其尺寸；省略时读取插件配置。启用后不能同时显式传入尺寸、分辨率或比例。
+生成成功后，结果会附上 `gen:<记录ID>`。历史记录关闭时不附。`reference_cross_session` 关闭且记录未共享时，还会提示：用户要在别的群或私聊使用这张图时，先征得同意再调用 `gemini_image_share`。
 
+旧参数 `provider`、`use_reference_images`、`include_user_avatar`、`reference_image_paths`、`preserve_reference_image_size`、顶层 `negative_prompt` / `watermark` / `quality` 和 `for_forum` 已从单图参数中移除。调用时传入会被忽略。批量请求请用独立工具 `gemini_image_batch`；`gemini_image_generation` 不再接受 `batch_tasks`。
 ### 批量生成
 
-`gemini_image_generation` 的 `batch_tasks` 会直接进入后台。每个条目必须包含唯一 `name`、完整 `prompt`、`image_count`，并至少指定 `provider` 或 `model`。插件按配置并发执行；供应商支持原生批量时优先按其单次上限提交，不支持时逐张生成，返回数量不足时会继续补齐。
+`gemini_image_batch` 的 `tasks` 会直接进入后台。每个条目必须包含唯一 `name`、完整 `prompt` 和 `image_count`。顶层参数 `model`、`template`、`references`、`resolution`、`aspect_ratio` 和 `options` 作为全部任务的默认值，条目内同名字段覆盖默认值。插件按配置并发执行；供应商支持原生批量时优先按其单次上限提交，不支持时逐张生成，返回数量不足时会继续补齐。
 
 ### 参数校验
 
@@ -172,6 +178,14 @@ LLM 传入非法 `resolution` 或 `aspect_ratio` 时，工具会记录警告并�
 - 修改后点击「保存限流配置」，即时生效且不重载插件、不清空计数。加载失败禁用保存，保存失败保留草稿；遇到版本冲突先核对草稿，再确认重新加载服务器配置。
 - 旧群号规则需选择完整 UMO、明确「确认迁移」后保存；未迁移的启用规则会暂停聊天生图，历史计数也可能触发短期迁移保护。备份及回退说明见 [限流配置](config.md#limit_settings)。
 
+### 提示词广场
+
+管理提示词模板：卡片列出内置与本地模板，可按名称、说明或标签搜索筛选；支持新建、编辑、复制、删除自定义模板，内置模板可恢复默认。每个模板可开关「对 AI 可用」，关闭后不出现在 `gemini_image_lookup` 的模板查询里；模板的默认分辨率与比例只在未显式指定时生效。
+
+点击「填入工作台」把模板正文和默认尺寸带回工作台继续编辑。模板包以 JSON 导入导出，格式与在线模板服务一致；导入默认重新分配本地 id，避免与内置和已有模板冲突。
+
+「在线模板」子页检索官方提示词服务（[image-hub.alxy.app](https://image-hub.alxy.app)）。默认（`cache`）按哈希把目录快照同步到插件本地缓存，检索和生成都不联网，页面显示缓存条数、哈希与同步时间，可随时「立即同步」；切到 `online` 会额外实时检索服务端。在线模板只读，点「导入为本地」后变成可编辑的本地副本。配置密钥后可以上传本地模板，上传前会展示将公开发送的完整内容供确认。详见 [提示词模板库](templates.md)。
+
 ### 供应商配置
 
 - 二级 Tab 分为「配置条目」「轮询排序」「公共设置」，切换保留草稿，不把长表单平铺在页面上。配置表独立滚动，点击编辑打开分组弹窗，高级字段默认折叠。
@@ -188,9 +202,9 @@ LLM 传入非法 `resolution` 或 `aspect_ratio` 时，工具会记录警告并�
 
 `webui` 配置段：`history_enabled`（关闭后不写历史记录）、`history_max_records`、`gallery_max_size_mb`、`upload_max_mb`、`max_concurrent_jobs`（工作台全局并发）、`batch_total_budget`（单次批量图片总预算）。
 
-## 论坛发帖模式
+## 仅返回路径
 
-当用户明确要求将图片发到论坛或 AstrBook 时，LLM 会设置 `for_forum=true`。此时工具会同步等待生成完成并返回图片路径或 URL，LLM 可继续调用 `upload_image` 上传图床后自动发帖。
+需要把生成结果交给其他工具处理时，传 `deliver="return"`。工具会等待生成完成并返回图片 URL 或本地路径，不自动发送给用户。
 
 ## 表情包切分算法
 

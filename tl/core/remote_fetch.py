@@ -1,17 +1,14 @@
-"""RemoteFetchService：受 PathPolicy 约束的远端抓取（大小/时间/重定向边界）。"""
+"""RemoteFetchService：远端抓取（大小/时间/重定向边界与 URL 基本形态校验）。"""
 
 from __future__ import annotations
 
 import asyncio
-import ipaddress
-import socket
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlsplit
 
 import aiohttp
-from aiohttp.resolver import ThreadedResolver
 from astrbot.api import logger
 
 from .errors import (
@@ -23,12 +20,15 @@ from .errors import (
     RemoteFetchTooManyRedirectsError,
     redact_url,
 )
-from .path_policy import PathPolicy
+from .path_policy import check_remote_url
 
-# 手动跟随的最大重定向跳数，每跳都用 PathPolicy 重新校验。
+# 手动跟随的最大重定向跳数，每跳都重新校验 URL 形态。
 MAX_REDIRECTS = 5
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _READ_CHUNK_BYTES = 64 * 1024
+# 受支持格式的魔数都在文件头：实测 512B 已足够，取 4096 留余量。
+# 尺寸未必：WEBP 需完整内容，故探测只把魔数当权威，像素校验尽力而为。
+PROBE_BYTES = 4 * 1024
 _SENSITIVE_REDIRECT_HEADERS = frozenset(
     {"authorization", "proxy-authorization", "cookie", "cookie2"}
 )
@@ -58,69 +58,24 @@ def _remaining(
     )
 
 
-class _PolicyResolver(ThreadedResolver):
-    """把实际连接使用的 DNS 结果交给 PathPolicy 再次校验。"""
-
-    def __init__(self, policy: PathPolicy) -> None:
-        super().__init__()
-        self._policy = policy
-
-    async def resolve(
-        self,
-        host: str,
-        port: int = 0,
-        family: socket.AddressFamily = socket.AF_INET,
-    ):
-        hosts = await super().resolve(host, port, family)
-        self._policy.validate_addresses(host, (item["host"] for item in hosts))
-        return hosts
-
-
 class RemoteFetchService:
-    """按 deadline、响应体上限与逐跳地址校验抓取远端字节。"""
+    """按 deadline、响应体上限与重定向边界抓取远端字节。"""
 
     def __init__(
         self,
-        policy: PathPolicy,
         *,
         max_body_bytes: int = 16 * 1024 * 1024,
         connect_timeout: float = 10.0,
         max_redirects: int = MAX_REDIRECTS,
     ) -> None:
-        self.policy = policy
         self.max_body_bytes = int(max_body_bytes)
         self.connect_timeout = float(connect_timeout)
         self.max_redirects = int(max_redirects)
 
-    async def check_url(
-        self,
-        url: str,
-        deadline_at: datetime | None = None,
-        *,
-        deadline_mono: float | None = None,
-    ) -> str:
-        """校验 URL；域名解析在线程池执行并受调用时剩余 deadline 约束。"""
+    def check_url(self, url: str) -> str:
+        """校验 URL 可作为抓取目标，原样返回。"""
 
-        remaining = _remaining(deadline_at, deadline_mono)
-        if remaining is not None and remaining <= 0:
-            raise RemoteFetchTimeoutError(f"远端抓取 DNS 校验超时: {redact_url(url)}")
-        hostname = urlsplit(url).hostname or ""
-        try:
-            ipaddress.ip_address(hostname.rstrip("."))
-        except ValueError:
-            validation = asyncio.to_thread(self.policy.validate_url, url)
-            try:
-                if remaining is None:
-                    await validation
-                else:
-                    await asyncio.wait_for(validation, timeout=remaining)
-            except asyncio.TimeoutError as exc:
-                raise RemoteFetchTimeoutError(
-                    f"远端抓取 DNS 校验超时: {redact_url(url)}"
-                ) from exc
-        else:
-            self.policy.validate_url(url)
-        return url
+        return check_remote_url(url)
 
     async def fetch(
         self,
@@ -129,16 +84,16 @@ class RemoteFetchService:
         deadline_at: datetime | None = None,
         proxy: str | None = None,
         headers: Mapping[str, str] | None = None,
+        probe: Callable[[bytes], None] | None = None,
     ) -> bytes:
-        """抓取 URL 字节；deadline_at 截断总时长，proxy 由调用方显式传入。"""
+        """抓取 URL 字节；deadline_at 截断总时长，proxy 与 probe 由调用方传入。"""
 
         current = str(url or "").strip()
         request_headers = dict(headers or {})
         remaining = _remaining(deadline_at, None)
         deadline_mono = time.monotonic() + remaining if remaining is not None else None
-        connector = aiohttp.TCPConnector(resolver=_PolicyResolver(self.policy))
         async with aiohttp.ClientSession(
-            connector=connector, trust_env=False
+            connector=aiohttp.TCPConnector(), trust_env=False
         ) as session:
             for hop in range(self.max_redirects + 1):
                 remaining = _remaining(deadline_at, deadline_mono)
@@ -148,15 +103,11 @@ class RemoteFetchService:
                         f"远端抓取超过 deadline: {redact_url(current)}"
                     )
                 try:
-                    await self.check_url(
-                        current, deadline_at, deadline_mono=deadline_mono
-                    )
+                    current = self.check_url(current)
                 except PathPolicyError as exc:
-                    logger.warning(
-                        "远端抓取目标被安全策略拒绝: %s", redact_url(current)
-                    )
+                    logger.warning("远端抓取目标被拒绝: %s", redact_url(current))
                     raise RemoteFetchRejectedError(
-                        f"远端抓取目标被安全策略拒绝: {redact_url(current)}"
+                        f"远端抓取目标被拒绝: {redact_url(current)}"
                     ) from exc
                 remaining = _remaining(deadline_at, deadline_mono)
                 if remaining is not None and remaining <= 0:
@@ -212,14 +163,7 @@ class RemoteFetchService:
                                 f"远端抓取失败: HTTP {response.status} "
                                 f"{redact_url(current)}"
                             )
-                        return await self._read_body(response, current)
-                except PathPolicyError as exc:
-                    logger.warning(
-                        "远端抓取连接地址被安全策略拒绝: %s", redact_url(current)
-                    )
-                    raise RemoteFetchRejectedError(
-                        f"远端抓取连接地址被安全策略拒绝: {redact_url(current)}"
-                    ) from exc
+                        return await self._read_body(response, current, probe)
                 except asyncio.CancelledError:
                     raise
                 except asyncio.TimeoutError as exc:
@@ -237,7 +181,12 @@ class RemoteFetchService:
             f"远端抓取重定向超过 {self.max_redirects} 跳"
         )
 
-    async def _read_body(self, response: aiohttp.ClientResponse, url: str) -> bytes:
+    async def _read_body(
+        self,
+        response: aiohttp.ClientResponse,
+        url: str,
+        probe: Callable[[bytes], None] | None,
+    ) -> bytes:
         content_length = response.headers.get("Content-Length", "")
         if content_length.isdigit() and int(content_length) > self.max_body_bytes:
             logger.error(
@@ -250,6 +199,7 @@ class RemoteFetchService:
             )
         chunks: list[bytes] = []
         size = 0
+        probed = probe is None
         async for chunk in response.content.iter_chunked(_READ_CHUNK_BYTES):
             size += len(chunk)
             if size > self.max_body_bytes:
@@ -262,4 +212,10 @@ class RemoteFetchService:
                     f"远端响应体超过 {self.max_body_bytes} 字节上限: {redact_url(url)}"
                 )
             chunks.append(chunk)
+            if not probed and size >= PROBE_BYTES:
+                # 格式与尺寸都在文件头，先用已收字节提前判定，不合格就不再读下去。
+                probe(b"".join(chunks)[:PROBE_BYTES])
+                probed = True
+        if not probed and chunks:
+            probe(b"".join(chunks)[:PROBE_BYTES])
         return b"".join(chunks)

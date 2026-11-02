@@ -80,21 +80,33 @@ def is_qq_image_host(host: str) -> bool:
     )
 
 
+# 开头即可判定的格式；表驱动，风格同 _TRANSCODE_MAGIC_PREFIXES。
+# WEBP/HEIC/HEIF 需按偏移判定，不在此表内。
+_PREFIX_MAGIC_MIMES: tuple[tuple[str, tuple[bytes, ...]], ...] = (
+    ("image/png", (b"\x89PNG\r\n\x1a\n",)),
+    ("image/jpeg", (b"\xff\xd8",)),
+)
+
+# ISO-BMFF 的品牌盒在偏移 4 处，不是文件开头，故单独按偏移判定。
+_HEIC_BRANDS = frozenset({b"ftypheic", b"ftyphevc"})
+_HEIF_BRANDS = frozenset({b"ftypheif", b"ftypmif1", b"ftypmsf1"})
+
+
 def detect_reference_image_mime(raw: bytes) -> str | None:
     """Detect MIME for image formats providers can receive directly."""
+
     if not raw or len(raw) < 4:
         return None
-    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if raw.startswith(b"\xff\xd8"):
-        return "image/jpeg"
-    if raw.startswith(b"RIFF") and len(raw) >= 12 and raw[8:12] == b"WEBP":
-        return "image/webp"
+    for mime_type, prefixes in _PREFIX_MAGIC_MIMES:
+        if raw.startswith(prefixes):
+            return mime_type
     if len(raw) >= 12:
+        if raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":
+            return "image/webp"
         brand = raw[4:12]
-        if brand in {b"ftypheic", b"ftyphevc"}:
+        if brand in _HEIC_BRANDS:
             return "image/heic"
-        if brand in {b"ftypheif", b"ftypmif1", b"ftypmsf1"}:
+        if brand in _HEIF_BRANDS:
             return "image/heif"
     return None
 

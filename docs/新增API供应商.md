@@ -286,6 +286,12 @@ ProviderSpec(
 }
 ```
 
+## v2 调度器下的适配器
+
+v2 通过 `LegacyClientAdapter` 包装现有 provider，不要求新增供应商另写调度逻辑。候选选择、重试、限流、deadline、历史和资源释放由调度器与适配层统一负责；provider 仍只负责能力判断、请求构造和响应解析。
+
+新增 provider 后运行 `tests/test_provider_contracts.py`，确认注册表懒加载、方法签名和最小请求体符合契约。需要服务账号凭证或联网令牌交换的实现应在测试中明确跳过原因，不要在契约测试中访问真实服务。
+
 ## 开发自检
 
 完成后至少检查：

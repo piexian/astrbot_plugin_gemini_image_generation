@@ -27,7 +27,7 @@
 | 入口 | 现有入口函数 | 当前任务/记录路径 | 对外兼容面 |
 | --- | --- | --- | --- |
 | 命令 | `main.py` 的 `/生图`、`/快速/*`、`/改图`、`/换风格` 等 | 普通快捷生成在 `_quick_generate_image()` 中抓取参考图、检查限流，直接调用 `api_client.generate_image()`；部分改图/切图流程直接调用 `ImageGenerator.generate_image_core()`。成功后归档 gallery 并写 `GenerationTracker`。 | 命令名称、AstrBot 事件回复和图片发送方式保持不变。 |
-| LLM Tool | `GeminiImageGenerationTool`（工具名 `gemini_image_generation`） | 单图先解析工具参数、参考图白名单和候选能力；前台短等待，超时后写 `BackgroundTaskManager` 并继续后台投递。批量任务创建后台父记录和 tracker 父记录，再运行 `run_batch_job()`。 | 工具名、参数、前台/后台提示和 `gemini_image_task_status` 查询继续兼容。 |
+| LLM Tool | `GeminiImageGenerationTool`（工具名 `gemini_image_generation`） | 单图先解析工具参数、参考图白名单和候选能力；前台短等待，超时后写 `BackgroundTaskManager` 并继续后台投递。批量任务创建后台父记录和 tracker 父记录，再运行 `run_batch_job()`。 | 工具名、参数、前台/后台提示和 `gemini_image_lookup` 查询模型和任务。 |
 | WebUI Studio | `WebStudioAPI.generate()` → `WebStudioService.generate()` | API 解析 JSON 后由 service admission、限流、上传文件 lease 和 tracker 记录；单图或 batch 通过 `_attach()` 调用 `asyncio.create_task`，运行 `_execute_generation()`，归档后更新 tracker。 | `/jobs`、`/history`、`/generate`、`/image`、`/providers`、`/providers/models` 等现有 WebUI API 路径保持兼容。 |
 | SDK | `ImageGenerationService.submit()` | 公开服务验证参数、选择 candidates、预留旧 scheduler 和限流 token，再调用插件核心生成逻辑；SDK task/callback 状态由 service 维护，并通过 `BackgroundTaskManager` 保存会话记录。 | `get_service(1)`、`submit`、`wait_task`、任务状态和 callback 行为保持兼容。 |
 

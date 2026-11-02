@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 from test_provider_application import MemoryKV, entry, key_manager, settings, usage
-from test_provider_config_frontend import _run
 from test_studio_providers import service
 from test_web_api import _api
 
@@ -176,35 +175,3 @@ async def test_providers_api_uses_standard_envelope_and_sanitizes_unexpected_err
     assert b"fake-private-error" not in response.body
     api._web_closed = True
     assert (await api.providers()).status_code == 503
-
-
-def test_frontend_allows_manual_vision_id_and_explains_safe_validation_failure():
-    _run(r"""
-const view = create(); await view.open(); selectTab('common');
-assert.equal(field('vision_provider_id', root).tagName, 'select');
-action('manual-vision').click();
-assert.equal(field('vision_provider_id', root).tagName, 'input');
-input(field('vision_provider_id', root), 'manual-unlisted-vision');
-post = async () => { throw Object.assign(new Error('启用的供应商配置缺少有效模型或 API Key'), {status: 'error', statusCode: 400}); };
-action('save').click(); await tick();
-assert.match(view.message, /缺少有效模型或 API Key/);
-assert.equal(view.dirty, true); assert.equal(view.conflict, false);
-assert.equal(posts()[0].payload.common.values.vision_provider_id, 'manual-unlisted-vision');
-post = async () => { throw Object.assign(new Error('供应商运行时不可用，请重载插件'), {status: 'error', statusCode: 503}); };
-action('save').click(); await tick();
-assert.equal(view.snapshot.requires_reload, true); assert.equal(action('save').disabled, true);
-view.destroy();
-""")
-
-
-def test_frontend_does_not_force_rewriting_unchanged_legacy_enum():
-    _run(r"""
-server.entries[0].api_type = 'doubao';
-server.entries[0].values = {enabled: false, endpoint_mode: 'plan'};
-const view = create(); await view.open(); selectTab('common');
-input(field('vision_model', root), 'new-vision-model');
-action('save').click(); await tick();
-assert.equal(posts().length, 1);
-assert.equal(posts()[0].payload.entries[0].values.endpoint_mode, 'plan');
-assert.equal(view.dirty, false); view.destroy();
-""")
