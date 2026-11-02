@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from tl.core.dispatch import ProviderDispatchError
 from tl.core.errors import (
+    JobStoreWriteCancelledError,
     LegacyProviderError,
     ProviderRouteError,
     QueueFullError,
@@ -1690,5 +1692,131 @@ async def test_lease_persist_failure_still_releases_every_admission(
         assert sorted(log) == [("release", "limiter"), ("release", "quota")]
         assert all(r.refunds == 0 for r in quota.reservations + limiter.reservations)
         assert scheduler._admissions == {}
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_submit_orphans_job_when_save_is_cancelled_after_commit(
+    tmp_path, monkeypatch
+):
+    scheduler, store = make_scheduler(tmp_path)
+    original_save = store.save
+    cancelled = False
+
+    async def save_then_cancel(job):
+        nonlocal cancelled
+        saved = await original_save(job)
+        if not cancelled:
+            cancelled = True
+            raise asyncio.CancelledError("save cancelled after commit")
+        return saved
+
+    monkeypatch.setattr(store, "save", save_then_cancel)
+    try:
+        with pytest.raises(asyncio.CancelledError, match="save cancelled"):
+            await scheduler.submit(request())
+        jobs = await store.list_jobs()
+        assert len(jobs) == 1
+        assert jobs[0].state is JobState.ORPHANED
+        assert scheduler._tasks == {}
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_committed_lease_write_marks_lease_released(tmp_path, monkeypatch):
+    log = []
+    scheduler, store, quota, _limiter = admission_scheduler(tmp_path, log)
+    original_add_lease = store.add_lease
+    cancelled = False
+
+    async def add_lease_then_cancel(record):
+        nonlocal cancelled
+        saved = await original_add_lease(record)
+        if not cancelled:
+            cancelled = True
+            raise JobStoreWriteCancelledError(
+                "lease write cancelled after commit",
+                outcome="committed",
+                result=saved,
+            )
+        return saved
+
+    monkeypatch.setattr(store, "add_lease", add_lease_then_cancel)
+    try:
+        handle = await scheduler.submit(request())
+        result = await scheduler.wait(handle.job_id)
+        assert result.state is JobState.CANCELLED
+        records = await store.list_leases(handle.job_id)
+        assert len(records) == 1
+        assert records[0].status == "released"
+        assert quota.reservations[0].releases == 1
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_committed_release_write_keeps_lease_released(tmp_path, monkeypatch):
+    log = []
+    scheduler, store, quota, _limiter = admission_scheduler(tmp_path, log)
+    original_release_lease = store.release_lease
+    cancelled = False
+
+    async def release_lease_then_cancel(lease_id, **kwargs):
+        nonlocal cancelled
+        await original_release_lease(lease_id, **kwargs)
+        if not cancelled:
+            cancelled = True
+            raise JobStoreWriteCancelledError(
+                "lease release cancelled after commit",
+                outcome="committed",
+            )
+
+    monkeypatch.setattr(store, "release_lease", release_lease_then_cancel)
+    try:
+        handle = await scheduler.submit(request())
+        result = await scheduler.wait(handle.job_id)
+        assert result.state is JobState.SUCCEEDED
+        records = await store.list_leases(handle.job_id)
+        assert records
+        assert all(record.status == "released" for record in records)
+        assert quota.reservations[0].releases == 1
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_deadline_preserves_committed_lease_write_outcome(tmp_path):
+    class SlowAddLeaseStore(SQLiteJobStore):
+        def __init__(self, path):
+            super().__init__(path, import_legacy=False)
+            self._delay_next_add_lease = False
+
+        async def add_lease(self, lease):
+            self._delay_next_add_lease = True
+            return await super().add_lease(lease)
+
+        async def _run_write(self, operation):
+            if self._delay_next_add_lease:
+                self._delay_next_add_lease = False
+
+                def delayed_operation():
+                    result = operation()
+                    time.sleep(0.5)
+                    return result
+
+                return await super()._run_write(delayed_operation)
+            return await super()._run_write(operation)
+
+    store = SlowAddLeaseStore(tmp_path)
+    scheduler = JobScheduler(store, provider=FakeProvider())
+    try:
+        handle = await scheduler.submit(request(timeout=0.2))
+        result = await scheduler.wait(handle.job_id)
+        assert result.state is JobState.CANCELLED
+        records = await store.list_leases(handle.job_id)
+        assert len(records) == 1
+        assert records[0].status == "released"
     finally:
         await scheduler.close()
