@@ -27,6 +27,12 @@ PROGRESS = "\n".join(
     p.read_text(encoding="utf-8")
     for p in sorted((ROOT / "frontend/src/progress").glob("*.vue"))
 )
+WORKBENCH = "\n".join(
+    p.read_text(encoding="utf-8")
+    for pattern in ("*.vue", "*.ts")
+    for p in sorted((ROOT / "frontend/src/workbench").glob(pattern))
+    if "__tests__" not in p.parts
+)
 HTML = (ROOT / "frontend/index.html").read_text(encoding="utf-8")
 I18N_DIR = ROOT / ".astrbot-plugin/i18n"
 
@@ -50,6 +56,8 @@ def _collect_keys():
     for m in re.finditer(r"\bt\((['\"])(.+?)\1", GALLERY):
         keys.add(m.group(2))
     for m in re.finditer(r"\bt\((['\"])(.+?)\1", PROGRESS):
+        keys.add(m.group(2))
+    for m in re.finditer(r"\bt\((['\"])(.+?)\1", WORKBENCH):
         keys.add(m.group(2))
     keys |= set(re.findall(r'data-i18n(?:-[a-z-]+)?="([^"]+)"', HTML))
     return keys
@@ -107,6 +115,7 @@ def test_no_bare_chinese_display_strings_in_js():
         ("limits/*.vue", LIMITS),
         ("gallery/*.vue", GALLERY),
         ("progress/*.vue", PROGRESS),
+        ("workbench/*", WORKBENCH),
     ):
         for i, line in enumerate(src.split("\n"), 1):
             if SKIP_LINE.search(line) or COMMENT_LINE.match(line):

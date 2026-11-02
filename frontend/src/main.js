@@ -4,8 +4,10 @@ import { createGalleryView } from './gallery/index'
 import { createProgressView } from './progress/index'
 import { createLimitsView } from './limits/index'
 import { createProviderConfigView } from './provider-config/index'
+import { createWorkbenchView } from './workbench/index'
 import { createTemplatesView } from './templates/index'
 
+window.__createWorkbenchView = createWorkbenchView
 window.__createTemplatesView = createTemplatesView
 window.__createProviderConfigView = createProviderConfigView
 window.__createLimitsView = createLimitsView
