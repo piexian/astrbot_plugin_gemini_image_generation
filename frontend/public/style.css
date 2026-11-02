@@ -2012,7 +2012,8 @@ code, kbd, samp, pre, .mono {
 
 @media (max-width: 640px) {
   .studio-shell {
-    padding: 20px 16px 32px;
+    padding: 20px calc(16px + env(safe-area-inset-right)) calc(32px + env(safe-area-inset-bottom))
+      calc(16px + env(safe-area-inset-left));
   }
   .studio-header {
     flex-wrap: wrap;
@@ -2136,7 +2137,8 @@ code, kbd, samp, pre, .mono {
     max-width: 96vw;
   }
   .comic-modal-backdrop {
-    padding: 12px;
+    padding: calc(12px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right))
+      calc(12px + env(safe-area-inset-bottom)) calc(12px + env(safe-area-inset-left));
   }
   .modal-header,
   .modal-body,

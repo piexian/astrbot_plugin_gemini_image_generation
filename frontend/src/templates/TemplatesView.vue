@@ -16,6 +16,7 @@ const props = defineProps<{
   bridge: BridgeClientLike
   modal: ModalLike
   t: Translator
+  clipboard: { copy: (text: string, message?: string) => Promise<void> | void }
   onUsed: (payload: { prompt?: string; template?: StudioTemplate | HubTemplate }) => void
   onSaved?: () => Promise<void>
 }>()
@@ -478,40 +479,47 @@ function dialogValue(selector: string) {
   return node ? String((node as HTMLInputElement).value || '').trim() : ''
 }
 
-async function openKeyDialog() {
-  // 后端只给掩码：既显示"已配置"，又不把完整密钥回显到页面。
+function openKeyDialog() {
+  // 后端只给掩码：密钥输入框永远为空，掩码只出现在占位提示里。
+  // 弹窗先同步打开；掩码异步拉取，迟到的响应在弹窗关闭后不得再触碰 DOM。
   let info: KeyInfo = { configured: false, masked: '' }
-  try {
-    const payload = (await props.bridge.get('webui/templates/hub/key')) as {
-      configured?: boolean
-      masked?: string
-    } | null
-    info = { configured: !!payload?.configured, masked: String(payload?.masked || '') }
-  } catch {
-    // 取不到按未配置处理
-  }
+  let dialogClosed = false
+  let keyInput: HTMLInputElement | null = null
+  let emailInput: HTMLInputElement | null = null
 
-  const keyVisible = ref(false)
-  // 弹窗内反馈：主视图的 message 被弹窗遮住，点"测试连接"看不到结果。
-  let feedback: HTMLParagraphElement | null = null
-  const setFeedback = (text: string) => {
-    if (feedback) feedback.textContent = text
+  const syncKeyPlaceholder = () => {
+    if (!keyInput) return
+    keyInput.placeholder = info.configured
+      ? props.t('留空保持原值（当前 {v0}）', { v0: info.masked })
+      : 'iph_...'
   }
 
   props.modal.openCustom({
     title: props.t('在线模板密钥'),
+    onClose: () => {
+      dialogClosed = true
+    },
     renderBody: body => {
+      // 弹窗内反馈：主视图的 message 被弹窗遮住，点"测试连接"看不到结果。
+      let feedback: HTMLParagraphElement | null = null
+      const setFeedback = (text: string) => {
+        if (feedback) feedback.textContent = text
+      }
       feedback = el('p', { className: 'tpl-note', role: 'status', 'aria-live': 'polite' })
+
       body.appendChild(
         el('div', { className: 'tpl-field' }, [
           el('label', { className: 'tpl-field-label' }, [props.t('邮箱')]),
-          el('input', {
-            type: 'text',
-            className: 'comic-input',
-            dataset: { tplKey: 'email' },
-            value: storedEmail(),
-            placeholder: 'you@example.com'
-          }),
+          (() => {
+            emailInput = el('input', {
+              type: 'text',
+              className: 'comic-input',
+              dataset: { tplKey: 'email' },
+              value: storedEmail(),
+              placeholder: 'you@example.com'
+            }) as HTMLInputElement
+            return emailInput
+          })(),
           // 申请/重置放在邮箱框下面，就近操作。
           el(
             'button',
@@ -519,7 +527,7 @@ async function openKeyDialog() {
               type: 'button',
               className: 'comic-btn comic-btn--sm comic-btn--outline',
               onClick: async () => {
-                const value = dialogValue('[data-tpl-key="email"]')
+                const value = emailInput ? String(emailInput.value || '').trim() : ''
                 if (!value) {
                   setFeedback(props.t('请先填写邮箱'))
                   return
@@ -543,28 +551,28 @@ async function openKeyDialog() {
         el('div', { className: 'tpl-field' }, [
           el('label', { className: 'tpl-field-label' }, [props.t('在线模板密钥')]),
           el('div', { className: 'tpl-key-row' }, [
-            el('input', {
-              type: keyVisible.value ? 'text' : 'password',
-              className: 'comic-input',
-              dataset: { tplKey: 'key' },
-              // 已配置时直接把掩码填进框，看得出已配置。
-              value: info.configured ? info.masked : '',
-              placeholder: info.configured ? props.t('留空保持原值') : 'iph_...'
-            }),
+            (() => {
+              keyInput = el('input', {
+                type: 'password',
+                className: 'comic-input',
+                dataset: { tplKey: 'key' },
+                autocomplete: 'new-password'
+              }) as HTMLInputElement
+              return keyInput
+            })(),
             el(
               'button',
               {
                 type: 'button',
                 className: 'comic-btn comic-btn--sm comic-btn--outline',
-                onClick: () => {
-                  keyVisible.value = !keyVisible.value
-                  const node = document.querySelector(
-                    '[data-tpl-key="key"]'
-                  ) as HTMLInputElement | null
-                  if (node) node.type = keyVisible.value ? 'text' : 'password'
+                onClick: (event: Event) => {
+                  if (!keyInput) return
+                  keyInput.type = keyInput.type === 'password' ? 'text' : 'password'
+                  ;(event.currentTarget as HTMLElement).textContent =
+                    keyInput.type === 'password' ? props.t('显示') : props.t('隐藏')
                 }
               },
-              [keyVisible.value ? props.t('隐藏') : props.t('显示')]
+              [props.t('显示')]
             ),
             el(
               'button',
@@ -591,9 +599,9 @@ async function openKeyDialog() {
               type: 'button',
               className: 'comic-btn comic-btn--sm comic-btn--cta',
               onClick: async () => {
-                const raw = dialogValue('[data-tpl-key="key"]')
-                // 掩码原样提交会覆盖真实密钥，等同未修改则跳过。
-                if (!raw || (info.configured && raw === info.masked)) {
+                const raw = keyInput ? String(keyInput.value || '').trim() : ''
+                // 空值=保持原密钥；掩码永远不在输入框里，无需再防覆盖。
+                if (!raw) {
                   setFeedback(props.t('密钥未变化。'))
                   return
                 }
@@ -602,11 +610,9 @@ async function openKeyDialog() {
                   key: raw
                 })) as { masked?: string } | null
                 if (result) {
-                  info = { configured: true, masked: String(result.masked || info.masked) }
-                  const node = document.querySelector(
-                    '[data-tpl-key="key"]'
-                  ) as HTMLInputElement | null
-                  if (node) node.value = info.masked
+                  info = { configured: true, masked: String(result.masked || '') }
+                  if (keyInput) keyInput.value = ''
+                  syncKeyPlaceholder()
                   setFeedback(props.t('已保存密钥。'))
                   void loadHubState()
                   if (scope.value === 'online') void openMine()
@@ -624,6 +630,22 @@ async function openKeyDialog() {
     }
     // 不提供 renderFooter：右上角 × 即可关闭。
   })
+
+  // 异步取掩码：只为占位提示服务；弹窗已关闭则全部丢弃。
+  void (async () => {
+    try {
+      const payload = (await props.bridge.get('webui/templates/hub/key')) as {
+        configured?: boolean
+        masked?: string
+      } | null
+      if (dialogClosed) return
+      info = { configured: !!payload?.configured, masked: String(payload?.masked || '') }
+      syncKeyPlaceholder()
+      // 邮箱顺带回填最近使用值（GET 失败时保留本地缓存值即可）。
+    } catch {
+      // 取不到按未配置处理
+    }
+  })()
 }
 
 // ---------- 导入导出与编辑器 ----------
@@ -631,7 +653,10 @@ async function exportPackage() {
   if (!available.value) return
   try {
     const payload = await props.bridge.get('webui/templates/export')
-    openTextDialog(props.t('导出模板包'), JSON.stringify(payload, null, 2), { readOnly: true })
+    openTextDialog(props.t('导出模板包'), JSON.stringify(payload, null, 2), {
+      readOnly: true,
+      copyable: true
+    })
   } catch {
     message.value = props.t('导出失败，请稍后重试。')
   }
@@ -662,8 +687,14 @@ function openTextDialog(
   {
     readOnly = true,
     submit = null,
-    submitText = null
-  }: { readOnly?: boolean; submit?: ((value: string) => void | Promise<void>) | null; submitText?: string | null } = {}
+    submitText = null,
+    copyable = false
+  }: {
+    readOnly?: boolean
+    submit?: ((value: string) => void | Promise<void>) | null
+    submitText?: string | null
+    copyable?: boolean
+  } = {}
 ) {
   props.modal.openCustom({
     title,
@@ -678,6 +709,24 @@ function openTextDialog(
       body.appendChild(area)
     },
     renderFooter: (footer, confirm, cancel) => {
+      if (copyable) {
+        footer.appendChild(
+          el(
+            'button',
+            {
+              type: 'button',
+              className: 'comic-btn comic-btn--outline',
+              onClick: async () => {
+                const area = document.querySelector(
+                  '.tpl-package-input'
+                ) as HTMLTextAreaElement | null
+                await props.clipboard.copy(area ? area.value : '', props.t('已复制到剪贴板'))
+              }
+            },
+            [props.t('复制')]
+          )
+        )
+      }
       footer.appendChild(
         el(
           'button',

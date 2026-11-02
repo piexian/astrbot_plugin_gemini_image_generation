@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import TemplatesView from '../TemplatesView.vue'
 import type { HubState, StudioTemplate } from '../types'
@@ -17,18 +17,46 @@ function makeBridge(routes: Record<string, unknown>) {
   }
 }
 
+const modalBody = document.createElement('div')
+const modalFooter = document.createElement('div')
 const modal = {
   confirm: vi.fn(async () => true),
-  openCustom: vi.fn(),
+  openCustom: vi.fn((options: Record<string, unknown>) => {
+    modal.options = options
+    ;(options.renderBody as ((b: HTMLElement) => void) | undefined)?.(modalBody)
+    ;(
+      options.renderFooter as ((f: HTMLElement, c: () => void, x: () => void) => void) | undefined
+    )?.(modalFooter, () => {}, () => {})
+  }),
+  close: function (accepted?: boolean) {
+    const current = modal.options
+    modal.options = null
+    modalBody.replaceChildren()
+    modalFooter.replaceChildren()
+    ;(current?.onClose as (() => void) | undefined)?.()
+    void accepted
+  },
+  options: null as Record<string, unknown> | null,
 }
 
 function mountView(bridge: ReturnType<typeof makeBridge>) {
   const onUsed = vi.fn()
   const wrapper = mount(TemplatesView, {
-    props: { bridge, modal, t, onUsed, onSaved: async () => {} },
+    props: { bridge, modal, t, clipboard: { copy: vi.fn() }, onUsed, onSaved: async () => {} },
+    attachTo: document.body,
   })
   return { wrapper, onUsed }
 }
+
+beforeEach(() => {
+  document.body.innerHTML = ''
+  modalBody.replaceChildren()
+  modalFooter.replaceChildren()
+  // 渲染目标挂到 body，querySelector 才能命中
+  document.body.appendChild(modalBody)
+  document.body.appendChild(modalFooter)
+  modal.options = null
+})
 
 describe('TemplatesView', () => {
   it('首帧未加载时显示占位提示，加载后渲染本地卡片并拉取远程缓存', async () => {
@@ -119,5 +147,91 @@ describe('TemplatesView', () => {
     expect(onUsed).toHaveBeenCalledWith(
       expect.objectContaining({ prompt: '内容a', template: expect.objectContaining({ id: 'a' }) })
     )
+  })
+})
+
+describe('TemplatesView 密钥与导出弹窗', () => {
+  const q = (selector: string) => document.querySelector(selector) as HTMLElement | null
+
+  it('已配置密钥时掩码只出现在占位提示，输入框保持为空', async () => {
+    const bridge = makeBridge({
+      'webui/templates': { templates: [template('a')] },
+      'webui/templates/hub': { templates: [], notice: '', state: { has_key: true } as HubState },
+      'webui/templates/hub/tags': { tags: [] },
+      'webui/templates/hub/key': { configured: true, masked: 'iph_***n2ta' },
+    })
+    const { wrapper } = mountView(bridge)
+    await (wrapper.vm as unknown as { loadOnce: () => Promise<void> }).loadOnce()
+    await flushPromises()
+
+    // 打开密钥弹窗（工具栏「密钥」按钮）
+    const keyButton = Array.from(wrapper.findAll('button')).find(b => b.text() === '密钥')
+    await keyButton!.trigger('click')
+    await flushPromises()
+
+    const keyInput = q('[data-tpl-key="key"]') as HTMLInputElement
+    expect(keyInput).toBeTruthy()
+    expect(keyInput.value).toBe('')
+    expect(keyInput.placeholder).toContain('iph_***n2ta')
+    expect(keyInput.placeholder).toContain('留空保持')
+    wrapper.unmount()
+  })
+
+  it('关闭密钥弹窗后迟到的掩码响应不再触碰 DOM', async () => {
+    let resolveKey: (value: unknown) => void = () => {}
+    const deferred = new Promise(resolve => { resolveKey = resolve })
+    const bridge = makeBridge({
+      'webui/templates': { templates: [] },
+      'webui/templates/hub': { templates: [], notice: '', state: { has_key: false } as HubState },
+      'webui/templates/hub/tags': { tags: [] },
+    })
+    // 仅密钥路由挂起：模拟用户在响应返回前就关闭弹窗
+    bridge.get.mockImplementation(async (path: string) => {
+      if (path === 'webui/templates/hub/key') return deferred
+      const routes: Record<string, unknown> = {
+        'webui/templates': { templates: [] },
+        'webui/templates/hub': { templates: [], notice: '', state: { has_key: false } },
+        'webui/templates/hub/tags': { tags: [] },
+      }
+      return routes[path] ?? {}
+    })
+    const { wrapper } = mountView(bridge)
+    await (wrapper.vm as unknown as { loadOnce: () => Promise<void> }).loadOnce()
+    await flushPromises()
+    await wrapper.findAll('.tpl-tabs button')[1]!.trigger('click')
+    await flushPromises()
+
+    // 无密钥直接弹窗；用户立刻关闭
+    expect(q('[data-tpl-key="key"]')).toBeTruthy()
+    ;(modal as unknown as { close: (accepted?: boolean) => void }).close(false)
+    resolveKey({ configured: true, masked: 'iph_late' })
+    await flushPromises()
+    expect(modal.options).toBeNull()
+    expect(q('[data-tpl-key="key"]')).toBeNull()
+    wrapper.unmount()
+  })
+
+  it('导出弹窗带复制与关闭按钮', async () => {
+    const bridge = makeBridge({
+      'webui/templates': { templates: [template('a')] },
+      'webui/templates/hub': { templates: [], notice: '', state: null },
+      'webui/templates/hub/tags': { tags: [] },
+      'webui/templates/export': { templates: [] },
+    })
+    const { wrapper } = mountView(bridge)
+    await (wrapper.vm as unknown as { loadOnce: () => Promise<void> }).loadOnce()
+    await flushPromises()
+
+    const exportButton = Array.from(wrapper.findAll('button')).find(b => b.text() === '导出')
+    await exportButton!.trigger('click')
+    await flushPromises()
+
+    const footerText = modalFooter.textContent || ''
+    expect(footerText).toContain('复制')
+    expect(footerText).toContain('关闭')
+    const textarea = q('.tpl-package-input') as HTMLTextAreaElement
+    expect(textarea).toBeTruthy()
+    expect(textarea.readOnly).toBe(true)
+    wrapper.unmount()
   })
 })

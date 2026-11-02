@@ -14,12 +14,14 @@ export function createTemplatesView(
     bridge,
     modal,
     t,
+    clipboard,
     onUsed,
     onSaved
   }: {
     bridge: BridgeClientLike
     modal: ModalLike
     t: Translator
+    clipboard: { copy: (text: string, message?: string) => Promise<void> | void }
     onUsed: (payload: { prompt?: string; template?: StudioTemplate }) => void
     onSaved?: () => Promise<void>
   }
@@ -28,6 +30,7 @@ export function createTemplatesView(
     bridge,
     modal,
     t,
+    clipboard,
     onUsed,
     onSaved
   })

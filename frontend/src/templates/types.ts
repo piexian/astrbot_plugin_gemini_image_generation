@@ -54,6 +54,8 @@ export interface ModalLike {
   }) => Promise<boolean>
   openCustom: (options: {
     title?: string
+    variant?: string
+    onClose?: () => void
     renderBody?: (body: HTMLElement) => void
     renderFooter?: (footer: HTMLElement, confirm: () => void, cancel: () => void) => void
   }) => void

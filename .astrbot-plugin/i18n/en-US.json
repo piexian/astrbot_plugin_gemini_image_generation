@@ -476,7 +476,6 @@
     "画廊": "Gallery",
     "画廊图片": "Gallery image",
     "画面比例": "Aspect ratio",
-    "留空保持原值": "Leave empty to keep",
     "登录状态已失效": "Session expired",
     "登录状态已失效，请刷新 Dashboard 并重新登录": "Session expired; refresh the Dashboard and sign in again",
     "白名单": "Allowlist",
@@ -634,6 +633,8 @@
     "提示词": "Prompt",
     "更多生成参数": "More generation parameters",
     "添加子任务": "Add subtask",
-    "生成张数": "Images to generate"
+    "生成张数": "Images to generate",
+    "留空保持原值（当前 {v0}）": "Keep existing (current: {v0})",
+    "已复制到剪贴板": "Copied to clipboard"
   }
 }
