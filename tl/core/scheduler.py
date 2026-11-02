@@ -127,6 +127,14 @@ async def _call(value: Any, *args: Any, **kwargs: Any) -> Any:
     return await result if inspect.isawaitable(result) else result
 
 
+class _PreservedStoreWriteCancellation(Exception):
+    """Keep a committed JobStore write outcome out of wait_for cancellation handling."""
+
+    def __init__(self, error: JobStoreWriteCancelledError) -> None:
+        super().__init__(*error.args)
+        self.error = error
+
+
 # Router 路径兜底余量：截断由 Router 按自身 deadline 执行，包裹超时留出余量。
 _ROUTER_EXECUTE_GRACE_SECONDS = 1.0
 
@@ -663,7 +671,17 @@ class JobScheduler:
         remaining = (job.deadline_at - datetime.now(timezone.utc)).total_seconds()
         if remaining <= 0:
             raise asyncio.TimeoutError(f"{label} deadline exceeded")
-        return await asyncio.wait_for(_call(operation), timeout=remaining)
+
+        async def run_operation() -> Any:
+            try:
+                return await _call(operation)
+            except JobStoreWriteCancelledError as error:
+                raise _PreservedStoreWriteCancellation(error) from error
+
+        try:
+            return await asyncio.wait_for(run_operation(), timeout=remaining)
+        except _PreservedStoreWriteCancellation as preserved:
+            raise preserved.error
 
     async def _persist_lease(self, job: Job, lease: Lease) -> Lease:
         record = LeaseRecord(
@@ -728,9 +746,13 @@ class JobScheduler:
                     result = callback()
                     if inspect.isawaitable(result):
                         await result
-                await self.store.release_lease(
-                    lease.token, job_id=job.job_id, owner_id=job.owner_id
-                )
+                try:
+                    await self.store.release_lease(
+                        lease.token, job_id=job.job_id, owner_id=job.owner_id
+                    )
+                except JobStoreWriteCancelledError as error:
+                    if error.outcome != "committed":
+                        raise
             except BaseException as error:
                 await self.store.update_lease(
                     lease.token,
