@@ -45,20 +45,10 @@ LANGS = ["en-US", "ja-JP", "ru-RU"]
 
 def _collect_keys():
     keys = set()
-    for m in re.finditer(r"\bt\((['\"])(.+?)\1", APP):
-        keys.add(m.group(2))
-    for m in re.finditer(r"\bt\((['\"])(.+?)\1", PC):
-        keys.add(m.group(2))
-    for m in re.finditer(r"\bt\((['\"])(.+?)\1", TPL):
-        keys.add(m.group(2))
-    for m in re.finditer(r"\bt\((['\"])(.+?)\1", LIMITS):
-        keys.add(m.group(2))
-    for m in re.finditer(r"\bt\((['\"])(.+?)\1", GALLERY):
-        keys.add(m.group(2))
-    for m in re.finditer(r"\bt\((['\"])(.+?)\1", PROGRESS):
-        keys.add(m.group(2))
-    for m in re.finditer(r"\bt\((['\"])(.+?)\1", WORKBENCH):
-        keys.add(m.group(2))
+    pattern = re.compile(r"\bt\(\s*(['\"])(.+?)\1")
+    for src in (APP, PC, TPL, LIMITS, GALLERY, PROGRESS, WORKBENCH):
+        for m in pattern.finditer(src):
+            keys.add(m.group(2))
     keys |= set(re.findall(r'data-i18n(?:-[a-z-]+)?="([^"]+)"', HTML))
     return keys
 
@@ -117,11 +107,13 @@ def test_no_bare_chinese_display_strings_in_js():
         ("progress/*.vue", PROGRESS),
         ("workbench/*", WORKBENCH),
     ):
-        for i, line in enumerate(src.split("\n"), 1):
+        lines = src.split("\n")
+        for i, line in enumerate(lines, 1):
             if SKIP_LINE.search(line) or COMMENT_LINE.match(line):
                 continue
+            prev = lines[i - 2] if i >= 2 else ""
             for m in re.finditer(r"(['\"])([^'\"\n]*[\u4e00-\u9fff][^'\"\n]*)\1", line):
-                prefix = line[: m.start()].rstrip()
+                prefix = (f"{prev}\n{line[: m.start()]}").rstrip()
                 if prefix.endswith(("t(", "this.t(")):
                     continue
                 leftovers.append((fname, i, m.group(2)[:40]))
