@@ -275,6 +275,12 @@ function use(template?: StudioTemplate | HubTemplate | null) {
   message.value = props.t('已把「{v0}」填入工作台。', { v0: template.name })
 }
 
+function copyTemplate(template?: StudioTemplate | HubTemplate | null) {
+  // 复制=提示词正文进剪贴板，不再打开编辑框。
+  if (!template) return
+  void props.clipboard.copy(template.content || '', props.t('已复制到剪贴板'))
+}
+
 // ---------- 本地模板维护 ----------
 async function mutate(payload: Record<string, unknown>) {
   if (!available.value || saving.value) return
@@ -308,21 +314,78 @@ async function toggleAi(template: StudioTemplate, value: boolean) {
 }
 
 // ---------- 在线模板动作 ----------
-async function editHub(id: string) {
-  // 服务端按整份内容覆盖：这里把当前正文带出来改，改完提交整份。
+function editHub(id: string) {
+  // 与新建模板同样的分块表单；服务端仅接受 name/ai_description/content/tags/reference。
   const hit = mine.value.find(item => item.id === id)
   if (!hit) return
-  openTextDialog(hit.name, hit.content || '', {
-    readOnly: false,
-    submitText: props.t('保存修改'),
-    submit: async value => {
-      const result = await request('POST', 'webui/templates/hub', {
-        action: 'update',
-        remote_id: hit.remote_id || hit.id,
-        changes: { id: hit.id, content: value }
-      })
-      message.value = result ? props.t('已保存修改。') : props.t('在线操作失败，请稍后重试。')
-      await openMine()
+  props.modal.openCustom({
+    title: props.t('修改在线模板'),
+    renderBody: body => {
+      body.appendChild(field('name', props.t('名称'), hit.name, { max: 40 }))
+      body.appendChild(
+        field('ai_description', props.t('一句话说明'), hit.ai_description || '', { max: 80 })
+      )
+      body.appendChild(textareaField('content', props.t('提示词正文'), hit.content || ''))
+      body.appendChild(
+        selectField('reference', props.t('参考图'), hit.reference || 'none', referenceOptions())
+      )
+      body.appendChild(field('tags', props.t('标签（空格分隔）'), (hit.tags || []).join(' ')))
+      body.appendChild(
+        el('p', { className: 'tpl-note' }, [
+          props.t('在线模板不支持修改默认分辨率与比例。')
+        ])
+      )
+    },
+    renderFooter: (footer, confirm, cancel) => {
+      footer.appendChild(
+        el(
+          'button',
+          { type: 'button', className: 'comic-btn comic-btn--outline', onClick: cancel },
+          [props.t('取消')]
+        )
+      )
+      footer.appendChild(
+        el(
+          'button',
+          {
+            type: 'button',
+            className: 'comic-btn comic-btn--cta',
+            onClick: async () => {
+              const read = (name: string) => {
+                const node = document.querySelector(`[data-tpl-editor="${name}"]`)
+                return node ? (node as HTMLInputElement).value : ''
+              }
+              const name = String(read('name') || '').trim()
+              const content = String(read('content') || '').trim()
+              if (!name || !content) {
+                message.value = props.t('名称和正文不能为空。')
+                return
+              }
+              const tags = String(read('tags') || '')
+                .split(/\s+/)
+                .filter(Boolean)
+              confirm()
+              const result = await request('POST', 'webui/templates/hub', {
+                action: 'update',
+                remote_id: hit.remote_id || hit.id,
+                changes: {
+                  id: hit.id,
+                  name,
+                  ai_description: String(read('ai_description') || '').trim(),
+                  content,
+                  reference: read('reference') || 'none',
+                  tags
+                }
+              })
+              message.value = result
+                ? props.t('已保存修改。')
+                : props.t('在线操作失败，请稍后重试。')
+              await openMine()
+            }
+          },
+          [props.t('保存修改')]
+        )
+      )
     }
   })
 }
@@ -494,10 +557,22 @@ function openKeyDialog() {
       : 'iph_...'
   }
 
+  // renderFooter 提供的 confirm 引用：保存成功后先关弹窗，再刷新背景数据。
+  let requestClose: () => void = () => {}
   props.modal.openCustom({
     title: props.t('在线模板密钥'),
     onClose: () => {
       dialogClosed = true
+    },
+    renderFooter: (footer, confirm, cancel) => {
+      requestClose = confirm
+      footer.appendChild(
+        el(
+          'button',
+          { type: 'button', className: 'comic-btn comic-btn--outline', onClick: cancel },
+          [props.t('关闭')]
+        )
+      )
     },
     renderBody: body => {
       // 弹窗内反馈：主视图的 message 被弹窗遮住，点"测试连接"看不到结果。
@@ -613,7 +688,8 @@ function openKeyDialog() {
                   info = { configured: true, masked: String(result.masked || '') }
                   if (keyInput) keyInput.value = ''
                   syncKeyPlaceholder()
-                  setFeedback(props.t('已保存密钥。'))
+                  // 先关弹窗再刷新，避免背后列表加载造成卡顿。
+                  requestClose()
                   void loadHubState()
                   if (scope.value === 'online') void openMine()
                 } else {
@@ -756,10 +832,10 @@ function openTextDialog(
   })
 }
 
-function openEditor(template?: Partial<StudioTemplate> | null, { copy = false } = {}) {
+function openEditor(template?: Partial<StudioTemplate> | null) {
   if (!template) return
   const draft = {
-    id: copy ? '' : template.id || '',
+    id: template.id || '',
     name: template.name || '',
     ai_description: template.ai_description || '',
     content: template.content || '',
@@ -769,11 +845,7 @@ function openEditor(template?: Partial<StudioTemplate> | null, { copy = false } 
     defaults_aspect_ratio: template.defaults?.aspect_ratio || ''
   }
   props.modal.openCustom({
-    title: copy
-      ? props.t('复制模板')
-      : draft.id
-        ? props.t('编辑模板')
-        : props.t('新建模板'),
+    title: draft.id ? props.t('编辑模板') : props.t('新建模板'),
     renderBody: body => {
       body.appendChild(field('name', props.t('名称'), draft.name, { max: 40 }))
       body.appendChild(
@@ -1037,7 +1109,7 @@ defineExpose({ loadOnce })
         :t="t"
         @use="use(item)"
         @edit="openEditor(item)"
-        @copy="openEditor(item, { copy: true })"
+        @copy="copyTemplate(item)"
         @upload="uploadHub(item.id)"
         @restore="mutate({ action: 'restore', id: item.id })"
         @remove="confirmDelete(item)"

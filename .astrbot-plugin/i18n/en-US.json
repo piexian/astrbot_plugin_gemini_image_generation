@@ -202,7 +202,6 @@
     "复制 Job ID": "Copy Job ID",
     "复制失败，请检查浏览器剪贴板权限": "Copy failed; check browser clipboard permission",
     "复制提示词": "Copy prompt",
-    "复制模板": "Duplicate template",
     "复制源链接 {v0}": "Copy source link {v0}",
     "大图预览": "Full-size preview",
     "失败": "Failed",
@@ -250,7 +249,6 @@
     "已中断": "Interrupted",
     "已从管理草稿移除，取消密钥更改可恢复。": "Removed from the management draft; cancel key changes to restore.",
     "已保存修改。": "Changes saved.",
-    "已保存密钥。": "Key saved.",
     "已切换为手动轮询；未参与类型将被跳过，主保存后生效。": "Switched to manual polling; non-participating types are skipped, effective after the main save.",
     "已删除。": "Deleted.",
     "已加载 {v0} 个模板。": "Loaded {v0} templates.",
@@ -635,6 +633,8 @@
     "添加子任务": "Add subtask",
     "生成张数": "Images to generate",
     "留空保持原值（当前 {v0}）": "Keep existing (current: {v0})",
-    "已复制到剪贴板": "Copied to clipboard"
+    "已复制到剪贴板": "Copied to clipboard",
+    "修改在线模板": "Edit online template",
+    "在线模板不支持修改默认分辨率与比例。": "Default resolution and aspect ratio cannot be changed for online templates."
   }
 }

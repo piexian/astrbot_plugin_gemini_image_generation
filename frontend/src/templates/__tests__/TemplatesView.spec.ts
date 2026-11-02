@@ -19,6 +19,7 @@ function makeBridge(routes: Record<string, unknown>) {
 
 const modalBody = document.createElement('div')
 const modalFooter = document.createElement('div')
+const clipboard = { copy: vi.fn(async () => {}) }
 const modal = {
   confirm: vi.fn(async () => true),
   openCustom: vi.fn((options: Record<string, unknown>) => {
@@ -26,7 +27,11 @@ const modal = {
     ;(options.renderBody as ((b: HTMLElement) => void) | undefined)?.(modalBody)
     ;(
       options.renderFooter as ((f: HTMLElement, c: () => void, x: () => void) => void) | undefined
-    )?.(modalFooter, () => {}, () => {})
+    )?.(
+      modalFooter,
+      () => (modal as unknown as { close: (accepted?: boolean) => void }).close(true),
+      () => (modal as unknown as { close: (accepted?: boolean) => void }).close(false)
+    )
   }),
   close: function (accepted?: boolean) {
     const current = modal.options
@@ -42,7 +47,7 @@ const modal = {
 function mountView(bridge: ReturnType<typeof makeBridge>) {
   const onUsed = vi.fn()
   const wrapper = mount(TemplatesView, {
-    props: { bridge, modal, t, clipboard: { copy: vi.fn() }, onUsed, onSaved: async () => {} },
+    props: { bridge, modal, t, clipboard, onUsed, onSaved: async () => {} },
     attachTo: document.body,
   })
   return { wrapper, onUsed }
@@ -50,6 +55,7 @@ function mountView(bridge: ReturnType<typeof makeBridge>) {
 
 beforeEach(() => {
   document.body.innerHTML = ''
+  clipboard.copy.mockClear()
   modalBody.replaceChildren()
   modalFooter.replaceChildren()
   // 渲染目标挂到 body，querySelector 才能命中
@@ -232,6 +238,127 @@ describe('TemplatesView 密钥与导出弹窗', () => {
     const textarea = q('.tpl-package-input') as HTMLTextAreaElement
     expect(textarea).toBeTruthy()
     expect(textarea.readOnly).toBe(true)
+    wrapper.unmount()
+  })
+})
+
+describe('TemplatesView 我的模板编辑与复制', () => {
+  const q = (selector: string) => document.querySelector(selector) as HTMLElement | null
+
+  function mineBridge() {
+    return makeBridge({
+      'webui/templates': { templates: [template('a')] },
+      'webui/templates/hub': { templates: [], notice: '', state: { has_key: true } as HubState },
+      'webui/templates/hub/tags': { tags: [] },
+      'webui/templates/hub/mine': {
+        templates: [
+          {
+            ...template('m1'),
+            remote_id: 'r1',
+            name: '旧名',
+            ai_description: '旧说明',
+            content: '旧正文',
+            tags: ['t1'],
+            reference: 'optional',
+          },
+        ],
+        state: null,
+      },
+    })
+  }
+
+  it('修改打开分块表单，保存提交各字段', async () => {
+    const bridge = mineBridge()
+    const { wrapper } = mountView(bridge)
+    await (wrapper.vm as unknown as { loadOnce: () => Promise<void> }).loadOnce()
+    await flushPromises()
+    await wrapper.findAll('.tpl-tabs button')[1]!.trigger('click')
+    await flushPromises()
+
+    const mineCard = wrapper.findAll('.tpl-card').find(c => c.text().includes('旧名'))!
+    const editButton = Array.from(mineCard.findAll('button')).find(b => b.text() === '修改')!
+    await editButton.trigger('click')
+    await flushPromises()
+
+    // 分块表单：名称/说明/正文/参考图/标签各自独立字段
+    for (const name of ['name', 'ai_description', 'content', 'reference', 'tags']) {
+      expect(q(`[data-tpl-editor="${name}"]`)).toBeTruthy()
+    }
+    const nameInput = q('[data-tpl-editor="name"]') as HTMLInputElement
+    expect(nameInput.value).toBe('旧名')
+
+    nameInput.value = '新名'
+    nameInput.dispatchEvent(new Event('input', { bubbles: true }))
+    const save = Array.from(modalFooter.querySelectorAll('button')).find(b => b.textContent === '保存修改')!
+    ;(save as HTMLButtonElement).click()
+    await flushPromises()
+
+    const updateCall = bridge.post.mock.calls.find(
+      ([path]) => path === 'webui/templates/hub'
+    ) as unknown as [string, Record<string, unknown>] | undefined
+    expect(updateCall).toBeTruthy()
+    const changes = (updateCall![1] as Record<string, unknown>).changes as Record<string, unknown>
+    expect(changes.name).toBe('新名')
+    expect(changes.content).toBe('旧正文')
+    expect(changes.tags).toEqual(['t1'])
+    // 保存后回到我的模板列表
+    expect(
+      bridge.get.mock.calls.filter(([path]) => path === 'webui/templates/hub/mine').length
+    ).toBeGreaterThan(1)
+    wrapper.unmount()
+  })
+
+  it('保存密钥后先关弹窗再刷新背景', async () => {
+    const bridge = makeBridge({
+      'webui/templates': { templates: [template('a')] },
+      'webui/templates/hub': { templates: [], notice: '', state: { has_key: false } as HubState },
+      'webui/templates/hub/tags': { tags: [] },
+      'webui/templates/hub/key': { configured: false, masked: '' },
+    })
+    // 保存密钥的 POST 同路由，返回成功掩码
+    bridge.post.mockImplementation(async (path: string) => {
+      if (path === 'webui/templates/hub/key') return { masked: 'iph_saved' }
+      return {}
+    })
+    const { wrapper } = mountView(bridge)
+    await (wrapper.vm as unknown as { loadOnce: () => Promise<void> }).loadOnce()
+    await flushPromises()
+
+    const keyButton = Array.from(wrapper.findAll('button')).find(b => b.text() === '密钥')!
+    await keyButton.trigger('click')
+    await flushPromises()
+    const keyInput = q('[data-tpl-key="key"]') as HTMLInputElement
+    keyInput.value = 'iph_newkey'
+    keyInput.dispatchEvent(new Event('input', { bubbles: true }))
+
+    const saveButton = Array.from(modalBody.querySelectorAll('button')).find(
+      b => b.textContent === '保存密钥'
+    )!
+    ;(saveButton as HTMLButtonElement).click()
+    await flushPromises()
+
+    // 弹窗已关闭，且背景刷新（hub state）发生
+    expect(modal.options).toBeNull()
+    expect(
+      bridge.get.mock.calls.filter(([path]) => path === 'webui/templates/hub').length
+    ).toBeGreaterThan(1)
+    wrapper.unmount()
+  })
+
+  it('本地卡片复制=提示词正文进剪贴板', async () => {
+    const bridge = makeBridge({
+      'webui/templates': { templates: [template('a')] },
+      'webui/templates/hub': { templates: [], notice: '', state: null },
+      'webui/templates/hub/tags': { tags: [] },
+    })
+    const { wrapper } = mountView(bridge)
+    await (wrapper.vm as unknown as { loadOnce: () => Promise<void> }).loadOnce()
+    await flushPromises()
+
+    const card = wrapper.findAll('.tpl-card').find(c => c.text().includes('模板a'))!
+    const copyButton = Array.from(card.findAll('button')).find(b => b.text() === '复制')!
+    await copyButton.trigger('click')
+    expect(clipboard.copy).toHaveBeenCalledWith('内容a', '已复制到剪贴板')
     wrapper.unmount()
   })
 })

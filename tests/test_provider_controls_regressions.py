@@ -3,9 +3,14 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from test_model_catalog import (
+    FakeResponse,
+    request,
+)  # noqa: F401,F811
+from test_model_catalog import (
+    http as http,
+)
 
-from test_model_catalog import FakeResponse, request  # noqa: F401 -- request 复用模块级 fixture
-from test_model_catalog import http as http  # noqa: F811 -- 显式导入以注册 http fixture
 from tl.model_catalog import ModelCatalogError, ModelCatalogService
 
 
