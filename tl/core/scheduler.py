@@ -25,6 +25,7 @@ from .errors import (
     BatchAllFailedError,
     InvalidRequestError,
     JobNotFoundError,
+    JobStoreWriteCancelledError,
     ProviderRouteError,
     RecoveryRequiredError,
     ServiceClosedError,
@@ -260,17 +261,28 @@ class JobScheduler:
                     deadline_at=datetime.now(timezone.utc)
                     + timedelta(seconds=self.default_timeout),
                 )
-            # 准入先于落库：预留或落库任一步失败都不留下 Job，已拿到的预留按
-            # 逆序回滚（此时 Job 从未被接受，额度退款）。
+            # 准入先于落库：预留或落库任一步失败都不留下可运行的 Job；
+            # 已落库记录在失败收尾时转为 ORPHANED，已拿到的预留按逆序回滚。
             reserved: list[tuple[LeaseKind, Any]] = []
+            persisted_job_id: str | None = None
             try:
                 await self._reserve_admissions(request, admission, reserved)
                 job = Job.create(request, job_id=f"job-{uuid.uuid4().hex}")
                 # Persistence is deliberately before create_task.
+                persisted_job_id = job.job_id
                 await self.store.create(job)
                 job.transition(JobState.QUEUED)
                 job = await self.store.save(job)
             except BaseException:
+                if persisted_job_id is not None:
+                    try:
+                        await self._orphan(persisted_job_id)
+                    except BaseException as orphan_error:
+                        logger.warning(
+                            "[v2] Job %s 孤儿收尾失败: %s",
+                            persisted_job_id,
+                            type(orphan_error).__name__,
+                        )
                 await self._rollback_admissions(reserved)
                 raise
             if reserved:
@@ -671,12 +683,43 @@ class JobScheduler:
             await self._deadline_call(
                 job, lambda: self.store.add_lease(record), "lease persist"
             )
+        except JobStoreWriteCancelledError as error:
+            release_error: BaseException | None = None
+            try:
+                await lease.release()
+            except BaseException as cleanup_error:
+                release_error = cleanup_error
+            if error.outcome == "committed":
+                if release_error is None:
+                    try:
+                        await self.store.release_lease(
+                            lease.token, job_id=job.job_id, owner_id=job.owner_id
+                        )
+                    except BaseException as cleanup_error:
+                        release_error = cleanup_error
+                if release_error is not None:
+                    try:
+                        await self.store.update_lease(
+                            lease.token,
+                            job_id=job.job_id,
+                            status="release_failed",
+                            error=f"{type(release_error).__name__}: {release_error}",
+                            owner_id=job.owner_id,
+                        )
+                    except BaseException as update_error:
+                        logger.warning(
+                            "[v2] lease %s 持久化收尾失败: %s",
+                            lease.token,
+                            type(update_error).__name__,
+                        )
+            raise
         except BaseException:
             try:
                 await lease.release()
             except BaseException:
                 pass
             raise
+
         callback = lease.release_callback
 
         async def release_and_persist() -> Any:
