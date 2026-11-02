@@ -128,7 +128,8 @@ ReferenceService 统一接收本地路径、file URI、HTTP URL、data URI、bas
 loopback、私网、link-local、云元数据地址和重定向绕过，并限制响应体、像素数、
 连接时间和总时间。候选 provider 的 proxy 由 service 传入。source URL 在写入
 history、响应和日志前必须脱敏；WebUI 只能看到 masked secret 以及
-keep/replace/append/clear 状态。
+keep/replace/append/clear 状态（仅在线模板密钥 `/templates/hub/key` 按 schema
+`show_key=true` 带 `no-store` 回填给已鉴权面板）。
 DNS resolver 对实际连接 IP 再执行同一网络策略，防止校验与连接之间的
 DNS rebinding。
 

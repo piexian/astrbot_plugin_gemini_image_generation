@@ -34,6 +34,7 @@ export interface HubSearchPayload {
 export interface KeyInfo {
   configured: boolean
   masked: string
+  key?: string
 }
 
 export type Translator = (key: string, params?: Record<string, unknown>) => string

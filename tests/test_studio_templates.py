@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -772,14 +773,24 @@ async def test_hub_endpoints_report_missing_service(tmp_path, monkeypatch):
 async def test_save_hub_key_writes_plugin_config(tmp_path):
     saved: dict = {}
 
-    class RawConfig:
+    class RawConfig(dict):
+        def __init__(self):
+            super().__init__(
+                service_settings={"template_hub_url": "https://example.test"},
+                template_hub_key="stale-root-value",
+            )
+
         async def save_config_async(self, update):
             saved.update(update)
+            self.update(update)
 
     service = _service(tmp_path)
-    service.raw_config = RawConfig()
+    raw = RawConfig()
+    service.raw_config = raw
     result = await service.save_hub_key("iph_secret_value")
-    assert saved["template_hub_key"] == "iph_secret_value"
+    assert saved["service_settings"]["template_hub_key"] == "iph_secret_value"
+    assert saved["service_settings"]["template_hub_url"] == "https://example.test"
+    assert "template_hub_key" not in raw
     assert result["has_key"] is True
 
 
@@ -787,15 +798,16 @@ async def test_save_hub_key_writes_plugin_config(tmp_path):
 async def test_save_hub_key_empty_clears(tmp_path):
     saved: dict = {}
 
-    class RawConfig:
+    class RawConfig(dict):
         async def save_config_async(self, update):
             saved.update(update)
+            self.update(update)
 
     service = _service(tmp_path)
-    service.raw_config = RawConfig()
+    service.raw_config = RawConfig(service_settings={})
     await service.save_hub_key("iph_x")
     result = await service.save_hub_key("")
-    assert saved["template_hub_key"] == ""
+    assert saved["service_settings"]["template_hub_key"] == ""
     assert result["has_key"] is False
 
 
@@ -819,13 +831,16 @@ def test_mask_key_never_reveals_full_value():
 
 
 @pytest.mark.asyncio
-async def test_hub_key_get_returns_mask_not_secret(tmp_path, monkeypatch):
+async def test_hub_key_get_returns_value_and_mask(tmp_path, monkeypatch):
     service = _service(tmp_path)
     service._hub_key = "iph_abcdefghijklmnop"
     api = _hub_api(tmp_path, monkeypatch, service, method="GET")
-    data = json.loads((await api.templates_hub_key()).body)["data"]
+    response = await api.templates_hub_key()
+    data = json.loads(response.body)["data"]
+    assert response.headers["Cache-Control"] == "no-store"
     assert data["configured"] is True
     assert "abcdefghijklmnop" not in data["masked"]
+    assert data["key"] == "iph_abcdefghijklmnop"
 
 
 @pytest.mark.asyncio
@@ -955,3 +970,120 @@ async def test_hub_delete_calls_source(tmp_path, monkeypatch):
     monkeypatch.setattr(service, "_with_source", lambda: Source())
     assert await service.hub_delete("abcdefghijk1") == {"status": "deleted"}
     assert calls == ["abcdefghijk1"]
+
+
+@pytest.mark.asyncio
+async def test_hub_state_only_skips_upstream_search(tmp_path, monkeypatch):
+    source = _FakeHubSource()
+    service = _hub_service(tmp_path, mode="online", source=source)
+    api = _hub_api(
+        tmp_path, monkeypatch, service, query={"q": "", "limit": "1", "state_only": "1"}
+    )
+    data = json.loads((await api.templates_hub()).body)["data"]
+    assert data["templates"] == []
+    assert data["notice"] == ""
+    assert data["state"]["mode"] == "online"
+    assert source.calls == []
+
+
+@pytest.mark.asyncio
+async def test_save_hub_key_snapshots_inside_lock(tmp_path):
+    """快照必须在持锁后取，否则锁等待期间写入的字段会被旧快照丢掉。"""
+
+    payloads: list[dict] = []
+    first_started = asyncio.Event()
+    gate = asyncio.Event()
+
+    class RawConfig(dict):
+        def __init__(self):
+            super().__init__(service_settings={"template_hub_url": "https://old.test"})
+
+        async def save_config_async(self, update):
+            payloads.append(update["service_settings"])
+            if len(payloads) == 1:
+                first_started.set()
+                await gate.wait()
+
+    service = _service(tmp_path)
+    raw = RawConfig()
+    service.raw_config = raw
+
+    first = asyncio.create_task(service.save_hub_key("iph_first"))
+    await first_started.wait()
+    second = asyncio.create_task(service.save_hub_key("iph_second"))
+    # 让第二个任务进入：旧实现到这里已经读完锁外快照。
+    await asyncio.sleep(0)
+    raw["service_settings"] = {
+        "template_hub_url": "https://old.test",
+        "added_during_wait": "kept",
+    }
+    gate.set()
+    await asyncio.gather(first, second)
+
+    assert payloads[1]["template_hub_key"] == "iph_second"
+    assert payloads[1]["added_during_wait"] == "kept"
+
+
+@pytest.mark.asyncio
+async def test_save_hub_key_rolls_back_on_save_error(tmp_path):
+    class RawConfig(dict):
+        def __init__(self):
+            super().__init__(
+                service_settings={"template_hub_url": "https://example.test"},
+                template_hub_key="stale-root-value",
+            )
+
+        async def save_config_async(self, update):
+            # 宿主先更新内存字典再写盘，写盘失败时回滚分支才有意义。
+            self.update(update)
+            raise OSError("disk full")
+
+    service = _service(tmp_path)
+    raw = RawConfig()
+    service.raw_config = raw
+    service._hub_key = "iph_original"
+
+    with pytest.raises(StudioServiceError) as error:
+        await service.save_hub_key("iph_new")
+    assert error.value.status_code == 500
+    assert raw["service_settings"] == {"template_hub_url": "https://example.test"}
+    assert raw["template_hub_key"] == "stale-root-value"
+    assert service._hub_key == "iph_original"
+
+
+@pytest.mark.asyncio
+async def test_save_hub_key_accepts_plain_config_object(tmp_path):
+    """宿主配置对象可能没有 .get：只提供保存方法时不能抛 AttributeError。"""
+
+    saved: list[dict] = []
+
+    class RawConfig:
+        async def save_config_async(self, update):
+            saved.append(update)
+            return True
+
+    service = _service(tmp_path)
+    service.raw_config = RawConfig()
+
+    result = await service.save_hub_key("iph_plain")
+    assert saved == [{"service_settings": {"template_hub_key": "iph_plain"}}]
+    assert result["has_key"] is True
+
+
+@pytest.mark.asyncio
+async def test_save_hub_key_rejects_stale_snapshot(tmp_path):
+    class RawConfig(dict):
+        def __init__(self):
+            super().__init__(service_settings={})
+
+        async def save_config_async(self, update):
+            return False
+
+    service = _service(tmp_path)
+    service.raw_config = RawConfig()
+    service._hub_key = "iph_original"
+
+    with pytest.raises(StudioServiceError) as error:
+        await service.save_hub_key("iph_new")
+    assert error.value.status_code == 409
+    assert service._hub_key == "iph_original"

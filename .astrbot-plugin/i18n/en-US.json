@@ -632,7 +632,7 @@
     "更多生成参数": "More generation parameters",
     "添加子任务": "Add subtask",
     "生成张数": "Images to generate",
-    "留空保持原值（当前 {v0}）": "Keep existing (current: {v0})",
+    "当前 {v0}（清空保存可移除）": "Current: {v0} (clear and save to remove)",
     "已复制到剪贴板": "Copied to clipboard",
     "修改在线模板": "Edit online template",
     "在线模板不支持修改默认分辨率与比例。": "Default resolution and aspect ratio cannot be changed for online templates."

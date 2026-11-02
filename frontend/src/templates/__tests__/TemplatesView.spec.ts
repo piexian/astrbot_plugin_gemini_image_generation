@@ -127,16 +127,42 @@ describe('TemplatesView', () => {
     const { wrapper } = mountView(bridge)
     await (wrapper.vm as unknown as { loadOnce: () => Promise<void> }).loadOnce()
     await flushPromises()
+    const modalCallsBeforeMine = modal.openCustom.mock.calls.length
 
     await wrapper.findAll('.tpl-tabs button')[1]!.trigger('click')
     await flushPromises()
 
     expect(bridge.get).toHaveBeenCalledWith('webui/templates/hub/mine', { limit: '50' })
+    expect(modal.openCustom.mock.calls.length).toBe(modalCallsBeforeMine)
     expect(wrapper.text()).toContain('模板m')
     const mineCard = wrapper.findAll('.tpl-card').find(c => c.text().includes('模板m'))
     expect(mineCard?.text()).toContain('修改')
     expect(mineCard?.text()).toContain('删除')
     expect(mineCard?.text()).not.toContain('举报')
+  })
+
+  it('上游拒绝密钥时显示错误且不重复弹窗', async () => {
+    const routes: Record<string, unknown> = {
+      'webui/templates': { templates: [] },
+      'webui/templates/hub': { templates: [], notice: '', state: { has_key: true } as HubState },
+      'webui/templates/hub/tags': { tags: [] },
+    }
+    const bridge = makeBridge(routes)
+    bridge.get.mockImplementation(async (path: string) => {
+      if (path === 'webui/templates/hub/mine') throw new Error('forbidden')
+      return routes[path]
+    })
+    const { wrapper } = mountView(bridge)
+    await (wrapper.vm as unknown as { loadOnce: () => Promise<void> }).loadOnce()
+    await flushPromises()
+
+    const modalCallsBeforeMine = modal.openCustom.mock.calls.length
+    await wrapper.findAll('.tpl-tabs button')[1]!.trigger('click')
+    await flushPromises()
+
+    expect(modal.openCustom.mock.calls.length).toBe(modalCallsBeforeMine)
+    expect(wrapper.text()).toContain('读取我的模板失败，请检查密钥。')
+    wrapper.unmount()
   })
 
   it('填入工作台把模板正文交给 onUsed', async () => {
@@ -159,12 +185,12 @@ describe('TemplatesView', () => {
 describe('TemplatesView 密钥与导出弹窗', () => {
   const q = (selector: string) => document.querySelector(selector) as HTMLElement | null
 
-  it('已配置密钥时掩码只出现在占位提示，输入框保持为空', async () => {
+  it('已配置密钥时回填密码输入框并保留掩码占位', async () => {
     const bridge = makeBridge({
       'webui/templates': { templates: [template('a')] },
       'webui/templates/hub': { templates: [], notice: '', state: { has_key: true } as HubState },
       'webui/templates/hub/tags': { tags: [] },
-      'webui/templates/hub/key': { configured: true, masked: 'iph_***n2ta' },
+      'webui/templates/hub/key': { configured: true, masked: 'iph_***n2ta', key: 'iph_abcdefghijklmnop' },
     })
     const { wrapper } = mountView(bridge)
     await (wrapper.vm as unknown as { loadOnce: () => Promise<void> }).loadOnce()
@@ -177,9 +203,9 @@ describe('TemplatesView 密钥与导出弹窗', () => {
 
     const keyInput = q('[data-tpl-key="key"]') as HTMLInputElement
     expect(keyInput).toBeTruthy()
-    expect(keyInput.value).toBe('')
+    expect(keyInput.value).toBe('iph_abcdefghijklmnop')
     expect(keyInput.placeholder).toContain('iph_***n2ta')
-    expect(keyInput.placeholder).toContain('留空保持')
+    expect(keyInput.placeholder).toContain('清空保存可移除')
     wrapper.unmount()
   })
 
@@ -214,6 +240,186 @@ describe('TemplatesView 密钥与导出弹窗', () => {
     await flushPromises()
     expect(modal.options).toBeNull()
     expect(q('[data-tpl-key="key"]')).toBeNull()
+    wrapper.unmount()
+  })
+
+  it('已回填密钥未修改时提示未变化且不发 POST', async () => {
+    const bridge = makeBridge({
+      'webui/templates': { templates: [template('a')] },
+      'webui/templates/hub': { templates: [], notice: '', state: { has_key: true } as HubState },
+      'webui/templates/hub/tags': { tags: [] },
+      'webui/templates/hub/key': {
+        configured: true,
+        masked: 'iph_***n2ta',
+        key: 'iph_abcdefghijklmnop',
+      },
+    })
+    const { wrapper } = mountView(bridge)
+    await (wrapper.vm as unknown as { loadOnce: () => Promise<void> }).loadOnce()
+    await flushPromises()
+
+    const keyButton = Array.from(wrapper.findAll('button')).find(b => b.text() === '密钥')
+    await keyButton!.trigger('click')
+    await flushPromises()
+
+    const keyInput = q('[data-tpl-key="key"]') as HTMLInputElement
+    expect(keyInput.value).toBe('iph_abcdefghijklmnop')
+
+    const saveButton = Array.from(modalBody.querySelectorAll('button')).find(
+      b => b.textContent === '保存密钥'
+    )!
+    ;(saveButton as HTMLButtonElement).click()
+    await flushPromises()
+
+    expect(bridge.post).not.toHaveBeenCalledWith('webui/templates/hub/key', expect.anything())
+    expect(modalBody.textContent).toContain('密钥未变化。')
+    wrapper.unmount()
+  })
+
+  it('已回填密钥被清空后保存会发送空 key', async () => {
+    const bridge = makeBridge({
+      'webui/templates': { templates: [template('a')] },
+      'webui/templates/hub': { templates: [], notice: '', state: { has_key: true } as HubState },
+      'webui/templates/hub/tags': { tags: [] },
+      'webui/templates/hub/key': {
+        configured: true,
+        masked: 'iph_***n2ta',
+        key: 'iph_abcdefghijklmnop',
+      },
+    })
+    bridge.post.mockImplementation(async (path: string) => {
+      if (path === 'webui/templates/hub/key') return { masked: '' }
+      return {}
+    })
+    const { wrapper } = mountView(bridge)
+    await (wrapper.vm as unknown as { loadOnce: () => Promise<void> }).loadOnce()
+    await flushPromises()
+
+    const keyButton = Array.from(wrapper.findAll('button')).find(b => b.text() === '密钥')
+    await keyButton!.trigger('click')
+    await flushPromises()
+
+    const keyInput = q('[data-tpl-key="key"]') as HTMLInputElement
+    keyInput.value = ''
+    keyInput.dispatchEvent(new Event('input', { bubbles: true }))
+
+    const saveButton = Array.from(modalBody.querySelectorAll('button')).find(
+      b => b.textContent === '保存密钥'
+    )!
+    ;(saveButton as HTMLButtonElement).click()
+    await flushPromises()
+
+    const saveCall = bridge.post.mock.calls.find(
+      ([path]) => path === 'webui/templates/hub/key'
+    ) as unknown as [string, Record<string, unknown>] | undefined
+    expect(saveCall?.[1]).toEqual({ action: 'save', key: '' })
+    wrapper.unmount()
+  })
+
+  it('密钥响应迟到时不覆盖用户已输入内容', async () => {
+    let resolveKey: (value: unknown) => void = () => {}
+    const deferred = new Promise(resolve => { resolveKey = resolve })
+    const bridge = makeBridge({
+      'webui/templates': { templates: [] },
+      'webui/templates/hub': { templates: [], notice: '', state: { has_key: true } as HubState },
+      'webui/templates/hub/tags': { tags: [] },
+    })
+    bridge.get.mockImplementation(async (path: string) => {
+      if (path === 'webui/templates/hub/key') return deferred
+      const routes: Record<string, unknown> = {
+        'webui/templates': { templates: [] },
+        'webui/templates/hub': { templates: [], notice: '', state: { has_key: true } },
+        'webui/templates/hub/tags': { tags: [] },
+      }
+      return routes[path] ?? {}
+    })
+    const { wrapper } = mountView(bridge)
+    await (wrapper.vm as unknown as { loadOnce: () => Promise<void> }).loadOnce()
+    await flushPromises()
+
+    const keyButton = Array.from(wrapper.findAll('button')).find(b => b.text() === '密钥')
+    await keyButton!.trigger('click')
+    await flushPromises()
+
+    const keyInput = q('[data-tpl-key="key"]') as HTMLInputElement
+    keyInput.value = 'iph_user_typed'
+    keyInput.dispatchEvent(new Event('input', { bubbles: true }))
+
+    resolveKey({ configured: true, masked: 'iph_***late', key: 'iph_server_value' })
+    await flushPromises()
+
+    expect(keyInput.value).toBe('iph_user_typed')
+    expect(keyInput.placeholder).toContain('iph_***late')
+    wrapper.unmount()
+  })
+
+  it('补填密钥后加载成功会清掉旧的未配置提示', async () => {
+    const routes: Record<string, unknown> = {
+      'webui/templates': { templates: [] },
+      'webui/templates/hub': { templates: [], notice: '', state: { has_key: false } as HubState },
+      'webui/templates/hub/tags': { tags: [] },
+      'webui/templates/hub/key': { configured: false, masked: '' },
+    }
+    const bridge = makeBridge(routes)
+    const { wrapper } = mountView(bridge)
+    await (wrapper.vm as unknown as { loadOnce: () => Promise<void> }).loadOnce()
+    await flushPromises()
+
+    await wrapper.findAll('.tpl-tabs button')[1]!.trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('请先填写在线模板密钥。')
+    ;(modal as unknown as { close: (accepted?: boolean) => void }).close(false)
+
+    // 用户补填密钥后再次打开我的模板：状态与列表都成功。
+    routes['webui/templates/hub'] = {
+      templates: [],
+      notice: '',
+      state: { has_key: true } as HubState,
+    }
+    routes['webui/templates/hub/mine'] = { templates: [{ ...template('m1') }], state: null }
+    await (wrapper.vm as unknown as { openMine: () => Promise<void> }).openMine()
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('请先填写在线模板密钥。')
+    expect(wrapper.text()).toContain('模板m1')
+    wrapper.unmount()
+  })
+
+  it('我的模板加载期间重复点击不重入，失败只渲染一处错误', async () => {
+    const routes: Record<string, unknown> = {
+      'webui/templates': { templates: [] },
+      'webui/templates/hub': { templates: [], notice: '', state: { has_key: true } as HubState },
+      'webui/templates/hub/tags': { tags: [] },
+    }
+    let releaseMine: (() => void) | null = null
+    const bridge = makeBridge(routes)
+    bridge.get.mockImplementation(async (path: string) => {
+      if (path === 'webui/templates/hub/mine') {
+        await new Promise<void>(resolve => { releaseMine = resolve })
+        throw new Error('forbidden')
+      }
+      return routes[path] ?? {}
+    })
+    const { wrapper } = mountView(bridge)
+    await (wrapper.vm as unknown as { loadOnce: () => Promise<void> }).loadOnce()
+    await flushPromises()
+
+    const openMine = (wrapper.vm as unknown as { openMine: () => Promise<void> }).openMine
+    const first = openMine()
+    await flushPromises()
+    await openMine()
+    await flushPromises()
+
+    const mineCalls = () =>
+      bridge.get.mock.calls.filter(([path]) => path === 'webui/templates/hub/mine').length
+    expect(mineCalls()).toBe(1)
+
+    releaseMine!()
+    await first
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text.split('读取我的模板失败，请检查密钥。').length - 1).toBe(1)
     wrapper.unmount()
   })
 

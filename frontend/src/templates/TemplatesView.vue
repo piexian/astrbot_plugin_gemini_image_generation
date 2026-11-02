@@ -201,27 +201,42 @@ async function importHub(id: string) {
   }
 }
 
-async function openMine() {
-  // 没绑密钥时不发注定失败的请求，直接弹绑定弹窗。
-  if (hubState.value && hubState.value.has_key === false) {
-    mine.value = []
-    message.value = props.t('请先填写在线模板密钥。')
-    void openKeyDialog()
-    return
+// 只清理“我的模板”路径写下的提示：别处的成功反馈要留着。
+function clearMineMessage() {
+  if (
+    message.value === props.t('请先填写在线模板密钥。') ||
+    message.value === props.t('读取我的模板失败，请检查密钥。')
+  ) {
+    message.value = ''
   }
+}
+
+async function openMine() {
+  // 连点会并发重入：加载期间直接返回，避免重复请求和连续弹窗。
+  if (!available.value || hubLoading.value) return
   hubLoading.value = true
   try {
+    const state = await loadHubState()
+    // 只有最新状态明确表示未配置时才弹绑定窗口。
+    if (state?.has_key === false) {
+      mine.value = []
+      hubNotice.value = ''
+      message.value = props.t('请先填写在线模板密钥。')
+      void openKeyDialog()
+      return
+    }
     const payload = (await props.bridge.get('webui/templates/hub/mine', {
       limit: '50'
     })) as { templates?: HubTemplate[]; state?: HubState } | null
     mine.value = Array.isArray(payload?.templates) ? payload.templates : []
     hubState.value = payload?.state || hubState.value
     hubNotice.value = ''
+    // 补填密钥后刷新成功：旧报错不能再挂在顶部。
+    clearMineMessage()
   } catch {
     mine.value = []
-    // 桥接错误信封不带状态码：失败时提示并弹密钥窗兜底。
-    hubNotice.value = props.t('读取我的模板失败，请检查密钥。')
-    void openKeyDialog()
+    hubNotice.value = ''
+    message.value = props.t('读取我的模板失败，请检查密钥。')
   } finally {
     hubLoading.value = false
   }
@@ -238,15 +253,19 @@ async function loadHubTags() {
   }
 }
 
-async function loadHubState() {
+async function loadHubState(): Promise<HubState | null> {
   try {
     const state = (await props.bridge.get('webui/templates/hub', {
       q: '',
-      limit: '1'
+      limit: '1',
+      state_only: '1'
     })) as { state?: HubState } | null
-    if (state?.state) hubState.value = state.state
+    const next = state?.state || null
+    if (next) hubState.value = next
+    return next
   } catch {
     // 状态刷新失败不影响主流程
+    return null
   }
 }
 
@@ -264,6 +283,7 @@ async function request(method: string, path: string, body: unknown = null) {
 function switchScope(next: 'local' | 'online') {
   if (scope.value === next) return
   scope.value = next
+  hubNotice.value = ''
   // 本地页合并远程缓存，首次进入补拉在线标签。
   if (next === 'local' && !hubTags.value.length) void loadHubTags()
   if (next === 'online') void openMine()
@@ -543,18 +563,23 @@ function dialogValue(selector: string) {
 }
 
 function openKeyDialog() {
-  // 后端只给掩码：密钥输入框永远为空，掩码只出现在占位提示里。
-  // 弹窗先同步打开；掩码异步拉取，迟到的响应在弹窗关闭后不得再触碰 DOM。
+  // 后端回填当前密钥；输入框保持 password 类型，避免明文展示。
   let info: KeyInfo = { configured: false, masked: '' }
   let dialogClosed = false
   let keyInput: HTMLInputElement | null = null
   let emailInput: HTMLInputElement | null = null
+  // 回填值与用户输入分开记：异步 GET 迟到不得覆盖用户已改动的内容。
+  let loadedKey = ''
+  let keyLoaded = false
+  let dirty = false
 
-  const syncKeyPlaceholder = () => {
+  const syncKeyInput = () => {
     if (!keyInput) return
-    keyInput.placeholder = info.configured
-      ? props.t('留空保持原值（当前 {v0}）', { v0: info.masked })
-      : 'iph_...'
+    if (!dirty) keyInput.value = info.key || ''
+    keyInput.placeholder =
+      info.configured && info.masked
+        ? props.t('当前 {v0}（清空保存可移除）', { v0: info.masked })
+        : 'iph_...'
   }
 
   // renderFooter 提供的 confirm 引用：保存成功后先关弹窗，再刷新背景数据。
@@ -631,7 +656,10 @@ function openKeyDialog() {
                 type: 'password',
                 className: 'comic-input',
                 dataset: { tplKey: 'key' },
-                autocomplete: 'new-password'
+                autocomplete: 'new-password',
+                onInput: () => {
+                  dirty = true
+                }
               }) as HTMLInputElement
               return keyInput
             })(),
@@ -675,8 +703,8 @@ function openKeyDialog() {
               className: 'comic-btn comic-btn--sm comic-btn--cta',
               onClick: async () => {
                 const raw = keyInput ? String(keyInput.value || '').trim() : ''
-                // 空值=保持原密钥；掩码永远不在输入框里，无需再防覆盖。
-                if (!raw) {
+                // 未回填完且用户没动过、也没输入内容时，才是真正的“未变化”。
+                if ((keyLoaded && raw === loadedKey) || (!keyLoaded && !dirty && !raw)) {
                   setFeedback(props.t('密钥未变化。'))
                   return
                 }
@@ -685,13 +713,26 @@ function openKeyDialog() {
                   key: raw
                 })) as { masked?: string } | null
                 if (result) {
-                  info = { configured: true, masked: String(result.masked || '') }
-                  if (keyInput) keyInput.value = ''
-                  syncKeyPlaceholder()
+                  info = {
+                    configured: Boolean(raw),
+                    masked: String(result.masked || ''),
+                    key: raw
+                  }
+                  loadedKey = raw
                   // 先关弹窗再刷新，避免背后列表加载造成卡顿。
                   requestClose()
-                  void loadHubState()
-                  if (scope.value === 'online') void openMine()
+                  if (scope.value === 'online' && raw) {
+                    // 已有密钥：openMine 内部会先刷新状态，不再额外请求。
+                    void openMine()
+                  } else if (scope.value === 'online') {
+                    // 密钥被清除：在线列表作废，只刷新状态。
+                    mine.value = []
+                    hubNotice.value = ''
+                    clearMineMessage()
+                    void loadHubState()
+                  } else {
+                    void loadHubState()
+                  }
                 } else {
                   setFeedback(props.t('在线操作失败，请稍后重试。'))
                 }
@@ -704,19 +745,25 @@ function openKeyDialog() {
 
       body.appendChild(feedback)
     }
-    // 不提供 renderFooter：右上角 × 即可关闭。
   })
 
-  // 异步取掩码：只为占位提示服务；弹窗已关闭则全部丢弃。
+  // 异步取回密钥：只在弹窗仍打开时更新输入框。
   void (async () => {
     try {
       const payload = (await props.bridge.get('webui/templates/hub/key')) as {
         configured?: boolean
         masked?: string
+        key?: string
       } | null
       if (dialogClosed) return
-      info = { configured: !!payload?.configured, masked: String(payload?.masked || '') }
-      syncKeyPlaceholder()
+      loadedKey = String(payload?.key || '').trim()
+      keyLoaded = true
+      info = {
+        configured: !!payload?.configured,
+        masked: String(payload?.masked || ''),
+        key: loadedKey
+      }
+      syncKeyInput()
       // 邮箱顺带回填最近使用值（GET 失败时保留本地缓存值即可）。
     } catch {
       // 取不到按未配置处理
@@ -989,6 +1036,7 @@ function el<K extends keyof HTMLElementTagNameMap>(
   for (const [key, val] of Object.entries(attrs)) {
     if (val === undefined || val === null) continue
     if (key === 'className') node.className = String(val)
+    else if (key === 'onInput' && typeof val === 'function') node.addEventListener('input', val as EventListener)
     else if (key === 'onClick' && typeof val === 'function') node.addEventListener('click', val as EventListener)
     else if (key === 'dataset') {
       for (const [dataKey, dataValue] of Object.entries(val as Record<string, unknown>)) {

@@ -256,10 +256,49 @@ class StudioTemplateService:
         async with self._config_lock:
             if self._is_closed():
                 raise StudioServiceError("插件正在关闭", status_code=503)
-            if callable(save_async):
-                await save_async({"template_hub_key": value})
-            else:
-                await asyncio.to_thread(save_sync, {"template_hub_key": value})
+            # 快照必须在锁内取：锁外读取会把并发保存的其它字段覆盖回旧值。
+            current_settings = (
+                raw.get("service_settings", {}) if hasattr(raw, "get") else {}
+            )
+            service_settings = (
+                dict(current_settings) if isinstance(current_settings, dict) else {}
+            )
+            service_settings["template_hub_key"] = value
+            config_update = {"service_settings": service_settings}
+            has_settings = isinstance(raw, dict) and "service_settings" in raw
+            settings_backup = (
+                copy.deepcopy(raw["service_settings"]) if has_settings else None
+            )
+            has_root_key = isinstance(raw, dict) and "template_hub_key" in raw
+            root_backup = (
+                copy.deepcopy(raw["template_hub_key"]) if has_root_key else None
+            )
+            try:
+                if isinstance(raw, dict):
+                    raw.pop("template_hub_key", None)
+                if callable(save_async):
+                    committed = await save_async(config_update)
+                else:
+                    committed = await asyncio.to_thread(save_sync, config_update)
+            except Exception as exc:
+                if isinstance(raw, dict):
+                    if has_settings:
+                        raw["service_settings"] = settings_backup
+                    else:
+                        raw.pop("service_settings", None)
+                    if has_root_key:
+                        raw["template_hub_key"] = root_backup
+                logger.warning(
+                    "[模板广场] 保存在线模板密钥失败，保留原配置", exc_info=True
+                )
+                raise StudioServiceError(
+                    "保存在线模板密钥失败，原配置保持不变", status_code=500
+                ) from exc
+            if callable(save_async) and committed is False:
+                # 宿主已用更新的版本覆盖本次快照，回写旧值只会抹掉刚保存的配置。
+                raise StudioServiceError(
+                    "插件配置已更新，请重新尝试保存密钥", status_code=409
+                )
             self.reconfigure_hub(key=value)
         return {**self.hub_state(), **self.hub_key_masked()}
 
@@ -271,6 +310,12 @@ class StudioTemplateService:
             "configured": bool(value),
             "masked": _mask_key(value),
         }
+
+    def hub_key_info(self) -> dict[str, Any]:
+        """返回授权 WebUI 回填密钥所需的信息。"""
+
+        info = self.hub_key_masked()
+        return {**info, "key": str(self._hub_key or "").strip()}
 
     async def hub_key_test(self) -> dict[str, Any]:
         """用已保存的密钥测试连接。"""

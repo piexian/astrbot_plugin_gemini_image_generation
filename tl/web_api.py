@@ -137,6 +137,10 @@ def _redact_source_urls(value: Any) -> Any:
     return value
 
 
+def _is_truthy(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true"}
+
+
 class WebStudioAPI:
     """将 tracker/service 映射为 AstrBot 标准信封和流式响应。"""
 
@@ -826,6 +830,13 @@ class WebStudioAPI:
                     )
                 else:
                     return error_response("不支持的在线操作", status_code=400)
+            elif _is_truthy(self._query_text("state_only", 8)):
+                # 只读状态：状态预检不触发上游实时检索。
+                result = {
+                    "templates": [],
+                    "notice": "",
+                    "state": self.templates_service.hub_state(),
+                }
             else:
                 result = await self.templates_service.hub_search(
                     self._query_text("q", 200),
@@ -905,11 +916,10 @@ class WebStudioAPI:
             return denied
         try:
             if request.method == "GET":
-                masked = self.templates_service.hub_key_masked()
+                info = self.templates_service.hub_key_info()
                 state = self.templates_service.hub_state()
                 result = {
-                    "configured": masked["configured"],
-                    "masked": masked["masked"],
+                    **info,
                     "mode": state["mode"],
                 }
             elif request.method == "DELETE":
@@ -931,7 +941,9 @@ class WebStudioAPI:
                     result = await self.templates_service.hub_key_request(
                         str(payload.get("email") or "")
                     )
-            return self._ok(result)
+            return json_response(
+                {"status": "ok", "data": result}, headers={"Cache-Control": "no-store"}
+            )
         except StudioServiceError as exc:
             return self._service_error(exc)
         except Exception:
