@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from astrbot.api import logger
+from .core.errors import redact_text
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import FunctionTool, ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
@@ -135,6 +137,10 @@ class GeminiImageLookupTool(FunctionTool[AstrAgentContext]):
             result = await self._tasks(
                 context, query, _limit(kwargs.get("limit"), 10, 20)
             )
+        logger.debug(
+            f"[gemini_image_lookup] tool={kind}, umo={_session_id(context)}, "
+            f"query_len={len(query)}, hits={result.get('total', len(result.get('history', result.get('tasks', result.get('models', result.get('templates', [])))))) if isinstance(result, dict) else 0}"
+        )
         return _json(result)
 
     def _models(self, query: str, limit: int, detail: bool) -> dict[str, Any]:
@@ -323,6 +329,11 @@ class GeminiImageShareTool(FunctionTool[AstrAgentContext]):
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs: Any
     ) -> ToolExecResult:
+        umo = _session_id(context)
+        logger.debug(
+            f"[gemini_image_share] tool=share, umo={umo}, "
+            f"references={len(kwargs.get('references') or [])}"
+        )
         tracker = getattr(self.plugin, "generation_tracker", None)
         if tracker is None or not getattr(tracker, "enabled", False):
             return _json({"error": "生成历史未开启"})
@@ -357,11 +368,17 @@ class GeminiImageShareTool(FunctionTool[AstrAgentContext]):
                     job_id, shared, user_id=user_id, umo=umo
                 )
             except ValueError as exc:
+                logger.warning(
+                    f"[gemini_image_share] share failed: task_id={job_id}, umo={umo}, error={redact_text(str(exc))[:240]}"
+                )
                 results.append({"ref": ref, "error": _share_error(exc)})
                 continue
             results.append(
                 {"ref": ref, "shared": shared, "shared_at": record.get("shared_at")}
             )
+        logger.info(
+            f"[gemini_image_share] share completed: umo={umo}, success={sum('error' not in item for item in results)}, failed={sum('error' in item for item in results)}"
+        )
         return _json({"results": results})
 
     async def _job_id(self, raw: str, event: Any) -> tuple[str | None, str | None]:

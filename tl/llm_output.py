@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
+from astrbot.api import logger
 from .file_uri import file_uri_to_path
 
 _AUTH_QUERY_KEYS = {
@@ -64,13 +65,19 @@ def image_locations(
     paths: list[str] = []
     urls: list[str] = []
     seen: set[str] = set()
+    stripped_url_count = 0
+    inline_data_count = 0
     for raw in [*(image_paths or []), *(image_urls or [])]:
         if not isinstance(raw, str):
             continue
         value = raw.strip()
-        if not value or value.lower().startswith("data:"):
+        if not value:
+            continue
+        if value.lower().startswith("data:"):
+            inline_data_count += 1
             continue
         if _is_inline_image_data(value):
+            inline_data_count += 1
             continue
         local_path = file_uri_to_path(value) or value
         if os.path.isfile(local_path):
@@ -79,9 +86,16 @@ def image_locations(
                 seen.add(local_path)
             continue
         public_url = _public_url(value)
+        if value.startswith(("http://", "https://")) and public_url is None:
+            stripped_url_count += 1
         if public_url and public_url not in seen:
             urls.append(public_url)
             seen.add(public_url)
+    if stripped_url_count or inline_data_count:
+        logger.debug(
+            f"[LLM输出] 图片位置清洗: stripped_url_count={stripped_url_count}, "
+            f"inline_data_count={inline_data_count}"
+        )
     return paths, urls
 
 
@@ -100,13 +114,23 @@ def sanitize_text(value: str | None) -> str | None:
 
     if not isinstance(value, str):
         return value
+    inline_data_count = len(_DATA_SCHEME_RE.findall(value))
     cleaned = _DATA_SCHEME_RE.sub("[inline image data omitted]", value)
 
     def replace_bare_base64(match: re.Match[str]) -> str:
         token = match.group(1)
-        return "[inline image data omitted]" if _is_inline_image_data(token) else token
+        nonlocal inline_data_count
+        if _is_inline_image_data(token):
+            inline_data_count += 1
+            return "[inline image data omitted]"
+        return token
 
-    return _BARE_BASE64_RE.sub(replace_bare_base64, cleaned)
+    result = _BARE_BASE64_RE.sub(replace_bare_base64, cleaned)
+    if inline_data_count:
+        logger.debug(
+            f"[LLM输出] 内联图片数据清洗: inline_data_count={inline_data_count}"
+        )
+    return result
 
 
 def sanitize_task_result(value: Any) -> Any:

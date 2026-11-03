@@ -1,12 +1,13 @@
 """Background batch orchestration for named image generation jobs."""
 
 from __future__ import annotations
-
 import asyncio
+import time
 from typing import Any
 
 from astrbot.api import logger
 
+from .core.errors import redact_text
 from .background_notify import notify_llm_background_result, report_background_failure
 from .generation_call import invoke_generation_core
 from .generation_tracker import tracking_context
@@ -104,7 +105,7 @@ async def _generate_batch_item(
     except Exception as exc:
         error = f"批量项异常: {exc}"
         logger.error(
-            f"[批量任务] 项目 {item['name']} 执行异常: {exc}",
+            f"[批量任务] 项目 {item['name']} 执行异常: {redact_text(exc)[:240]}",
             exc_info=True,
         )
 
@@ -179,6 +180,11 @@ async def run_batch_job(
 ) -> None:
     """旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
     manager = plugin.background_task_manager
+    started_at = time.perf_counter()
+    logger.info(
+        f"[批量任务] 启动: task_id={task_id}, parent_job_id={parent_job_id}, "
+        f"items={len(items)}, umo={getattr(event, 'unified_msg_origin', None)}"
+    )
     semaphore = asyncio.Semaphore(max(int(plugin.cfg.batch_concurrency), 1))
     progress_lock = asyncio.Lock()
     results: list[dict[str, Any] | None] = [None] * len(items)
@@ -205,7 +211,7 @@ async def run_batch_job(
                             record["job_id"], status="interrupted", error=error
                         )
         except Exception as exc:
-            logger.warning(f"[生成追踪] 更新批量记录失败: {exc}")
+            logger.warning(f"[生成追踪] 更新批量记录失败: {redact_text(exc)[:240]}")
 
     async def run_one(index: int, item: dict[str, Any]) -> None:
         async with semaphore:
@@ -278,6 +284,10 @@ async def run_batch_job(
             failed_items=failed,
             items=[_public_item(value) for value in final_results],
         )
+        logger.info(
+            f"[批量任务] 收尾: task_id={task_id}, items={len(final_results)}, "
+            f"succeeded={succeeded}, failed={failed}, elapsed={time.perf_counter() - started_at:.2f}s"
+        )
     except asyncio.CancelledError:
         await update_parent("interrupted", "批量生成已中断")
         await manager.update(
@@ -288,7 +298,9 @@ async def run_batch_job(
         )
         raise
     except Exception as exc:
-        logger.error(f"[批量任务] {task_id} 执行失败: {exc}", exc_info=True)
+        logger.error(
+            f"[批量任务] {task_id} 执行失败: {redact_text(exc)[:240]}", exc_info=True
+        )
         final_results = [value for value in results if value is not None]
         succeeded = sum(bool(value["success"]) for value in final_results)
         generated = sum(int(value["generated_images"]) for value in final_results)

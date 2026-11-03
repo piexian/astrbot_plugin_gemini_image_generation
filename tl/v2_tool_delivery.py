@@ -19,6 +19,7 @@ from .batch_generation import (
     _public_item,
     _send_batch_results,
 )
+from .core.errors import redact_text
 from .core.states import JobState
 from .v2_bridge import split_artifacts, v2_failure_message
 
@@ -51,6 +52,10 @@ class ToolBackgroundDelivery:
     async def deliver(self, job: Any, result: Any) -> None:
         task_id = await self._wait_record()
         image_urls, image_paths = split_artifacts(result.artifacts)
+        logger.info(
+            f"[{self._scene}] 后台结果投递: job_id={getattr(job, 'job_id', None)}, "
+            f"task_id={task_id}, state={getattr(job, 'state', None)}, images={len(image_urls) + len(image_paths)}"
+        )
         result_data = (image_urls, image_paths, result.text, None)
         try:
             delivered = await dispatch_generation_result(
@@ -66,7 +71,10 @@ class ToolBackgroundDelivery:
                 ),
             )
         except Exception as exc:
-            logger.error(f"[{self._scene}] 后台结果分发异常: {exc}", exc_info=True)
+            logger.error(
+                f"[{self._scene}] 后台结果分发异常: {redact_text(exc)[:240]}",
+                exc_info=True,
+            )
             delivered = False
         stats = result.stats
         await self._update_record(
@@ -90,6 +98,10 @@ class ToolBackgroundDelivery:
 
     async def deliver_failure(self, job: Any) -> None:
         task_id = await self._wait_record()
+        logger.warning(
+            f"[{self._scene}] 后台任务终态: job_id={getattr(job, 'job_id', None)}, "
+            f"task_id={task_id}, state={getattr(job, 'state', None)}, error_code={getattr(job, 'error_code', None)}"
+        )
         if job.state is JobState.FAILED:
             message = v2_failure_message(job, total_timeout=self._total_timeout())
             delivered = await report_background_failure(
@@ -167,6 +179,10 @@ class ToolBatchDelivery(ToolBackgroundDelivery):
         await self._update_record(
             task_id, parent_job, {"current_item": self._item_name(child_job)}
         )
+        logger.debug(
+            f"[批量任务] 子项开始: parent_job_id={getattr(parent_job, 'job_id', None)}, "
+            f"child_job_id={getattr(child_job, 'job_id', None)}, progress={len(self._results)}/{len(self._child_order)}"
+        )
 
     async def child_finished(
         self, parent_job: Any, child_job: Any, result: Any
@@ -202,6 +218,10 @@ class ToolBatchDelivery(ToolBackgroundDelivery):
             error=error,
         )
         await self._update_progress(parent_job)
+        logger.debug(
+            f"[批量任务] 子项完成: parent_job_id={getattr(parent_job, 'job_id', None)}, "
+            f"child_job_id={getattr(child_job, 'job_id', None)}, progress={len(self._results)}/{len(self._child_order)}"
+        )
 
     async def _update_progress(self, parent_job: Any) -> None:
         task_id = await self._wait_record()
@@ -226,9 +246,17 @@ class ToolBatchDelivery(ToolBackgroundDelivery):
                 self._plugin, self._event, task_id or "", self._ordered_results()
             )
         except Exception as exc:
-            logger.error(f"[批量任务/{task_id}] 结果分发异常: {exc}", exc_info=True)
+            logger.error(
+                f"[批量任务/{task_id}] 结果分发异常: {redact_text(exc)[:240]}",
+                exc_info=True,
+            )
             delivered = False
         await self._finalize_record(task_id, job, delivered=delivered)
+        succeeded = sum(bool(item["success"]) for item in self._ordered_results())
+        logger.info(
+            f"[批量任务] 汇总投递: parent_job_id={getattr(job, 'job_id', None)}, "
+            f"task_id={task_id}, succeeded={succeeded}, failed={len(self._results) - succeeded}"
+        )
         if not delivered:
             raise RuntimeError("批量结果未送达")
 
@@ -245,10 +273,18 @@ class ToolBatchDelivery(ToolBackgroundDelivery):
                     task_id=task_id,
                 )
             except Exception as exc:
-                logger.error(f"[批量任务/{task_id}] 失败通知异常: {exc}", exc_info=True)
+                logger.error(
+                    f"[批量任务/{task_id}] 失败通知异常: {redact_text(exc)[:240]}",
+                    exc_info=True,
+                )
                 delivered = False
             await self._finalize_record(
                 task_id, job, delivered=delivered, force_failed=True
+            )
+            succeeded = sum(bool(item["success"]) for item in self._ordered_results())
+            logger.warning(
+                f"[批量任务] 汇总失败: parent_job_id={getattr(job, 'job_id', None)}, "
+                f"task_id={task_id}, succeeded={succeeded}, failed={len(self._results) - succeeded}"
             )
             return
         await self._update_record(

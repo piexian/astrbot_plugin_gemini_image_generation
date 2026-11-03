@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import time
 import urllib.parse
 from typing import TYPE_CHECKING
 
@@ -13,6 +14,7 @@ from astrbot.api import logger
 from astrbot.api.message_components import Image as AstrImage
 from astrbot.api.message_components import Node, Plain
 
+from .core.errors import redact_text
 from .napcat_stream import upload_file_stream
 from .thought_signature import log_thought_signature_debug
 from .tl_utils import encode_file_to_base64, file_uri_to_path
@@ -126,7 +128,7 @@ class MessageSender:
             platform_name = event.get_platform_name()
             return platform_name == "aiocqhttp"
         except AttributeError as e:
-            logger.debug(f"判断平台类型失败: {e}")
+            logger.debug(f"判断平台类型失败: {redact_text(e)[:240]}")
             return False
 
     async def safe_send(self, event: AstrMessageEvent, payload):
@@ -136,7 +138,7 @@ class MessageSender:
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.error(f"发送消息失败: {e}")
+            logger.error(f"发送消息失败: {redact_text(e)[:240]}")
             yield event.plain_result("⚠️ 消息发送失败，请稍后重试或检查网络/权限。")
 
     def _stream_fallback_candidate(self, image: str) -> str | None:
@@ -223,7 +225,7 @@ class MessageSender:
                 if first_error is None:
                     first_error = exc
                 logger.warning(
-                    f"[SEND] {scene} 第 {sent_count + failed_count} 条消息发送失败: {exc}"
+                    f"[SEND] scene={scene} umo={getattr(event, 'unified_msg_origin', None)} 第 {sent_count + failed_count} 条消息发送失败: {redact_text(exc)[:240]}"
                 )
                 continue
             else:
@@ -267,18 +269,18 @@ class MessageSender:
         except _DispatchSendError as exc:
             if exc.sent_count > 0:
                 logger.warning(
-                    f"[SEND] {scene} 已成功发送 {exc.sent_count} 条消息，"
-                    f"跳过 Stream API 整组兜底以避免重复发送: {exc.cause}"
+                    f"[SEND] scene={scene} umo={getattr(event, 'unified_msg_origin', None)} 已成功发送 {exc.sent_count} 条消息，"
+                    f"跳过 Stream API 整组兜底以避免重复发送: {redact_text(exc.cause)[:240]}"
                 )
                 raise
             first_error = exc.cause
             logger.warning(
-                f"[SEND] {scene} 原始发送失败，准备检查 Stream API 兜底: {exc.cause}"
+                f"[SEND] scene={scene} umo={getattr(event, 'unified_msg_origin', None)} 原始发送失败，准备检查 Stream API 兜底: {redact_text(exc.cause)[:240]}"
             )
         except Exception as exc:
             first_error = exc
             logger.warning(
-                f"[SEND] {scene} 原始发送失败，准备检查 Stream API 兜底: {exc}"
+                f"[SEND] scene={scene} umo={getattr(event, 'unified_msg_origin', None)} 原始发送失败，准备检查 Stream API 兜底: {redact_text(exc)[:240]}"
             )
 
         (
@@ -300,7 +302,10 @@ class MessageSender:
                 "原始发送失败，NapCat Stream API 兜底上传也未成功"
             ) from first_error
 
-        logger.warning(f"[SEND] {scene} 已启用 NapCat Stream API 兜底重试")
+        logger.warning(
+            f"[SEND] scene={scene} umo={getattr(event, 'unified_msg_origin', None)} "
+            "已启用 NapCat Stream API 兜底重试"
+        )
         await self._send_dispatch_results(
             event=event,
             image_urls=image_urls,
@@ -363,7 +368,7 @@ class MessageSender:
             raise
         except Exception as e:
             # 非关键统计信息发送失败时仅记录日志，避免影响主流程
-            logger.error(f"发送耗时统计消息失败: {e}")
+            logger.error(f"发送耗时统计消息失败: {redact_text(e)[:240]}")
 
     @staticmethod
     def _format_token_usage(token_usage: dict[str, int] | None) -> str | None:
@@ -528,7 +533,7 @@ class MessageSender:
 
             return AstrImage(file=image)
         except Exception as e:
-            logger.warning(f"构造图片组件失败: {e}")
+            logger.warning(f"构造图片组件失败: {redact_text(e)[:240]}")
             return Plain(f"[图片不可用: {image[:48]}]")
 
     async def dispatch_send_results(
@@ -548,6 +553,9 @@ class MessageSender:
         - 总数<=4：链式富媒体发送（文本+多图一起）
         - 总数>4：合并转发
         """
+
+        dispatch_started = time.monotonic()
+        umo = getattr(event, "unified_msg_origin", None)
 
         # 优先 URL，paths 作为补充（URL 在前，去重）
         available_images = self.merge_available_images(image_urls, image_paths)
@@ -593,6 +601,10 @@ class MessageSender:
                     ),
                 ):
                     yield res
+            logger.info(
+                f"[SEND] 发送成功: scene={scene} mode=文本提示或空结果 "
+                f"images={len(available_images)} duration={time.monotonic() - dispatch_started:.3f}s umo={umo}"
+            )
             return
 
         # 单图直发
@@ -626,6 +638,10 @@ class MessageSender:
                     ):
                         yield res
             log_thought_signature_debug(thought_signature, scene=f"{scene}/单图发送")
+            logger.info(
+                f"[SEND] 发送成功: scene={scene} mode=单图直发 "
+                f"images={len(available_images)} duration={time.monotonic() - dispatch_started:.3f}s umo={umo}"
+            )
             return
 
         # AIOCQHTTP 逐图发送（base64）
@@ -655,6 +671,10 @@ class MessageSender:
                     yield res
 
             log_thought_signature_debug(thought_signature, scene=f"{scene}/逐图发送")
+            logger.info(
+                f"[SEND] 发送成功: scene={scene} mode=AIOCQHTTP逐图发送 "
+                f"images={len(available_images)} duration={time.monotonic() - dispatch_started:.3f}s umo={umo}"
+            )
             return
 
         # 短链富媒体发送
@@ -669,6 +689,10 @@ class MessageSender:
                 async for res in self.safe_send(event, event.chain_result(chain)):
                     yield res
             log_thought_signature_debug(thought_signature, scene=f"{scene}/短链发送")
+            logger.info(
+                f"[SEND] 发送成功: scene={scene} mode=短链富媒体 "
+                f"images={len(available_images)} duration={time.monotonic() - dispatch_started:.3f}s umo={umo}"
+            )
             return
 
         # 合并转发
@@ -685,7 +709,7 @@ class MessageSender:
                 img_component = self.build_forward_image_component(img)
                 node_content.append(img_component)
             except Exception as e:
-                logger.warning(f"构造合并转发图片节点失败: {e}")
+                logger.warning(f"构造合并转发图片节点失败: {redact_text(e)[:240]}")
                 node_content.append(Plain(f"[图片不可用: {img[:48]}]"))
 
         sender_id = "0"
@@ -694,7 +718,7 @@ class MessageSender:
             if hasattr(event, "message_obj") and getattr(event, "message_obj", None):
                 sender_id = getattr(event.message_obj, "self_id", "0")
         except Exception as e:
-            logger.debug(f"获取 sender_id 失败，使用默认值 '0'：{e}")
+            logger.debug(f"获取 sender_id 失败，使用默认值 '0'：{redact_text(e)[:240]}")
 
         node = Node(uin=sender_id, name=sender_name, content=node_content)
 
@@ -702,3 +726,8 @@ class MessageSender:
             yield res
 
         log_thought_signature_debug(thought_signature, scene=f"{scene}/合并转发")
+
+        logger.info(
+            f"[SEND] 发送成功: scene={scene} mode=合并转发 "
+            f"images={len(available_images)} duration={time.monotonic() - dispatch_started:.3f}s umo={umo}"
+        )

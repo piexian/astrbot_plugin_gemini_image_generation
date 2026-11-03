@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 from astrbot.api import logger
 
+from .core.errors import redact_text
 from .llm_output import sanitize_task_result
 from .plugin_config import get_session_tool_timeout
 
@@ -95,6 +97,10 @@ async def notify_llm_background_result(
     scene: str,
 ) -> bool:
     """按官方后台结果回灌路径唤醒主 Agent；返回是否实际送达。"""
+    task_id = str((task_result or {}).get("task_id") or "") or None
+    umo = getattr(event, "unified_msg_origin", None)
+    started_at = time.perf_counter()
+    logger.info(f"[{scene}] 后台结果回灌开始: task_id={task_id}, umo={umo}")
     try:
         if not _OFFICIAL_API_READY:
             raise RuntimeError("AstrBot 官方回灌 API 不可用")
@@ -173,11 +179,20 @@ async def notify_llm_background_result(
         )
         if not getattr(cron_event, "_has_send_oper", False):
             logger.warning(f"[{scene}] 后台通知 agent 未成功调用发送工具")
+            logger.warning(
+                f"[{scene}] 后台回灌未触发发送工具: task_id={task_id}, umo={umo}"
+            )
             return False
         await _bump_delivery_count(plugin, task_result, scene=scene)
+        logger.info(
+            f"[{scene}] 后台结果回灌完成: task_id={task_id}, umo={umo}, "
+            f"elapsed={time.perf_counter() - started_at:.2f}s, sent=True"
+        )
         return True
     except Exception as e:
-        logger.warning(f"[{scene}] 后台结果回灌未送达: {e}")
+        logger.warning(
+            f"[{scene}] 后台结果回灌失败: task_id={task_id}, umo={umo}, error={redact_text(e)[:240]}"
+        )
         return False
 
 
@@ -197,7 +212,7 @@ async def _bump_delivery_count(
     try:
         await manager.record_delivery(task_id)
     except Exception as exc:
-        logger.warning(f"[{scene}] 记录交付次数失败: {exc}")
+        logger.warning(f"[{scene}] 记录交付次数失败: {redact_text(exc)[:240]}")
 
 
 async def report_background_failure(
@@ -221,6 +236,11 @@ async def report_background_failure(
     try:
         await event.send(event.plain_result(direct_notice))
     except Exception as e:
-        logger.warning(f"[{scene}] 发送错误消息失败: {e}")
+        logger.warning(
+            f"[{scene}] 失败结果直发兜底失败: task_id={task_id}, umo={getattr(event, 'unified_msg_origin', None)}, error={redact_text(e)[:240]}"
+        )
         return False
+    logger.info(
+        f"[{scene}] 失败结果直发兜底成功: task_id={task_id}, umo={getattr(event, 'unified_msg_origin', None)}"
+    )
     return True

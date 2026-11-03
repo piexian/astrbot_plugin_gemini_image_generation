@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from astrbot.api import logger
+from .core.errors import redact_text
 
 from .background_notify import notify_llm_background_result, report_background_failure
 from .image_outputs import normalize_image_outputs
@@ -25,7 +26,7 @@ async def bump_delivery_count(
     try:
         await manager.record_delivery(task_id)
     except Exception as exc:
-        logger.warning(f"[{scene}] 记录交付次数失败: {exc}")
+        logger.warning(f"[{scene}] 记录交付次数失败: {redact_text(str(exc))[:240]}")
 
 
 async def dispatch_generation_result(
@@ -41,6 +42,10 @@ async def dispatch_generation_result(
     task_id: str | None = None,
     reference_note: str | None = None,
 ) -> bool:
+    umo = getattr(event, "unified_msg_origin", None)
+    logger.debug(
+        f"[{scene}] 后台结果分发开始: task_id={task_id}, umo={umo}, success={success}"
+    )
     if success and isinstance(result_data, tuple):
         image_urls, image_paths, text_content, thought_signature = result_data
         image_paths, image_urls = await normalize_image_outputs(image_urls, image_paths)
@@ -68,11 +73,13 @@ async def dispatch_generation_result(
                             remaining_urls.append(url)
                     except Exception as e:
                         logger.warning(
-                            f"[{scene}] 代理下载图片失败，保留原 URL: {url[:80]} {e}"
+                            f"[{scene}] 代理下载图片失败，保留原 URL: {redact_text(e)[:240]}"
                         )
                         remaining_urls.append(url)
             except Exception as e:
-                logger.warning(f"[{scene}] 获取代理下载会话失败: {e}")
+                logger.warning(
+                    f"[{scene}] 获取代理下载会话失败: {redact_text(e)[:240]}"
+                )
                 remaining_urls = list(image_urls)
             image_urls = remaining_urls
             image_paths = list(image_paths or []) + downloaded_paths
@@ -87,7 +94,7 @@ async def dispatch_generation_result(
         )
         content_text = prepared_text or fallback_text
         if notify_llm:
-            return await notify_llm_background_result(
+            delivered = await notify_llm_background_result(
                 plugin,
                 event,
                 {
@@ -101,6 +108,10 @@ async def dispatch_generation_result(
                 notice=f"后台图片生成任务 {task_id or '-'} 已完成，请调用主动发送工具发送图片。",
                 scene=scene,
             )
+            logger.info(
+                f"[{scene}] 后台结果回传完成: task_id={task_id}, umo={umo}, delivered={delivered}"
+            )
+            return delivered
         if text_content and not prepared_text and fallback_text:
             logger.info(
                 f"[{scene}] Text content only contained image references; using fallback text."
@@ -117,9 +128,12 @@ async def dispatch_generation_result(
                 text_content_prepared=True,
             )
         except Exception as exc:
-            logger.warning(f"[{scene}] 发送结果失败: {exc}")
+            logger.warning(f"[{scene}] 发送结果失败: {redact_text(exc)[:240]}")
             return False
         if task_id:
+            logger.info(
+                f"[{scene}] 后台结果直发完成: task_id={task_id}, umo={umo}, images={len(available_images)}"
+            )
             await bump_delivery_count(plugin, task_id, scene=scene)
         return True
 
@@ -135,7 +149,7 @@ async def dispatch_generation_result(
     try:
         await event.send(event.plain_result(error_msg))
     except Exception as exc:
-        logger.warning(f"[{scene}] 发送错误消息失败: {exc}")
+        logger.warning(f"[{scene}] 发送错误消息失败: {redact_text(exc)[:240]}")
         return False
     return True
 
