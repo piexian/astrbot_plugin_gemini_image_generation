@@ -23,7 +23,6 @@ from astrbot.api import logger
 from .dispatch import dispatch_provider
 from .errors import (
     MAX_ARTIFACTS,
-    redact_text,
     BatchAllFailedError,
     InvalidRequestError,
     JobNotFoundError,
@@ -32,6 +31,7 @@ from .errors import (
     RecoveryRequiredError,
     ServiceClosedError,
     StaleJobError,
+    redact_text,
 )
 from .leases import Lease, LeaseKind, LeaseSet
 from .models import Job, JobEvent, LeaseRecord

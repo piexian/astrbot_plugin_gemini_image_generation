@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import Any
 
 from astrbot.api import logger
-from .core.errors import redact_text
 
 from .api_types import APIError
+from .core.errors import redact_text
 
 try:  # AstrBot 新版提供会话工作区；旧版本无此模块，维持插件数据目录
     from astrbot.core.workspace import (

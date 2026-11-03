@@ -7,9 +7,9 @@ from typing import Any
 
 from astrbot.api import logger
 
+from .core.errors import redact_text
 from .core.states import JobState
 from .generation_tracker import without_session_origin
-from .core.errors import redact_text
 from .v2_bridge import split_artifacts, v2_failure_message
 
 _CALLBACK_TIMEOUT_SECONDS = 30

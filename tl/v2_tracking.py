@@ -6,8 +6,8 @@ from typing import Any
 
 from astrbot.api import logger
 
-from .core.results import GenerationResult
 from .core.errors import redact_text
+from .core.results import GenerationResult
 from .core.states import JobState
 from .generation_scheduler import generation_progress
 from .generation_tracker import (

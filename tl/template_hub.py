@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlencode, urlsplit, urlunsplit
@@ -15,7 +16,7 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 import aiohttp
 from astrbot.api import logger
 
-from .core.errors import PathPolicyError
+from .core.errors import PathPolicyError, redact_text, redact_url
 from .core.path_policy import check_remote_url
 from .prompt_templates import (
     CatalogVersion,
@@ -147,6 +148,8 @@ class HubTemplateSource:
         headers = self._headers(auth=auth)
         if etag:
             headers["If-None-Match"] = etag
+        started = time.monotonic()
+        status = 0
         # 每次请求新建连接：同步每 6 小时一次、只发两个请求，复用连接没有收益，
         # 却会把 session 绑在已关闭的 loop 上（缓存同步走 asyncio.run）。
         async with self._session_factory() as session:
@@ -154,7 +157,9 @@ class HubTemplateSource:
                 async with session.request(
                     method, url, headers=headers, json=json_body, allow_redirects=False
                 ) as response:
+                    status = response.status
                     if response.status == 304:
+                        _log_ok(method, url, status, started)
                         return 304, dict(response.headers), None
                     if response.status == 429:
                         retry = response.headers.get("Retry-After", "")
@@ -171,17 +176,21 @@ class HubTemplateSource:
                         raise SourceRejected(
                             _message(payload) or "在线模板服务拒绝了本次请求"
                         )
+                    _log_ok(method, url, status, started)
                     return response.status, dict(response.headers), payload
             except (
                 SourceAuthError,
                 SourceRateLimited,
                 SourceRejected,
                 SourceUnavailable,
-            ):
+            ) as exc:
+                _log_failure(method, url, status, started, exc)
                 raise
             except asyncio.TimeoutError as exc:
+                _log_failure(method, url, status, started, exc)
                 raise SourceUnavailable("在线模板服务响应超时") from exc
             except aiohttp.ClientError as exc:
+                _log_failure(method, url, status, started, exc)
                 raise SourceUnavailable(
                     f"在线模板服务连接失败：{type(exc).__name__}"
                 ) from exc
@@ -374,6 +383,43 @@ def _retry_after(raw: str) -> float:
         return max(float(str(raw).strip()), 0.0)
     except (TypeError, ValueError):
         return 60.0
+
+
+def _log_ok(method: str, url: str, status: int, started: float) -> None:
+    """请求正常完成记耗时；URL 可能带查询参数，脱敏后再落日志。"""
+
+    logger.debug(
+        "[模板广场] %s %s 完成：status=%s，耗时 %.0f ms",
+        method,
+        redact_url(url),
+        status,
+        (time.monotonic() - started) * 1000.0,
+    )
+
+
+def _log_failure(
+    method: str, url: str, status: int, started: float, exc: BaseException
+) -> None:
+    """失败只记脱敏摘要，绝不打印请求头或密钥。"""
+
+    logger.warning(
+        "[模板广场] %s %s 失败：status=%s，耗时 %.0f ms，原因：%s",
+        method,
+        redact_url(url),
+        status or "-",
+        (time.monotonic() - started) * 1000.0,
+        _safe_text(exc),
+    )
+
+
+def _safe_text(exc: BaseException) -> str:
+    """异常摘要取不到时退回类型名：aiohttp 部分异常的 __str__ 可能自己抛错。"""
+
+    try:
+        text = str(exc)
+    except Exception:
+        text = type(exc).__name__
+    return redact_text(text)[:240]
 
 
 def _message(payload: Any) -> str | None:

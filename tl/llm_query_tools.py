@@ -6,13 +6,13 @@ import json
 from typing import Any
 
 from astrbot.api import logger
-from .core.errors import redact_text
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import FunctionTool, ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 from pydantic import Field
 from pydantic.dataclasses import dataclass
 
+from .core.errors import redact_text
 from .generation_tracker import requester_from_event
 from .internal_references import (
     InternalReferenceError,

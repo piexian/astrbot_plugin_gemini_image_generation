@@ -1,14 +1,15 @@
 """Background batch orchestration for named image generation jobs."""
 
 from __future__ import annotations
+
 import asyncio
 import time
 from typing import Any
 
 from astrbot.api import logger
 
-from .core.errors import redact_text
 from .background_notify import notify_llm_background_result, report_background_failure
+from .core.errors import redact_text
 from .generation_call import invoke_generation_core
 from .generation_tracker import tracking_context
 

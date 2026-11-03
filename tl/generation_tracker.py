@@ -22,7 +22,7 @@ from typing import Any
 from astrbot.api import logger
 
 from .api.reference_pipeline import select_persistent_source_urls
-from .core.errors import redact_url
+from .core.errors import redact_text, redact_url
 from .studio_parameters import clean_history_settings
 
 TERMINAL_STATUSES = {
@@ -491,7 +491,11 @@ class GenerationTracker:
             names = {
                 str(name) for record in removed for name in (record.get("images") or [])
             }
-            self._delete_gallery_files(names)
+            cleaned = self._delete_gallery_files(names)
+            logger.info(
+                f"[生成历史] 历史淘汰: 淘汰记录数={len(removed)}, "
+                f"清理图片数={cleaned}, 记录总数={len(self._jobs)}"
+            )
         return removed
 
     @staticmethod
@@ -790,7 +794,10 @@ class GenerationTracker:
             self._broadcast(record)
             logger.debug(
                 f"[生成历史] 失败记录: job_id={job_id}, "
-                f"状态={previous_status}->failed, 记录总数={len(self._jobs)}"
+                f"来源={record.get('source') or '未知'}, "
+                f"状态={previous_status}->failed, "
+                f"原因={redact_text(record.get('error'))[:240]}, "
+                f"记录总数={len(self._jobs)}"
             )
 
     async def set_shared(
@@ -991,16 +998,17 @@ class GenerationTracker:
             and _SAFE_FILE_NAME.fullmatch(name)
         ]
 
-    def _delete_gallery_files(self, names: set[str]) -> None:
+    def _delete_gallery_files(self, names: set[str]) -> int:
         with self.gallery_lock:
             try:
-                self._delete_gallery_files_locked(names)
+                return self._delete_gallery_files_locked(names)
             finally:
                 self._pending_image_deletions.difference_update(names)
 
-    def _delete_gallery_files_locked(self, names: set[str]) -> None:
+    def _delete_gallery_files_locked(self, names: set[str]) -> int:
         gallery_root = self.gallery_dir.resolve()
         protected = self.protected_reference_names()
+        deleted = 0
         for name in names - protected:
             if not _SAFE_FILE_NAME.fullmatch(name):
                 continue
@@ -1008,12 +1016,18 @@ class GenerationTracker:
             if target.parent != gallery_root:
                 continue
             try:
+                existed = target.exists()
                 target.unlink(missing_ok=True)
+                if existed:
+                    deleted += 1
                 thumbnail = self.gallery_dir / ".thumbs" / f"{name}.jpg"
                 if thumbnail.parent.resolve() == gallery_root / ".thumbs":
                     thumbnail.unlink(missing_ok=True)
             except OSError as exc:
-                logger.warning(f"[生成历史] 删除 gallery 文件失败 {name}: {exc}")
+                logger.warning(
+                    f"[生成历史] 删除 gallery 文件失败: 原因={redact_text(str(exc))[:240]}"
+                )
+        return deleted
 
     def subscribe(self) -> asyncio.Queue[dict[str, Any]]:
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=200)

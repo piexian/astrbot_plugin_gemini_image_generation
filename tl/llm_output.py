@@ -10,6 +10,7 @@ from typing import Any
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from astrbot.api import logger
+
 from .file_uri import file_uri_to_path
 
 _AUTH_QUERY_KEYS = {

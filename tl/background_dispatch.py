@@ -6,9 +6,9 @@ from collections.abc import Mapping
 from typing import Any
 
 from astrbot.api import logger
-from .core.errors import redact_text
 
 from .background_notify import notify_llm_background_result, report_background_failure
+from .core.errors import redact_text
 from .image_outputs import normalize_image_outputs
 from .llm_output import image_locations, sanitize_text
 

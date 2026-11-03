@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from astrbot.api import logger
+
 from .core.errors import (
     CoreError,
     QueueFullError,
