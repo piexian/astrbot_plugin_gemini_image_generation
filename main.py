@@ -400,6 +400,9 @@ class GeminiImageGenerationPlugin(Star):
             )
 
     def _provider_jobs_busy(self) -> bool:
+        v2_service = getattr(self, "_v2_service", None)
+        if v2_service is not None and v2_service.busy:
+            return True
         scheduler = getattr(self, "generation_scheduler", None)
         if scheduler is not None and scheduler.busy:
             return True
@@ -543,18 +546,18 @@ class GeminiImageGenerationPlugin(Star):
         return True
 
     def _ensure_v2_service(self):
-        """装配 v2 栈（灰度）；失败置空回退 legacy 路径，不做自动恢复。"""
+        """装配并返回常驻 v2 GenerationService 单例。"""
         if self._v2_service is not None:
             return self._v2_service
         if not self._ensure_api_client():
             return None
         try:
             service = build_generation_stack(
-                client=self.api_client,
+                client=lambda: self.api_client,
                 candidates=[{"provider": "legacy", "model": "auto"}],
                 data_dir=os.path.join(self._plugin_data_dir, "v2"),
                 allowed_local_roots=(REFERENCE_IMAGE_CACHE_DIR,),
-                # submit 准入：共享额度、WebUI 名额与旧 FIFO 生成队列由调度器统一预留。
+                # submit 准入：共享额度、WebUI 名额与 FIFO 生成队列由调度器统一预留。
                 quota=RateLimiterQuota(lambda: self.rate_limiter),
                 limiter=CompositeAdmissionLimiter(
                     StudioAdmissionLimiter(
@@ -570,8 +573,9 @@ class GeminiImageGenerationPlugin(Star):
                 ),
             )
         except Exception as e:
-            logger.warning(
-                f"[v2] 调度器装配失败，本次回退 legacy 路径: {redact_text(str(e))[:240]}"
+            logger.error(
+                f"[v2] 调度器装配失败: {redact_text(str(e))[:240]}",
+                exc_info=True,
             )
             return None
         self._v2_service = service
