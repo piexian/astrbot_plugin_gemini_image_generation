@@ -15,7 +15,9 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from .errors import LeaseError
+from astrbot.api import logger
+
+from .errors import LeaseError, redact_text
 
 
 class LeaseKind(str, Enum):
@@ -73,9 +75,23 @@ class Lease:
         except asyncio.CancelledError:
             self.status = LeaseStatus.RELEASE_FAILED
             self.release_error = "CancelledError"
+            logger.debug(
+                "[v2] Lease release failed: kind=%s job_id=%s attempts=%s error=%s",
+                self.kind,
+                self.job_id,
+                self.release_attempts,
+                "CancelledError",
+            )
             raise
         except BaseException as exc:
             self.status = LeaseStatus.RELEASE_FAILED
+            logger.debug(
+                "[v2] Lease release failed: kind=%s job_id=%s attempts=%s error=%s",
+                self.kind,
+                self.job_id,
+                self.release_attempts,
+                f"{type(exc).__name__}: {redact_text(str(exc))[:240]}",
+            )
             self.release_error = f"{type(exc).__name__}: {exc}"[:500]
             raise LeaseError(
                 f"释放 {self.kind} lease 失败",

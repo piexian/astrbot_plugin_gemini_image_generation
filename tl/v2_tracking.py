@@ -7,6 +7,7 @@ from typing import Any
 from astrbot.api import logger
 
 from .core.results import GenerationResult
+from .core.errors import redact_text
 from .core.states import JobState
 from .generation_scheduler import generation_progress
 from .generation_tracker import (
@@ -82,7 +83,10 @@ class TrackerProjection:
             await self._tracker.begin(**begin_kwargs)
         except ReferenceImageUnavailableError as exc:
             if not metadata.get("reference_names"):
-                logger.warning(f"[生成追踪] v2 创建记录失败，不影响本次生成: {exc}")
+                logger.warning(
+                    "[生成追踪] v2 创建记录失败，不影响本次生成: %s",
+                    redact_text(str(exc))[:240],
+                )
                 return
             # 参考图已入库为临时句柄；画廊原件随后被清理时仍要保留任务记录。
             begin_kwargs["reference_names"] = []
@@ -90,10 +94,14 @@ class TrackerProjection:
                 await self._tracker.begin(**begin_kwargs)
             except Exception as retry_exc:
                 logger.warning(
-                    f"[生成追踪] v2 去除失效画廊租约后创建记录失败: {retry_exc}"
+                    "[生成追踪] v2 去除失效画廊租约后创建记录失败: %s",
+                    redact_text(str(retry_exc))[:240],
                 )
         except Exception as exc:
-            logger.warning(f"[生成追踪] v2 创建记录失败，不影响本次生成: {exc}")
+            logger.warning(
+                "[生成追踪] v2 创建记录失败，不影响本次生成: %s",
+                redact_text(str(exc))[:240],
+            )
 
     def runtime_scope(self, job: Any):
         async def progress(status: str) -> None:
@@ -188,8 +196,9 @@ class TrackerProjection:
             await self._tracker.update(job.job_id, **changes)
         except Exception as exc:
             logger.warning(
-                f"[生成追踪] v2 批量父记录写入失败: job_id={job.job_id}, "
-                f"异常类型={type(exc).__name__}"
+                "[生成追踪] v2 批量父记录写入失败: job_id=%s, error=%s",
+                job.job_id,
+                redact_text(str(exc))[:240],
             )
 
     async def child_finished(
@@ -210,8 +219,9 @@ class TrackerProjection:
             )
         except Exception as exc:
             logger.warning(
-                f"[生成追踪] v2 批量父记录进度写入失败: job_id={parent_job.job_id}, "
-                f"异常类型={type(exc).__name__}"
+                "[生成追踪] v2 批量父记录进度写入失败: job_id=%s, error=%s",
+                parent_job.job_id,
+                redact_text(str(exc))[:240],
             )
 
     def _finished_with_result(self, job: Any) -> bool:
@@ -262,6 +272,7 @@ class TrackerProjection:
                 )
         except Exception as exc:
             logger.warning(
-                f"[生成追踪] v2 终态写入失败: job_id={job.job_id}, "
-                f"异常类型={type(exc).__name__}"
+                "[生成追踪] v2 终态写入失败: job_id=%s, error=%s",
+                job.job_id,
+                redact_text(str(exc))[:240],
             )
