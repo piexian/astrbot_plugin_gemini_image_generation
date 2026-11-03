@@ -14,6 +14,8 @@ from typing import Any
 
 from astrbot.api import logger
 
+from .core.errors import redact_text
+
 TERMINAL_STATUSES = {
     "succeeded",
     "partial_success",
@@ -51,7 +53,9 @@ class BackgroundTaskManager:
         except FileNotFoundError:
             return {}
         except Exception as exc:
-            logger.warning(f"[后台任务] 读取任务记录失败，将使用空记录: {exc}")
+            logger.warning(
+                f"[后台任务] 读取任务记录失败，将使用空记录: {redact_text(str(exc))[:240]}"
+            )
             return {}
         if not isinstance(raw, dict):
             return {}
@@ -144,6 +148,10 @@ class BackgroundTaskManager:
                 record["plugin_id"] = plugin_id
             self._records[task_id] = record
             await self._save()
+            logger.debug(
+                f"[后台任务] 创建记录: task_id={task_id}, job_id={record.get('job_id')}, "
+                f"kind={kind}, status={record.get('status')}, umo={record.get('session_id')}"
+            )
             return copy.deepcopy(record)
 
     async def record_delivery(self, task_id: str) -> dict[str, Any] | None:
@@ -172,12 +180,17 @@ class BackgroundTaskManager:
             record["updated_at"] = _timestamp()
             try:
                 await self._save()
-            except Exception:
+            except Exception as exc:
                 if not best_effort:
                     raise
                 logger.error(
-                    f"[后台任务] {task_id} 持久化失败，保留内存中的任务结果",
+                    f"[后台任务] {task_id} 持久化失败，保留内存中的任务结果: {redact_text(exc)[:240]}",
                     exc_info=True,
+                )
+            if record.get("status") in TERMINAL_STATUSES:
+                logger.debug(
+                    f"[后台任务] 终态切换: task_id={task_id}, job_id={record.get('job_id')}, "
+                    f"kind={record.get('kind')}, status={record.get('status')}, umo={record.get('session_id')}"
                 )
             return copy.deepcopy(record)
 
@@ -242,7 +255,7 @@ class BackgroundTaskManager:
             exc = done_task.exception()
             if exc:
                 logger.error(
-                    f"[后台任务] {task_id} 异常终止: {exc}",
+                    f"[后台任务] {task_id} 异常终止: {redact_text(exc)[:240]}",
                     exc_info=(type(exc), exc, exc.__traceback__),
                 )
 

@@ -37,6 +37,7 @@ from .core.errors import (
     QueueFullError,
     QuotaExceededError,
     ServiceClosedError,
+    redact_text,
 )
 from .core.states import JobState
 from .generation_call import invoke_generation_core
@@ -509,7 +510,7 @@ def _resolve_tool_size_params(
             default_size = CUSTOM_SIZE_DEFAULT
             logger.warning(
                 "[工具调用] openai_images.custom_size 非法，"
-                f"已退回默认尺寸 {default_size}: {exc}"
+                f"已退回默认尺寸 {default_size}: {redact_text(str(exc))[:240]}"
             )
         return default_size, None, None
 
@@ -525,7 +526,7 @@ def _resolve_tool_size_params(
         default_size = CUSTOM_SIZE_DEFAULT
         logger.warning(
             "[工具调用] openai_images.custom_size 非法，"
-            f"已退回默认尺寸 {default_size}: {exc}"
+            f"已退回默认尺寸 {default_size}: {redact_text(str(exc))[:240]}"
         )
     return default_size, None, None
 
@@ -753,7 +754,9 @@ async def _await_generation_task_and_send(
                 ),
             )
     except Exception as exc:
-        logger.error(f"[{scene}] 后台图像生成异常: {exc}", exc_info=True)
+        logger.error(
+            f"[{scene}] 后台图像生成异常: {redact_text(str(exc))[:240]}", exc_info=True
+        )
         if notify_llm:
             await report_background_failure(
                 plugin,
@@ -807,7 +810,7 @@ def _schedule_generation_delivery(
         exc = task.exception()
         if exc:
             logger.error(
-                f"[{scene}] 后台发送任务异常终止: {exc}",
+                f"[{scene}] 后台发送任务异常终止: {redact_text(str(exc))[:240]}",
                 exc_info=(type(exc), exc, exc.__traceback__),
             )
 
@@ -1137,6 +1140,10 @@ async def _start_background_record_v2(
         raise
     task_id = record["task_id"]
     delivery.bind_record(task_id)
+    logger.info(
+        f"[工具调用] v2 后台记录已创建: job_id={getattr(delivery, '_job_id', None)}, "
+        f"task_id={task_id}, umo={getattr(event, 'unified_msg_origin', None)}"
+    )
     return _background_json(task_id, mode, message)
 
 
@@ -1242,6 +1249,9 @@ async def _run_single_v2(
         return submission.message or "请求过于频繁，请稍后再试"
     job_id = handle.job_id
 
+    logger.info(
+        f"[工具调用] v2 提交成功: job_id={job_id}, umo={getattr(event, 'unified_msg_origin', None)}"
+    )
     # ========== deliver=return：同步等待生成完成 ==========
     if return_images:
         logger.info("[后台任务] 仅返回路径：同步等待图片生成完成……")
@@ -1261,11 +1271,14 @@ async def _run_single_v2(
                 forum=forum_mode,
             )
         except Exception as e:
-            logger.error(f"[后台任务] 图片生成异常：{e}", exc_info=True)
+            logger.error(
+                f"[后台任务] 图片生成异常：{redact_text(str(e))[:240]}", exc_info=True
+            )
             return f"❌ 图片生成过程中出错：{str(e)}"
 
     foreground_wait_seconds = _resolve_foreground_wait_seconds(plugin, event)
     delivery = ToolBackgroundDelivery(plugin, event, scene="后台任务")
+    delivery._job_id = job_id
     result_wait = service.result_wait_timeout(generator.total_timeout)
     job_result = None
     background_notice: str | None = None
@@ -1280,13 +1293,20 @@ async def _run_single_v2(
                     llm_notice=config_value_notice,
                 )
             else:
+                logger.warning(
+                    f"[前台等待] attach_delivery 返回 False，回退同步等待: job_id={job_id}, task_id={getattr(delivery, '_task_id', None)}"
+                )
                 job_result = await service.wait(job_id, timeout=result_wait)
         else:
             logger.debug(f"[前台等待] 最多等待 {foreground_wait_seconds} 秒。")
             try:
                 job_result = await service.wait(job_id, timeout=foreground_wait_seconds)
             except asyncio.TimeoutError:
-                logger.debug("[前台等待] 等待超时，切换为后台继续生成。")
+                logger.info(
+                    f"[前台等待] 等待超时，切换为后台继续生成: job_id={job_id}, "
+                    f"task_id={getattr(delivery, '_task_id', None)}, "
+                    f"umo={getattr(event, 'unified_msg_origin', None)}, waited_seconds={foreground_wait_seconds}"
+                )
                 if service.attach_delivery(job_id, delivery):
                     background_notice = _build_background_fallback_notice(
                         ref_count=ref_count,
@@ -1298,6 +1318,9 @@ async def _run_single_v2(
                     )
                 else:
                     # 超时的瞬间 Job 已越过投递判定点，结果就绪在即：按前台完成处理。
+                    logger.warning(
+                        f"[前台等待] attach_delivery 返回 False，回退同步等待: job_id={job_id}, task_id={getattr(delivery, '_task_id', None)}"
+                    )
                     job_result = await service.wait(job_id, timeout=result_wait)
     except asyncio.CancelledError:
         # 取消入口即取消生成：不留下无人投递的后台 Job。
@@ -1312,7 +1335,9 @@ async def _run_single_v2(
             total_timeout=generator.total_timeout,
         )
     except Exception as e:
-        logger.error(f"[前台等待] 图像生成异常：{e}", exc_info=True)
+        logger.error(
+            f"[前台等待] 图像生成异常：{redact_text(str(e))[:240]}", exc_info=True
+        )
         await asyncio.shield(service.cancel(job_id))
         return f"❌ 图片生成过程中出错：{str(e)}"
 
@@ -1325,7 +1350,9 @@ async def _run_single_v2(
             plugin, job_result, config_value_notice=config_value_notice, job_id=job_id
         )
     except Exception as e:
-        logger.error(f"[前台等待] 图像生成异常：{e}", exc_info=True)
+        logger.error(
+            f"[前台等待] 图像生成异常：{redact_text(str(e))[:240]}", exc_info=True
+        )
         return f"❌ 图片生成过程中出错：{str(e)}"
 
 
@@ -1422,7 +1449,9 @@ async def _run_batch_v2(
             total_timeout=generator.total_timeout,
         )
     except Exception as exc:
-        logger.error(f"[批量任务] v2 提交异常: {exc}", exc_info=True)
+        logger.error(
+            f"[批量任务] v2 提交异常: {redact_text(str(exc))[:240]}", exc_info=True
+        )
         return f"❌ 批量生成任务启动失败：{exc}"
     finally:
         if token is not None:
@@ -1442,6 +1471,10 @@ async def _run_batch_v2(
         raise
     task_id = record["task_id"]
     delivery.bind_record(task_id)
+    logger.info(
+        f"[批量任务] v2 后台建档: task_id={task_id}, parent_job_id={getattr(handle, 'job_id', None)}, "
+        f"items={len(prepared_items)}, umo={getattr(event, 'unified_msg_origin', None)}"
+    )
     return _background_json(task_id, batch_mode, message)
 
 
@@ -1741,7 +1774,13 @@ async def _run_batch_tool(
             )
             parent_job_id = parent["job_id"]
         except Exception as exc:
-            logger.warning(f"[生成追踪] 创建批量父记录失败: {exc}")
+            logger.warning(
+                f"[生成追踪] 创建批量父记录失败: {redact_text(str(exc))[:240]}"
+            )
+    logger.info(
+        f"[批量任务] v2 后台建档: task_id={task_id}, parent_job_id={parent_job_id}, "
+        f"items={len(prepared_items)}, umo={getattr(event, 'unified_msg_origin', None)}"
+    )
     plugin.background_task_manager.attach(
         task_id,
         run_batch_job(
@@ -1954,7 +1993,10 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
             except asyncio.TimeoutError:
                 return "❌ 图片生成超时，请稍后重试"
             except Exception as e:
-                logger.error(f"[后台任务] 图片生成异常：{e}", exc_info=True)
+                logger.error(
+                    f"[后台任务] 图片生成异常：{redact_text(str(e))[:240]}",
+                    exc_info=True,
+                )
                 return f"❌ 图片生成过程中出错：{str(e)}"
 
         generation_task = _create_generation_task(
@@ -2004,6 +2046,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                 )
                 return _background_json(task_id, request_routing_mode, message)
 
+            request_stats: dict[str, Any] = {}
             logger.debug(f"[前台等待] 最多等待 {foreground_wait_seconds} 秒。")
             try:
                 success, result_data, request_stats = await asyncio.wait_for(
@@ -2062,6 +2105,10 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                         message=result_message,
                     )
                     task_id = record["task_id"]
+                    logger.info(
+                        f"[工具调用] 代理下载超时转后台: job_id={request_stats.get('job_id')}, "
+                        f"task_id={task_id}, umo={getattr(event, 'unified_msg_origin', None)}"
+                    )
                     _schedule_generation_delivery(
                         plugin=plugin,
                         event=event,
@@ -2083,7 +2130,10 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                 )
                 return error_msg
         except asyncio.TimeoutError:
-            logger.debug("[前台等待] 等待超时，切换为后台继续生成。")
+            logger.info(
+                f"[前台等待] 等待超时，切换为后台继续生成: job_id={request_stats.get('job_id')}, "
+                f"task_id=None, umo={getattr(event, 'unified_msg_origin', None)}, waited_seconds={foreground_wait_seconds}"
+            )
             notice = _build_background_fallback_notice(
                 ref_count=ref_count,
                 avatar_count=avatar_count,
@@ -2100,6 +2150,10 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
                 message=message,
             )
             task_id = record["task_id"]
+            logger.info(
+                f"[工具调用] 通用后台记录已创建: job_id={request_stats.get('job_id')}, "
+                f"task_id={task_id}, umo={getattr(event, 'unified_msg_origin', None)}"
+            )
             _schedule_generation_delivery(
                 plugin=plugin,
                 event=event,
@@ -2110,7 +2164,9 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
             )
             return _background_json(task_id, request_routing_mode, message)
         except Exception as e:
-            logger.error(f"[前台等待] 图像生成异常：{e}", exc_info=True)
+            logger.error(
+                f"[前台等待] 图像生成异常：{redact_text(e)[:240]}", exc_info=True
+            )
             return f"❌ 图片生成过程中出错：{str(e)}"
 
 

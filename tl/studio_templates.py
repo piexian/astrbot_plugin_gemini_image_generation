@@ -12,6 +12,7 @@ from typing import Any
 
 from astrbot.api import logger
 
+from .core.errors import redact_text
 from .prompt_templates import (
     PromptTemplateStore,
     SourceAuthError,
@@ -153,6 +154,10 @@ class StudioTemplateService:
                     seen.add(record["id"])
             except TemplateSourceError as exc:
                 notice = _source_message(exc)
+                logger.warning(
+                    "[模板广场] 实时检索失败，降级为本地缓存结果：%s",
+                    redact_text(str(exc))[:240],
+                )
         return {
             "templates": results[:size],
             "notice": notice,
@@ -218,8 +223,14 @@ class StudioTemplateService:
                 results.append({"id": remote_id, "ok": True, "local_id": created.id})
             except TemplateValidationError as exc:
                 results.append({"id": remote_id, "ok": False, "message": str(exc)})
+        imported = sum(1 for item in results if item["ok"])
+        logger.info(
+            "[模板广场] 在线模板导入完成：成功 %s 条，失败 %s 条",
+            imported,
+            len(results) - imported,
+        )
         return {
-            "imported": sum(1 for item in results if item["ok"]),
+            "imported": imported,
             "failed": sum(1 for item in results if not item["ok"]),
             "results": results,
         }
@@ -300,6 +311,8 @@ class StudioTemplateService:
                     "插件配置已更新，请重新尝试保存密钥", status_code=409
                 )
             self.reconfigure_hub(key=value)
+        # 只记密钥是否更新或清除，绝不落原文或长度。
+        logger.info("[模板广场] 在线模板密钥已%s", "更新" if value else "清除")
         return {**self.hub_state(), **self.hub_key_masked()}
 
     def hub_key_masked(self) -> dict[str, Any]:
@@ -460,6 +473,7 @@ class StudioTemplateService:
         elif action == "delete":
             template_id = _require_id(payload.get("id"))
             await self.store.delete(template_id)
+            logger.info("[模板广场] 已删除本地模板: %s", template_id)
             return {"id": template_id}
         elif action == "restore":
             template_id = _require_id(payload.get("id"))
@@ -472,6 +486,10 @@ class StudioTemplateService:
             template = await self.store.set_ai_enabled(template_id, enabled)
         else:
             raise StudioServiceError("不支持的模板操作", status_code=400)
+        if action == "create":
+            logger.info("[模板广场] 已创建本地模板: %s", template.id)
+        elif action == "update":
+            logger.info("[模板广场] 已更新本地模板: %s", template.id)
         return _public_record(template)
 
     def export_package(self) -> dict[str, Any]:
@@ -619,7 +637,8 @@ def _source_message(exc: Exception) -> str:
 
 def _auth_error(exc: Exception) -> StudioServiceError:
     # 面板把任何 HTTP 401 当作登录失效踢回登录页，上游密钥问题必须用 403 表达。
-    logger.info("[模板广场] 在线模板密钥被上游拒绝: %s", exc)
+    # 密钥原文不入日志：异常摘要脱敏后截断。
+    logger.warning("[模板广场] 在线模板密钥被上游拒绝：%s", redact_text(str(exc))[:240])
     return StudioServiceError(_source_message(exc), status_code=403)
 
 

@@ -14,6 +14,7 @@ from typing import Any
 
 from astrbot.api import logger
 
+from .core.errors import redact_text
 from .limit_config import (
     GROUP_ACCESS_KEYS,
     LIMIT_KEYS,
@@ -23,6 +24,11 @@ from .limit_config import (
     validate_umo,
 )
 from .web_studio_service import StudioServiceError
+
+
+def _short_revision(value: Any) -> str:
+    # revision 是配置快照哈希，只留前 8 位便于对账。
+    return str(value or "")[:8] or "未知"
 
 
 class StudioLimitsService:
@@ -152,10 +158,19 @@ class StudioLimitsService:
             if self.limiter._closed or self._is_closed():
                 raise StudioServiceError("插件正在关闭", status_code=503)
             if revision != self._revision():
+                logger.warning(
+                    f"[限流] 保存版本冲突: "
+                    f"提交 revision={_short_revision(revision)}, "
+                    f"实际 revision={_short_revision(self._revision())}"
+                )
                 raise StudioServiceError(
                     "限流配置已更新，请重新加载后再保存", status_code=409
                 )
             if getattr(self.config, "limit_config_error", ""):
+                logger.warning(
+                    f"[限流] 拒绝保存: 原因=现有配置格式无效, "
+                    f"错误={redact_text(self.config.limit_config_error)[:240]}"
+                )
                 raise StudioServiceError(
                     "现有配置格式无效，请先在插件配置中修正，避免覆盖无法展示的规则",
                     status_code=409,
@@ -189,7 +204,11 @@ class StudioLimitsService:
             except Exception as exc:
                 if self.raw_config.get("limit_settings") == merged:
                     self.raw_config["limit_settings"] = previous
-                logger.warning("[限流] 配置保存失败，保留原运行时规则", exc_info=True)
+                logger.warning(
+                    "[限流] 配置保存失败，保留原运行时规则: "
+                    f"原因={redact_text(str(exc))[:240]}",
+                    exc_info=True,
+                )
                 raise StudioServiceError(
                     "保存限流配置失败，原规则保持不变", status_code=500
                 ) from exc
@@ -204,12 +223,21 @@ class StudioLimitsService:
                     )
                 except ValueError:
                     self.config.limit_config_error = "并发保存后的限流配置无效"
+                logger.warning(
+                    "[限流] 宿主已更新配置，拒绝覆盖: "
+                    f"提交 revision={_short_revision(revision)}"
+                )
                 raise StudioServiceError(
                     "配置已被宿主的新版本更新，请重新加载", status_code=409
                 )
             apply_limits(self.config, copy.deepcopy(limits))
             await self.limiter._save_to_kv(force=True)
-            logger.info("[限流] Studio 配置已保存并即时生效，保留现有计数")
+            logger.info(
+                f"[限流] Studio 配置已保存并即时生效，保留现有计数: "
+                f"全局额度={bool(limits['global_rate_limit']['enabled'])}, "
+                f"规则条数={len(limits['rate_limit_rules'])}, "
+                f"revision={_short_revision(revision)}"
+            )
             return self.get_limits()
 
     async def _load_sessions(self) -> list[dict[str, str]]:

@@ -9,6 +9,10 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import TypeVar
 
+from astrbot.api import logger
+
+from .errors import redact_text
+
 T = TypeVar("T")
 
 
@@ -25,6 +29,11 @@ def _remaining(deadline: datetime | None, deadline_mono: float | None) -> float 
         ).total_seconds(),
         0.0,
     )
+
+
+def _error_summary(error: BaseException) -> str:
+    detail = redact_text(str(error)).strip()[:240]
+    return f"{type(error).__name__}: {detail}" if detail else type(error).__name__
 
 
 def is_retryable(error: BaseException) -> bool:
@@ -55,6 +64,11 @@ async def run_with_retry(
     for attempt in range(1, max_attempts + 1):
         remaining = _remaining(deadline, deadline_mono)
         if remaining is not None and remaining <= 0:
+            logger.warning(
+                "[v2] retry deadline 已耗尽: attempt=%s error=%s",
+                attempt,
+                _error_summary(last_error) if last_error is not None else "",
+            )
             raise asyncio.TimeoutError("retry deadline exceeded") from last_error
         try:
             result = operation(attempt)
@@ -71,11 +85,23 @@ async def run_with_retry(
                 raise
             remaining = _remaining(deadline, deadline_mono)
             if remaining is not None and remaining <= 0:
+                logger.warning(
+                    "[v2] retry deadline 已耗尽: attempt=%s error=%s",
+                    attempt,
+                    _error_summary(error),
+                )
                 raise asyncio.TimeoutError("retry deadline exceeded") from error
             delay = (
                 min(backoff * (2 ** (attempt - 1)), remaining)
                 if remaining is not None
                 else backoff * (2 ** (attempt - 1))
+            )
+            logger.debug(
+                "[v2] retry 即将重试: attempt=%s delay=%s remaining_s=%s error=%s",
+                attempt,
+                delay,
+                remaining,
+                _error_summary(error),
             )
             if delay > 0:
                 if deadline_mono is None:

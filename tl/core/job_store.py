@@ -32,6 +32,7 @@ from .errors import (
     StaleJobError,
     StateTransitionError,
     redact_sensitive,
+    redact_text,
 )
 from .models import Artifact, Attempt, Job, JobEvent, LeaseRecord, utc_now
 from .requests import GenerationRequest
@@ -92,6 +93,11 @@ def _json_loads(value: str | None, default: Any) -> Any:
 def _safe_text(value: Any, default: str = "") -> str:
     text = str(value or "").strip()
     return text or default
+
+
+def _error_summary(error: BaseException) -> str:
+    detail = redact_text(str(error)).strip()[:240]
+    return f"{type(error).__name__}: {detail}" if detail else type(error).__name__
 
 
 def _validate_database_name(value: str) -> str:
@@ -678,6 +684,12 @@ class SQLiteJobStore:
         self.heartbeat_at = now_text
         self._stale_owner_ids = stale_owner_ids
         self._recover_ownerless = not live_owner
+        logger.info(
+            "[v2] JobStore owner 已注册: owner_id=%s fencing_token=%s stale_owners=%s",
+            self.owner_id,
+            self.fencing_token,
+            len(stale_owner_ids),
+        )
         return bool(stale_owner_ids or self._recover_ownerless)
 
     def _heartbeat_locked(self, connection: sqlite3.Connection) -> None:
@@ -692,6 +704,10 @@ class SQLiteJobStore:
             (now_text, self.owner_id),
         )
         if result.rowcount != 1:
+            logger.error(
+                "[v2] JobStore heartbeat owner 失效或已被接管: owner_id=%s",
+                self.owner_id,
+            )
             raise ServiceClosedError("JobStore owner 已失效，请重新打开")
         self.heartbeat_at = now_text
 
@@ -717,7 +733,7 @@ class SQLiteJobStore:
         except Exception as exc:
             self._backup_corrupt(path)
             logger.warning(
-                "JobStore 忽略损坏的旧 JSON %s: %s", path.name, type(exc).__name__
+                "JobStore 忽略损坏的旧 JSON %s: %s", path.name, _error_summary(exc)
             )
             return None
 
@@ -791,7 +807,7 @@ class SQLiteJobStore:
                         logger.warning(
                             "JobStore 跳过 %s 中的坏记录: %s",
                             source,
-                            type(exc).__name__,
+                            _error_summary(exc),
                         )
                         continue
                     inserted = connection.execute(
@@ -826,6 +842,13 @@ class SQLiteJobStore:
                     ) VALUES (?, ?, ?, ?, ?)
                     """,
                     (source, _timestamp(), len(records), imported, skipped),
+                )
+            if imported > 0:
+                logger.info(
+                    "[v2] JobStore 导入旧记录: source=%s imported=%s skipped=%s",
+                    source,
+                    imported,
+                    skipped,
                 )
 
     def _job_from_history(self, record: Any) -> Job | None:
@@ -965,7 +988,14 @@ class SQLiteJobStore:
                 + clauses[0],
                 params,
             ).fetchall()
+            recovered_jobs = recovered_interrupted = recovered_orphaned = 0
+            recovered_attempts = recovered_leases = 0
             for row in rows:
+                recovered_jobs += 1
+                if row["state"] == "accepted":
+                    recovered_orphaned += 1
+                else:
+                    recovered_interrupted += 1
                 state = (
                     JobState.ORPHANED
                     if row["state"] == "accepted"
@@ -1000,6 +1030,7 @@ class SQLiteJobStore:
                     """,
                     (row["job_id"],),
                 ).fetchall()
+                recovered_attempts += len(attempts)
                 for attempt in attempts:
                     connection.execute(
                         """
@@ -1029,6 +1060,7 @@ class SQLiteJobStore:
                     """,
                     (row["job_id"],),
                 ).fetchall()
+                recovered_leases += len(active_leases)
                 for lease in active_leases:
                     connection.execute(
                         """
@@ -1068,6 +1100,16 @@ class SQLiteJobStore:
                         },
                     ),
                 )
+        if recovered_jobs or recovered_attempts or recovered_leases:
+            logger.info(
+                "[v2] JobStore crash recovery: interrupted=%s orphaned=%s attempts=%s leases=%s",
+                recovered_interrupted,
+                recovered_orphaned,
+                recovered_attempts,
+                recovered_leases,
+            )
+        else:
+            logger.debug("[v2] JobStore crash recovery: no records recovered")
 
     @staticmethod
     def _job_values(job: Job) -> tuple[Any, ...]:
@@ -1200,6 +1242,10 @@ class SQLiteJobStore:
                     job.owner_id != previous["owner_id"]
                     or job.fencing_token != int(previous["fencing_token"] or 0)
                 ):
+                    logger.debug(
+                        "[v2] JobStore save CAS 冲突: job_id=%s reason=owner_fencing",
+                        job.job_id,
+                    )
                     raise StaleJobError(
                         f"Job owner fencing rejected: {job.job_id}",
                         details={"job_id": job.job_id, "owner_id": job.owner_id},
@@ -1208,11 +1254,21 @@ class SQLiteJobStore:
                     job.owner_id != self.owner_id
                     or job.fencing_token != self.fencing_token
                 ):
+                    logger.debug(
+                        "[v2] JobStore save CAS 冲突: job_id=%s reason=owner_token",
+                        job.job_id,
+                    )
                     raise StaleJobError(
                         f"Job owner fencing rejected: {job.job_id}",
                         details={"job_id": job.job_id, "owner_id": job.owner_id},
                     )
                 if previous_revision != expected:
+                    logger.debug(
+                        "[v2] JobStore save CAS 冲突: job_id=%s reason=revision expected=%s current=%s",
+                        job.job_id,
+                        expected,
+                        previous_revision,
+                    )
                     raise StaleJobError(
                         f"Job 快照已过期: {job.job_id}",
                         details={
@@ -1266,6 +1322,11 @@ class SQLiteJobStore:
                     ),
                 )
                 if result.rowcount == 0:
+                    logger.debug(
+                        "[v2] JobStore save CAS 冲突: job_id=%s reason=rowcount expected=%s",
+                        job.job_id,
+                        expected,
+                    )
                     raise StaleJobError(
                         f"Job 快照已过期: {job.job_id}",
                         details={
@@ -1775,7 +1836,10 @@ class SQLiteJobStore:
                     count += 1
                 return count
 
-        return await self._run_write(operation)
+        count = await self._run_write(operation)
+        if count > 0:
+            logger.info("[v2] JobStore leases expired: count=%s", count)
+        return count
 
     async def checkpoint(self) -> None:
         """Flush and truncate WAL outside a transaction, preserving cancellation.

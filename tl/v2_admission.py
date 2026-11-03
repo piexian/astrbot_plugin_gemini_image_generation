@@ -7,6 +7,8 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, ExitStack, contextmanager
 from typing import TYPE_CHECKING, Any
 
+from astrbot.api import logger
+
 from .api_types import APIError
 from .core.errors import (
     InvalidRequestError,
@@ -14,12 +16,19 @@ from .core.errors import (
     QuotaExceededError,
     ServiceClosedError,
     StudioBusyError,
+    redact_text,
 )
 from .generation_scheduler import generation_reservation
 
 if TYPE_CHECKING:
     from .core.requests import GenerationRequest
     from .rate_limiter import RateLimiter
+
+
+def _error_summary(error: BaseException) -> str:
+    detail = redact_text(str(error)).strip()[:240]
+    return f"{type(error).__name__}: {detail}" if detail else type(error).__name__
+
 
 _QUOTA_SCOPES = frozenset({"session", "global", "plugin"})
 
@@ -35,7 +44,13 @@ class _QuotaReservation:
         """Job 结束时调用；额度不回补。"""
 
     async def refund(self) -> None:
-        await self._rate_limiter.refund(self.token)
+        try:
+            await self._rate_limiter.refund(self.token)
+        except BaseException as error:
+            logger.warning(
+                "[v2] quota reservation refund 失败: %s", _error_summary(error)
+            )
+            raise
 
 
 class RateLimiterQuota:
@@ -77,6 +92,14 @@ class RateLimiterQuota:
             plugin_id=plugin_id,
         )
         if not decision.allowed:
+            logger.warning(
+                "[v2] quota reserve 拒绝: scope=%s retry_after=%s silent=%s umo=%s plugin_id=%s",
+                getattr(decision, "scope", None) or scope,
+                getattr(decision, "retry_after", 0),
+                not getattr(decision, "message", None),
+                umo,
+                plugin_id,
+            )
             raise QuotaExceededError(
                 decision.message or "",
                 details={
@@ -86,6 +109,13 @@ class RateLimiterQuota:
                     "silent": not decision.message,
                 },
             )
+        logger.debug(
+            "[v2] quota reserve 成功: scope=%s umo=%s plugin_id=%s token=%s",
+            getattr(decision, "scope", None) or scope,
+            umo,
+            plugin_id,
+            bool(getattr(decision, "token", None)),
+        )
         return _QuotaReservation(rate_limiter, decision.token)
 
 
@@ -127,8 +157,16 @@ class LegacyFifoLimiter:
             ticket = scheduler.reserve()
         except APIError as error:
             if error.error_type == "queue_full":
+                logger.warning(
+                    "[v2] LegacyFifoLimiter 队列已满: error=%s",
+                    _error_summary(error),
+                )
                 raise QueueFullError(error.message) from error
             if error.error_type == "service_closed":
+                logger.warning(
+                    "[v2] LegacyFifoLimiter 已关闭: error=%s",
+                    _error_summary(error),
+                )
                 raise ServiceClosedError(error.message) from error
             raise
         return _FifoReservation(ticket)
@@ -160,8 +198,18 @@ class StudioAdmissionLimiter:
             return None
         maximum = max(int(self._get_maximum()), 1)
         if self._active >= maximum:
+            logger.warning(
+                "[v2] StudioAdmissionLimiter 并发已满: active=%s limit=%s",
+                self._active,
+                maximum,
+            )
             raise StudioBusyError("工作台生成任务已达到并发上限，请稍后重试")
         self._active += 1
+        logger.debug(
+            "[v2] StudioAdmissionLimiter 占位成功: active=%s limit=%s",
+            self._active,
+            maximum,
+        )
         return _StudioReservation(self)
 
 
@@ -197,6 +245,10 @@ class _CompositeReservation:
                 if inspect.isawaitable(result):
                     await result
             except Exception as error:
+                logger.warning(
+                    "[v2] composite reservation release 失败: %s",
+                    _error_summary(error),
+                )
                 if first_error is None:
                     first_error = error
         if first_error is not None:
@@ -223,7 +275,11 @@ class CompositeAdmissionLimiter:
             if reservations:
                 try:
                     await _CompositeReservation(reservations).release()
-                except Exception:
+                except Exception as error:
+                    logger.warning(
+                        "[v2] composite admission rollback 失败: %s",
+                        _error_summary(error),
+                    )
                     pass
             raise
         return _CompositeReservation(reservations) if reservations else None

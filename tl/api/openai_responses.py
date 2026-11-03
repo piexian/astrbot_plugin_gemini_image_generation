@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import codecs
 import json
+import time
 from typing import Any
 
 import aiohttp
+from astrbot.api import logger
 
 from ..api_types import APIError, ApiRequestConfig
+from ..core.errors import redact_text, redact_url
 from ..generation_scheduler import emit_generation_preview
 from ..openai_image_size import derive_custom_size_from_preset_params
 from ..tl_utils import save_base64_image
@@ -38,8 +41,18 @@ async def read_responses_response(
         try:
             result = await response.json(content_type=None)
         except ValueError as exc:
+            logger.warning(
+                "[openai_responses] 响应 JSON 解析失败: status=%s error=%s",
+                getattr(response, "status", None),
+                redact_text(exc)[:240],
+            )
             raise _unknown_result() from exc
         if not isinstance(result, dict):
+            logger.warning(
+                "[openai_responses] 响应不是 JSON 对象: status=%s type=%s",
+                getattr(response, "status", None),
+                type(result).__name__,
+            )
             raise _unknown_result()
         return result
 
@@ -58,8 +71,18 @@ async def read_responses_response(
         try:
             event = json.loads(raw)
         except (ValueError, TypeError) as exc:
+            logger.warning(
+                "[openai_responses] SSE 事件解析失败: status=%s error=%s",
+                getattr(response, "status", None),
+                redact_text(exc)[:240],
+            )
             raise _unknown_result() from exc
         if not isinstance(event, dict):
+            logger.warning(
+                "[openai_responses] SSE 事件不是 JSON 对象: status=%s type=%s",
+                getattr(response, "status", None),
+                type(event).__name__,
+            )
             raise _unknown_result()
         kind = event.get("type")
         if kind == "response.image_generation_call.partial_image":
@@ -69,8 +92,22 @@ async def read_responses_response(
             return None
         if kind in {"error", "response.failed"}:
             result = event.get("response") or event
+            detail = result.get("error") if isinstance(result, dict) else result
+            code = detail.get("code") if isinstance(detail, dict) else None
+            message = detail.get("message") if isinstance(detail, dict) else detail
+            logger.warning(
+                "[openai_responses] SSE 事件失败: type=%s status=%s code=%s message=%s",
+                kind,
+                getattr(response, "status", None),
+                redact_text(code)[:120],
+                redact_text(message)[:240],
+            )
             return {"status": "failed", "error": result.get("error") or result}
         if kind == "response.incomplete":
+            logger.warning(
+                "[openai_responses] SSE 事件不完整: status=%s",
+                getattr(response, "status", None),
+            )
             raise _unknown_result()
         if kind == "response.output_item.done":
             item = event.get("item") or {}
@@ -208,6 +245,16 @@ class OpenAIResponsesProvider:
             )
         content = [{"type": "input_text", "text": config.prompt}]
         content.extend({"type": "input_image", "image_url": ref} for ref in refs)
+        logger.debug(
+            "[openai_responses] build_request: url=%s model=%s base_model=%s "
+            "stream=True size=%s action=%s refs=%d",
+            redact_url(url),
+            model,
+            base_model,
+            tool.get("size"),
+            action,
+            len(refs),
+        )
         return ProviderRequest(
             url=url,
             headers={
@@ -235,10 +282,17 @@ class OpenAIResponsesProvider:
         http_status: int | None = None,
         request_config: ApiRequestConfig | None = None,
     ) -> tuple[list[str], list[str], str | None, str | None]:
+        started_at = time.monotonic()
         result = response_data.get("response") or response_data
         error = result.get("error")
         if error or result.get("status") == "failed":
             message = error.get("message") if isinstance(error, dict) else error
+            logger.warning(
+                "[openai_responses] 生图失败: status=%s http_status=%s message=%s",
+                result.get("status"),
+                http_status,
+                redact_text(message)[:240],
+            )
             raise APIError(
                 str(message or "Responses 生图失败"),
                 http_status,
@@ -289,4 +343,10 @@ class OpenAIResponsesProvider:
                 error_type="no_image",
                 retryable=False,
             )
+        logger.debug(
+            "[openai_responses] parse_response: images=%d saved=%d elapsed_ms=%d",
+            len(seen),
+            len(paths),
+            int((time.monotonic() - started_at) * 1000),
+        )
         return paths, paths, "\n".join(texts) or None, None

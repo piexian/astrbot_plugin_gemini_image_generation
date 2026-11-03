@@ -10,6 +10,7 @@ import aiohttp
 from astrbot.api import logger
 
 from ..api_types import APIError, ApiRequestConfig
+from ..core.errors import redact_text, redact_url
 from ..tl_utils import save_base64_image
 from .base import ProviderRequest
 from .data_uri import format_data_uri
@@ -54,8 +55,11 @@ class AgnesAIProvider:
         )
 
         logger.debug(
-            f"[agnes_ai] URL={url} refs={len(config.reference_images or [])} "
-            f"response_format={settings.get('response_format') or 'url'}"
+            "[agnes_ai] build_request: url=%s model=%s refs=%d response_format=%s",
+            redact_url(url),
+            payload.get("model"),
+            len(config.reference_images or []),
+            settings.get("response_format") or "url",
         )
         return ProviderRequest(
             url=url,
@@ -89,7 +93,11 @@ class AgnesAIProvider:
                     if isinstance(error_obj, dict)
                     else str(error_obj)
                 )
-                logger.warning(f"[agnes_ai] API 返回错误: {error_msg}")
+                logger.warning(
+                    "[agnes_ai] API 返回错误: http_status=%s detail=%s",
+                    http_status,
+                    redact_text(error_msg)[:300],
+                )
                 raise APIError(
                     f"图像生成失败: {error_msg}",
                     http_status,
@@ -97,7 +105,11 @@ class AgnesAIProvider:
                     error_obj.get("code") if isinstance(error_obj, dict) else None,
                     retryable=False,
                 )
-            logger.warning(f"[agnes_ai] 响应无 data 字段: {response_data}")
+            logger.warning(
+                "[agnes_ai] 响应无 data 字段: http_status=%s body=%s",
+                http_status,
+                redact_text(response_data)[:300],
+            )
             raise APIError(
                 "API 响应格式不正确，缺少 data 字段",
                 http_status,
@@ -126,8 +138,12 @@ class AgnesAIProvider:
                         image_urls.append(image_path)
                         image_paths.append(image_path)
                         continue
+                    logger.warning(
+                        "[agnes_ai] 图片下载未落盘，回退直链: url=%s",
+                        redact_url(image_url),
+                    )
                 image_urls.append(image_url)
-                logger.debug(f"[agnes_ai] 图片 URL: {image_url[:80]}...")
+                logger.debug("[agnes_ai] 图片 URL: %s", redact_url(image_url))
 
             b64_data = image_item.get("b64_json")
             if isinstance(b64_data, str) and b64_data:
@@ -154,7 +170,11 @@ class AgnesAIProvider:
             if isinstance(error_obj, dict)
             else str(error_obj)
         )
-        logger.warning(f"[agnes_ai] 未返回图片: {error_msg}")
+        logger.warning(
+            "[agnes_ai] 未返回图片: http_status=%s detail=%s",
+            http_status,
+            redact_text(error_msg)[:300],
+        )
         raise APIError(
             f"图像生成失败: {error_msg}",
             http_status,
@@ -205,8 +225,11 @@ class AgnesAIProvider:
             payload["extra_body"] = extra_body
 
         logger.debug(
-            f"[agnes_ai] payload: model={model} size={payload.get('size')} "
-            f"refs={len(ref_images)} response_format={response_format}"
+            "[agnes_ai] payload: model=%s size=%s refs=%d response_format=%s",
+            model,
+            payload.get("size"),
+            len(ref_images),
+            response_format,
         )
         return payload
 

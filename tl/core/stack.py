@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from astrbot.api import logger
+
 from .job_store import SQLiteJobStore
 from .leases import Lease, LeaseKind
 from .legacy_adapter import LegacyClientAdapter
@@ -143,4 +145,10 @@ def build_generation_stack(
     except BaseException:
         store.close_sync()
         raise
+    logger.info(
+        "[v2] Generation stack 已装配: candidates=%s data_dir=%s import_legacy=%s",
+        len(candidates),
+        data_dir,
+        import_legacy,
+    )
     return GenerationService(scheduler, reference_service)

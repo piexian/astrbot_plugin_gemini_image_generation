@@ -10,6 +10,7 @@ import contextlib
 import copy
 import inspect
 import math
+import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
@@ -30,6 +31,7 @@ from .errors import (
     RecoveryRequiredError,
     ServiceClosedError,
     StaleJobError,
+    redact_text,
 )
 from .leases import Lease, LeaseKind, LeaseSet
 from .models import Job, JobEvent, LeaseRecord
@@ -160,9 +162,18 @@ def _delivery_error_text(error: Exception, timeout: float) -> str:
 
     if isinstance(error, TimeoutError):
         return f"投递超时（{timeout:g} 秒）"
-    detail = str(error).strip()
+    detail = redact_text(str(error)).strip()
     text = f"{type(error).__name__}: {detail}" if detail else type(error).__name__
     return text[:_DELIVERY_ERROR_MAX_CHARS]
+
+
+def _error_summary(error: BaseException) -> str:
+    detail = redact_text(str(error)).strip()[:240]
+    return f"{type(error).__name__}: {detail}" if detail else type(error).__name__
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return max(int((time.monotonic() - started_at) * 1000), 0)
 
 
 class _GuardedObserverScope:
@@ -182,7 +193,7 @@ class _GuardedObserverScope:
             logger.warning(
                 "[v2] %s runtime_scope 退出失败: %s",
                 self._owner_name,
-                type(error).__name__,
+                _error_summary(error),
             )
         # 恒为 False：观察者与准入预留都不得抑制 provider 自身抛出的异常。
         return False
@@ -279,8 +290,24 @@ class JobScheduler:
                 # Persistence is deliberately before create_task.
                 persisted_job_id = job.job_id
                 await self.store.create(job)
+
                 job.transition(JobState.QUEUED)
                 job = await self.store.save(job)
+                logger.info(
+                    "[v2] Job 已受理: job_id=%s source=%s provider=%s model=%s images=%s refs=%s deadline_s=%.3f",
+                    job.job_id,
+                    request.source,
+                    request.provider,
+                    request.model,
+                    request.image_count,
+                    len(request.reference_images),
+                    max(
+                        (job.deadline_at - datetime.now(timezone.utc)).total_seconds(),
+                        0.0,
+                    )
+                    if job.deadline_at is not None
+                    else 0.0,
+                )
             except BaseException:
                 if persisted_job_id is not None:
                     try:
@@ -289,7 +316,7 @@ class JobScheduler:
                         logger.warning(
                             "[v2] Job %s 孤儿收尾失败: %s",
                             persisted_job_id,
-                            type(orphan_error).__name__,
+                            _error_summary(orphan_error),
                         )
                 await self._rollback_admissions(reserved)
                 raise
@@ -410,6 +437,13 @@ class JobScheduler:
                 raise
             parent_id = parent_job.job_id
             child_ids = tuple(job.job_id for job in child_jobs)
+            logger.info(
+                "[v2] 批量 Job 已受理: parent_job_id=%s children=%s concurrency=%s source=%s",
+                parent_id,
+                len(child_ids),
+                concurrency,
+                parent.source,
+            )
             if reserved:
                 self._admissions[parent_id] = tuple(reserved)
             if delivery is not None:
@@ -484,7 +518,7 @@ class JobScheduler:
             except Exception as error:
                 # 回滚中的清理失败不能遮蔽 submit_batch 的原始异常。
                 logger.warning(
-                    "[v2] Job %s 标记孤儿失败: %s", job_id, type(error).__name__
+                    "[v2] Job %s 标记孤儿失败: %s", job_id, _error_summary(error)
                 )
 
     async def _reserve_admissions(
@@ -523,7 +557,7 @@ class JobScheduler:
             except Exception as error:
                 # 回滚失败不能遮蔽 submit 的原始异常，仅记录。
                 logger.warning(
-                    "[v2] 准入预留 %s 回滚失败: %s", kind.value, type(error).__name__
+                    "[v2] 准入预留 %s 回滚失败: %s", kind.value, _error_summary(error)
                 )
 
     def _ensure_heartbeat(self) -> None:
@@ -541,9 +575,10 @@ class JobScheduler:
                 await self.store.heartbeat()
         except asyncio.CancelledError:
             raise
-        except BaseException:
+        except BaseException as error:
             # The next JobStore operation will fence this owner if its heartbeat
             # has been revoked; never create a replacement loop from the loop.
+            logger.error("[v2] JobStore 心跳循环异常退出: %s", _error_summary(error))
             return
 
     def attach_delivery(self, job_id: str, delivery: Any) -> bool:
@@ -555,12 +590,19 @@ class JobScheduler:
         Job 未知或已无 runtime task、已登记过、已越过判定点、调度器已关闭时返回 False。
         """
 
-        if (
-            self._closed
-            or job_id not in self._tasks
-            or job_id in self._deliveries
-            or job_id in self._delivery_decided
-        ):
+        if self._closed:
+            logger.debug("[v2] attach_delivery 拒绝: job_id=%s reason=closed", job_id)
+            return False
+        if job_id not in self._tasks:
+            logger.debug("[v2] attach_delivery 拒绝: job_id=%s reason=unknown", job_id)
+            return False
+        if job_id in self._delivery_decided:
+            logger.debug("[v2] attach_delivery 拒绝: job_id=%s reason=decided", job_id)
+            return False
+        if job_id in self._deliveries:
+            logger.debug(
+                "[v2] attach_delivery 拒绝: job_id=%s reason=duplicate", job_id
+            )
             return False
         self._deliveries[job_id] = delivery
         return True
@@ -598,7 +640,7 @@ class JobScheduler:
                 pending = release()
             except Exception as error:
                 logger.warning(
-                    "[v2] 准入预留 %s 释放失败: %s", kind.value, type(error).__name__
+                    "[v2] 准入预留 %s 释放失败: %s", kind.value, _error_summary(error)
                 )
                 continue
             if not inspect.isawaitable(pending):
@@ -614,7 +656,7 @@ class JobScheduler:
             await pending
         except Exception as error:
             logger.warning(
-                "[v2] 准入预留 %s 释放失败: %s", kind.value, type(error).__name__
+                "[v2] 准入预留 %s 释放失败: %s", kind.value, _error_summary(error)
             )
 
     async def _orphan(self, job_id: str) -> None:
@@ -728,7 +770,7 @@ class JobScheduler:
                         logger.warning(
                             "[v2] lease %s 持久化收尾失败: %s",
                             lease.token,
-                            type(update_error).__name__,
+                            _error_summary(update_error),
                         )
             raise
         except BaseException:
@@ -795,6 +837,7 @@ class JobScheduler:
 
     async def _run(self, job_id: str, *, notify_finished: bool = True) -> None:
         """运行一个 Job；``notify_finished=False`` 时终态通知交给调用方（批量子 Job）。"""
+        started_at = time.monotonic()
 
         leases = LeaseSet()
         # 终态通知只覆盖真正进入运行流程的 Job；恢复时已是终态的直接返回不通知。
@@ -810,6 +853,11 @@ class JobScheduler:
             job.fencing_token = self.store.fencing_token
             job.transition(JobState.RUNNING)
             job = await self.store.save(job)
+            logger.debug(
+                "[v2] Job 进入运行态: job_id=%s revision=%s",
+                job.job_id,
+                job.revision,
+            )
             await self._notify_delivery_started(job)
             # submit 时预留的准入资源在此转成持久化 lease（审计 + 终态释放）。
             # 先全部入 LeaseSet 再逐个落库：某个落库失败时，其余预留也由
@@ -826,7 +874,9 @@ class JobScheduler:
                 # 批量父 Job 不调用 provider：子 Job 各自运行，汇总后的收尾与普通
                 # Job 共用（return 仍会经过下面的 finally）。
                 await self._complete_job(
-                    job_id, await self._run_batch_children(job_id, batch)
+                    job_id,
+                    await self._run_batch_children(job_id, batch),
+                    started_at=started_at,
                 )
                 return
             original_references = self._original_references.get(job_id)
@@ -924,7 +974,7 @@ class JobScheduler:
                 saved = await self._deadline_call(job, save_operation, "artifact save")
                 if isinstance(saved, GenerationResult):
                     result = saved
-            await self._complete_job(job_id, result)
+            await self._complete_job(job_id, result, started_at=started_at)
         except asyncio.CancelledError:
             job = await self.store.get(job_id)
             if job is not None and job.state not in TERMINAL_STATES:
@@ -932,6 +982,13 @@ class JobScheduler:
                     job.request_cancel()
                     job.transition(JobState.CANCELLED)
                     await self.store.save(job)
+                    logger.info(
+                        "[v2] Job 已结束: job_id=%s state=%s error_code=%s elapsed_ms=%s",
+                        job_id,
+                        JobState.CANCELLED.value,
+                        None,
+                        _elapsed_ms(started_at),
+                    )
                 except (StaleJobError, ValueError):
                     pass
             raise
@@ -966,6 +1023,13 @@ class JobScheduler:
                     job.set_error(str(code), message)
                     job.transition(JobState.FAILED)
                     await self.store.save(job)
+                    logger.info(
+                        "[v2] Job 已结束: job_id=%s state=%s error_code=%s elapsed_ms=%s",
+                        job_id,
+                        JobState.FAILED.value,
+                        code,
+                        _elapsed_ms(started_at),
+                    )
                 except (StaleJobError, ValueError):
                     pass
         finally:
@@ -983,6 +1047,12 @@ class JobScheduler:
                 await asyncio.wait_for(
                     asyncio.shield(cleanup), timeout=self.cleanup_timeout
                 )
+            except asyncio.TimeoutError as error:
+                logger.warning(
+                    "[v2] Job %s 租约清理超时: %s",
+                    job_id,
+                    _error_summary(error),
+                )
             except BaseException:
                 # Lease records retain release_failed/active state for recovery.
                 pass
@@ -994,7 +1064,13 @@ class JobScheduler:
                 if started and notify_finished:
                     await self._notify_job_finished(job_id)
 
-    async def _complete_job(self, job_id: str, result: GenerationResult) -> None:
+    async def _complete_job(
+        self,
+        job_id: str,
+        result: GenerationResult,
+        *,
+        started_at: float | None = None,
+    ) -> None:
         """有结果的 Job 收尾：RESULT_READY → job_result 观察者 → 投递判定 → 终态。"""
 
         job = await self.store.get(job_id)
@@ -1021,6 +1097,13 @@ class JobScheduler:
         # 终态落库成功后才登记：并发赢家、失败、取消路径不登记，
         # 避免 wait() 读回的结果遮蔽 store 里的最终结果。
         self._remember_runtime_result(job_id, result)
+        logger.info(
+            "[v2] Job 已结束: job_id=%s state=%s error_code=%s elapsed_ms=%s",
+            job_id,
+            job.state.value,
+            job.error_code,
+            _elapsed_ms(started_at) if started_at is not None else 0,
+        )
 
     # ===== 批量父子 Job =====
 
@@ -1081,6 +1164,11 @@ class JobScheduler:
         except asyncio.CancelledError:
             raise
         except Exception as error:
+            logger.warning(
+                "[v2] 批量子 Job %s 准入/启动拒绝: %s",
+                child_id,
+                _error_summary(error),
+            )
             # 被拒（队列满等）只让这个子 Job 失败，不影响其他子 Job。
             await self._fail_unstarted_child(child_id, error)
             await self._settle_child(parent_id, plan, child_id)
@@ -1092,7 +1180,12 @@ class JobScheduler:
         runtime = self._run(child_id, notify_finished=False)
         try:
             task = asyncio.create_task(runtime, name=f"job:{child_id}")
-        except BaseException:
+        except BaseException as error:
+            logger.warning(
+                "[v2] 批量子 Job %s runtime task 启动失败: %s",
+                child_id,
+                _error_summary(error),
+            )
             runtime.close()
             self._release_admissions(child_id)
             self._done.pop(child_id, None)
@@ -1126,7 +1219,8 @@ class JobScheduler:
                 )
             )
             job.set_error(
-                str(getattr(error, "code", None) or type(error).__name__), str(error)
+                str(getattr(error, "code", None) or type(error).__name__),
+                str(error),
             )
             job.transition(JobState.FAILED)
             await self.store.save(job)
@@ -1164,7 +1258,7 @@ class JobScheduler:
             raise
         except Exception as error:
             logger.warning(
-                "[v2] 批量子 Job %s 收尾读取失败: %s", child_id, type(error).__name__
+                "[v2] 批量子 Job %s 收尾读取失败: %s", child_id, _error_summary(error)
             )
         if child_id in plan.claimed:
             return
@@ -1200,7 +1294,7 @@ class JobScheduler:
             raise
         except Exception as error:
             logger.warning(
-                "[v2] 批量钩子 %s 读取父 Job 失败: %s", hook, type(error).__name__
+                "[v2] 批量钩子 %s 读取父 Job 失败: %s", hook, _error_summary(error)
             )
             return
         if parent is None:
@@ -1221,7 +1315,7 @@ class JobScheduler:
                 "[v2] 投递方 %s 的 %s 调用失败: %s",
                 type(delivery).__name__,
                 hook,
-                type(error).__name__,
+                _error_summary(error),
             )
 
     @staticmethod
@@ -1293,7 +1387,7 @@ class JobScheduler:
             raise
         except Exception as error:
             logger.warning(
-                "[v2] 批量 %s 收拢子 Job 失败: %s", parent_id, type(error).__name__
+                "[v2] 批量 %s 收拢子 Job 失败: %s", parent_id, _error_summary(error)
             )
 
     async def _settle_batch_children(self, parent_id: str) -> None:
@@ -1326,7 +1420,11 @@ class JobScheduler:
                 _call(delivery.deliver, job, result), timeout=self.delivery_timeout
             )
         except Exception as error:
-            logger.warning("[v2] Job %s 投递失败: %s", job.job_id, type(error).__name__)
+            logger.warning(
+                "[v2] Job %s 投递失败: %s",
+                job.job_id,
+                _delivery_error_text(error, self.delivery_timeout),
+            )
             job.set_error(
                 "delivery_failed", _delivery_error_text(error, self.delivery_timeout)
             )
@@ -1347,7 +1445,9 @@ class JobScheduler:
         except asyncio.CancelledError:
             raise
         except Exception as error:
-            logger.warning("[v2] 投递方 job_started 调用失败: %s", type(error).__name__)
+            logger.warning(
+                "[v2] 投递方 job_started 调用失败: %s", _error_summary(error)
+            )
 
     async def _deliver_failure(self, job_id: str, delivery: Any) -> None:
         """Job 无结果结束且投递方尚未交接时通知其失败；异常/超时只记日志。"""
@@ -1357,7 +1457,7 @@ class JobScheduler:
         try:
             job = await self.store.get(job_id)
         except Exception as error:
-            logger.warning("[v2] 投递失败通知读取 Job 失败: %s", type(error).__name__)
+            logger.warning("[v2] 投递失败通知读取 Job 失败: %s", _error_summary(error))
             return
         if job is None or job.state not in _NO_RESULT_STATES:
             return
@@ -1369,7 +1469,7 @@ class JobScheduler:
             logger.warning(
                 "[v2] 投递方 %s 的 deliver_failure 调用失败: %s",
                 type(delivery).__name__,
-                type(error).__name__,
+                _error_summary(error),
             )
 
     async def _notify_observers(self, hook: str, *args: Any) -> None:
@@ -1391,7 +1491,7 @@ class JobScheduler:
                     "[v2] 观察者 %s 钩子 %s 调用失败: %s",
                     name,
                     hook,
-                    type(error).__name__,
+                    _error_summary(error),
                 )
 
     async def _notify_job_finished(self, job_id: str) -> None:
@@ -1402,7 +1502,7 @@ class JobScheduler:
         except asyncio.CancelledError:
             raise
         except BaseException as error:
-            logger.warning("[v2] 终态通知读取 Job 失败: %s", type(error).__name__)
+            logger.warning("[v2] 终态通知读取 Job 失败: %s", _error_summary(error))
             return
         if job is None or job.state not in TERMINAL_STATES:
             return
@@ -1438,7 +1538,7 @@ class JobScheduler:
                 logger.warning(
                     "[v2] %s runtime_scope 进入失败，跳过: %s",
                     name,
-                    type(error).__name__,
+                    _error_summary(error),
                 )
         return stack
 
@@ -1513,6 +1613,11 @@ class JobScheduler:
             if task is not None and not task.done():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
+            logger.info(
+                "[v2] Job 取消: job_id=%s had_task=%s",
+                job_id,
+                task is not None,
+            )
         job = await self.store.get(job_id)
         if job is None:
             raise JobNotFoundError(f"Job 不存在: {job_id}")
@@ -1532,6 +1637,8 @@ class JobScheduler:
                 return
             self._closed = True
             tasks = [task for task in self._tasks.values() if not task.done()]
+            if tasks:
+                logger.info("[v2] Scheduler 关闭，取消在途任务: count=%s", len(tasks))
             self._original_references.clear()
             self._runtime_results.clear()
             for task in tasks:

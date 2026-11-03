@@ -9,6 +9,7 @@ from typing import Any
 from astrbot.api import logger
 
 from .api_types import APIError
+from .core.errors import redact_text
 
 try:  # AstrBot 新版提供会话工作区；旧版本无此模块，维持插件数据目录
     from astrbot.core.workspace import (
@@ -34,8 +35,11 @@ async def bind_session_image_dir(event: Any, context: Any = None):
     try:
         root = await _send_allowed_workspace_root(umo, context)
     except Exception as e:
-        logger.warning(f"[生成图保存] 解析会话工作区失败: {e}")
+        logger.warning(f"[生成图保存] 解析会话工作区失败: {redact_text(str(e))[:240]}")
         return _session_image_dir.set(_WORKSPACE_FAILED)
+    logger.debug(
+        f"[生成图保存] 会话工作区已绑定: umo={umo}, dir={Path(root) / SESSION_IMAGE_SUBDIR}"
+    )
     return _session_image_dir.set(Path(root) / SESSION_IMAGE_SUBDIR)
 
 
@@ -103,6 +107,9 @@ def cleanup_session_images_by_size(max_size_mb: float) -> None:
             removed += 1
             if released >= target_release:
                 break
-        logger.debug(f"会话工作区生成图超出容量上限，已清理 {removed} 个最旧文件")
+        if removed > 0:
+            logger.info(
+                f"会话工作区生成图清理完成: removed={removed}, released_bytes={released}"
+            )
     except Exception as e:
-        logger.warning(f"会话工作区生成图清理失败: {e}")
+        logger.warning(f"会话工作区生成图清理失败: {redact_text(e)[:240]}")

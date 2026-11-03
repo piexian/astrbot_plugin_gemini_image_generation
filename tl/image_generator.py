@@ -16,6 +16,7 @@ from .core.errors import (
     QueueFullError,
     QuotaExceededError,
     ServiceClosedError,
+    redact_text,
 )
 from .core.requests import GenerationRequest
 from .core.states import JobState
@@ -208,7 +209,9 @@ class ImageGenerator:
             )
             return job_id
         except Exception as exc:
-            logger.warning(f"[生成追踪] 创建记录失败，不影响本次生成: {exc}")
+            logger.warning(
+                f"[生成追踪] 创建记录失败，不影响本次生成: {redact_text(str(exc))[:240]}"
+            )
             return None
 
     async def _complete_tracking(
@@ -241,7 +244,9 @@ class ImageGenerator:
                 f"[生成追踪] 失败: job_id={job_id}, 异常类型={type(error).__name__}"
             )
         except Exception as exc:
-            logger.warning(f"[生成追踪] 写入失败状态异常: {exc}")
+            logger.warning(
+                f"[生成追踪] 写入失败状态异常: {redact_text(str(exc))[:240]}"
+            )
 
     async def generate_image_core(
         self,
@@ -523,7 +528,9 @@ class ImageGenerator:
             return False, error_msg
 
         except Exception as e:
-            logger.error(f"生成图像时发生未预期的错误: {e}", exc_info=True)
+            logger.error(
+                f"生成图像时发生未预期的错误: {redact_text(e)[:240]}", exc_info=True
+            )
             await self._fail_tracking(tracking_job_id, e)
             return False, f"❌ 生成图像时发生错误: {str(e)}"
 
@@ -676,7 +683,9 @@ class ImageGenerator:
                 logger.error(error_msg)
                 return V2Submission(message=error_msg)
             except Exception as e:
-                logger.error(f"生成图像时发生未预期的错误: {e}", exc_info=True)
+                logger.error(
+                    f"生成图像时发生未预期的错误: {redact_text(e)[:240]}", exc_info=True
+                )
                 return V2Submission(message=f"❌ 生成图像时发生错误: {str(e)}")
             try:
                 handle = await v2_service.submit(request, admission=admission)
@@ -698,8 +707,18 @@ class ImageGenerator:
                 logger.error(error_msg)
                 return V2Submission(message=error_msg)
             except Exception as e:
-                logger.error(f"生成图像时发生未预期的错误: {e}", exc_info=True)
+                logger.error(
+                    f"生成图像时发生未预期的错误: {redact_text(e)[:240]}", exc_info=True
+                )
                 return V2Submission(message=f"❌ 生成图像时发生错误: {str(e)}")
+            logger.info(
+                f"[v2] 提交成功: job_id={getattr(handle, 'job_id', None)}, "
+                f"umo={getattr(event, 'unified_msg_origin', None)}, "
+                f"provider={getattr(request, 'provider', None) or requested_provider}, "
+                f"model={getattr(request, 'model', None) or requested_model}, "
+                f"candidate_id={getattr(request, 'candidate_id', None)}, "
+                f"refs={len(reference_images or []) + len(avatar_reference or [])}"
+            )
             return V2Submission(handle=handle)
         finally:
             reset_session_image_dir(token)
@@ -715,6 +734,8 @@ class ImageGenerator:
     ) -> tuple[bool, tuple[list[str], list[str], str | None, str | None] | str]:
         """v2 第二阶段：等待 Job 终态并转换为旧调用方兼容结果。"""
         deadline = self.total_timeout
+        wait_started = asyncio.get_running_loop().time()
+        job_id = getattr(handle, "job_id", None)
         # 等待上限由调度器给出（deadline 之外还容纳观察者钩子时间）；等待期间
         # 调用方被取消或超时都先取消 Job，与旧路径"取消入口即取消生成"一致。
         try:
@@ -732,11 +753,16 @@ class ImageGenerator:
                 error_type="timeout",
                 total_timeout=self.total_timeout,
             )
+            logger.warning(
+                f"[v2] 等待超时并取消: job_id={job_id}, umo={getattr(handle, 'umo', None)}, timeout={deadline}"
+            )
             logger.error(error_msg)
             return False, error_msg
         except Exception as e:
             # wait 自身异常：Job 可能仍在运行，先取消再按旧路径措辞返回。
-            logger.error(f"生成图像时发生未预期的错误: {e}", exc_info=True)
+            logger.error(
+                f"生成图像时发生未预期的错误: {redact_text(e)[:240]}", exc_info=True
+            )
             await asyncio.shield(v2_service.cancel(handle.job_id))
             return False, f"❌ 生成图像时发生错误: {str(e)}"
         if (
@@ -763,6 +789,11 @@ class ImageGenerator:
                 "effective_image_count": max(int(image_count or 1), 1),
                 "routing_mode": routing_mode(requested_provider, requested_model),
             }
+        )
+        logger.info(
+            f"[v2] 等待完成: job_id={job_id}, umo={getattr(handle, 'umo', None)}, "
+            f"images={len(image_paths) + len(image_urls)}, provider={result.provider}, "
+            f"model={result.model}, elapsed={asyncio.get_running_loop().time() - wait_started:.2f}s"
         )
         logger.info(
             f"🖼️ v2 返回图片数量: {len(image_paths)}, URL 数量: {len(image_urls)}"

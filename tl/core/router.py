@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -47,6 +48,11 @@ def _remaining_seconds(deadline: datetime | None) -> float | None:
         deadline.astimezone(timezone.utc) - datetime.now(timezone.utc)
     ).total_seconds()
     return max(remaining, 0.0)
+
+
+def _error_summary(error: BaseException) -> str:
+    detail = redact_text(str(error)).strip()[:240]
+    return f"{type(error).__name__}: {detail}" if detail else type(error).__name__
 
 
 def is_route_retryable(error: BaseException) -> bool:
@@ -154,11 +160,19 @@ class ProviderRouter:
                 logger.warning(
                     "provider 候选 %s supports 检查失败: %s",
                     candidate.display_id,
-                    redact_text(str(error)),
+                    redact_text(str(error))[:240],
                 )
                 continue
             if supported:
                 selected.append(candidate)
+        logger.debug(
+            "[v2] Router select: provider=%s model=%s candidate_id=%s total=%s selected=%s",
+            request.provider,
+            request.model,
+            request.candidate_id,
+            len(self._candidates),
+            [item.display_id for item in selected],
+        )
         return selected
 
     async def execute(
@@ -181,6 +195,13 @@ class ProviderRouter:
 
         selected = await self.select(request)
         if not selected:
+            logger.warning(
+                "[v2] Router 无匹配候选: provider=%s model=%s candidate_id=%s candidates=%s",
+                request.provider,
+                request.model,
+                request.candidate_id,
+                [item.display_id for item in self._candidates],
+            )
             raise NoSupportedProviderError(
                 "没有候选 provider 支持当前请求",
                 details={
@@ -195,6 +216,14 @@ class ProviderRouter:
         last_error: BaseException | None = None
         single_candidate = len(selected) == 1
         for candidate in selected:
+            if outcomes:
+                logger.info(
+                    "[v2] 路由回退: prev=%s -> next=%s attempts=%s remaining_s=%s",
+                    outcomes[-1].candidate_id,
+                    candidate.display_id,
+                    attempts_total,
+                    _remaining_seconds(deadline),
+                )
             outcome, result, error = await self._run_candidate(
                 candidate, request, deadline, single_candidate=single_candidate
             )
@@ -205,12 +234,20 @@ class ProviderRouter:
             last_error = error
             remaining = _remaining_seconds(deadline)
             if remaining is not None and remaining <= 0:
+                logger.warning(
+                    "[v2] Router deadline 耗尽: candidates=%s",
+                    [item.to_dict() for item in outcomes],
+                )
                 raise ProviderRouteError(
                     "provider 调用超过总 deadline",
                     code="deadline_exceeded",
                     retryable=True,
                     details={"candidates": [item.to_dict() for item in outcomes]},
                 ) from last_error
+        logger.warning(
+            "[v2] Router 全部候选失败: candidates=%s",
+            [item.to_dict() for item in outcomes],
+        )
         raise ProviderRouteError(
             "所有候选 provider 均失败",
             retryable=_error_retryable(last_error),
@@ -235,11 +272,19 @@ class ProviderRouter:
             except asyncio.CancelledError:
                 raise
             except BaseException as error:
-                return self._outcome(candidate, 0, OUTCOME_FAILED, error), None, error
+                outcome = self._outcome(candidate, 0, OUTCOME_FAILED, error)
+                logger.warning(
+                    "[v2] Router 候选最终失败: candidate_id=%s attempts=%s error_code=%s error=%s",
+                    candidate.display_id,
+                    outcome.attempts,
+                    outcome.error_code,
+                    _error_summary(error),
+                )
+                return outcome, None, error
 
         attempts = 0
 
-        async def attempt(number: int) -> GenerationResult:
+        async def run_attempt(number: int) -> GenerationResult:
             nonlocal attempts
             attempts = number
             attempt_input = ProviderAttempt(
@@ -298,6 +343,32 @@ class ProviderRouter:
                 raise InvalidRequestError("provider parse_response 须返回结果对象")
             return result
 
+        async def attempt(number: int) -> GenerationResult:
+            started_at = time.monotonic()
+            logger.debug(
+                "[v2] Router attempt 开始: candidate_id=%s attempt=%s",
+                candidate.display_id,
+                number,
+            )
+            try:
+                result = await run_attempt(number)
+            except BaseException as error:
+                logger.debug(
+                    "[v2] Router attempt 结束: candidate_id=%s attempt=%s elapsed_ms=%s error=%s",
+                    candidate.display_id,
+                    number,
+                    int((time.monotonic() - started_at) * 1000),
+                    _error_summary(error),
+                )
+                raise
+            logger.debug(
+                "[v2] Router attempt 结束: candidate_id=%s attempt=%s elapsed_ms=%s",
+                candidate.display_id,
+                number,
+                int((time.monotonic() - started_at) * 1000),
+            )
+            return result
+
         try:
             result = await run_with_retry(
                 attempt,
@@ -309,11 +380,15 @@ class ProviderRouter:
         except asyncio.CancelledError:
             raise
         except BaseException as error:
-            return (
-                self._outcome(candidate, attempts, OUTCOME_FAILED, error),
-                None,
-                error,
+            outcome = self._outcome(candidate, attempts, OUTCOME_FAILED, error)
+            logger.warning(
+                "[v2] Router 候选最终失败: candidate_id=%s attempts=%s error_code=%s error=%s",
+                candidate.display_id,
+                outcome.attempts,
+                outcome.error_code,
+                _error_summary(error),
             )
+            return outcome, None, error
         return self._outcome(candidate, attempts, OUTCOME_SUCCEEDED), result, None
 
     def _outcome(

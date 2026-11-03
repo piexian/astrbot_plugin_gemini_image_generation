@@ -21,6 +21,7 @@ import aiohttp
 from astrbot.api import logger
 
 from ..api_types import APIError, ApiRequestConfig
+from ..core.errors import redact_text, redact_url
 from .base import ProviderRequest
 from .google import GoogleProvider
 
@@ -143,6 +144,16 @@ class VertexProvider(GoogleProvider):
         )
         if not credential:
             headers["x-goog-api-key"] = config.api_key or ""
+        logger.debug(
+            "[vertex] build_request: url=%s model=%s full_mode=%s location=%s "
+            "refs=%d auth=%s",
+            redact_url(url),
+            config.model,
+            bool(credential),
+            location,
+            len(config.reference_images or []),
+            "service_account" if credential else "api_key",
+        )
         return ProviderRequest(url=url, headers=headers, payload=payload)
 
     @staticmethod
@@ -364,7 +375,9 @@ class VertexProvider(GoogleProvider):
                 body = await response.text()
                 if response.status != 200:
                     logger.warning(
-                        f"[vertex] 访问令牌获取失败: HTTP {response.status} {body[:300]}"
+                        "[vertex] 访问令牌获取失败: http_status=%s detail=%s",
+                        response.status,
+                        redact_text(body)[:300],
                     )
                     raise APIError(
                         f"Vertex 访问令牌获取失败（HTTP {response.status}），"
@@ -377,7 +390,9 @@ class VertexProvider(GoogleProvider):
         except APIError:
             raise
         except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
-            logger.warning(f"[vertex] 访问令牌请求异常: {exc}")
+            logger.warning(
+                "[vertex] 访问令牌请求异常: error=%s", redact_text(exc)[:240]
+            )
             raise APIError(
                 f"Vertex 访问令牌请求失败: {exc}",
                 None,
@@ -477,7 +492,7 @@ class VertexProvider(GoogleProvider):
         return None
 
     def _safety_error(self, description: str) -> APIError:
-        logger.warning(f"[vertex] {description}")
+        logger.warning("[vertex] 内容安全过滤: %s", redact_text(description)[:300])
         return APIError(
             f"Vertex 内容安全过滤未通过：{description}",
             None,
@@ -511,7 +526,12 @@ class VertexProvider(GoogleProvider):
             else f"HTTP {http_status}"
         )
         status_name = str(error.get("status")) if isinstance(error, dict) else ""
-        logger.warning(f"[vertex] API 错误: HTTP {http_status} {message[:300]}")
+        logger.warning(
+            "[vertex] API 错误: http_status=%s status=%s detail=%s",
+            http_status,
+            status_name or "-",
+            redact_text(message)[:300],
+        )
 
         rai_detail = _describe_rai_codes(
             " ".join(self._collect_rai_reasons(response_data))

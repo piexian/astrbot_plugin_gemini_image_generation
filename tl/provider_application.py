@@ -8,6 +8,9 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
+from astrbot.api import logger
+
+from .core.errors import redact_text
 from .plugin_config import ConfigLoader
 from .provider_capabilities import candidate_capability
 from .provider_metadata import get_provider_spec, iter_provider_specs
@@ -72,6 +75,10 @@ class ProviderApplication:
                 enabled = True
             if enabled and get_provider_spec(entry.get("__template_key", "")):
                 expected += 1
+        logger.debug(
+            f"[供应商] 准备新运行时: 启用条目数={expected}, "
+            f"总条目数={len(settings.get('provider_overrides', []))}"
+        )
         validation = copy.deepcopy(plugin.cfg)
         validation.provider_config_errors = []
         try:
@@ -98,6 +105,9 @@ class ProviderApplication:
         except StudioServiceError:
             raise
         except Exception as exc:
+            logger.warning(
+                f"[供应商] 新运行时校验失败: 原因={redact_text(str(exc))[:240]}"
+            )
             raise StudioServiceError(
                 "供应商参数校验失败，请检查模型及相关配置字段"
             ) from exc
@@ -109,7 +119,10 @@ class ProviderApplication:
         previous = {name: getattr(plugin.cfg, name) for name in names}
         try:
             keys = await plugin.key_manager.clone_for_config(config)
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                f"[供应商] 准备 Key 用量失败: 原因={redact_text(str(exc))[:240]}"
+            )
             raise StudioServiceError(
                 "无法安全读取或保存 Key 用量，请待存储恢复后重试", status_code=503
             ) from None
@@ -135,6 +148,12 @@ class ProviderApplication:
             else None,
         )
         # 此时更新门已封住新生成且所有旧任务结束；持久化失败时旧配置可重建连接。
+        logger.debug(
+            f"[供应商] 运行时已准备: 候选数={len(getattr(config, 'provider_candidates', []) or [])}, "
+            f"全部候选数={len(getattr(config, 'provider_candidates_all', []) or [])}, "
+            f"重建工具描述={tool is not None}, "
+            f"关闭旧客户端={bool(client)}"
+        )
         if client:
             await client.close()
         return prepared
@@ -190,6 +209,11 @@ class ProviderApplication:
         )
         client._default_proxy = client.proxy
         self._bind(prepared.tool)
+        logger.debug(
+            f"[供应商] 运行时已应用: 候选数={len(plugin.cfg.provider_candidates)}, "
+            f"全部候选数={len(getattr(plugin.cfg, 'provider_candidates_all', []) or [])}, "
+            f"重建客户端={client is not None}"
+        )
 
     def restore(self, prepared: PreparedProviderRuntime) -> None:
         plugin = self.plugin
@@ -201,3 +225,7 @@ class ProviderApplication:
             for name, value in prepared.previous_client_fields.items():
                 setattr(plugin.api_client, name, value)
         self._bind(prepared.previous_tool)
+        logger.debug(
+            f"[供应商] 运行时已回滚: 候选数={len(plugin.cfg.provider_candidates)}, "
+            f"重建工具描述={prepared.previous_tool is not None}"
+        )

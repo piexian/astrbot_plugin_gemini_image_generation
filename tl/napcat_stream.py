@@ -6,11 +6,14 @@ import asyncio
 import base64
 import hashlib
 import math
+import time
 import uuid
 from pathlib import Path
 from typing import Any
 
 from astrbot.api import logger
+
+from .core.errors import redact_text
 
 DEFAULT_STREAM_CHUNK_SIZE = 64 * 1024
 DEFAULT_FILE_RETENTION_MS = 30 * 1000
@@ -105,6 +108,7 @@ async def upload_file_stream(
     total_chunks = max(1, math.ceil(file_size / chunk_size))
     stream_id = str(uuid.uuid4())
 
+    upload_started = time.monotonic()
     logger.debug(
         f"[NapCat Stream] 开始上传: file={path.name} size={file_size} chunks={total_chunks}"
     )
@@ -162,12 +166,17 @@ async def upload_file_stream(
         )
         uploaded_path = _extract_uploaded_path(complete_response)
         if uploaded_path:
-            logger.debug(f"[NapCat Stream] 上传完成: {uploaded_path}")
+            logger.info(
+                f"[NapCat Stream] 上传成功: file={path.name} size={file_size} "
+                f"duration={time.monotonic() - upload_started:.3f}s"
+            )
         else:
             logger.warning("[NapCat Stream] 上传完成响应缺少 file_path")
         return uploaded_path
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        logger.warning(f"[NapCat Stream] 上传失败，回退原文件路径: {exc}")
+        logger.warning(
+            f"[NapCat Stream] 上传失败，回退原文件路径: {redact_text(exc)[:240]}"
+        )
         return None

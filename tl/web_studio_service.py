@@ -33,6 +33,7 @@ from .core.errors import (
     ReferenceResolveError,
     ServiceClosedError,
     StudioBusyError,
+    redact_text,
     redact_url,
 )
 from .core.path_policy import check_remote_url
@@ -192,8 +193,8 @@ class WebStudioService:
             1,
         )
         if self._admitted_jobs >= maximum:
-            logger.info(
-                "[WebUI] 工作台任务被拒绝: 原因=并发已满, "
+            logger.warning(
+                "[WebUI] 工作台任务被拒绝: 原因=并发已满, scope=studio, "
                 f"当前任务数={self._admitted_jobs}, 并发上限={maximum}, 状态码=429"
             )
             raise StudioServiceError(
@@ -220,11 +221,13 @@ class WebStudioService:
             # 完成回调也覆盖协程首次执行前就被取消的情况。
             self._release_uploads(leased)
             if done_task.cancelled():
+                logger.info(f"[WebUI] 工作台任务已取消: job_id={job_id}")
                 return
             exception = done_task.exception()
             if exception is not None:
                 logger.error(
-                    f"[WebUI] 任务 {job_id} 异常退出: {exception}",
+                    f"[WebUI] 任务 {job_id} 异常退出: "
+                    f"{redact_text(str(exception))[:240]}",
                     exc_info=(
                         type(exception),
                         exception,
@@ -270,6 +273,11 @@ class WebStudioService:
                             None, cost=len(normalized.get("batch") or []) or 1
                         )
                         if not decision.allowed:
+                            logger.warning(
+                                "[WebUI] 工作台任务被限流拒绝: "
+                                f"scope={decision.scope}, "
+                                f"retry_after={decision.retry_after}"
+                            )
                             raise StudioServiceError(
                                 decision.message or "请求过于频繁，请稍后再试",
                                 status_code=429,
@@ -303,7 +311,10 @@ class WebStudioService:
         )
         logger.info(
             f"[WebUI] 工作台任务已受理: job_id={response['job_id']}, "
-            f"来源=webui, 目标张数={target_count}, 批量条目数={len(batch_items)}"
+            f"来源=webui, 供应商={normalized.get('provider')}, "
+            f"模型={normalized.get('model')}, 目标张数={target_count}, "
+            f"批量条目数={len(batch_items)}, "
+            f"参考图数={len(normalized['reference_images'])}"
         )
         return response
 
@@ -427,6 +438,11 @@ class WebStudioService:
                 "参考图片不存在或正在清理，请重新选择", status_code=404
             )
         if isinstance(error, QuotaExceededError):
+            logger.warning(
+                "[WebUI] v2 工作台任务被限流拒绝: "
+                f"scope={error.details.get('scope')}, "
+                f"retry_after={error.details.get('retry_after')}"
+            )
             return StudioServiceError(
                 error.message or "请求过于频繁，请稍后再试",
                 status_code=429,
@@ -436,6 +452,9 @@ class WebStudioService:
                 },
             )
         if isinstance(error, (StudioBusyError, QueueFullError)):
+            logger.warning(
+                f"[WebUI] v2 工作台任务被拒绝: code={error.code}, scope=studio"
+            )
             return StudioServiceError(error.message, status_code=429)
         if isinstance(error, ServiceClosedError):
             return StudioServiceError(error.message, status_code=503)
@@ -683,6 +702,12 @@ class WebStudioService:
                         fallback_candidates = compatible
                     else:
                         merged[field] = None
+                logger.debug(
+                    f"[WebUI] 复用参数供应商回退: job_id={reuse_job_id}, "
+                    f"原供应商={record.get('params', {}).get('provider')}, "
+                    f"原模型={record.get('params', {}).get('model')}, "
+                    f"回退候选数={len(fallback_candidates)}"
+                )
                 warning = "原记录的供应商或模型已不可用，已回退默认配置"
         if "generation_settings" not in payload and merged.get("generation_settings"):
             candidates = select_candidates(
@@ -712,6 +737,10 @@ class WebStudioService:
             missing = len(references["missing_reference_names"])
             if missing:
                 notice = f"{missing} 张历史参考图已清理，已跳过"
+                logger.debug(
+                    f"[WebUI] 复用参数参考图缺失: job_id={reuse_job_id}, "
+                    f"缺失张数={missing}"
+                )
                 warning = f"{warning}；{notice}" if warning else notice
         return merged, warning
 
@@ -1964,11 +1993,21 @@ class WebStudioService:
         self._closed = True
         async with self._admission_lock:
             tasks = list(self._runtime_tasks.values())
+            aborted = [
+                job_id
+                for job_id, task in self._runtime_tasks.items()
+                if not task.done()
+            ]
             for task in tasks:
                 if not task.done():
                     task.cancel()
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
+            if aborted:
+                logger.info(
+                    f"[WebUI] 工作台关闭，取消在途任务: 任务数={len(aborted)}, "
+                    f"job_id={','.join(aborted[:5])}"
+                )
             self._runtime_tasks.clear()
             self._admitted_jobs = 0
             with self._upload_file_lock:

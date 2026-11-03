@@ -19,6 +19,7 @@ import aiohttp
 from astrbot.api import logger
 
 from ..api_types import APIError, ApiRequestConfig
+from ..core.errors import redact_text, redact_url
 from .base import ProviderRequest
 from .param_utils import ensure_prompt_length
 from .provider_limits import MAX_REFERENCE_IMAGES_MODELSCOPE
@@ -305,6 +306,11 @@ class ModelScopeProvider:
                 "invalid_response",
                 retryable=True,
             )
+        logger.info(
+            "[modelscope] 异步任务已提交: model=%s task_id=%s",
+            getattr(request_config, "model", None),
+            task_id,
+        )
 
         settings: dict[str, Any] = (
             getattr(request_config, "provider_settings", None) or {}
@@ -361,7 +367,15 @@ class ModelScopeProvider:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + poll_timeout
 
+        attempts = 0
+
         def _timeout_error() -> APIError:
+            logger.warning(
+                "[modelscope] 轮询超时: task_id=%s attempts=%d timeout=%.0fs",
+                task_id,
+                attempts,
+                poll_timeout,
+            )
             return APIError(
                 f"ModelScope 任务轮询超时（{poll_timeout:.0f} 秒），"
                 "任务可能仍在服务端运行，为避免重复计费将不再重新提交",
@@ -382,6 +396,7 @@ class ModelScopeProvider:
             get_timeout = aiohttp.ClientTimeout(
                 total=min(_POLL_REQUEST_TIMEOUT.total, remaining)
             )
+            attempts += 1
             try:
                 async with session.get(
                     url, headers=headers, proxy=proxy, timeout=get_timeout
@@ -425,6 +440,13 @@ class ModelScopeProvider:
                     or (body.strip()[:200] if body else "")
                     or f"HTTP {poll_status}"
                 )
+                logger.warning(
+                    "[modelscope] 轮询请求失败: task_id=%s status=%s attempts=%d detail=%s",
+                    task_id,
+                    poll_status,
+                    attempts,
+                    redact_text(message)[:240],
+                )
                 raise APIError(
                     f"ModelScope 轮询请求失败: {message}",
                     poll_status,
@@ -445,6 +467,12 @@ class ModelScopeProvider:
                 )
             if status == "FAILED":
                 message = self._extract_error_message(data) or "未知原因"
+                logger.warning(
+                    "[modelscope] 任务失败: task_id=%s attempts=%d detail=%s",
+                    task_id,
+                    attempts,
+                    redact_text(message)[:240],
+                )
                 raise APIError(
                     f"ModelScope 任务失败: {message}",
                     None,
@@ -482,13 +510,17 @@ class ModelScopeProvider:
                         proxy=client._request_http_proxy(request_config),
                     )
                 except Exception as e:  # noqa: BLE001 — 下载失败回退直链
-                    logger.warning("[modelscope] 图片下载失败，回退直链: %s", e)
+                    logger.warning(
+                        "[modelscope] 图片下载失败，回退直链: url=%s error=%s",
+                        redact_url(url),
+                        redact_text(e)[:240],
+                    )
                 if image_path:
                     image_urls.append(image_path)
                     image_paths.append(image_path)
                     continue
             image_urls.append(url)
-            logger.debug("[modelscope] 图片 URL: %s...", url[:80])
+            logger.debug("[modelscope] 图片 URL: %s", redact_url(url))
 
         if not image_urls:
             raise APIError(

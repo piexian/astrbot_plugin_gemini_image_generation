@@ -7,6 +7,7 @@ from typing import Any
 
 from astrbot.api import logger
 
+from .core.errors import redact_text
 from .core.states import JobState
 from .generation_tracker import without_session_origin
 from .v2_bridge import split_artifacts, v2_failure_message
@@ -31,7 +32,13 @@ class SdkDelivery:
 
     async def _wait_record(self) -> str:
         if not self._bound:
-            await asyncio.wait_for(self._record_ready.wait(), timeout=30)
+            try:
+                await asyncio.wait_for(self._record_ready.wait(), timeout=30)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"[插件接入] 等待 SDK 后台记录绑定超时: job_id={getattr(self, '_job_id', None)}, task_id={self._task_id}"
+                )
+                raise
         if not self._task_id:
             raise RuntimeError("SDK 后台记录未创建")
         return self._task_id
@@ -67,6 +74,9 @@ class SdkDelivery:
             }
         )
         error = stats.get("fill_error")
+        logger.info(
+            f"[插件接入] v2 投递完成: job_id={job.job_id}, task_id={task_id}, images={len(images)}"
+        )
         await self._publish(
             task_id,
             job.job_id,
@@ -101,6 +111,10 @@ class SdkDelivery:
             image_paths=[],
             text_content="",
             stats={},
+        )
+        logger.warning(
+            f"[插件接入] v2 投递失败: job_id={getattr(job, 'job_id', None)}, "
+            f"task_id={task_id}, state={getattr(job, 'state', None)}"
         )
 
     async def _publish(self, task_id: str, job_id: str, **changes: Any) -> None:
@@ -140,9 +154,12 @@ class SdkDelivery:
             await asyncio.wait_for(callback_task, _CALLBACK_TIMEOUT_SECONDS)
         except asyncio.CancelledError:
             callback_status = "interrupted"
-        except Exception:
+        except Exception as exc:
             callback_status = "failed"
-            logger.warning(f"[插件接入] 任务 {task_id} 完成回调失败", exc_info=True)
+            logger.warning(
+                f"[插件接入] 任务 {task_id} 完成回调失败: {redact_text(str(exc))[:240]}",
+                exc_info=True,
+            )
         finally:
             self._service._callback_tasks.pop(task_id, None)
         await manager.update(task_id, best_effort=True, callback_status=callback_status)

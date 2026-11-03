@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 import os
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -15,6 +16,7 @@ from urllib.parse import urlsplit
 from astrbot.api import logger
 
 from .api_normalize import normalize_api_type
+from .core.errors import redact_text, redact_url
 from .model_catalog import (
     ModelCatalogError,
     ModelCatalogService,
@@ -43,6 +45,24 @@ _SCHEMA_KEYS = frozenset(
     }
 )
 _MAX_STRING = 16384
+_LOG_PREFIX = "供应商"
+
+
+def _short_revision(value: Any) -> str:
+    # revision 是配置快照哈希，只留前 8 位便于对账，不泄露完整配置指纹。
+    return str(value or "")[:8] or "未知"
+
+
+def _log_catalog_result(
+    api_type: str, target: str, result: dict[str, Any], started: float
+) -> None:
+    models = result.get("models") if isinstance(result, dict) else None
+    logger.debug(
+        f"[{_LOG_PREFIX}] 模型查询完成: api_type={api_type}, "
+        f"目标={target or '本体提供商'}, 模型数={len(models or [])}, "
+        f"截断={bool(result.get('truncated')) if isinstance(result, dict) else False}, "
+        f"耗时={int((time.monotonic() - started) * 1000)}ms"
+    )
 
 
 def _invalid(location: str) -> StudioServiceError:
@@ -332,6 +352,11 @@ class ProviderConfigService:
             raise _invalid("模型查询")
         revision = self._revision()
         if payload.get("revision") != revision:
+            logger.warning(
+                f"[{_LOG_PREFIX}] 模型查询版本冲突: "
+                f"提交 revision={_short_revision(payload.get('revision'))}, "
+                f"实际 revision={_short_revision(revision)}"
+            )
             raise _conflict()
         if type(payload.get("confirmed_target", False)) is not bool:
             raise _invalid("confirmed_target")
@@ -410,12 +435,18 @@ class ProviderConfigService:
         self._ensure_open()
         if not isinstance(payload, dict):
             raise _invalid("模型查询")
+        started = time.monotonic()
+        api_type = str(payload.get("kind") or "")
+        target = ""
         try:
             if payload.get("kind") == "vision":
                 if set(payload) != {"kind", "provider_id"}:
                     raise _invalid("视觉模型查询")
                 provider = self.vision_directory.get_instance(payload["provider_id"])
-                return await self.catalog.fetch_vision(provider)
+                api_type = str(payload.get("provider_id") or "")[:64]
+                result = await self.catalog.fetch_vision(provider)
+                _log_catalog_result(api_type, target, result, started)
+                return result
             if payload.get("kind") != "entry":
                 raise _invalid("模型查询类型")
             async with self.config_lock:
@@ -424,8 +455,21 @@ class ProviderConfigService:
             if isinstance(query, dict):
                 return query
             # 网络等待不占配置锁，不借用生成客户端或 Key 额度。
-            return await self.catalog.fetch(query)
+            api_type = str(payload.get("entry", {}).get("api_type") or "")[:64]
+            target = redact_url(query.url)
+            logger.debug(
+                f"[{_LOG_PREFIX}] 模型查询开始: api_type={api_type}, 目标={target}"
+            )
+            result = await self.catalog.fetch(query)
+            _log_catalog_result(api_type, target, result, started)
+            return result
         except ModelCatalogError as exc:
+            logger.warning(
+                f"[{_LOG_PREFIX}] 模型查询失败: api_type={api_type}, "
+                f"目标={target or '未解析'}, reason={exc.reason}, "
+                f"耗时={int((time.monotonic() - started) * 1000)}ms, "
+                f"原因={redact_text(exc.message)[:240]}"
+            )
             raise StudioServiceError(
                 exc.message, status_code=exc.status_code, data={"reason": exc.reason}
             ) from None
@@ -715,22 +759,37 @@ class ProviderConfigService:
             committed = await self._persist(previous)
             if committed is False or self._superseded(previous, host_revision):
                 failed = True
-        except Exception:
+                logger.warning(
+                    f"[{_LOG_PREFIX}] 回滚写入未生效: "
+                    f"宿主编号={host_revision}, 当前编={self._host_revision()}"
+                )
+        except Exception as exc:
             if self.raw_config.get("provider_settings") == merged:
                 self.raw_config["provider_settings"] = copy.deepcopy(previous)
             failed = True
+            logger.warning(
+                f"[{_LOG_PREFIX}] 回滚写入失败: 原因={redact_text(str(exc))[:240]}"
+            )
         try:
             self.restore(prepared)
-        except Exception:
+        except Exception as exc:
             failed = True
+            logger.warning(
+                f"[{_LOG_PREFIX}] 恢复旧运行时失败: 原因={redact_text(str(exc))[:240]}"
+            )
         if failed:
             self.runtime.failed = True
-            logger.warning("[供应商] 配置回滚失败，生成已暂停，需重载插件")
+            logger.warning(f"[{_LOG_PREFIX}] 配置回滚失败，生成已暂停，需重载插件")
 
     async def _save_transaction(self, payload: dict) -> dict[str, Any]:
         async with self.config_lock:
             revision = self._revision()
             if payload["revision"] != revision:
+                logger.warning(
+                    f"[{_LOG_PREFIX}] 保存配置版本冲突: "
+                    f"提交 revision={_short_revision(payload.get('revision'))}, "
+                    f"实际 revision={_short_revision(revision)}"
+                )
                 raise _conflict()
             if self.runtime.failed or self.runtime.closed:
                 raise StudioServiceError(
@@ -740,6 +799,10 @@ class ProviderConfigService:
                 with self.runtime.update():
                     return await self._update(payload, revision)
             except ProviderRuntimeBusy:
+                logger.warning(
+                    f"[{_LOG_PREFIX}] 保存配置被生成任务占用: "
+                    f"revision={_short_revision(revision)}"
+                )
                 raise StudioServiceError(
                     "生成任务正在运行，请稍后再次保存供应商配置",
                     status_code=409,
@@ -763,39 +826,66 @@ class ProviderConfigService:
             prepared = await self.prepare(copy.deepcopy(merged))
         except StudioServiceError:
             raise
-        except Exception:
-            logger.warning("[供应商] 无法准备新供应商配置，原配置保持不变")
+        except Exception as exc:
+            logger.warning(
+                f"[{_LOG_PREFIX}] 无法准备新供应商配置，原配置保持不变: "
+                f"revision={_short_revision(revision)}, "
+                f"原因={redact_text(str(exc))[:240]}"
+            )
             raise StudioServiceError(
                 "供应商配置无法应用，请检查配置条目", status_code=400
             ) from None
         if self._revision() != revision:
+            # prepare 期间配置被改写：宿主或其他编辑器先提交，旧快照不能再落盘。
+            logger.warning(
+                f"[{_LOG_PREFIX}] 准备阶段配置被更新: "
+                f"期望 revision={_short_revision(revision)}, "
+                f"实际 revision={_short_revision(self._revision())}"
+            )
             self.runtime.failed = True
             raise _conflict()
         host_revision = self._host_revision()
         try:
             committed = await self._persist(merged)
-        except Exception:
+        except Exception as exc:
             current = self.raw_config.get("provider_settings", {})
             newer_host = host_revision is not None and self._host_revision() not in {
                 host_revision,
                 host_revision + 1,
             }
             if newer_host or (current != merged and current != previous):
+                logger.warning(
+                    f"[{_LOG_PREFIX}] 保存期间宿主已抢占配置: "
+                    f"期望 revision={_short_revision(revision)}, "
+                    f"宿主编号={host_revision}, 当前编={self._host_revision()}"
+                )
                 self.runtime.failed = True
                 raise _conflict() from None
             if self.raw_config.get("provider_settings") == merged:
                 self.raw_config["provider_settings"] = copy.deepcopy(previous)
-            logger.warning("[供应商] 配置保存失败，原运行时保持不变")
+            logger.warning(
+                f"[{_LOG_PREFIX}] 配置保存失败，原运行时保持不变: "
+                f"原因={redact_text(str(exc))[:240]}"
+            )
             raise StudioServiceError(
                 "保存供应商配置失败，原配置保持不变", status_code=500
             ) from None
         if committed is False or self._superseded(merged, host_revision):
             # 宿主更新优先，绝不能把旧快照回写覆盖它。
+            logger.warning(
+                f"[{_LOG_PREFIX}] 宿主保存优先级高于 Studio 提交: "
+                f"期望 revision={_short_revision(revision)}, "
+                f"宿主编号={host_revision}, 当前编={self._host_revision()}"
+            )
             self.runtime.failed = True
             raise _conflict()
         try:
             self.apply(prepared)
-        except Exception:
+        except Exception as exc:
+            logger.error(
+                f"[{_LOG_PREFIX}] 应用新供应商配置失败，开始回滚: "
+                f"原因={redact_text(str(exc))[:240]}"
+            )
             await self._rollback(previous, merged, prepared)
             raise StudioServiceError(
                 "应用供应商配置失败，需重载插件"
@@ -804,5 +894,9 @@ class ProviderConfigService:
                 status_code=500,
                 data={"requires_reload": bool(self.runtime.failed)},
             ) from None
-        logger.info("[供应商] Studio 配置已保存并即时生效")
+        logger.info(
+            f"[供应商] Studio 配置已保存并即时生效: "
+            f"revision={_short_revision(revision)}, "
+            f"条目数={len(self._settings().get('provider_overrides', []))}"
+        )
         return self._snapshot()

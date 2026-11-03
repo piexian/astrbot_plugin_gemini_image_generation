@@ -46,6 +46,7 @@ from .tl.core.errors import (
     QueueFullError,
     QuotaExceededError,
     ServiceClosedError,
+    redact_text,
 )
 from .tl.core.stack import build_generation_stack
 from .tl.core.states import JobState
@@ -167,7 +168,9 @@ class GeminiImageGenerationPlugin(Star):
         try:
             self.web_studio_service.import_legacy_images()
         except Exception as e:
-            logger.warning(f"[WebUI] 历史生成图纳入画廊失败（不影响启动）: {e}")
+            logger.warning(
+                f"[WebUI] 历史生成图纳入画廊失败（不影响启动）: {redact_text(str(e))[:240]}"
+            )
         self._web_api = None
         self.studio_providers = None
         self.studio_templates = None
@@ -212,7 +215,7 @@ class GeminiImageGenerationPlugin(Star):
                     target.unlink(missing_ok=True)
                 logger.debug(f"已清理旧缓存: {target}")
             except Exception as e:
-                logger.debug(f"清理旧缓存 {target} 失败: {e}")
+                logger.debug(f"清理旧缓存 {target} 失败: {redact_text(str(e))[:240]}")
 
         def _rmdir_if_empty(directory: Path):
             try:
@@ -392,7 +395,9 @@ class GeminiImageGenerationPlugin(Star):
                 ensure_admin_default_tool_permission(batch_tool.name)
             logger.debug("已注册生图、查询和共享 LLM 工具")
         except Exception as e:
-            logger.warning(f"注册 LLM 工具失败: {e}，将使用装饰器方式")
+            logger.warning(
+                f"注册 LLM 工具失败: {redact_text(str(e))[:240]}，将使用装饰器方式"
+            )
 
     def _provider_jobs_busy(self) -> bool:
         scheduler = getattr(self, "generation_scheduler", None)
@@ -461,7 +466,9 @@ class GeminiImageGenerationPlugin(Star):
             self._web_routes = self._web_api.register(self.context)
             logger.info(f"[WebUI] 工作台路由注册完成: 路由数={len(self._web_routes)}")
         except Exception as e:
-            logger.warning(f"[WebUI] 工作台路由注册失败，其他功能不受影响: {e}")
+            logger.warning(
+                f"[WebUI] 工作台路由注册失败，其他功能不受影响: {redact_text(str(e))[:240]}"
+            )
 
     async def terminate(self):
         """插件卸载/重载时调用"""
@@ -479,19 +486,19 @@ class GeminiImageGenerationPlugin(Star):
         try:
             await self.web_studio_service.close()
         except Exception as e:
-            logger.debug(f"[WebUI] 关闭工作台服务失败: {e}")
+            logger.warning(f"[WebUI] 关闭工作台服务失败: {redact_text(e)[:240]}")
         route_count = len(self._web_routes)
         try:
             if self._web_api is not None:
                 self._web_api.unregister(self.context, self._web_routes)
             logger.info(f"[WebUI] 工作台路由注销完成: 路由数={route_count}")
         except Exception as e:
-            logger.debug(f"[WebUI] 工作台路由注销失败: {e}")
+            logger.warning(f"[WebUI] 工作台路由注销失败: {redact_text(e)[:240]}")
         self._web_routes = []
         try:
             await self.background_task_manager.close()
         except Exception as e:
-            logger.debug(f"关闭后台任务管理器失败: {e}")
+            logger.warning(f"关闭后台任务管理器失败: {redact_text(e)[:240]}")
         # v2 栈在后台任务之后、生成历史之前关闭：取消 v2 Job 时投影仍要写
         # tracker；并保持早于 legacy client，避免关闭期间仍有任务引用会话。
         v2_service = getattr(self, "_v2_service", None)
@@ -499,21 +506,21 @@ class GeminiImageGenerationPlugin(Star):
             try:
                 await v2_service.close()
             except Exception as e:
-                logger.warning(f"[v2] 关闭调度器失败: {e}")
+                logger.warning(f"[v2] 关闭调度器失败: {redact_text(str(e))[:240]}")
             self._v2_service = None
         try:
             await self.generation_tracker.close()
         except Exception as e:
-            logger.debug(f"关闭生成历史追踪器失败: {e}")
+            logger.warning(f"关闭生成历史追踪器失败: {redact_text(e)[:240]}")
         if self.api_client and hasattr(self.api_client, "close"):
             try:
                 await self.api_client.close()
             except Exception as e:
-                logger.debug(f"关闭 API 会话失败: {e}")
+                logger.warning(f"关闭 API 会话失败: {redact_text(e)[:240]}")
         try:
             await self.rate_limiter.close()
         except Exception as e:
-            logger.debug(f"关闭限流器失败: {e}")
+            logger.warning(f"关闭限流器失败: {redact_text(e)[:240]}")
         logger.info("Gemini 图像生成插件已卸载")
 
     # ===== 配置和客户端管理 =====
@@ -563,7 +570,9 @@ class GeminiImageGenerationPlugin(Star):
                 ),
             )
         except Exception as e:
-            logger.warning(f"[v2] 调度器装配失败，本次回退 legacy 路径: {e}")
+            logger.warning(
+                f"[v2] 调度器装配失败，本次回退 legacy 路径: {redact_text(str(e))[:240]}"
+            )
             return None
         self._v2_service = service
         return service
@@ -597,7 +606,7 @@ class GeminiImageGenerationPlugin(Star):
         if not usable_candidates:
             if not quiet:
                 for error in getattr(self.cfg, "provider_config_errors", []) or []:
-                    logger.error(f"供应商配置错误: {error}")
+                    logger.error(f"供应商配置错误: {redact_text(str(error))[:240]}")
                 logger.error(
                     "未找到任何可用供应商配置，请在 provider_settings.provider_overrides 中填写供应商名称、模型和 api_keys"
                 )
@@ -690,7 +699,7 @@ class GeminiImageGenerationPlugin(Star):
         try:
             await ensure_font_downloaded(proxy=self.cfg.proxy)
         except Exception as e:
-            logger.warning(f"字体下载任务异常: {e}")
+            logger.warning(f"字体下载任务异常: {redact_text(str(e))[:240]}")
 
     # ===== 核心业务方法 =====
 
@@ -736,6 +745,9 @@ class GeminiImageGenerationPlugin(Star):
         template_id: str | None = None,
     ):
         """快捷图像生成。旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
+        redact_error = globals().get("redact_text")
+        if redact_error is None:
+            from tl.core.errors import redact_text as redact_error
         if not str(prompt or "").strip():
             yield event.plain_result("❌ 图像描述不能为空")
             return
@@ -899,7 +911,9 @@ class GeminiImageGenerationPlugin(Star):
                         f"来源=command, 目标张数=1, prompt={enhanced_prompt[:30]!r}"
                     )
                 except Exception as tracking_error:
-                    logger.warning(f"[生成追踪] 快捷生成创建记录失败: {tracking_error}")
+                    logger.warning(
+                        f"[生成追踪] 快捷生成创建记录失败: {redact_error(str(tracking_error))[:240]}"
+                    )
 
             try:
                 yield event.plain_result("🎨  生成中...")
@@ -1011,11 +1025,11 @@ class GeminiImageGenerationPlugin(Star):
                     logger.debug(f"[生成追踪] 快捷生成已中断: job_id={tracking_job_id}")
                 except Exception as tracking_error:
                     logger.warning(
-                        f"[生成追踪] 快捷生成取消状态写入异常: {tracking_error}"
+                        f"[生成追踪] 快捷生成取消状态写入异常: {redact_error(str(tracking_error))[:240]}"
                     )
             raise
         except Exception as e:
-            logger.error(f"快捷生成失败: {e}", exc_info=True)
+            logger.error(f"快捷生成失败: {redact_error(str(e))[:240]}", exc_info=True)
             if tracking_job_id:
                 try:
                     await self.generation_tracker.fail(tracking_job_id, error=e)
@@ -1025,7 +1039,7 @@ class GeminiImageGenerationPlugin(Star):
                     )
                 except Exception as tracking_error:
                     logger.warning(
-                        f"[生成追踪] 快捷生成失败状态写入异常: {tracking_error}"
+                        f"[生成追踪] 快捷生成失败状态写入异常: {redact_error(str(tracking_error))[:240]}"
                     )
             yield event.plain_result(format_error_message(e))
 
@@ -1531,7 +1545,7 @@ class GeminiImageGenerationPlugin(Star):
                         else:
                             raise RuntimeError("下载结果为空")
                 except Exception as e:
-                    logger.warning(f"表情源图下载失败: {e}")
+                    logger.warning(f"表情源图下载失败: {redact_text(str(e))[:240]}")
                     yield event.plain_result(
                         "❌ 表情源图为远程链接，但下载到本地失败，无法切割。"
                     )
@@ -1582,7 +1596,7 @@ class GeminiImageGenerationPlugin(Star):
                     )
                 split_duration = time.perf_counter() - split_start_time
             except Exception as e:
-                logger.error(f"切割图片时发生异常: {e}")
+                logger.error(f"切割图片时发生异常: {redact_text(e)[:240]}")
                 split_files = []
                 split_duration = time.perf_counter() - split_start_time
 
@@ -1632,7 +1646,7 @@ class GeminiImageGenerationPlugin(Star):
                         ):
                             yield res
                     except Exception as e:
-                        logger.warning(f"发送ZIP失败: {e}")
+                        logger.warning(f"发送ZIP失败: {redact_text(str(e))[:240]}")
                         yield event.plain_result("⚠️ 压缩包发送失败，降级使用合并转发")
                         sent_success = False
 
@@ -1665,7 +1679,7 @@ class GeminiImageGenerationPlugin(Star):
                 )
                 yield event.chain_result([node])
         except Exception as e:
-            logger.error(f"表情包生成失败: {e}", exc_info=True)
+            logger.error(f"表情包生成失败: {redact_text(str(e))[:240]}", exc_info=True)
             yield event.plain_result(format_error_message(e))
 
     @filter.command("切图")
@@ -1718,7 +1732,7 @@ class GeminiImageGenerationPlugin(Star):
             try:
                 manual_cols, manual_rows = _parse_manual_grid(grid_text)
             except Exception as e:
-                logger.debug(f"切图网格参数处理异常: {e}")
+                logger.debug(f"切图网格参数处理异常: {redact_text(str(e))[:240]}")
 
         ref_images, _ = await self.image_handler.fetch_images_from_event(
             event, include_at_avatars=False
@@ -1737,6 +1751,9 @@ class GeminiImageGenerationPlugin(Star):
         )
 
         if not local_path:
+            logger.warning(
+                f"[切图] 源图解析为空: umo={getattr(event, 'unified_msg_origin', None)}"
+            )
             yield event.plain_result("❌ 图片下载/解析失败，无法进行切割。")
             return
 
@@ -1783,7 +1800,7 @@ class GeminiImageGenerationPlugin(Star):
             )
             split_duration = time.perf_counter() - split_start_time
         except Exception as e:
-            logger.error(f"切割图片时发生异常: {e}")
+            logger.error(f"切割图片时发生异常: {redact_text(e)[:240]}")
             split_files = []
             split_duration = None
 
@@ -1909,7 +1926,7 @@ class GeminiImageGenerationPlugin(Star):
                 logger.info("本地 Pillow 帮助图片生成成功")
                 return
             except Exception as e:
-                logger.error(f"本地 Pillow 渲染失败: {e}")
+                logger.error(f"本地 Pillow 渲染失败: {redact_text(str(e))[:240]}")
                 yield event.plain_result(render_text(template_data))
                 return
 
@@ -1943,7 +1960,7 @@ class GeminiImageGenerationPlugin(Star):
             yield event.image_result(html_image_url)
 
         except Exception as e:
-            logger.error(f"HTML帮助图片生成失败: {e}")
+            logger.error(f"HTML帮助图片生成失败: {redact_text(str(e))[:240]}")
             yield event.plain_result(render_text(template_data))
 
     @filter.command("改图")
@@ -2100,7 +2117,7 @@ class GeminiImageGenerationPlugin(Star):
                     scene="换风格",
                 )
             except Exception as e:
-                logger.warning(f"换风格结果发送失败: {e}")
+                logger.warning(f"换风格结果发送失败: {redact_text(str(e))[:240]}")
                 yield event.plain_result("⚠️ 图像已生成，但发送失败，请查看日志。")
         else:
             yield event.plain_result(result_data)

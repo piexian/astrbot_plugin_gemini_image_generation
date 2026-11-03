@@ -175,7 +175,18 @@ class LegacyClientAdapter:
         except APIError as error:
             # legacy client 内部已按密钥重试并做过候选回退，这里转为不可
             # 重试错误：Router 不再重复一轮，直接 fallback 到下一候选。
-            raise self._api_error_to_legacy(error) from error
+            legacy_error = self._api_error_to_legacy(error)
+            logger.warning(
+                "[v2] legacy APIError 转换: candidate_id=%s api_type=%s model=%s code=%s status_code=%s error_type=%s error=%s",
+                self._candidate_id,
+                getattr(error, "api_type", None),
+                self._model,
+                legacy_error.code,
+                getattr(error, "status_code", None),
+                getattr(error, "error_type", None),
+                redact_text(str(error))[:240],
+            )
+            raise legacy_error from error
 
     async def _send_filling(
         self, request: GenerationRequest, attempt: ProviderAttempt, body_factory: Any
@@ -198,6 +209,14 @@ class LegacyClientAdapter:
             round_config = body_factory()
             round_config.image_count = target - len(collected)
             remaining = _remaining(attempt.deadline_at, None)
+            logger.debug(
+                "legacy 候选 %s/%s 补图轮次: requested=%s collected=%s remaining_s=%s",
+                self._provider,
+                self._model,
+                round_config.image_count,
+                len(collected),
+                remaining,
+            )
             if first_round:
                 response = await self._generate(request, round_config, remaining)
             else:
@@ -236,6 +255,13 @@ class LegacyClientAdapter:
             if round_text:
                 texts.append(str(round_text))
             config = round_config
+            logger.debug(
+                "legacy 候选 %s/%s 补图进展: collected=%s/%s",
+                self._provider,
+                self._model,
+                len(collected),
+                target,
+            )
             await emit_generation_count(
                 len(collected), self._progress_stats(round_config)
             )
@@ -338,7 +364,7 @@ class LegacyClientAdapter:
             stats["successful_model_alias"] = model_alias
         if fill_error:
             stats["fill_error"] = fill_error
-        return GenerationResult(
+        result = GenerationResult(
             artifacts=artifacts,
             text=text,
             provider=provider,
@@ -348,3 +374,12 @@ class LegacyClientAdapter:
             partial=bool(fill_error),
             stats=stats,
         )
+        logger.debug(
+            "legacy parse_response 结果: candidate_id=%s provider=%s model=%s artifacts=%s partial=%s",
+            candidate_id,
+            provider,
+            model,
+            len(artifacts),
+            bool(fill_error),
+        )
+        return result

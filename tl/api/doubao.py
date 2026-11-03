@@ -9,6 +9,7 @@ import aiohttp
 from astrbot.api import logger
 
 from ..api_types import APIError, ApiRequestConfig
+from ..core.errors import redact_text, redact_url
 from ..plugin_config import DOUBAO_SEQUENTIAL_IMAGES_MAX, DOUBAO_SEQUENTIAL_IMAGES_MIN
 from ..provider_hooks import (
     DOUBAO_OUTPUT_FORMATS,
@@ -582,6 +583,11 @@ class DoubaoProvider:
                         if image_path:
                             image_urls.append(image_path)
                             image_paths.append(image_path)
+                        else:
+                            logger.warning(
+                                "[doubao] 图片下载未落盘，已跳过该图: url=%s",
+                                redact_url(url),
+                            )
                         continue
                     image_urls.append(url)
                     continue
@@ -610,7 +616,7 @@ class DoubaoProvider:
                 logger.warning(
                     "[doubao] 错误字段格式异常，期望 dict，实际: %s 值: %s",
                     type(error_obj).__name__,
-                    repr(error_obj)[:200],
+                    redact_text(error_obj)[:200],
                 )
                 raise APIError(
                     f"豆包 API 返回了格式异常的错误信息：{str(error_obj)[:100]}",
@@ -623,7 +629,7 @@ class DoubaoProvider:
             if isinstance(error_obj, dict) and not error_obj.get("message"):
                 logger.warning(
                     "[doubao] 错误字段缺少 message: %s",
-                    repr(error_obj)[:200],
+                    redact_text(error_obj)[:200],
                 )
                 raise APIError(
                     "豆包 API 返回了不完整的错误信息，请稍后重试。",
@@ -636,7 +642,7 @@ class DoubaoProvider:
             if not error_obj:
                 logger.warning(
                     "[doubao] 响应中既无错误也无有效图像数据: %s",
-                    repr(response_data)[:500],
+                    redact_text(response_data)[:500],
                 )
                 raise APIError(
                     "豆包 API 返回了空响应，未生成图像也未返回错误信息。请稍后重试或检查请求参数。",

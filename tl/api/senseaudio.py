@@ -11,6 +11,7 @@ import aiohttp
 from astrbot.api import logger
 
 from ..api_types import APIError, ApiRequestConfig
+from ..core.errors import redact_text, redact_url
 from .base import ProviderRequest
 from .param_utils import coerce_float, ensure_prompt_length
 from .provider_limits import MAX_REFERENCE_IMAGES_SENSEAUDIO
@@ -195,7 +196,13 @@ class SenseAudioProvider:
         is_retry: bool = False,
     ) -> tuple[list[str], list[str], str | None, str | None]:
         if http_status is not None and http_status != 200:
-            raise self._error(response_data, http_status)
+            error = self._error(response_data, http_status)
+            logger.warning(
+                "[senseaudio] API 错误响应: http_status=%s detail=%s",
+                http_status,
+                redact_text(error)[:300],
+            )
+            raise error
         if not isinstance(response_data, dict):
             raise APIError(
                 "SenseAudio 响应不是对象",
@@ -213,6 +220,11 @@ class SenseAudioProvider:
                     "invalid_response",
                     retryable=False,
                 )
+            logger.info(
+                "[senseaudio] 异步任务已提交: model=%s task_id=%s",
+                settings.get("model") or getattr(request_config, "model", None),
+                task_id,
+            )
             response_data = await self._poll(
                 client=client,
                 session=session,
@@ -241,7 +253,10 @@ class SenseAudioProvider:
                 proxy=client._request_http_proxy(request_config),
             )
             if not path:
-                # 共享下载器失败时返回空路径；不能触发上游重新生成。
+                logger.warning(
+                    "[senseaudio] 图片下载失败，未落盘: url=%s",
+                    redact_url(url),
+                )
                 raise APIError(
                     "SenseAudio 图片下载失败", None, "download_error", retryable=False
                 )
@@ -267,15 +282,23 @@ class SenseAudioProvider:
         headers = {
             "Authorization": f"Bearer {getattr(request_config, 'api_key', None)}"
         }
+        attempts = 0
         while True:
             remaining = deadline - loop.time()
             if remaining <= 0:
+                logger.warning(
+                    "[senseaudio] 轮询超时: task_id=%s attempts=%d elapsed=%.0fs",
+                    task_id,
+                    attempts,
+                    timeout - max(0.0, remaining),
+                )
                 raise APIError(
                     "SenseAudio 轮询超时；任务可能仍在生成，不再重新提交",
                     None,
                     "timeout",
                     retryable=False,
                 )
+            attempts += 1
             try:
                 async with session.get(
                     f"{base}/v1/image/pending",
@@ -303,7 +326,15 @@ class SenseAudioProvider:
                             retryable=False,
                         ) from exc
                     if status != 200:
-                        raise self._error(data, status, retryable=False)
+                        error = self._error(data, status, retryable=False)
+                        logger.warning(
+                            "[senseaudio] 任务查询失败: task_id=%s status=%s attempts=%d detail=%s",
+                            task_id,
+                            status,
+                            attempts,
+                            redact_text(error)[:240],
+                        )
+                        raise error
                     if not isinstance(data, dict):
                         raise APIError(
                             "SenseAudio 查询响应不是对象",
@@ -315,7 +346,15 @@ class SenseAudioProvider:
                     if state == "completed":
                         return data
                     if state == "failed":
-                        raise self._error(data, status, retryable=False)
+                        error = self._error(data, status, retryable=False)
+                        logger.warning(
+                            "[senseaudio] 任务失败: task_id=%s status=%s attempts=%d detail=%s",
+                            task_id,
+                            status,
+                            attempts,
+                            redact_text(error)[:240],
+                        )
+                        raise error
                     if state != "pending":
                         raise APIError(
                             "SenseAudio 返回未知任务状态",

@@ -19,6 +19,7 @@ from .core.errors import (
     QueueFullError,
     QuotaExceededError,
     ServiceClosedError,
+    redact_text,
 )
 from .file_uri import file_uri_to_path
 from .generation_scheduler import generation_progress, generation_reservation
@@ -441,6 +442,10 @@ class ImageGenerationService:
             if on_complete:
                 self._callbacks[task_id] = on_complete
             self._v2_jobs[task_id] = (v2_service, handle.job_id)
+            logger.info(
+                f"[插件接入] v2 提交完成: plugin_id={plugin_id}, job_id={handle.job_id}, "
+                f"task_id={task_id}, umo={umo}"
+            )
             delivery.bind_record(task_id)
             return {
                 "task_id": task_id,
@@ -666,8 +671,11 @@ class ImageGenerationService:
                     job_id=job_id,
                     candidate_id=stats.get("successful_candidate_id"),
                 )
-            except Exception:
-                logger.warning(f"[插件接入] 任务 {task_id} 图片归档失败", exc_info=True)
+            except Exception as exc:
+                logger.warning(
+                    f"[插件接入] 任务 {task_id} 图片归档失败: {redact_text(str(exc))[:240]}",
+                    exc_info=True,
+                )
         # Prefer the archived local artifacts only when the entire result was preserved.
         if len(archived) == len(images) and archived:
             paths = [str(tracker.gallery_dir / name) for name in archived]
@@ -700,6 +708,16 @@ class ImageGenerationService:
                 error=error,
                 callback_status=result.get("callback_status", "none"),
             )
+            if status in {"succeeded", "partial_success"}:
+                logger.info(
+                    f"[插件接入] 生成完成: plugin_id={result.get('plugin_id')}, job_id={job_id}, "
+                    f"task_id={task_id}, images={len(images)}"
+                )
+            else:
+                logger.warning(
+                    f"[插件接入] 生成失败: plugin_id={result.get('plugin_id')}, job_id={job_id}, "
+                    f"task_id={task_id}, error={redact_text(error)[:240] if error else 'unknown'}"
+                )
         finally:
             event = self._events.pop(task_id, None)
             if event:
@@ -717,9 +735,12 @@ class ImageGenerationService:
                 await asyncio.wait_for(callback_task, 30)
             except asyncio.CancelledError:
                 callback_status = "interrupted"
-            except Exception:
+            except Exception as exc:
                 callback_status = "failed"
-                logger.warning(f"[插件接入] 任务 {task_id} 完成回调失败", exc_info=True)
+                logger.warning(
+                    f"[插件接入] 任务 {task_id} 完成回调失败: {redact_text(str(exc))[:240]}",
+                    exc_info=True,
+                )
             finally:
                 self._callback_tasks.pop(task_id, None)
             await manager.update(

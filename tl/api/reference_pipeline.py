@@ -15,6 +15,7 @@ from typing import Any, Final
 from astrbot.api import logger
 
 from ..api_types import APIError, ApiRequestConfig
+from ..core.errors import redact_text
 from .compat_utils import is_temp_cache_url
 from .data_uri import format_data_uri, strip_data_uri_prefix
 
@@ -68,14 +69,22 @@ async def load_reference_bytes(
     try:
         _mime, b64_data = await _normalize(normalize, normalize_input, config)
     except Exception as exc:
-        logger.debug("%s 参考图归一化失败: %s", log_prefix, exc)
+        logger.warning(
+            "%s 参考图归一化失败，已跳过: %s",
+            log_prefix,
+            redact_text(str(exc))[:240],
+        )
         return None
     if not b64_data:
         return None
     try:
         return base64.b64decode(strip_data_uri_prefix(b64_data), validate=True)
     except (binascii.Error, ValueError) as exc:
-        logger.debug("%s 参考图 base64 解码失败: %s", log_prefix, exc)
+        logger.warning(
+            "%s 参考图 base64 解码失败，已跳过: %s",
+            log_prefix,
+            redact_text(str(exc))[:240],
+        )
         return None
 
 
@@ -145,7 +154,11 @@ async def reference_data_uri(
         try:
             base64.b64decode(payload, validate=True)
         except (binascii.Error, ValueError) as exc:
-            logger.debug("%s 无效 data URI 参考图: %s", log_prefix, exc)
+            logger.warning(
+                "%s 无效 data URI 参考图，已丢弃: %s",
+                log_prefix,
+                redact_text(str(exc))[:240],
+            )
             return None
         return image_str
     if not image_str.startswith("data:") and not _looks_like_local_file(image_str):
@@ -182,7 +195,11 @@ async def reference_data_uri(
     try:
         mime_type, b64_data = await _normalize(normalize, normalize_input, config)
     except Exception as exc:
-        logger.debug("%s 参考图归一化失败: %s", log_prefix, exc)
+        logger.warning(
+            "%s 参考图归一化失败: %s",
+            log_prefix,
+            redact_text(str(exc))[:240],
+        )
         mime_type, b64_data = None, None
     if not b64_data:
         if force:
