@@ -8,6 +8,7 @@ import aiohttp
 from astrbot.api import logger
 
 from ..api_types import APIError, ApiRequestConfig
+from ..core.errors import redact_text, redact_url
 from ..tl_utils import save_base64_image
 from .base import ProviderRequest
 from .param_utils import coerce_float, coerce_int, ensure_prompt_length
@@ -188,7 +189,13 @@ class StepfunProvider:
                 "Content-Type": "application/json",
             }
 
-        logger.debug(f"[stepfun] URL: {url} (edits={has_ref}) model={model}")
+        logger.debug(
+            "[stepfun] build_request: url=%s edits=%s model=%s refs=%d",
+            redact_url(url),
+            has_ref,
+            model,
+            len(config.reference_images or []),
+        )
         return ProviderRequest(url=url, headers=headers, payload=payload)
 
     # ------------------------------------------------------------------
@@ -218,7 +225,12 @@ class StepfunProvider:
                 else str(error_obj)
             )
             error_code = error_obj.get("code") if isinstance(error_obj, dict) else None
-            logger.warning(f"[stepfun] API 返回错误: {error_msg}")
+            logger.warning(
+                "[stepfun] API 返回错误: http_status=%s code=%s detail=%s",
+                http_status,
+                error_code,
+                redact_text(error_msg)[:300],
+            )
             raise APIError(
                 f"StepFun 错误: {error_msg}",
                 http_status,
@@ -229,7 +241,11 @@ class StepfunProvider:
 
         data_list = response_data.get("data")
         if not isinstance(data_list, list) or not data_list:
-            logger.warning(f"[stepfun] 响应缺少 data: {response_data}")
+            logger.warning(
+                "[stepfun] 响应缺少 data: http_status=%s body=%s",
+                http_status,
+                redact_text(response_data)[:300],
+            )
             raise APIError(
                 "StepFun 未返回图片",
                 http_status,
@@ -253,9 +269,14 @@ class StepfunProvider:
                     if image_path:
                         image_urls.append(image_path)
                         image_paths.append(image_path)
+                    else:
+                        logger.warning(
+                            "[stepfun] 图片下载未落盘，已跳过该图: url=%s",
+                            redact_url(url_value),
+                        )
                     continue
                 image_urls.append(url_value)
-                logger.debug(f"[stepfun] 图片 URL: {url_value[:80]}...")
+                logger.debug("[stepfun] 图片 URL: %s", redact_url(url_value))
                 continue
 
             b64_value = image_item.get("b64_json")
@@ -267,7 +288,11 @@ class StepfunProvider:
                     logger.debug(f"[stepfun] base64 图片: {len(b64_value)} 字节")
 
         if not image_urls and not image_paths:
-            logger.warning(f"[stepfun] data 中未提取到图片: {response_data}")
+            logger.warning(
+                "[stepfun] data 中未提取到图片: http_status=%s body=%s",
+                http_status,
+                redact_text(response_data)[:300],
+            )
             raise APIError(
                 "StepFun 未返回图片",
                 http_status,

@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, Any
 
 from astrbot.api import logger
 
+from .core.errors import redact_text
+
 if TYPE_CHECKING:
     from .plugin_config import PluginConfig
 
@@ -133,11 +135,13 @@ class KeyManager:
                     if not isinstance(data, dict):
                         raise ValueError("Invalid key usage state")
                     self._restore_usage_records(data)
-            except Exception:
+            except Exception as exc:
                 if strict:
                     raise
                 logger.warning(
-                    "[KeyManager] 无法读取使用记录，有每日限额的候选暂不可用"
+                    "[KeyManager] 无法读取使用记录，有每日限额的候选暂不可用: %s",
+                    redact_text(str(exc))[:240],
+                    exc_info=True,
                 )
                 return
             self._loaded = True
@@ -149,8 +153,11 @@ class KeyManager:
         try:
             data = self._export_usage_records()
             await self._put_kv(self.KV_KEY, data)
-        except Exception as e:
-            logger.debug(f"[KeyManager] 保存使用记录失败: {e}")
+        except Exception as exc:
+            logger.warning(
+                "[KeyManager] 保存使用记录失败，内存计数保留并等待下次保存重试: %s",
+                redact_text(str(exc))[:240],
+            )
 
     def _export_usage_records(self) -> dict[str, Any]:
         """导出使用记录为可序列化格式"""
@@ -271,6 +278,11 @@ class KeyManager:
                 return key
 
             if self._get_kv and not self._loaded:
+                # 与配额耗尽区分：这里是用量状态未知，不能贸然借出 Key。
+                logger.warning(
+                    "[KeyManager] 候选 %s 的用量记录尚未加载完成，暂不借出 Key",
+                    key_scope,
+                )
                 return None
 
             # 有每日限额，需要检查并找到可用 Key
@@ -328,6 +340,17 @@ class KeyManager:
             provider.current_index = (provider.current_index + 1) % len(
                 provider.api_keys
             )
+            next_index = provider.current_index
+            next_key = provider.api_keys[next_index]
+            total_keys = len(provider.api_keys)
+
+        logger.info(
+            "[KeyManager] 候选 %s 轮换 Key: ***%s (索引 %s/%s)",
+            key_scope,
+            next_key[-4:],
+            next_index + 1,
+            total_keys,
+        )
 
         # 获取可用 Key（会自动跳过已耗尽的）
         return await self.get_available_key(key_scope)

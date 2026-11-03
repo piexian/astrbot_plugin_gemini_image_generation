@@ -216,6 +216,38 @@ class RateLimiter:
         plugin_id: str | None = None,
     ) -> LimitDecision:
         """预留逻辑任务额度；无 UMO 的插件按稳定标识使用默认规则。"""
+        decision = await self._acquire(umo, cost=cost, event=event, plugin_id=plugin_id)
+        if not decision.allowed:
+            # 群名单静默拒绝没有 message，按 DEBUG 记录，避免刷屏。
+            if decision.message:
+                logger.warning(
+                    "[限流] 拒绝生成请求: umo=%s scope=%s retry_after=%s "
+                    "cost=%s plugin_id=%s",
+                    umo,
+                    decision.scope,
+                    decision.retry_after,
+                    cost,
+                    plugin_id,
+                )
+            else:
+                logger.debug(
+                    "[限流] 群名单静默拒绝: umo=%s scope=%s cost=%s plugin_id=%s",
+                    umo,
+                    decision.scope,
+                    cost,
+                    plugin_id,
+                )
+        return decision
+
+    async def _acquire(
+        self,
+        umo: str | None,
+        *,
+        cost: int = 1,
+        event: AstrMessageEvent | None = None,
+        plugin_id: str | None = None,
+    ) -> LimitDecision:
+        """acquire 的判定主体；拒绝日志统一由 acquire 输出。"""
         if type(cost) is not int or not 1 <= cost <= MAX_REQUESTS:
             return LimitDecision(False, "无效的生成任务数量", "input")
         if umo is not None:
@@ -372,6 +404,7 @@ class RateLimiter:
             self._rate_limit_buckets.clear()
             self.legacy_until = 0.0
             await self._save_to_kv(force=True)
+        logger.info("[限流] 已重置全部限流计数桶")
 
     async def close(self) -> None:
         async with self._rate_limit_lock:

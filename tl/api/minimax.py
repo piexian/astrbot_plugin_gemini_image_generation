@@ -11,6 +11,7 @@ import aiohttp
 from astrbot.api import logger
 
 from ..api_types import APIError, ApiRequestConfig
+from ..core.errors import redact_url
 from ..tl_utils import save_base64_image
 from .base import ProviderRequest
 from .data_uri import format_data_uri, strip_data_uri_prefix
@@ -343,9 +344,14 @@ class MiniMaxProvider:
                 if image_path:
                     image_urls.append(image_path)
                     image_paths.append(image_path)
+                else:
+                    logger.warning(
+                        "[minimax] 图片下载未落盘，已跳过该图: url=%s",
+                        redact_url(image_url),
+                    )
                 continue
             image_urls.append(image_url)
-            logger.debug("[minimax] 图片 URL: %s...", image_url[:80])
+            logger.debug("[minimax] 图片 URL: %s", redact_url(image_url))
 
         for b64_data in self._iter_string_list(data.get("image_base64")):
             image_path = await save_base64_image(

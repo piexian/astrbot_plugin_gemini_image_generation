@@ -288,6 +288,11 @@ class ReferenceService:
         # 解码与 Pillow 校验/转码是同步 CPU 工作，放线程避免卡事件循环。
         payload, mime_type = await asyncio.to_thread(self._prepare_ingest, data)
         ref_id = await self._tmp_store.put(payload, mime_type, requester=requester)
+        logger.debug(
+            "[参考图] 内联图已落盘: mime=%s 字节=%s",
+            mime_type,
+            len(payload),
+        )
         return f"ref:{self._tmp_store.kind}:{ref_id}"
 
     def _prepare_ingest(self, data: str | bytes) -> tuple[bytes, str]:
@@ -357,6 +362,12 @@ class ReferenceService:
                 prepared.append(await self.ingest(raw, requester=requester))
             else:
                 prepared.append(text)
+        logger.debug(
+            "[参考图] 内联转换完成: 输入=%s 转句柄=%s 原样保留=%s",
+            len(references),
+            sum(1 for item in prepared if item.startswith("ref:")),
+            sum(1 for item in prepared if not item.startswith("ref:")),
+        )
         return tuple(prepared)
 
     def _read_trusted_local(self, text: str) -> bytes:
@@ -522,12 +533,24 @@ class ReferenceService:
             )
         except APIError as exc:
             if exc.error_type == "reference_image_too_large":
+                logger.warning(
+                    "[参考图] 转码后超出字节上限: %s -> %s 字节上限",
+                    mime_type,
+                    self.max_reference_bytes,
+                )
                 raise ReferenceTooLargeError(
                     f"参考图转码后超过 {self.max_reference_bytes} 字节上限"
                 ) from exc
             logger.warning("参考图转码失败（%s）: %s", mime_type, exc.message)
             raise ReferenceResolveError(f"参考图转码失败（{mime_type}）") from exc
-        return base64.b64decode(encoded), out_mime
+        payload = base64.b64decode(encoded)
+        logger.debug(
+            "[参考图] MIME 转码完成: %s -> %s (%s 字节)",
+            mime_type,
+            out_mime,
+            len(payload),
+        )
+        return payload, out_mime
 
     def _pixel_size(self, raw: bytes, mime_type: str) -> tuple[int, int] | None:
         """读声明尺寸；None = 字节不足或无法本地解码，需完整内容再判。"""

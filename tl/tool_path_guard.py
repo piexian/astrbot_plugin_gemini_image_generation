@@ -24,6 +24,8 @@ from typing import Any
 
 from astrbot.api import logger
 
+from .core.errors import redact_text
+
 # 各系统 AstrBot 数据目录的默认白名单。
 # - Linux/macOS: ~/.astrbot/data
 # - Docker 常见: /opt/astrbot/data、/AstrBot/data、/app/data
@@ -177,6 +179,7 @@ def filter_reference_paths(
         (accepted_paths, rejected_raw)：接受的规范化 file:// 路径列表与被拒原始串列表。
         接受项交给下游 _process_reference_image 继续做参考图转换。
     """
+    # log_fn 保留调用方的详细日志回调；安全拦截另有固定的 WARNING 日志。
     log = log_fn or _log_default
     allowed_resolved = [] if global_mode else expand_allowed_dirs(allowed_dirs)
 
@@ -204,7 +207,10 @@ def filter_reference_paths(
             continue
 
         if raw_has_traversal(raw):
-            log(f"[path_guard] 拒绝路径含 '..' 穿越: {raw[:80]}")
+            msg = f"[path_guard] 拒绝路径含 '..' 穿越: {redact_text(raw[:80])}"
+            logger.warning(msg)
+            if log_fn is not None:
+                log_fn(msg)
             rejected.append(raw)
             continue
 
@@ -220,12 +226,18 @@ def filter_reference_paths(
             continue
 
         if not global_mode and not is_path_allowed(path, allowed_resolved):
-            log(f"[path_guard] 拒绝路径越出白名单: {raw[:80]}")
+            msg = f"[path_guard] 拒绝路径越出白名单: {redact_text(raw[:80])}"
+            logger.warning(msg)
+            if log_fn is not None:
+                log_fn(msg)
             rejected.append(raw)
             continue
 
         if not is_supported_image_file(path):
-            log(f"[path_guard] 拒绝非图片文件: {raw[:80]}")
+            msg = f"[path_guard] 拒绝非图片文件: {redact_text(raw[:80])}"
+            logger.warning(msg)
+            if log_fn is not None:
+                log_fn(msg)
             rejected.append(raw)
             continue
 

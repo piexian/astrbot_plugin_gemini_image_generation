@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from astrbot.api import logger
+
 from ..api_types import APIError, ApiRequestConfig
 from .data_uri import strip_data_uri_prefix
 from .reference_intake import announce_reference_intake
@@ -46,6 +48,15 @@ async def resolve_reference_api_values(
         )
         if value:
             values.append(value)
+    expected = min(len(refs), max_count)
+    if len(values) < expected:
+        logger.warning(
+            "%s 参考图解析丢图: 输入=%s 有效=%s（上限 %s）",
+            log_prefix,
+            len(refs),
+            len(values),
+            max_count,
+        )
     return values
 
 

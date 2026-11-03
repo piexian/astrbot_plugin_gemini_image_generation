@@ -29,6 +29,7 @@ from .api import (
 )
 from .api_headers import apply_api_key_to_headers, extract_api_key_from_headers
 from .api_types import APIError, ApiRequestConfig
+from .core.errors import redact_text, redact_url
 from .generation_scheduler import scheduled_generation
 from .provider_capabilities import (
     apply_request_overrides,
@@ -145,7 +146,7 @@ class GeminiAPIClient:
             or os.environ.get("http_proxy")
         )
         if self.proxy:
-            logger.debug(f"检测到代理配置，使用代理: {self.proxy}")
+            logger.debug(f"检测到代理配置，使用代理: {redact_text(self.proxy)[:240]}")
         logger.debug(f"API 客户端已初始化，支持 {len(self.api_keys)} 个 API 密钥")
         self._session: aiohttp.ClientSession | None = None
         self._proxy_sessions: dict[str, aiohttp.ClientSession] = {}
@@ -1005,7 +1006,7 @@ class GeminiAPIClient:
         url, headers, payload = await self._get_api_url(config)
 
         logger.debug(f"使用 {config.model} (通过 {config.api_type}) 生成图像")
-        logger.debug(f"API 端点: {url[:80]}...")
+        logger.debug(f"API 端点: {redact_url(url)}")
 
         # 从 payload 中获取实际使用的 size（provider_overrides 可能已覆盖）
         actual_size = payload.get("size") or config.resolution or "默认"
@@ -1119,7 +1120,10 @@ class GeminiAPIClient:
                     # 无 KeyManager 配置时使用默认轮换
                     new_key = await self.rotate_key_for_scope(key_scope)
             except Exception as e:
-                logger.debug(f"轮换 API Key 失败，将继续使用当前 Key: {e}")
+                logger.warning(
+                    "轮换 API Key 失败，将继续使用当前 Key: %s",
+                    redact_text(str(e))[:240],
+                )
                 return None
 
             updated = False
@@ -1436,15 +1440,22 @@ class GeminiAPIClient:
                             response_data = self._parse_sse_payload(response_text)
                             logger.debug("检测到 SSE 响应，已完成 JSON 转换")
                         except Exception as sse_error:
-                            logger.error(f"SSE 解析失败: {sse_error}")
-                            logger.error(f"响应内容前500字符: {response_text[:500]}")
+                            logger.error(
+                                "SSE 解析失败: %s", redact_text(str(sse_error))[:240]
+                            )
+                            logger.error(
+                                "响应内容前500字符: %s",
+                                redact_text(response_text)[:500],
+                            )
                             raise APIError(
                                 f"API 返回了无效的 JSON/SSE 响应: {sse_error}",
                                 response.status,
                             ) from None
                     else:
-                        logger.error(f"JSON 解析失败: {e}")
-                        logger.error(f"响应内容前500字符: {response_text[:500]}")
+                        logger.error("JSON 解析失败: %s", redact_text(str(e))[:240])
+                        logger.error(
+                            "响应内容前500字符: %s", redact_text(response_text)[:500]
+                        )
                         raise APIError(
                             f"API 返回了无效的 JSON 响应: {e}", response.status
                         ) from None
@@ -1730,7 +1741,7 @@ class GeminiAPIClient:
 
             # 按顺序处理图像候选
             for candidate_url in image_candidates:
-                logger.debug("[openai] 处理候选URL: %s", str(candidate_url)[:120])
+                logger.debug("[openai] 处理候选URL: %s", redact_url(str(candidate_url)))
                 if isinstance(candidate_url, str) and candidate_url.startswith(
                     "data:image/"
                 ):
@@ -1739,7 +1750,9 @@ class GeminiAPIClient:
                     if candidate_url.startswith("/") and not candidate_url.startswith(
                         "//"
                     ):
-                        logger.warning(f"发现相对路径 URL，已跳过: {candidate_url}")
+                        logger.warning(
+                            "发现相对路径 URL，已跳过: %s", redact_url(candidate_url)
+                        )
                         continue
                     # 对于可访问的 http(s) 链接，直接返回 URL，避免重复下载占用带宽
                     if candidate_url.startswith("http://") or candidate_url.startswith(
@@ -1751,7 +1764,9 @@ class GeminiAPIClient:
                         )
                         if is_temp_cache or has_request_proxy or self.proxy:
                             logger.debug(
-                                f"[openai] {'临时缓存' if is_temp_cache else '代理模式'}，强制下载: {candidate_url}"
+                                "[openai] %s，强制下载: %s",
+                                "临时缓存" if is_temp_cache else "代理模式",
+                                redact_url(candidate_url),
                             )
                             image_url, image_path = await self._download_image(
                                 candidate_url,
@@ -1767,7 +1782,8 @@ class GeminiAPIClient:
                         # 其他永久 URL 直接使用
                         image_urls.append(candidate_url)
                         logger.debug(
-                            f"🖼️ OpenAI 返回可直接访问的图像链接: {candidate_url}"
+                            "OpenAI 返回可直接访问的图像链接: %s",
+                            redact_url(candidate_url),
                         )
                         continue
                     image_url, image_path = await self._download_image(
@@ -1812,7 +1828,9 @@ class GeminiAPIClient:
                 for url in http_urls:
                     is_temp_cache = "/images/users-" in url or "/temp/image/" in url
                     if is_temp_cache:
-                        logger.debug(f"跳过文本中的临时缓存 URL（已下载）: {url}")
+                        logger.debug(
+                            "跳过文本中的临时缓存 URL（已下载）: %s", redact_url(url)
+                        )
                         continue
                     if has_request_proxy:
                         _, image_path = await self._download_image(
@@ -2212,10 +2230,10 @@ class GeminiAPIClient:
                 REFERENCE_IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
                 cached = next(REFERENCE_IMAGE_CACHE_DIR.glob(f"{cache_key}.*"), None)
                 if cached and cached.exists() and cached.stat().st_size > 0:
-                    logger.debug(f"图像下载命中缓存: {cleaned_url}")
+                    logger.debug("图像下载命中缓存: %s", redact_url(cleaned_url))
                     return str(cached), str(cached)
             except Exception as e:
-                logger.debug(f"检查图像缓存失败: {e}")
+                logger.debug("检查图像缓存失败: %s", redact_text(str(e))[:240])
 
         max_retries = 1
         retry_interval = 1.0
@@ -2223,7 +2241,10 @@ class GeminiAPIClient:
         for attempt in range(1, max_retries + 1):
             try:
                 logger.debug(
-                    f"正在下载图像: {cleaned_url[:100]}... 尝试 {attempt}/{max_retries}"
+                    "正在下载图像: %s 尝试 %s/%s",
+                    redact_url(cleaned_url),
+                    attempt,
+                    max_retries,
                 )
 
                 request_proxy = (
@@ -2288,8 +2309,8 @@ class GeminiAPIClient:
                             "下载图像失败: HTTP %s %s url=%s 响应摘要=%s 建议=%s",
                             response.status,
                             response_reason,
-                            cleaned_url,
-                            err_text[:200],
+                            redact_url(cleaned_url),
+                            redact_text(err_text[:200])[:200],
                             "；".join(dict.fromkeys(suggestions)),
                         )
 
@@ -2317,7 +2338,7 @@ class GeminiAPIClient:
                         )
                         logger.debug(
                             "服务器响应体预览: %s",
-                            err_text[:1000] if err_text else "<empty>",
+                            redact_text(err_text)[:1000] if err_text else "<empty>",
                         )
 
                         if response.status == 400 and attempt < max_retries:
@@ -2346,9 +2367,9 @@ class GeminiAPIClient:
                         image_url_local = image_path
                         return image_url_local, image_path
             except aiohttp.ClientError as e:
-                logger.error(f"下载图像发生网络异常: {e}")
+                logger.error("下载图像发生网络异常: %s", redact_text(str(e))[:240])
             except Exception as e:
-                logger.error(f"下载图像失败: {e}")
+                logger.error("下载图像失败: %s", redact_text(str(e))[:240])
 
             if attempt < max_retries:
                 await asyncio.sleep(retry_interval * attempt)

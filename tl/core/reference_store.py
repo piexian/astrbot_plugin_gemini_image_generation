@@ -74,6 +74,12 @@ class TmpReferenceStore:
             requester=normalized_requester,
             expires_at=now + timedelta(seconds=self._ttl_seconds),
         )
+        logger.debug(
+            "[参考图] 登记临时句柄: mime=%s 字节=%s 当前句柄数=%s",
+            mime_type,
+            len(raw),
+            len(self._entries),
+        )
         return ref_id
 
     async def resolve(
@@ -128,12 +134,15 @@ class TmpReferenceStore:
 
     def _evict(self, now: datetime) -> None:
         # 文件由 AstrBot TempDirCleaner 统一清理；这里只回收空闲的过期映射。
-        for ref_id in [
+        expired = [
             ref_id
             for ref_id, entry in self._entries.items()
             if entry.expires_at <= now and entry.leases <= 0
-        ]:
+        ]
+        for ref_id in expired:
             self._entries.pop(ref_id, None)
+        if expired:
+            logger.debug("[参考图] 清理过期临时句柄 %s 个", len(expired))
 
     def _pop_oldest_idle(self, requester: dict[str, str]) -> bool:
         """只淘汰同 requester 的空闲句柄，避免跨请求者互相驱逐。"""
@@ -147,12 +156,31 @@ class TmpReferenceStore:
     def _make_room(self, requester: dict[str, str]) -> None:
         """预留一个槽位；活动句柄占满时拒绝新登记而不牺牲已有任务。"""
 
+        evicted = 0
+
         while (
             sum(entry.requester == requester for entry in self._entries.values())
             >= self._max_entries_per_requester
         ):
             if not self._pop_oldest_idle(requester):
+                logger.warning(
+                    "[参考图] 请求者临时句柄容量已满，拒绝登记 (上限=%s)",
+                    self._max_entries_per_requester,
+                )
                 raise ReferenceResolveError("当前请求者的临时参考图句柄容量已满")
+            evicted += 1
         if len(self._entries) >= self._max_entries:
             if not self._pop_oldest_idle(requester):
+                logger.warning(
+                    "[参考图] 临时句柄总容量已满，拒绝登记 (上限=%s 当前=%s)",
+                    self._max_entries,
+                    len(self._entries),
+                )
                 raise ReferenceResolveError("临时参考图句柄总容量已满")
+            evicted += 1
+        if evicted:
+            logger.debug(
+                "[参考图] 容量淘汰临时句柄 %s 个 (上限=%s)",
+                evicted,
+                self._max_entries,
+            )

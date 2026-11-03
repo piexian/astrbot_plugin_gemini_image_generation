@@ -22,6 +22,7 @@ import aiohttp
 from astrbot.api import logger
 
 from ..api_types import APIError, ApiRequestConfig
+from ..core.errors import redact_text, redact_url
 from .base import ProviderRequest
 from .param_utils import coerce_int
 from .provider_limits import MAX_REFERENCE_IMAGES_SILICONFLOW
@@ -353,11 +354,12 @@ class SiliconFlowProvider:
         url = f"{base}{_GENERATIONS_PATH}"
         logger.debug(
             "[siliconflow] build_request: url=%s model=%s family=%s "
-            "image_size=%s refs=%s prompt_len=%s",
-            url,
+            "image_size=%s batch_size=%s refs=%s prompt_len=%s",
+            redact_url(url),
             model,
             family,
             payload.get("image_size"),
+            payload.get("batch_size"),
             len(refs),
             len(prompt),
         )
@@ -412,14 +414,21 @@ class SiliconFlowProvider:
                     proxy=client._request_http_proxy(request_config),
                 )
             except Exception as e:  # noqa: BLE001 — 下载失败回退直链
-                logger.warning("[siliconflow] 图片下载失败，回退直链: %s", e)
+                logger.warning(
+                    "[siliconflow] 图片下载失败，回退直链: url=%s error=%s",
+                    redact_url(url_value),
+                    redact_text(e)[:240],
+                )
             if image_path:
                 # SF 的 OSS 常回 octet-stream，按魔数修正扩展名防平台发送降级
                 image_path = _normalize_image_extension(image_path)
                 image_urls.append(image_path)
                 image_paths.append(image_path)
             else:
-                logger.warning("[siliconflow] 图片 URL 约 1 小时后失效，直链仅为兜底")
+                logger.warning(
+                    "[siliconflow] 图片 URL 约 1 小时后失效，直链仅为兜底: url=%s",
+                    redact_url(url_value),
+                )
                 image_urls.append(url_value)
         if not image_urls:
             raise APIError(
@@ -433,6 +442,12 @@ class SiliconFlowProvider:
     def _error_from_body(self, response_data: Any, http_status: int | None) -> APIError:
         """非 200 错误体解析；retryable=None 交框架通用判断（429/5xx 重试、多 Key 轮换）。"""
         message, code = self._parse_error_body(response_data)
+        logger.warning(
+            "[siliconflow] API 错误响应: http_status=%s code=%s detail=%s",
+            http_status,
+            code,
+            redact_text(message)[:300],
+        )
         if code == _OVERLOAD_CODE:
             return APIError(
                 f"SiliconFlow 服务过载: {message or f'HTTP {http_status}'}",

@@ -72,6 +72,8 @@ async def normalize_image_outputs(
     urls: list[str] = []
     seen_paths: set[str] = set()
     seen_urls: set[str] = set()
+    url_candidates = 0
+    dropped_auth_urls = 0
 
     for raw in [*(image_paths or ()), *(image_urls or ())]:
         if not isinstance(raw, str):
@@ -95,9 +97,22 @@ async def normalize_image_outputs(
                 paths.append(path)
                 seen_paths.add(path)
             continue
-        if value.startswith(("http://", "https://")) and not _auth_like_url(value):
+        if value.startswith(("http://", "https://")):
+            url_candidates += 1
+            if _auth_like_url(value):
+                dropped_auth_urls += 1
+                continue
             if value not in seen_urls:
                 urls.append(value)
                 seen_urls.add(value)
+
+    if dropped_auth_urls:
+        logger.debug(
+            "[图片结果] 过滤非持久化源 URL: 候选 URL=%s 保留 URL=%s 本地路径=%s 丢弃=%s",
+            url_candidates,
+            len(urls),
+            len(paths),
+            dropped_auth_urls,
+        )
 
     return paths, urls

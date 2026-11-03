@@ -18,6 +18,7 @@ from .errors import (
     RemoteFetchRejectedError,
     RemoteFetchTimeoutError,
     RemoteFetchTooManyRedirectsError,
+    redact_text,
     redact_url,
 )
 from .path_policy import check_remote_url
@@ -141,16 +142,33 @@ class RemoteFetchService:
                                 )
                             location = response.headers.get("Location", "")
                             if not location:
+                                logger.warning(
+                                    "远端抓取重定向缺少 Location: %s",
+                                    redact_url(current),
+                                )
                                 raise RemoteFetchError(
                                     f"重定向缺少 Location: {redact_url(current)}"
                                 )
                             next_url = urljoin(current, location)
                             if _origin(next_url) != _origin(current):
+                                logger.debug(
+                                    "远端抓取跨源重定向，已剥离认证头: %s -> %s",
+                                    redact_url(current),
+                                    redact_url(next_url),
+                                )
                                 request_headers = {
                                     key: value
                                     for key, value in request_headers.items()
                                     if key.lower() not in _SENSITIVE_REDIRECT_HEADERS
                                 }
+                            else:
+                                logger.debug(
+                                    "远端抓取重定向 %s/%s: %s -> %s",
+                                    hop + 1,
+                                    self.max_redirects,
+                                    redact_url(current),
+                                    redact_url(next_url),
+                                )
                             current = next_url
                             continue
                         if response.status != 200:
@@ -172,11 +190,16 @@ class RemoteFetchService:
                         f"远端抓取超时: {redact_url(current)}"
                     ) from exc
                 except (aiohttp.ClientError, OSError) as exc:
-                    logger.error("远端抓取网络错误: %s (%s)", redact_url(current), exc)
+                    logger.warning(
+                        "远端抓取网络错误: %s (%s)",
+                        redact_url(current),
+                        redact_text(exc)[:240],
+                    )
                     raise RemoteFetchError(
                         f"远端抓取网络错误: {redact_url(current)}: {exc}"
                     ) from exc
         # 循环耗尽只可能是末跳 redirect 分支已抛错，这里仅作兜底。
+        logger.warning("远端抓取重定向循环异常结束: %s", redact_url(current))
         raise RemoteFetchTooManyRedirectsError(
             f"远端抓取重定向超过 {self.max_redirects} 跳"
         )
@@ -218,4 +241,7 @@ class RemoteFetchService:
                 probed = True
         if not probed and chunks:
             probe(b"".join(chunks)[:PROBE_BYTES])
+        logger.debug(
+            "远端抓取完成: %s (%s 字节 %s 块)", redact_url(url), size, len(chunks)
+        )
         return b"".join(chunks)
