@@ -19,11 +19,9 @@ from .core.errors import (
     QueueFullError,
     QuotaExceededError,
     ServiceClosedError,
-    redact_text,
 )
 from .file_uri import file_uri_to_path
-from .generation_scheduler import generation_progress, generation_reservation
-from .generation_tracker import tracking_context, without_session_origin
+from .generation_tracker import without_session_origin
 from .limit_config import validate_umo
 from .provider_capabilities import (
     candidate_capability,
@@ -83,8 +81,6 @@ class ImageGenerationService:
         self._callbacks = {}
         self._callback_tasks = {}
         self._events = {}
-        self._tasks = {}
-        self._started = {}
         self._v2_jobs = {}
         self._submissions = set()
 
@@ -254,95 +250,28 @@ class ImageGenerationService:
             raise PluginServiceError(
                 "invalid_request", "没有符合供应商、模型和参数要求的候选"
             )
-        get_v2_service = getattr(self.plugin, "_v2_service_for", None)
-        v2_service = get_v2_service(umo) if callable(get_v2_service) else None
-        if v2_service is not None:
-            return await self._submit_v2(
-                v2_service,
-                plugin_id=plugin_id,
-                plugin_name=plugin_name,
-                umo=umo,
-                requester=requester,
-                use_rate_limit=use_rate_limit,
-                refs=refs,
-                parameters=parameters,
-                prompt=prompt,
-                image_count=image_count,
-                watermark=watermark,
-                on_complete=on_complete,
-            )
-        self._admit()
-        ticket = self.plugin.generation_scheduler.reserve()
-        token = None
-        record = None
-        try:
-            if use_rate_limit:
-                decision = await self.plugin.rate_limiter.acquire(
-                    umo, plugin_id=plugin_id
-                )
-                if not decision.allowed:
-                    raise PluginServiceError(
-                        "rate_limited", decision.message or "请求超过限流额度"
-                    )
-                token = decision.token
-            # Recheck lifecycle after asynchronous quota/storage operations.
-            if self._state != "ready" or self.plugin.provider_runtime.closed:
-                raise PluginServiceError("service_closed", "服务正在关闭")
-            manager = self.plugin.background_task_manager
-            record = await manager.create(
-                session_id=umo or "",
-                kind="plugin",
-                plugin_id=plugin_id,
-                routing_mode=routing_mode(provider, model),
-                message="任务已接收",
-            )
-            task_id = record["task_id"]
-            await manager.update(
-                task_id,
-                status="queued",
-                caller={"plugin_id": plugin_id, "plugin_name": plugin_name},
-                requester=requester,
-                requested_images=image_count,
-                generated_images=0,
-                image_urls=[],
-                image_paths=[],
-                callback_status="pending" if on_complete else "none",
-            )
-            if self._state != "ready" or self.plugin.provider_runtime.closed:
-                raise PluginServiceError("service_closed", "服务正在关闭")
-            if on_complete:
-                self._callbacks[task_id] = on_complete
-            request = dict(
-                parameters,
-                prompt=prompt,
-                image_count=image_count,
-                watermark=watermark,
-                reference_images=refs,
-                requester=requester,
-                caller={"plugin_id": plugin_id, "plugin_name": plugin_name},
-            )
-            task = manager.attach(task_id, self._run(task_id, request, ticket))
-            self._started[task_id] = asyncio.Event()
-            self._tasks[task_id] = task
-
-            def finished(done):
-                self._tasks.pop(task_id, None)
-                self._started.pop(task_id, None)
-
-            task.add_done_callback(finished)
-            return {
-                "task_id": task_id,
-                "status": "queued",
-                "instance_id": self.instance_id,
-            }
-        except BaseException:
-            ticket.release()
-            await self.plugin.rate_limiter.refund(token)
-            if record:
-                await self.plugin.background_task_manager.update(
-                    record["task_id"], status="interrupted", message="任务提交未完成"
-                )
-            raise
+        ensure_v2 = getattr(self.plugin, "_ensure_v2_service", None)
+        v2_service = ensure_v2() if callable(ensure_v2) else None
+        if v2_service is None:
+            # 过渡兼容：宿主尚未提供装配入口时回退读取按会话过滤的 v2 入口。
+            get_v2_service = getattr(self.plugin, "_v2_service_for", None)
+            v2_service = get_v2_service(umo) if callable(get_v2_service) else None
+        if v2_service is None:
+            raise PluginServiceError("not_configured", "生图服务暂不可接收任务")
+        return await self._submit_v2(
+            v2_service,
+            plugin_id=plugin_id,
+            plugin_name=plugin_name,
+            umo=umo,
+            requester=requester,
+            use_rate_limit=use_rate_limit,
+            refs=refs,
+            parameters=parameters,
+            prompt=prompt,
+            image_count=image_count,
+            watermark=watermark,
+            on_complete=on_complete,
+        )
 
     async def _submit_v2(
         self,
@@ -532,12 +461,6 @@ class ImageGenerationService:
             if v2_job:
                 service, _ = v2_job
                 await service.cancel(record.get("job_id") or v2_job[1])
-            else:
-                task = self._tasks.get(task_id)
-                if task:
-                    await self._started[task_id].wait()
-                    task.cancel()
-                    await asyncio.gather(task, return_exceptions=True)
         return await self.get_task(task_id, plugin_id=plugin_id)
 
     async def remove_callback(self, task_id: str, *, plugin_id: str):
@@ -553,206 +476,6 @@ class ImageGenerationService:
                 )
         return removed
 
-    async def _run(self, task_id, request, ticket):
-        """旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
-        self._started[task_id].set()
-        manager = self.plugin.background_task_manager
-        tracker = self.plugin.generation_tracker
-        job_id = None
-        images, texts, stats = [], [], {}
-        error = None
-        status = "failed"
-        try:
-            if tracker.enabled:
-                history = await tracker.begin(
-                    source="plugin",
-                    prompt=request["prompt"],
-                    params=request,
-                    requester=request["requester"],
-                    caller=request["caller"],
-                    requested_images=request["image_count"],
-                    reference_names=[
-                        Path(file_uri_to_path(ref) or ref).name
-                        for ref in request["reference_images"]
-                        if Path(file_uri_to_path(ref) or ref).parent
-                        == tracker.gallery_dir
-                    ],
-                )
-                job_id = history["job_id"]
-            await manager.update(task_id, job_id=job_id)
-
-            async def progress(value):
-                await manager.update(task_id, status=value)
-                if job_id:
-                    await tracker.update(job_id, status=value)
-
-            with (
-                generation_reservation(ticket),
-                generation_progress(
-                    progress,
-                    preview=(lambda data, fmt: tracker.preview(job_id, data, fmt))
-                    if job_id
-                    else None,
-                ),
-                tracking_context("plugin", managed_externally=True),
-            ):
-                while len(images) < request["image_count"]:
-                    (
-                        success,
-                        result,
-                    ) = await self.plugin.image_generator.generate_image_core(
-                        event=None,
-                        prompt=request["prompt"],
-                        reference_images=request["reference_images"],
-                        avatar_reference=[],
-                        override_resolution=request["resolution"],
-                        override_aspect_ratio=request["aspect_ratio"],
-                        requested_provider=request["provider"],
-                        requested_model=request["model"],
-                        image_count=request["image_count"] - len(images),
-                        is_tool_call=False,
-                        negative_prompt=request["negative_prompt"],
-                        watermark=request["watermark"],
-                        quality=request["quality"],
-                    )
-                    stats = self.plugin.image_generator.get_request_stats()
-                    if not success:
-                        error = str(result)
-                        break
-                    urls, paths, text, _signature = result
-                    fresh = [
-                        value
-                        for value in dict.fromkeys([*urls, *paths])
-                        if value and value not in images
-                    ]
-                    if not fresh:
-                        error = "供应商未返回新的图片"
-                        break
-                    images.extend(fresh[: request["image_count"] - len(images)])
-                    if text:
-                        texts.append(text)
-            status = (
-                "succeeded"
-                if len(images) == request["image_count"]
-                else ("partial_success" if images else "failed")
-            )
-        except asyncio.CancelledError:
-            status, error = "interrupted", "任务已取消或服务已关闭"
-        except Exception:
-            logger.error(f"[插件接入] 任务 {task_id} 执行失败", exc_info=True)
-            status = "partial_success" if images else "failed"
-            error = "图像生成失败，请查看插件日志"
-        finally:
-            ticket.release()
-
-        finish = asyncio.create_task(
-            self._finish(task_id, job_id, images, texts, stats, status, error)
-        )
-        try:
-            await asyncio.shield(finish)
-        except asyncio.CancelledError:
-            callback_task = self._callback_tasks.get(task_id)
-            if callback_task:
-                callback_task.cancel()
-            await finish
-
-    async def _finish(self, task_id, job_id, images, texts, stats, status, error):
-        """旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
-        manager = self.plugin.background_task_manager
-        tracker = self.plugin.generation_tracker
-        urls = [value for value in images if value.startswith(("http://", "https://"))]
-        paths = [value for value in images if value not in urls]
-        archived = []
-        if images and tracker.enabled and status != "interrupted":
-            try:
-                archived = await self.plugin.web_studio_service.archive_images(
-                    urls,
-                    paths,
-                    job_id=job_id,
-                    candidate_id=stats.get("successful_candidate_id"),
-                )
-            except Exception as exc:
-                logger.warning(
-                    f"[插件接入] 任务 {task_id} 图片归档失败: {redact_text(str(exc))[:240]}",
-                    exc_info=True,
-                )
-        # Prefer the archived local artifacts only when the entire result was preserved.
-        if len(archived) == len(images) and archived:
-            paths = [str(tracker.gallery_dir / name) for name in archived]
-            urls = []
-        try:
-            # Publish the terminal task before optional history writes. Failed disk
-            # writes must not hide usable images from callers in this process.
-            result = await manager.update(
-                task_id,
-                best_effort=True,
-                status=status,
-                message=error or "生成完成",
-                error=error,
-                generated_images=len(images),
-                image_urls=urls,
-                image_paths=paths,
-                text_content="\n".join(texts),
-                stats=stats,
-            )
-            await self._update_history(
-                job_id,
-                status=status,
-                generated_images=len(images),
-                images=archived,
-                source_urls=[
-                    v for v in images if v.startswith(("http://", "https://"))
-                ],
-                text_content="\n".join(texts),
-                stats=stats,
-                error=error,
-                callback_status=result.get("callback_status", "none"),
-            )
-            if status in {"succeeded", "partial_success"}:
-                logger.info(
-                    f"[插件接入] 生成完成: plugin_id={result.get('plugin_id')}, job_id={job_id}, "
-                    f"task_id={task_id}, images={len(images)}"
-                )
-            else:
-                logger.warning(
-                    f"[插件接入] 生成失败: plugin_id={result.get('plugin_id')}, job_id={job_id}, "
-                    f"task_id={task_id}, error={redact_text(error)[:240] if error else 'unknown'}"
-                )
-        finally:
-            event = self._events.pop(task_id, None)
-            if event:
-                event.set()
-        callback = self._callbacks.pop(task_id, None)
-        if callback and self._state == "ready":
-            await manager.update(task_id, best_effort=True, callback_status="running")
-            await self._update_history(job_id, callback_status="running")
-            callback_task = asyncio.create_task(
-                callback(without_session_origin(result))
-            )
-            self._callback_tasks[task_id] = callback_task
-            callback_status = "succeeded"
-            try:
-                await asyncio.wait_for(callback_task, 30)
-            except asyncio.CancelledError:
-                callback_status = "interrupted"
-            except Exception as exc:
-                callback_status = "failed"
-                logger.warning(
-                    f"[插件接入] 任务 {task_id} 完成回调失败: {redact_text(str(exc))[:240]}",
-                    exc_info=True,
-                )
-            finally:
-                self._callback_tasks.pop(task_id, None)
-            await manager.update(
-                task_id, best_effort=True, callback_status=callback_status
-            )
-            await self._update_history(job_id, callback_status=callback_status)
-        elif callback:
-            await manager.update(
-                task_id, best_effort=True, callback_status="interrupted"
-            )
-            await self._update_history(job_id, callback_status="interrupted")
-
     async def _update_history(self, job_id, **changes):
         if job_id:
             try:
@@ -766,8 +489,6 @@ class ImageGenerationService:
     async def close(self):
         self._state = "closing"
         await asyncio.gather(*(event.wait() for event in list(self._submissions)))
-        await asyncio.gather(*(event.wait() for event in list(self._started.values())))
-        tasks = list(self._tasks.values())
         pending_v2 = list(self._v2_jobs.values())
         if pending_v2:
             results = await asyncio.gather(
@@ -778,10 +499,12 @@ class ImageGenerationService:
                 if isinstance(result, Exception):
                     logger.warning(f"[插件接入] 关闭 v2 任务失败: {result}")
         self._v2_jobs.clear()
-        for task in tasks:
+        callbacks = [task for task in self._callback_tasks.values() if not task.done()]
+        for task in callbacks:
             task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        if callbacks:
+            await asyncio.gather(*callbacks, return_exceptions=True)
+        self._callback_tasks.clear()
         self._callbacks.clear()
         for event in self._events.values():
             event.set()

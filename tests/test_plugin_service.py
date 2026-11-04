@@ -1,10 +1,13 @@
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from tests.test_web_studio_service import _png
+from tl.api_types import APIError
 from tl.background_tasks import BackgroundTaskManager
+from tl.core.stack import build_generation_stack
 from tl.generation_scheduler import GenerationScheduler, scheduled_generation
 from tl.generation_tracker import GenerationTracker
 from tl.image_generator import ImageGenerator
@@ -12,6 +15,8 @@ from tl.plugin_config import PluginConfig, ProviderCandidate
 from tl.plugin_service import ImageGenerationService
 from tl.provider_runtime import ProviderRuntime
 from tl.rate_limiter import RateLimiter
+from tl.v2_admission import LegacyFifoLimiter, RateLimiterQuota
+from tl.v2_tracking import TrackerProjection
 
 
 def make_service(tmp_path, *, history=True):
@@ -59,9 +64,35 @@ def make_service(tmp_path, *, history=True):
         image_generator=ImageGenerator(None, client, tracker=tracker),
         web_studio_service=SimpleNamespace(archive_images=archive),
     )
+    plugin._v2_service = build_generation_stack(
+        # 取客户端用回调：用例会在提交前替换 plugin.api_client.generate_image。
+        client=lambda: plugin.api_client,
+        candidates=[{"provider": "legacy", "model": "auto"}],
+        # 与 v2 用例自建的栈分开：同一 SQLite 目录不挂两个 JobStore。
+        data_dir=tmp_path / "v2-facade",
+        # 与宿主装配一致：会话工作区内的本地参考图按已校验路径读取。
+        allowed_local_roots=(tmp_path,),
+        quota=RateLimiterQuota(lambda: plugin.rate_limiter),
+        limiter=LegacyFifoLimiter(lambda: plugin.generation_scheduler),
+        observers=[
+            TrackerProjection(tracker, plugin.web_studio_service.archive_images)
+        ],
+    )
+    plugin._ensure_v2_service = lambda: plugin._v2_service
     service = ImageGenerationService(plugin)
     service.initialized()
     return service, gate
+
+
+async def close_service(service):
+    """关闭 facade 与 v2 栈，再收口用例自建的组件。"""
+
+    await service.close()
+    await service.plugin._v2_service.close()
+    await service.plugin.generation_scheduler.close()
+    await service.plugin.background_task_manager.close()
+    await service.plugin.generation_tracker.close()
+    await service.plugin.rate_limiter.close()
 
 
 @pytest.mark.asyncio
@@ -94,15 +125,17 @@ async def test_partial_generation_preserves_images_and_restart_does_not_replay_c
     tmp_path,
 ):
     service, _ = make_service(tmp_path)
-    original = service.plugin.image_generator.generate_image_core
+    original = service.plugin.api_client.generate_image
     calls = 0
 
-    async def generate(**kwargs):
+    async def generate(config, **kwargs):
         nonlocal calls
         calls += 1
-        return await original(**kwargs) if calls == 1 else (False, "供应商拒绝后续请求")
+        if calls > 1:
+            raise APIError("供应商拒绝后续请求", 500, "server")
+        return await original(config, **kwargs)
 
-    service.plugin.image_generator.generate_image_core = generate
+    service.plugin.api_client.generate_image = generate
     accepted = await service.submit(plugin_id="a", prompt="draw", image_count=2)
     result = await service.wait_task(accepted["task_id"], plugin_id="a")
     assert result["status"] == "partial_success" and result["generated_images"] == 1
@@ -115,38 +148,16 @@ async def test_partial_generation_preserves_images_and_restart_does_not_replay_c
     restored = await reloaded.get_for_plugin(accepted["task_id"], "a")
     assert restored["status"] == "partial_success"
     assert restored["callback_status"] == "interrupted"
+    await close_service(service)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("use_file_uri", [False, True])
-async def test_local_reference_survives_real_image_handler_filter(
-    tmp_path, use_file_uri, monkeypatch
+async def test_local_reference_reaches_client_as_resolved_cache_path(
+    tmp_path, use_file_uri
 ):
     service, _ = make_service(tmp_path)
-    import sys
-    import types
-
-    components = types.ModuleType("astrbot.api.message_components")
-    components.At = type("At", (), {})
-    components.Image = type("Image", (), {})
-    components.Reply = type("Reply", (), {})
-    monkeypatch.setitem(sys.modules, "astrbot.api.message_components", components)
-    tl_utils = sys.modules["tl.tl_utils"]
-    monkeypatch.setattr(
-        tl_utils, "AvatarManager", type("AvatarManager", (), {}), raising=False
-    )
-    monkeypatch.setattr(
-        tl_utils, "encode_file_to_base64", lambda value: "", raising=False
-    )
-    monkeypatch.setattr(
-        tl_utils, "is_valid_base64_image_str", lambda value: False, raising=False
-    )
-    from tl.image_handler import ImageHandler
-
     path = _png(tmp_path / "reference.png")
-    service.plugin.image_generator._filter_valid_fn = (
-        ImageHandler().filter_valid_reference_images
-    )
     captured = []
     original = service.plugin.api_client.generate_image
 
@@ -164,9 +175,9 @@ async def test_local_reference_survives_real_image_handler_filter(
         result = await service.wait_task(accepted["task_id"], plugin_id="a")
         assert result["status"] == "succeeded"
         assert len(captured) == 1
-        assert captured[0].reference_images == [path.as_uri()]
+        # 本地图经 v2 句柄落成缓存文件，内容与原图一致而非 base64 串。
+        supplier_reference = Path(captured[0].reference_images[0])
+        assert supplier_reference != path
+        assert supplier_reference.read_bytes() == path.read_bytes()
     finally:
-        await service.close()
-        await service.plugin.background_task_manager.close()
-        await service.plugin.generation_tracker.close()
-        await service.plugin.rate_limiter.close()
+        await close_service(service)

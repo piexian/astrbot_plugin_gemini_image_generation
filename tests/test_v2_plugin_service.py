@@ -40,7 +40,7 @@ async def make_v2_service(tmp_path, archive=None):
             )
         ],
     )
-    service.plugin._v2_service_for = lambda umo: stack
+    service.plugin._ensure_v2_service = lambda: stack
     return service, stack, gate
 
 
@@ -105,7 +105,6 @@ async def test_v2_end_to_end_fill_archive_callback_and_wait(tmp_path):
         assert final["callback_status"] == "succeeded"
         assert callback_records[0]["task_id"] == accepted["task_id"]
         assert service.plugin.api_client.calls == 2
-        assert service._tasks == {}
         assert service._v2_jobs == {}
         history = service.plugin.generation_tracker.get(result["job_id"])
         assert history["caller"] == {"plugin_id": "a", "plugin_name": "插件 A"}
@@ -145,7 +144,7 @@ class RecordingV2Service:
 async def test_v2_submit_preserves_urls_ingests_local_files_and_builds_record(tmp_path):
     service, _ = make_service(tmp_path)
     fake = RecordingV2Service()
-    service.plugin._v2_service_for = lambda umo: fake
+    service.plugin._ensure_v2_service = lambda: fake
     local = _png(tmp_path / "reference.png")
     url = "https://example.org/reference.png"
     try:
@@ -187,7 +186,7 @@ async def test_v2_submit_preserves_urls_ingests_local_files_and_builds_record(tm
 async def test_v2_session_quota_scope(tmp_path):
     service, _ = make_service(tmp_path)
     fake = RecordingV2Service()
-    service.plugin._v2_service_for = lambda umo: fake
+    service.plugin._ensure_v2_service = lambda: fake
     try:
         await service.submit(
             plugin_id="a",
@@ -212,7 +211,7 @@ async def test_v2_session_quota_scope(tmp_path):
 )
 async def test_v2_submit_error_codes(tmp_path, error, code):
     service, _ = make_service(tmp_path)
-    service.plugin._v2_service_for = lambda umo: RecordingV2Service(error)
+    service.plugin._ensure_v2_service = lambda: RecordingV2Service(error)
     try:
         with pytest.raises(PluginServiceError) as caught:
             await service.submit(plugin_id="a", prompt="draw")
@@ -321,16 +320,15 @@ async def test_close_cancels_v2_and_skips_callback(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_none_v2_service_uses_legacy_task_path(tmp_path):
+async def test_missing_v2_service_rejects_submission(tmp_path):
     service, _ = make_service(tmp_path)
-    calls = []
-    service.plugin._v2_service_for = lambda umo: calls.append(umo) or None
+    service.plugin._ensure_v2_service = lambda: None
     try:
-        accepted = await service.submit(plugin_id="a", prompt="draw")
-        assert accepted["task_id"] in service._tasks
-        result = await service.wait_task(accepted["task_id"], plugin_id="a")
-        assert result["status"] == "succeeded"
-        assert calls == [None]
+        with pytest.raises(PluginServiceError) as caught:
+            await service.submit(plugin_id="a", prompt="draw")
+        assert caught.value.code == "not_configured"
+        assert str(caught.value) == "生图服务暂不可接收任务"
+        assert service._v2_jobs == {}
     finally:
         await close_service(service)
 
@@ -363,7 +361,7 @@ async def test_v2_callback_timeout_marks_only_callback_failed(tmp_path, monkeypa
 async def test_v2_record_creation_failure_cancels_submitted_job(tmp_path, monkeypatch):
     service, _ = make_service(tmp_path)
     fake = RecordingV2Service()
-    service.plugin._v2_service_for = lambda umo: fake
+    service.plugin._ensure_v2_service = lambda: fake
 
     async def fail_create(*args, **kwargs):
         raise RuntimeError("disk full")
