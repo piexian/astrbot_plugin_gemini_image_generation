@@ -469,10 +469,8 @@ def _command_plugin(tmp_path):
     plugin.image_handler.filter_valid_reference_images = lambda values, **kwargs: list(
         values
     )
-    plugin.image_generator = type(
-        "G", (), {"generate_image_core": _async_fail, "submit_v2": _async_fail}
-    )()
-    plugin._v2_service_for = lambda umo: None
+    plugin._test_v2_service = _CaptureService()
+    plugin._ensure_v2_service = lambda: plugin._test_v2_service
     return plugin
 
 
@@ -482,19 +480,6 @@ async def _async_false(*args, **kwargs):
 
 async def _async_refs(*args, **kwargs):
     return (["ref.png"], [])
-
-
-async def _async_fail(*args, **kwargs):
-    return False, "provider failed"
-
-
-class _Client:
-    def __init__(self):
-        self.configs = []
-
-    async def generate_image(self, config, **kwargs):
-        self.configs.append(config)
-        return (["https://img.test/out.png"], [], "ok", None)
 
 
 class _CaptureService(_FakeV2Service):
@@ -524,68 +509,50 @@ class _CaptureService(_FakeV2Service):
         ("quick_sticker", "简单 一只猫", "sticker-simple", 6, 4),
     ],
 )
-async def test_quick_commands_render_templates_on_both_paths(
+async def test_quick_commands_render_templates_on_v2_path(
     tmp_path, method, prompt, template_id, rows, cols
 ):
     plugin = _command_plugin(tmp_path)
     plugin.cfg.sticker_grid_rows, plugin.cfg.sticker_grid_cols = rows, cols
-    client = _Client()
-    plugin.api_client = client
+    plugin.api_client = object()
     _wire_sender(plugin)
     event = _Event()
     event.message_str = ""
     outputs = [item async for item in getattr(plugin, method)(event, prompt)]
+
     assert any("生成" in item for item in outputs)
     rendered_input = "一只猫" if "一只猫" in prompt else ""
     expected = render_template(
         builtin_template(template_id), rendered_input, rows=rows, cols=cols
     )
-    assert client.configs[0].prompt == expected
-    assert (
-        plugin.generation_tracker.begin.await_args.kwargs["params"]["template_id"]
-        == template_id
-    )
-
-    plugin = _command_plugin(tmp_path / "v2")
-    plugin.cfg.sticker_grid_rows, plugin.cfg.sticker_grid_cols = rows, cols
-    service = _CaptureService()
-    plugin._v2_service_for = lambda umo: service
-    plugin.api_client = _Client()
-    _wire_sender(plugin)
-    outputs = [item async for item in getattr(plugin, method)(event, prompt)]
-    assert any("生成" in item for item in outputs)
-    assert service.request.metadata["template_id"] == template_id
-    assert service.request.prompt == expected
+    request = plugin._test_v2_service.request
+    assert request.metadata["template_id"] == template_id
+    assert request.prompt == expected
     plugin.generation_tracker.begin.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_quick_dimensions_follow_override_then_config_then_builtin(tmp_path):
     plugin = _command_plugin(tmp_path)
-    client = _Client()
-    plugin.api_client = client
+    plugin.api_client = object()
     _wire_sender(plugin)
     event = _Event()
     event.message_str = ""
+
+    def request_size():
+        request = plugin._test_v2_service.request
+        return request.resolution, request.aspect_ratio
+
     await _collect(plugin.quick_avatar(event, "一只猫"))
-    assert (client.configs[-1].resolution, client.configs[-1].aspect_ratio) == (
-        "1K",
-        "1:1",
-    )
+    assert request_size() == ("1K", "1:1")
 
     plugin.cfg.quick_mode_overrides = {"avatar": ("2K", "9:16")}
     await _collect(plugin.quick_avatar(event, "一只猫"))
-    assert (client.configs[-1].resolution, client.configs[-1].aspect_ratio) == (
-        "2K",
-        "9:16",
-    )
+    assert request_size() == ("2K", "9:16")
 
     await plugin.prompt_templates.update("avatar", {"defaults": {"resolution": "4K"}})
     await _collect(plugin.quick_avatar(event, "一只猫"))
-    assert (client.configs[-1].resolution, client.configs[-1].aspect_ratio) == (
-        "4K",
-        "9:16",
-    )
+    assert request_size() == ("4K", "9:16")
 
 
 @pytest.mark.asyncio
@@ -602,21 +569,20 @@ async def test_sticker_reference_rule_and_corrupt_store(tmp_path):
     assert "请附上一张清晰的角色参考图（如头像或原表情）后再试。" in outputs[1]
 
     await plugin.prompt_templates.update("sticker", {"reference": "optional"})
-    client = _Client()
-    plugin.api_client = client
+    plugin.api_client = object()
     _wire_sender(plugin)
     await _collect(plugin.quick_sticker(event, "一只猫"))
-    assert client.configs[0].prompt
+    assert plugin._test_v2_service.request.prompt
 
     broken = tmp_path / "broken"
     (broken / "prompt_templates.json").parent.mkdir()
     (broken / "prompt_templates.json").write_text("{", encoding="utf-8")
     plugin.prompt_templates = PromptTemplateStore(broken)
-    plugin.api_client = _Client()
+    plugin.api_client = object()
     _wire_sender(plugin)
     plugin.image_handler.fetch_images_from_event = _async_refs
     await _collect(plugin.quick_poster(event, "一只猫"))
-    assert plugin.api_client.configs[0].prompt == render_template(
+    assert plugin._test_v2_service.request.prompt == render_template(
         builtin_template("poster"), "一只猫"
     )
 
@@ -654,19 +620,15 @@ def _provider_operation(node):
 @pytest.mark.asyncio
 async def test_poster_route_is_parsed_before_template_render(tmp_path):
     plugin = _command_plugin(tmp_path)
-    client = _Client()
-    plugin.api_client = client
+    plugin.api_client = object()
     _wire_sender(plugin)
     event = _Event()
     event.message_str = ""
     await _collect(plugin.quick_poster(event, "google/image-model 一只猫"))
-    config = client.configs[0]
-    assert (config.requested_provider, config.requested_model) == (
-        "google",
-        "image-model",
-    )
-    assert "google/image-model" not in config.prompt
-    assert config.prompt == render_template(builtin_template("poster"), "一只猫")
+    request = plugin._test_v2_service.request
+    assert (request.provider, request.model) == ("google", "image-model")
+    assert "google/image-model" not in request.prompt
+    assert request.prompt == render_template(builtin_template("poster"), "一只猫")
 
 
 @pytest.mark.asyncio
@@ -696,7 +658,7 @@ async def test_avatar_keyword_uses_the_original_text(tmp_path):
         return ([], [])
 
     plugin.image_handler.fetch_images_from_event = fetch
-    plugin.api_client = _Client()
+    plugin.api_client = object()
     _wire_sender(plugin)
     event = _Event()
     event.message_str = ""

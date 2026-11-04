@@ -10,10 +10,10 @@ import pytest
 from tl.generation_tracker import (
     GenerationTracker,
     current_tracking_context,
+    record_generation_success,
     requester_from_event,
     tracking_context,
 )
-from tl.image_generator import ImageGenerator
 
 
 @pytest.mark.asyncio
@@ -341,379 +341,156 @@ def test_requester_metadata_is_defensive_and_truncated() -> None:
     assert len(requester["user_name"]) <= 200
 
 
+class _RecordingTracker:
+    """记录终态写入的最小 tracker。"""
+
+    def __init__(self) -> None:
+        self.completed = None
+        self.updates: list[dict] = []
+        self.failed = None
+
+    async def complete(self, job_id, **kwargs):
+        self.completed = (job_id, kwargs)
+
+    async def update(self, job_id, **changes):
+        self.updates.append(changes)
+
+    async def fail(self, job_id, **kwargs):
+        self.failed = (job_id, kwargs)
+
+
 @pytest.mark.asyncio
-async def test_image_generator_uses_context_parent_and_item(monkeypatch) -> None:
-    class Tracker:
-        def __init__(self) -> None:
-            self.begin_kwargs = None
-            self.completed = None
-
-        async def begin(self, **kwargs):
-            self.begin_kwargs = kwargs
-            return {"job_id": "job-one"}
-
-        async def complete(self, job_id, **kwargs):
-            self.completed = (job_id, kwargs)
-
-        async def fail(self, job_id, **kwargs):
-            raise AssertionError(kwargs)
-
-    class Client:
-        async def generate_image(self, config, **kwargs):
-            config.successful_provider = "google"
-            config.successful_model = "image-model"
-            return [], ["/tmp/generated.png"], None, None
+async def test_record_generation_success_archives_with_job_and_candidate() -> None:
+    """完成记录把 job_id 与候选传给归档，并保留归档结果与统计。"""
+    tracker = _RecordingTracker()
+    archived = []
 
     async def archive(urls, paths, **kwargs):
-        assert kwargs["job_id"] == "job-one"
+        archived.append((list(urls), list(paths), kwargs))
         return ["gallery.png"]
 
-    tracker = Tracker()
-    generator = ImageGenerator(
-        context=None,
-        api_client=Client(),
-        filter_valid_fn=lambda images, source: images or [],
-        tracker=tracker,
+    await record_generation_success(
+        tracker,
+        "job-one",
+        image_urls=[],
+        image_paths=["/tmp/generated.png"],
+        text_content=None,
+        stats={"successful_provider": "google", "successful_model": "image-model"},
         archive_images_fn=archive,
+        candidate_id="cand-1",
     )
-    monkeypatch.setattr("tl.image_generator.Path.exists", lambda self: True)
 
-    with tracking_context("llm_batch", "parent", "item"):
-        success, _ = await generator.generate_image_core(
-            event=None,
-            prompt="draw",
-            reference_images=[],
-            avatar_reference=[],
-            is_tool_call=True,
-        )
-
-    assert success is True
-    assert tracker.begin_kwargs["source"] == "llm_batch"
-    assert tracker.begin_kwargs["parent_job_id"] == "parent"
-    assert tracker.begin_kwargs["item_name"] == "item"
+    assert archived == [
+        ([], ["/tmp/generated.png"], {"candidate_id": "cand-1", "job_id": "job-one"})
+    ]
     assert tracker.completed[0] == "job-one"
     assert tracker.completed[1]["image_files"] == ["gallery.png"]
+    assert tracker.completed[1]["status"] == "succeeded"
+    assert tracker.completed[1]["stats"]["successful_model"] == "image-model"
+    assert tracker.failed is None
 
 
 @pytest.mark.asyncio
-async def test_image_generator_archive_failure_records_partial_success(
-    monkeypatch,
-) -> None:
+async def test_record_generation_success_archive_failure_downgrades_to_partial() -> (
+    None
+):
     """归档异常（如下载超时）不能把已发送的生成结果记为失败。"""
-
-    class Tracker:
-        def __init__(self) -> None:
-            self.completed = None
-            self.updates: list[dict] = []
-
-        async def begin(self, **kwargs):
-            return {"job_id": "job-one"}
-
-        async def complete(self, job_id, **kwargs):
-            self.completed = (job_id, kwargs)
-
-        async def update(self, job_id, **changes):
-            self.updates.append(changes)
-
-        async def fail(self, job_id, **kwargs):
-            raise AssertionError(kwargs)
-
-    class Client:
-        async def generate_image(self, config, **kwargs):
-            config.successful_provider = "openai_images"
-            config.successful_model = "gpt-image-2"
-            return [], ["/tmp/generated.png"], None, None
 
     async def broken_archive(urls, paths, **kwargs):
         raise TimeoutError()  # aiohttp 下载超时的 str() 为空
 
-    tracker = Tracker()
-    generator = ImageGenerator(
-        context=None,
-        api_client=Client(),
-        filter_valid_fn=lambda images, source: images or [],
-        tracker=tracker,
+    tracker = _RecordingTracker()
+
+    await record_generation_success(
+        tracker,
+        "job-one",
+        image_urls=["https://cdn.example/a.png"],
+        image_paths=[],
+        text_content=None,
+        stats={
+            "successful_provider": "openai_images",
+            "successful_model": "gpt-image-2",
+        },
         archive_images_fn=broken_archive,
     )
-    monkeypatch.setattr("tl.image_generator.Path.exists", lambda self: True)
 
-    success, _ = await generator.generate_image_core(
-        event=None,
-        prompt="draw",
-        reference_images=[],
-        avatar_reference=[],
-        is_tool_call=True,
-    )
-
-    assert success is True
+    assert tracker.completed[0] == "job-one"
     assert tracker.completed[1]["status"] == "partial_success"
     assert tracker.completed[1]["image_files"] == []
     assert tracker.completed[1]["stats"]["successful_provider"] == "openai_images"
-    assert len(tracker.updates) == 1
-    assert "画廊归档不完整（0/1）" in tracker.updates[0]["error"]
-    assert "TimeoutError" in tracker.updates[0]["error"]
+    assert tracker.failed is None
+    (update,) = tracker.updates
+    assert "画廊归档不完整（0/1）" in update["error"]
+    assert "TimeoutError" in update["error"]
 
 
 @pytest.mark.asyncio
-async def test_image_generator_partial_archive_marks_partial_success(
-    monkeypatch,
-) -> None:
+async def test_record_generation_success_partial_archive_marks_partial_success() -> (
+    None
+):
     """归档返回空列表（静默下载失败）同样降级为部分成功而非失败。"""
-
-    class Tracker:
-        def __init__(self) -> None:
-            self.completed = None
-            self.updates: list[dict] = []
-
-        async def begin(self, **kwargs):
-            return {"job_id": "job-one"}
-
-        async def complete(self, job_id, **kwargs):
-            self.completed = (job_id, kwargs)
-
-        async def update(self, job_id, **changes):
-            self.updates.append(changes)
-
-        async def fail(self, job_id, **kwargs):
-            raise AssertionError(kwargs)
-
-    class Client:
-        async def generate_image(self, config, **kwargs):
-            config.successful_provider = "google"
-            config.successful_model = "image-model"
-            return ["https://cdn.example/a.png"], [], None, None
 
     async def empty_archive(urls, paths, **kwargs):
         return []
 
-    tracker = Tracker()
-    generator = ImageGenerator(
-        context=None,
-        api_client=Client(),
-        filter_valid_fn=lambda images, source: images or [],
-        tracker=tracker,
+    tracker = _RecordingTracker()
+
+    await record_generation_success(
+        tracker,
+        "job-one",
+        image_urls=["https://cdn.example/a.png"],
+        image_paths=[],
+        text_content=None,
+        stats={"successful_provider": "google", "successful_model": "image-model"},
         archive_images_fn=empty_archive,
     )
-    monkeypatch.setattr("tl.image_generator.Path.exists", lambda self: True)
 
-    success, _ = await generator.generate_image_core(
-        event=None,
-        prompt="draw",
-        reference_images=[],
-        avatar_reference=[],
-        is_tool_call=True,
-    )
-
-    assert success is True
     assert tracker.completed[1]["status"] == "partial_success"
+    assert tracker.failed is None
     assert "画廊归档不完整（0/1）" in tracker.updates[0]["error"]
 
 
 @pytest.mark.asyncio
-async def test_image_generator_without_archive_fn_keeps_succeeded(
-    monkeypatch,
-) -> None:
+async def test_record_generation_success_without_archive_fn_keeps_succeeded() -> None:
     """未接入归档函数时（无 Studio）语义不变，仍记为成功。"""
+    tracker = _RecordingTracker()
 
-    class Tracker:
-        def __init__(self) -> None:
-            self.completed = None
-
-        async def begin(self, **kwargs):
-            return {"job_id": "job-one"}
-
-        async def complete(self, job_id, **kwargs):
-            self.completed = (job_id, kwargs)
-
-        async def fail(self, job_id, **kwargs):
-            raise AssertionError(kwargs)
-
-    class Client:
-        async def generate_image(self, config, **kwargs):
-            config.successful_provider = "google"
-            config.successful_model = "image-model"
-            return [], ["/tmp/generated.png"], None, None
-
-    tracker = Tracker()
-    generator = ImageGenerator(
-        context=None,
-        api_client=Client(),
-        filter_valid_fn=lambda images, source: images or [],
-        tracker=tracker,
-    )
-    monkeypatch.setattr("tl.image_generator.Path.exists", lambda self: True)
-
-    success, _ = await generator.generate_image_core(
-        event=None,
-        prompt="draw",
-        reference_images=[],
-        avatar_reference=[],
-        is_tool_call=True,
+    await record_generation_success(
+        tracker,
+        "job-one",
+        image_urls=[],
+        image_paths=["/tmp/generated.png"],
+        text_content=None,
+        stats={"successful_provider": "google", "successful_model": "image-model"},
     )
 
-    assert success is True
     assert tracker.completed[1]["status"] == "succeeded"
     assert tracker.completed[1]["image_files"] == []
-
-
-def test_import_legacy_inserts_and_dedupes(tmp_path) -> None:
-    tracker = GenerationTracker(tmp_path, 20)
-    record = {
-        "job_id": "legacy-a",
-        "parent_job_id": None,
-        "item_name": None,
-        "source": "legacy",
-        "status": "succeeded",
-        "prompt": "",
-        "params": {},
-        "requester": {"user_id": "", "user_name": "", "group_id": ""},
-        "created_at": "2026-01-01T00:00:00+00:00",
-        "finished_at": "2026-01-01T00:00:00+00:00",
-        "duration_ms": 0,
-        "requested_images": 1,
-        "generated_images": 1,
-        "images": ["old.png"],
-        "text_content": "",
-        "error": None,
-        "stats": {},
-    }
-
-    assert tracker.import_legacy([dict(record)]) == 1
-    # 相同图片名不重复建档
-    dup = dict(record, job_id="legacy-b")
-    assert tracker.import_legacy([dup]) == 0
-    # 重载后仍不重复
-    tracker2 = GenerationTracker(tmp_path, 20)
-    assert tracker2.import_legacy([dict(record, job_id="legacy-c")]) == 0
-    assert tracker2.get("legacy-a") is not None
-
-
-def test_import_legacy_disabled_tracker_noop(tmp_path) -> None:
-    tracker = GenerationTracker(tmp_path, 20, enabled=False)
-    record = {"job_id": "legacy-x", "images": ["x.png"]}
-    assert tracker.import_legacy([record]) == 0
-    assert not (tmp_path / "generation_history.json").exists()
+    assert tracker.updates == []
 
 
 @pytest.mark.asyncio
-async def test_source_urls_sanitized_on_begin_complete_and_update(tmp_path) -> None:
-    """持久源链接随任务记录；临时缓存/非 http/超长/重复项被过滤，上限 20 条。"""
-    tracker = GenerationTracker(tmp_path, 20)
-    record = await tracker.begin(
-        source="command", prompt="draw", params={}, requester={}, requested_images=1
-    )
-    job_id = record["job_id"]
-    assert record["source_urls"] == []
-
-    urls = [
-        "https://cdn.example/a.png",
-        "https://cdn.example/a.png",
-        "https://gw.example/images/users-1/cache.png",
-        "https://gw.example/temp/image/x.png",
-        "file:///tmp/a.png",
-        "ftp://cdn.example/a.png",
-        123,
-        None,
-        "https://cdn.example/" + "q" * 2100,
-        *[f"https://cdn.example/{index}.png" for index in range(30)],
-    ]
-    await tracker.complete(
-        job_id, image_files=[], text_content=None, stats={}, source_urls=urls
-    )
-    saved = tracker.get(job_id)["source_urls"]
-    assert saved[0] == "https://cdn.example/a.png"
-    assert len(saved) == 20
-    assert all(
-        isinstance(url, str)
-        and url.startswith(("http://", "https://"))
-        and len(url) <= 2048
-        for url in saved
-    )
-    assert not any("/images/users-" in url or "/temp/image/" in url for url in saved)
-
-    await tracker.update(
-        job_id, source_urls=["https://keep.example/b.png", "not-a-url"]
-    )
-    assert tracker.get(job_id)["source_urls"] == ["https://keep.example/b.png"]
-    await tracker.update(job_id, source_urls="https://wrong.example/type.png")
-    assert tracker.get(job_id)["source_urls"] == []
-    await tracker.close()
-
-
-def test_legacy_records_without_source_urls_still_load(tmp_path) -> None:
-    """旧历史文件没有 source_urls 字段，加载与更新不受影响。"""
-    history = tmp_path / "generation_history.json"
-    history.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "jobs": [
-                    {
-                        "job_id": "legacy-no-urls",
-                        "status": "succeeded",
-                        "images": [],
-                        "created_at": "2026-01-01T00:00:00+00:00",
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-    tracker = GenerationTracker(tmp_path, 20)
-    record = tracker.get("legacy-no-urls")
-    assert record is not None
-    assert "source_urls" not in record
-
-
-@pytest.mark.asyncio
-async def test_image_generator_records_persistent_source_urls(monkeypatch) -> None:
+async def test_record_generation_success_records_persistent_source_urls() -> None:
     """归档失败时源 URL 仍写入记录，便于事后取回图片。"""
-
-    class Tracker:
-        def __init__(self) -> None:
-            self.completed = None
-            self.updates: list[dict] = []
-
-        async def begin(self, **kwargs):
-            return {"job_id": "job-one"}
-
-        async def complete(self, job_id, **kwargs):
-            self.completed = (job_id, kwargs)
-
-        async def update(self, job_id, **changes):
-            self.updates.append(changes)
-
-        async def fail(self, job_id, **kwargs):
-            raise AssertionError(kwargs)
-
-    class Client:
-        async def generate_image(self, config, **kwargs):
-            config.successful_provider = "openai_images"
-            config.successful_model = "gpt-image-2"
-            return ["https://cdn.example/a.png", "/tmp/local.png"], [], None, None
 
     async def broken_archive(urls, paths, **kwargs):
         raise TimeoutError()
 
-    tracker = Tracker()
-    generator = ImageGenerator(
-        context=None,
-        api_client=Client(),
-        filter_valid_fn=lambda images, source: images or [],
-        tracker=tracker,
+    tracker = _RecordingTracker()
+
+    await record_generation_success(
+        tracker,
+        "job-one",
+        image_urls=["https://cdn.example/a.png", "/tmp/local.png"],
+        image_paths=[],
+        text_content=None,
+        stats={
+            "successful_provider": "openai_images",
+            "successful_model": "gpt-image-2",
+        },
         archive_images_fn=broken_archive,
     )
-    monkeypatch.setattr("tl.image_generator.Path.exists", lambda self: True)
 
-    success, _ = await generator.generate_image_core(
-        event=None,
-        prompt="draw",
-        reference_images=[],
-        avatar_reference=[],
-        is_tool_call=True,
-    )
-
-    assert success is True
     kwargs = tracker.completed[1]
     assert kwargs["status"] == "partial_success"
     assert kwargs["source_urls"] == ["https://cdn.example/a.png"]

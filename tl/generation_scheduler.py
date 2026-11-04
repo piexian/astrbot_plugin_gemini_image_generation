@@ -131,7 +131,7 @@ class GenerationScheduler:
 
 
 def scheduled_generation(function):
-    """旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
+    """包裹生成调用以自动获取或复用 GenerationScheduler FIFO 排队票据。"""
 
     @wraps(function)
     async def call(owner, *args, **kwargs):

@@ -397,7 +397,7 @@ def test_v2_failure_message_no_image_is_the_legacy_missing_file_text():
         v2_failure_text("provider_no_image", "任意消息", total_timeout=1)
         == IMAGE_FILE_MISSING_MESSAGE
     )
-    # 旧路径原文：与 _generate_image_core_impl 的无图提示逐字一致。
+    # 无图结果提示文案契约。
     assert IMAGE_FILE_MISSING_MESSAGE == (
         "❌ 图像文件未找到，无法返回结果。\n"
         "🧐 可能原因：生成后保存文件失败，或远程传输路径无效。\n"

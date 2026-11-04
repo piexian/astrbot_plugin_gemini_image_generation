@@ -253,10 +253,6 @@ class ImageGenerationService:
         ensure_v2 = getattr(self.plugin, "_ensure_v2_service", None)
         v2_service = ensure_v2() if callable(ensure_v2) else None
         if v2_service is None:
-            # 过渡兼容：宿主尚未提供装配入口时回退读取按会话过滤的 v2 入口。
-            get_v2_service = getattr(self.plugin, "_v2_service_for", None)
-            v2_service = get_v2_service(umo) if callable(get_v2_service) else None
-        if v2_service is None:
             raise PluginServiceError("not_configured", "生图服务暂不可接收任务")
         return await self._submit_v2(
             v2_service,

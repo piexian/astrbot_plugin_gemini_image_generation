@@ -507,9 +507,6 @@ class _FakePlugin:
             )
         )
 
-    async def _check_and_consume_limit(self, event):
-        raise AssertionError("v2 路径不应自行扣额度")
-
     def _ensure_v2_service(self):
         return self.v2_service
 

@@ -660,17 +660,11 @@ def _resolve_foreground_wait_seconds(plugin: Any, event: Any) -> int:
     return foreground_wait_seconds
 
 
-def _resolve_v2_service(plugin: Any, event: Any) -> Any:
-    """取生成服务：优先常驻装配入口，宿主未提供时回退按会话过滤的入口。"""
+def _resolve_v2_service(plugin: Any) -> Any:
+    """取常驻 v2 生成服务；宿主未提供装配入口时返回 None。"""
 
     ensure_v2 = getattr(plugin, "_ensure_v2_service", None)
-    service = ensure_v2() if callable(ensure_v2) else None
-    if service is not None:
-        return service
-    service_for = getattr(plugin, "_v2_service_for", None)
-    if callable(service_for):
-        return service_for(getattr(event, "unified_msg_origin", None))
-    return None
+    return ensure_v2() if callable(ensure_v2) else None
 
 
 def _event_session_id(event: Any) -> str:
@@ -1568,7 +1562,7 @@ async def _run_batch_tool(
     if error or not prepared_items:
         return f"❌ 批量任务参数错误：{error or '没有有效任务'}"
 
-    v2_service = _resolve_v2_service(plugin, event)
+    v2_service = _resolve_v2_service(plugin)
     if v2_service is None:
         return "❌ 无法生成图像：生成服务尚未初始化"
     return await _run_batch_v2(plugin, event, v2_service, prepared_items)
@@ -1701,7 +1695,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         if not candidates:
             return "❌ 没有匹配所选供应商、模型、生成模式和参数能力的候选模型"
         # 额度、生成与后台投递都归 v2 调度器：工具只准备请求并等待结果。
-        v2_service = _resolve_v2_service(plugin, event)
+        v2_service = _resolve_v2_service(plugin)
         if v2_service is None:
             return "❌ 无法生成图像：生成服务尚未初始化"
         return await _run_single_v2(

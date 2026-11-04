@@ -20,7 +20,12 @@ from tests.test_web_studio_service import _config, _png, _SequenceClient
 from tl import enhanced_prompts, llm_tools
 from tl.api_types import ApiRequestConfig
 from tl.background_tasks import BackgroundTaskManager
-from tl.core.errors import QueueFullError, QuotaExceededError, ServiceClosedError
+from tl.core.errors import (
+    CoreError,
+    QueueFullError,
+    QuotaExceededError,
+    ServiceClosedError,
+)
 from tl.core.stack import build_generation_stack
 from tl.core.states import JobState
 from tl.format_error import format_error_message
@@ -28,7 +33,6 @@ from tl.generation_errors import api_failure_message
 from tl.generation_tracker import (
     GenerationTracker,
     ReferenceImageUnavailableError,
-    record_generation_success,
 )
 from tl.image_generator import ImageGenerator
 from tl.llm_tools import GeminiImageBatchTool, GeminiImageGenerationTool
@@ -53,9 +57,16 @@ from tl.v2_bridge import (
 )
 from tl.v2_bridge import (
     v2_failure_message,
+    v2_failure_text,
 )
 from tl.v2_tracking import TrackerProjection
 from tl.web_studio_service import StudioServiceError, WebStudioService
+
+# 1x1 PNG：命令入口的参考图先经 ReferenceService 校验，必须是可解码的图片。
+_PNG_DATA_URI = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
 
 
 class _Limiter:
@@ -299,7 +310,6 @@ def _tool_plugin(tmp_path, *, allowed=True):
         cfg=config,
         rate_limiter=limiter,
         background_task_manager=manager,
-        _check_and_consume_limit=limiter.check_and_consume,
         _fetch_images_from_event=AsyncMock(return_value=([], [])),
         get_tool_timeout=lambda event: 1,
         v2_dir=tmp_path / "v2",
@@ -450,10 +460,8 @@ def _command_class():
     plugin = next(node for node in source.body if isinstance(node, ast.ClassDef))
     methods = {
         "_check_command_generation_limit",
-        "_check_and_consume_limit",
         "_quick_generate_image",
         "_ensure_v2_service",
-        "_v2_service_for",
         "generate_image",
         "modify_image",
         "change_style",
@@ -501,6 +509,7 @@ def _command_class():
         "time": time,
         "logger": logger,
         "ApiRequestConfig": ApiRequestConfig,
+        "CoreError": CoreError,
         "QuotaExceededError": QuotaExceededError,
         "QueueFullError": QueueFullError,
         "ServiceClosedError": ServiceClosedError,
@@ -510,8 +519,8 @@ def _command_class():
         "requester_from_event": lambda event: {},
         "_build_no_ref_msg": lambda mode, suggestion: f"{mode}: {suggestion}",
         "JobState": JobState,
-        "record_generation_success": staticmethod(record_generation_success),
         "v2_failure_message": v2_failure_message,
+        "v2_failure_text": v2_failure_text,
         "api_failure_message": api_failure_message,
         "v2_command_request": v2_command_request,
         "v2_split_artifacts": v2_split_artifacts,
@@ -532,8 +541,8 @@ def _command_class():
     return namespace[plugin.name]
 
 
-@pytest.fixture
-def command_plugin():
+@pytest_asyncio.fixture
+async def command_plugin(tmp_path):
     plugin = _command_class()()
     plugin.cfg = _config()
     plugin.cfg.preserve_reference_image_size = False
@@ -551,23 +560,47 @@ def command_plugin():
         should_use_avatar_for_prompt=AsyncMock(return_value=False),
     )
     plugin.image_handler = SimpleNamespace(
-        fetch_images_from_event=AsyncMock(return_value=(["ref.png"], [])),
+        fetch_images_from_event=AsyncMock(return_value=([_PNG_DATA_URI], [])),
         filter_valid_reference_images=lambda values, **kwargs: list(values),
     )
-    plugin.image_generator = SimpleNamespace(
-        generate_image_core=AsyncMock(return_value=(False, "provider failed")),
-        get_request_stats=lambda: {},
+    plugin.image_generator = ImageGenerator(
+        context=None,
+        api_client=plugin.api_client,
+        filter_valid_fn=lambda images, source: images or [],
     )
     plugin.generation_tracker = SimpleNamespace(
-        begin=AsyncMock(return_value={"job_id": "job"}), fail=AsyncMock()
+        begin=AsyncMock(return_value={"job_id": "job"}),
+        complete=AsyncMock(),
+        update=AsyncMock(),
+        fail=AsyncMock(),
     )
+    plugin.web_studio_service = SimpleNamespace(
+        archive_images=AsyncMock(return_value=[])
+    )
+    service = build_generation_stack(
+        lambda: plugin.api_client,
+        [{"provider": "legacy", "model": "auto"}],
+        tmp_path / "v2",
+        (REFERENCE_IMAGE_CACHE_DIR,),
+        quota=RateLimiterQuota(lambda: plugin.rate_limiter),
+        observers=[
+            TrackerProjection(
+                plugin.generation_tracker, plugin.web_studio_service.archive_images
+            )
+        ],
+    )
+    plugin._v2_service = service
+    plugin._ensure_v2_service = lambda: plugin._v2_service
 
     async def duration(*args, **kwargs):
         if False:
             yield None
 
     plugin.message_sender = SimpleNamespace(send_api_duration=duration)
-    return plugin
+    try:
+        yield plugin
+    finally:
+        await service.close()
 
 
 _COMMANDS = [
@@ -592,14 +625,11 @@ async def test_command_entries_consume_exactly_once(
     event = _Event()
     event.message_str = ""
     results = [result async for result in getattr(plugin, name)(event, *args)]
+    # 额度恰好扣一次，且由 v2 submit 准入统一扣减。
     assert plugin.rate_limiter.calls == [(event.unified_msg_origin, 1)]
-    started = (
-        plugin.api_client.generate_image.await_count
-        + plugin.image_generator.generate_image_core.await_count
-    )
-    assert started == (1 if allowed else 0)
+    assert plugin.api_client.generate_image.await_count == (1 if allowed else 0)
     assert any(
-        ("provider failed" if allowed else "chat exhausted") in result
+        ("所有候选 provider 均失败" if allowed else "global exhausted") in result
         for result in results
     )
 
@@ -617,7 +647,7 @@ async def test_command_api_unavailable_does_not_consume(
     results = [result async for result in getattr(plugin, name)(event, *args)]
     assert any("API 客户端未初始化" in result for result in results)
     assert plugin.rate_limiter.calls == []
-    plugin.image_generator.generate_image_core.assert_not_called()
+    plugin.api_client is None
 
 
 @pytest.mark.asyncio
@@ -645,7 +675,6 @@ async def test_command_invalid_input_does_not_consume(
     assert results
     assert plugin.rate_limiter.calls == []
     plugin.api_client.generate_image.assert_not_called()
-    plugin.image_generator.generate_image_core.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -714,7 +743,6 @@ async def test_studio_llm_and_command_share_real_global_limiter(
     studio.rate_limiter = command_plugin.rate_limiter = limiter
     plugin = _tool_plugin(tmp_path / "llm")
     plugin.rate_limiter = limiter
-    plugin._check_and_consume_limit = limiter.check_and_consume
     service, tool_client = await _install_tool_v2(plugin, limiter)
     tool_client.ok = False
     try:
@@ -750,13 +778,6 @@ async def test_studio_llm_and_command_share_real_global_limiter(
 
 
 @pytest.mark.asyncio
-async def test_compatibility_wrapper_forwards_batch_cost(command_plugin):
-    event = _Event()
-    assert await command_plugin._check_and_consume_limit(event, cost=4) == (True, None)
-    assert command_plugin.rate_limiter.calls == [(event.unified_msg_origin, 4)]
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("name,args,split", _COMMANDS)
 async def test_denied_groups_remain_silent_before_preparation(
     command_plugin, name, args, split
@@ -771,8 +792,8 @@ async def test_denied_groups_remain_silent_before_preparation(
     command_plugin.image_handler.fetch_images_from_event.assert_not_awaited()
 
 
-def _quick_harness(plugin, result, *, archive_error=None, archived=None):
-    """让快捷生成走完整跟踪块：返回 (sent, updates, generate_config)。"""
+def _quick_harness(tmp_path, plugin, result, *, archive_error=None, archived=None):
+    """装配真实 v2 栈与生成历史：返回 (sent, tracker, service)。"""
 
     async def generate_image(config, **kwargs):
         config.successful_provider = "openai_images"
@@ -781,8 +802,25 @@ def _quick_harness(plugin, result, *, archive_error=None, archived=None):
         config.retry_count = 0
         return result
 
+    async def archive_images(urls, paths, **kwargs):
+        if archive_error is not None:
+            raise archive_error
+        return list(archived or [])
+
+    tracker = GenerationTracker(tmp_path / "tracker", 30)
     plugin.api_client = SimpleNamespace(generate_image=generate_image)
+    plugin.image_generator.api_client = plugin.api_client
     plugin.image_handler.fetch_images_from_event = AsyncMock(return_value=([], []))
+    service = build_generation_stack(
+        lambda: plugin.api_client,
+        [{"provider": "legacy", "model": "auto"}],
+        tmp_path / "v2",
+        (REFERENCE_IMAGE_CACHE_DIR,),
+        quota=RateLimiterQuota(lambda: plugin.rate_limiter),
+        observers=[TrackerProjection(tracker, archive_images)],
+    )
+    plugin._v2_service = service
+    plugin.generation_tracker = tracker
 
     sent = []
 
@@ -796,25 +834,7 @@ def _quick_harness(plugin, result, *, archive_error=None, archived=None):
     plugin.message_sender = SimpleNamespace(
         send_results_with_stream_retry=send_results, send_api_duration=duration
     )
-
-    async def archive_images(urls, paths, **kwargs):
-        if archive_error is not None:
-            raise archive_error
-        return list(archived or [])
-
-    plugin.web_studio_service = SimpleNamespace(archive_images=archive_images)
-    updates = []
-
-    async def update(job_id, **changes):
-        updates.append(changes)
-
-    plugin.generation_tracker = SimpleNamespace(
-        begin=AsyncMock(return_value={"job_id": "job-q"}),
-        complete=AsyncMock(),
-        update=update,
-        fail=AsyncMock(),
-    )
-    return sent, updates
+    return sent, tracker, service
 
 
 async def _run_quick(plugin):
@@ -829,76 +849,82 @@ async def _run_quick(plugin):
 
 
 @pytest.mark.asyncio
-async def test_quick_mode_archive_timeout_records_partial_success(command_plugin):
+async def test_quick_mode_archive_timeout_records_partial_success(
+    command_plugin, tmp_path
+):
     """归档下载超时（空消息 TimeoutError）不能把已发送结果记为失败。"""
     plugin = command_plugin
-    sent, updates = _quick_harness(
+    sent, tracker, service = _quick_harness(
+        tmp_path,
         plugin,
         (["https://cdn.example/img.png"], [], None, None),
         archive_error=TimeoutError(),
     )
+    try:
+        outputs = await _run_quick(plugin)
 
-    outputs = await _run_quick(plugin)
-
-    assert "🎨 使用手办化模式生成图像..." in outputs
-    assert sent and sent[0]["image_urls"] == ["https://cdn.example/img.png"]
-    tracker = plugin.generation_tracker
-    tracker.fail.assert_not_awaited()
-    kwargs = tracker.complete.await_args.kwargs
-    assert kwargs["status"] == "partial_success"
-    assert kwargs["image_files"] == []
-    assert kwargs["source_urls"] == ["https://cdn.example/img.png"]
-    assert kwargs["stats"]["provider"] == "openai_images"
-    assert kwargs["stats"]["model"] == "gpt-image-2"
-    assert len(updates) == 1
-    assert "画廊归档不完整（0/1）" in updates[0]["error"]
-    assert "TimeoutError" in updates[0]["error"]
+        assert "🎨 使用手办化模式生成图像..." in outputs
+        assert sent and sent[0]["image_urls"] == ["https://cdn.example/img.png"]
+        (record,) = tracker.records_snapshot()
+        assert record["status"] == "partial_success"
+        assert record["images"] == []
+        assert record["source_urls"] == ["https://cdn.example/img.png"]
+        assert record["stats"]["provider"] == "openai_images"
+        assert record["stats"]["model"] == "gpt-image-2"
+        assert "画廊归档不完整（0/1）" in record["error"]
+        assert "TimeoutError" in record["error"]
+    finally:
+        await service.close()
 
 
 @pytest.mark.asyncio
-async def test_quick_mode_full_archive_records_succeeded(command_plugin):
+async def test_quick_mode_full_archive_records_succeeded(command_plugin, tmp_path):
     plugin = command_plugin
-    sent, updates = _quick_harness(
+    sent, tracker, service = _quick_harness(
+        tmp_path,
         plugin,
         (["https://cdn.example/img.png"], [], None, None),
         archived=["gallery-a.png"],
     )
+    try:
+        await _run_quick(plugin)
 
-    await _run_quick(plugin)
-
-    assert sent
-    tracker = plugin.generation_tracker
-    tracker.fail.assert_not_awaited()
-    kwargs = tracker.complete.await_args.kwargs
-    assert kwargs["status"] == "succeeded"
-    assert kwargs["image_files"] == ["gallery-a.png"]
-    assert kwargs["source_urls"] == ["https://cdn.example/img.png"]
-    assert updates == []
-
-
-@pytest.mark.asyncio
-async def test_quick_mode_text_only_result_is_partial_success(command_plugin):
-    plugin = command_plugin
-    _quick_harness(plugin, ([], [], "模型仅返回文本", None))
-
-    await _run_quick(plugin)
-
-    tracker = plugin.generation_tracker
-    tracker.fail.assert_not_awaited()
-    kwargs = tracker.complete.await_args.kwargs
-    assert kwargs["status"] == "partial_success"
-    assert kwargs["image_files"] == []
-    assert kwargs["text_content"] == "模型仅返回文本"
+        assert sent
+        (record,) = tracker.records_snapshot()
+        assert record["status"] == "succeeded"
+        assert record["images"] == ["gallery-a.png"]
+        assert record["source_urls"] == ["https://cdn.example/img.png"]
+        assert not record["error"]
+    finally:
+        await service.close()
 
 
 @pytest.mark.asyncio
-async def test_quick_mode_empty_result_fails_with_clear_error(command_plugin):
+async def test_quick_mode_text_only_result_is_partial_success(command_plugin, tmp_path):
     plugin = command_plugin
-    _quick_harness(plugin, ([], [], None, None))
+    _sent, tracker, service = _quick_harness(
+        tmp_path, plugin, ([], [], "模型仅返回文本", None)
+    )
+    try:
+        await _run_quick(plugin)
 
-    await _run_quick(plugin)
+        (record,) = tracker.records_snapshot()
+        assert record["status"] == "partial_success"
+        assert record["images"] == []
+        assert record["text_content"] == "模型仅返回文本"
+    finally:
+        await service.close()
 
-    tracker = plugin.generation_tracker
-    tracker.complete.assert_not_awaited()
-    kwargs = tracker.fail.await_args.kwargs
-    assert kwargs["error"] == "供应商未返回图片或文本内容"
+
+@pytest.mark.asyncio
+async def test_quick_mode_empty_result_fails_with_clear_error(command_plugin, tmp_path):
+    plugin = command_plugin
+    _sent, tracker, service = _quick_harness(tmp_path, plugin, ([], [], None, None))
+    try:
+        await _run_quick(plugin)
+
+        (record,) = tracker.records_snapshot()
+        assert record["status"] == "failed"
+        assert record["error"] == "供应商未返回图片或文本内容"
+    finally:
+        await service.close()

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-# 生成成功但没有任何图片 URL/路径时的提示（旧路径 _generate_image_core_impl 原文）。
+# 生成成功但没有任何图片 URL/路径时的提示文案。
 IMAGE_FILE_MISSING_MESSAGE = (
     "❌ 图像文件未找到，无法返回结果。\n"
     "🧐 可能原因：生成后保存文件失败，或远程传输路径无效。\n"

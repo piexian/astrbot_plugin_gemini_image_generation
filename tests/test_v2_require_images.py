@@ -1,4 +1,4 @@
-"""生成核心路径的“无图结果”：v2 与旧路径一致按失败处理；命令快捷路径不受影响。"""
+"""生成核心路径的“无图结果”按失败处理；命令快捷路径不受影响。"""
 
 from __future__ import annotations
 
@@ -32,12 +32,11 @@ class TextOnlyClient:
         return [], [], self.text, None
 
 
-def make_generator(client, tracker=None):
+def make_generator(client):
     return ImageGenerator(
         context=None,
         api_client=client,
         filter_valid_fn=lambda images, source: images or [],
-        tracker=tracker,
     )
 
 
@@ -57,20 +56,15 @@ async def archive_nothing(urls, paths, **kwargs):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("text", ["只有文本", None])
-async def test_core_path_text_only_result_fails_like_legacy(tmp_path, text):
-    legacy_tracker = GenerationTracker(tmp_path / "legacy", 30)
-    v2_tracker = GenerationTracker(tmp_path / "v2", 30)
+async def test_core_path_text_only_result_fails(tmp_path, text):
+    tracker = GenerationTracker(tmp_path / "v2", 30)
     service = make_stack(
         tmp_path,
         TextOnlyClient(text),
-        observers=[TrackerProjection(v2_tracker, archive_nothing)],
+        observers=[TrackerProjection(tracker, archive_nothing)],
     )
     try:
-        legacy = make_generator(TextOnlyClient(text), legacy_tracker)
-        legacy_result = await legacy.generate_image_core(
-            event=EVENT, prompt="draw", reference_images=[], avatar_reference=[]
-        )
-        v2_result = await make_generator(TextOnlyClient(text)).generate_image_core(
+        result = await make_generator(TextOnlyClient(text)).generate_image_core(
             event=EVENT,
             prompt="draw",
             reference_images=[],
@@ -78,21 +72,16 @@ async def test_core_path_text_only_result_fails_like_legacy(tmp_path, text):
             v2_service=service,
         )
 
-        # 返回值：旧路径原文，没有图片就是失败，哪怕供应商给了文本。
-        assert legacy_result == (False, IMAGE_FILE_MISSING_MESSAGE)
-        assert v2_result == legacy_result
-        # 历史：两条路径都记为 failed，且没有产出。
-        (legacy_record,) = legacy_tracker.records_snapshot()
-        (v2_record,) = v2_tracker.records_snapshot()
-        assert legacy_record["status"] == v2_record["status"] == "failed"
-        assert legacy_record["requester"]["umo"] == EVENT.unified_msg_origin
-        assert v2_record["requester"]["umo"] == EVENT.unified_msg_origin
-        assert v2_record["error"] == "供应商未返回图片"
-        assert v2_record["generated_images"] == 0 and v2_record["images"] == []
+        # 入口声明 require_images：没有图片就是失败，哪怕供应商给了文本。
+        assert result == (False, IMAGE_FILE_MISSING_MESSAGE)
+        (record,) = tracker.records_snapshot()
+        assert record["status"] == "failed"
+        assert record["requester"]["umo"] == EVENT.unified_msg_origin
+        assert record["error"] == "供应商未返回图片"
+        assert record["generated_images"] == 0 and record["images"] == []
     finally:
         await service.close()
-        await legacy_tracker.close()
-        await v2_tracker.close()
+        await tracker.close()
 
 
 @pytest.mark.asyncio
@@ -123,8 +112,7 @@ async def test_quick_command_path_keeps_text_only_result_as_success(tmp_path):
     client = TextOnlyClient("仅文本")
     service = make_stack(tmp_path, client)
     plugin = _make_plugin()
-    plugin.cfg.scheduler_v2 = True
-    plugin._v2_service_for = lambda umo: service
+    plugin._ensure_v2_service = lambda: service
     plugin.api_client = SimpleNamespace(generate_image=client.generate_image)
     plugin._ensure_api_client = lambda: True
     plugin.image_handler.fetch_images_from_event = AsyncMock(return_value=([], []))

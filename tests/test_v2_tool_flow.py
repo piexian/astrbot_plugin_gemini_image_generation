@@ -163,7 +163,6 @@ def make_plugin(tmp_path, service, client, *, allowed_dirs=(), candidates=()):
             prepare_text_content=lambda text, refs: text or "",
         ),
         background_task_manager=BackgroundTaskManager(tmp_path / "bg"),
-        _check_and_consume_limit=AsyncMock(return_value=(True, None)),
         _fetch_images_from_event=AsyncMock(return_value=([], [])),
         _ensure_v2_service=Mock(return_value=service),
         get_tool_timeout=lambda event: 10,
@@ -252,7 +251,6 @@ async def make_env(tmp_path, monkeypatch, fake_mcp):
     for service, plugin in built:
         await service.close()
         await plugin.background_task_manager.close()
-        plugin._check_and_consume_limit.assert_not_awaited()
 
 
 def new_event():
@@ -624,8 +622,6 @@ def scripted(tmp_path, monkeypatch, fake_mcp):
         )
 
     yield build
-    for plugin in built:
-        plugin._check_and_consume_limit.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -764,8 +760,6 @@ async def test_return_text_formats_each_outcome(tmp_path, make_env, outcome):
     else:
         assert "[图像生成完成 - 未发送给用户]" not in text
         assert text.startswith("❌ ")
-    # 额度由调度器在提交时扣：工具不再自行调用旧限流入口。
-    env.plugin._check_and_consume_limit.assert_not_awaited()
 
 
 # ===== 额度与准入 =====
@@ -985,14 +979,10 @@ async def test_batch_explicit_size_overrides_reference_size_config(make_env):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("host_entry", ["ensure", "legacy_gate"])
-async def test_without_v2_service_rejects_and_generates_nothing(tmp_path, host_entry):
+async def test_without_v2_service_rejects_and_generates_nothing(tmp_path):
     plugin = make_plugin(tmp_path, None, GatedClient())
     plugin.image_generator.submit_v2 = AsyncMock()
     plugin._ensure_v2_service = Mock(return_value=None)
-    if host_entry == "legacy_gate":
-        # 兼容分支：宿主还带按会话过滤的旧入口，同样返回未初始化。
-        plugin._v2_service_for = Mock(return_value=None)
 
     result = await GeminiImageGenerationTool(plugin=plugin).call(
         _context(_Event()), prompt="draw", deliver="return"
@@ -1152,7 +1142,6 @@ async def test_batch_v2_uses_parent_children_and_delivers_without_legacy_task(
     assert [
         config.image_count for config in client.configs if config.prompt == "b"
     ] == [2, 1]
-    env.plugin._check_and_consume_limit.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -6,7 +6,6 @@ import asyncio
 from collections.abc import Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from astrbot.api import logger
@@ -20,18 +19,14 @@ from .core.errors import (
 )
 from .core.requests import GenerationRequest
 from .core.states import JobState
-from .generation_errors import IMAGE_FILE_MISSING_MESSAGE, api_failure_message
-from .generation_scheduler import generation_progress
+from .generation_errors import api_failure_message
 from .generation_tracker import (
     current_tracking_context,
-    record_generation_success,
     requester_from_event,
 )
 from .image_outputs import normalize_image_outputs
 from .provider_capabilities import routing_mode
 from .session_image_dir import bind_session_image_dir, reset_session_image_dir
-from .thought_signature import log_thought_signature_debug
-from .tl_api import APIError, ApiRequestConfig
 from .v2_bridge import (
     build_request as v2_build_request,
 )
@@ -56,6 +51,7 @@ _API_CLIENT_UNAVAILABLE_MESSAGE = (
     "🧐 可能原因：服务启动过快，提供商尚未加载或 API 配置/密钥缺失。\n"
     "✅ 建议：先在配置文件中填写有效的 API 密钥并重启服务。"
 )
+_V2_SERVICE_UNAVAILABLE_MESSAGE = "❌ 生成服务尚未初始化"
 
 
 def _avatar_prompt_note(avatar_count: int) -> str:
@@ -163,128 +159,37 @@ class ImageGenerator:
     def _set_request_stats(self, stats: dict[str, object]) -> None:
         self.last_request_stats = stats
 
-    async def _begin_tracking(
-        self,
-        *,
-        event: Any,
-        prompt: str,
-        config: ApiRequestConfig,
-        is_tool_call: bool,
-        template_id: str | None = None,
-    ) -> str | None:
-        if self.tracker is None:
-            return None
-        context = current_tracking_context()
-        if context and context.managed_externally:
-            return None
-        source = (
-            context.source if context else ("llm_tool" if is_tool_call else "command")
-        )
-        try:
-            record = await self.tracker.begin(
-                source=source,
-                prompt=prompt,
-                params={
-                    "resolution": config.resolution,
-                    "aspect_ratio": config.aspect_ratio,
-                    "provider": config.requested_provider,
-                    "model": config.requested_model,
-                    "image_count": config.image_count,
-                    "quality": config.quality,
-                    "seed": config.seed,
-                    "negative_prompt": config.negative_prompt,
-                    "template_id": template_id,
-                },
-                requester=requester_from_event(event),
-                parent_job_id=context.parent_job_id if context else None,
-                item_name=context.item_name if context else None,
-                requested_images=config.image_count,
-            )
-            job_id = str(record["job_id"])
-            logger.debug(
-                f"[生成追踪] 开始: job_id={job_id}, 来源={source}, "
-                f"目标张数={config.image_count}, "
-                f"供应商={config.requested_provider or '未指定'}, "
-                f"模型={config.requested_model or '未指定'}, prompt={prompt[:30]!r}"
-            )
-            return job_id
-        except Exception as exc:
-            logger.warning(
-                f"[生成追踪] 创建记录失败，不影响本次生成: {redact_text(str(exc))[:240]}"
-            )
-            return None
-
-    async def _complete_tracking(
-        self,
-        job_id: str | None,
-        image_urls: list[str],
-        image_paths: list[str],
-        text_content: str | None,
-    ) -> None:
-        if not job_id or self.tracker is None:
-            return
-        stats = self.get_request_stats()
-        await record_generation_success(
-            self.tracker,
-            job_id,
-            image_urls=image_urls,
-            image_paths=image_paths,
-            text_content=text_content,
-            stats=stats,
-            archive_images_fn=self._archive_images_fn,
-            candidate_id=stats.get("successful_candidate_id"),
-        )
-
-    async def _fail_tracking(self, job_id: str | None, error: Any) -> None:
-        if not job_id or self.tracker is None:
-            return
-        try:
-            await self.tracker.fail(job_id, error=error)
-            logger.debug(
-                f"[生成追踪] 失败: job_id={job_id}, 异常类型={type(error).__name__}"
-            )
-        except Exception as exc:
-            logger.warning(
-                f"[生成追踪] 写入失败状态异常: {redact_text(str(exc))[:240]}"
-            )
-
     async def generate_image_core(
         self,
         event: AstrMessageEvent,
-        *args,
         v2_service: Any = None,
         v2_admission: Mapping[str, Any] | None = None,
         v2_quota: Mapping[str, Any] | Literal[False] | None = None,
         **kwargs,
     ) -> tuple[bool, tuple[list[str], list[str], str | None, str | None] | str]:
-        """聊天会话生成图绑定工作区保存目录（框架发送白名单内）后执行生成。
+        """执行 v2 两阶段生成：``submit_v2`` 提交并绑定会话图片目录，``wait_v2`` 转换结果。
 
-        传入 ``v2_service`` 时走 v2 两阶段（``submit_v2`` + ``wait_v2``）；
-        ``v2_admission`` 与 ``v2_quota`` 只在该路径生效，分别是提交时的准入
-        上下文和请求 ``metadata["quota"]``。
+        ``v2_admission`` 与 ``v2_quota`` 分别是提交时的准入上下文和请求
+        ``metadata["quota"]``；未装配 v2 服务时直接返回失败提示。
         """
-        if v2_service is not None:
-            submission = await self.submit_v2(
-                event=event,
-                v2_service=v2_service,
-                admission=v2_admission,
-                quota=v2_quota,
-                **kwargs,
-            )
-            if submission.handle is None:
-                return False, submission.message or ""
-            return await self.wait_v2(
-                v2_service=v2_service,
-                handle=submission.handle,
-                requested_provider=kwargs.get("requested_provider"),
-                requested_model=kwargs.get("requested_model"),
-                image_count=kwargs.get("image_count", 1),
-            )
-        token = await bind_session_image_dir(event, self.context)
-        try:
-            return await self._generate_image_core_impl(event, *args, **kwargs)
-        finally:
-            reset_session_image_dir(token)
+        if v2_service is None:
+            return False, _V2_SERVICE_UNAVAILABLE_MESSAGE
+        submission = await self.submit_v2(
+            event=event,
+            v2_service=v2_service,
+            admission=v2_admission,
+            quota=v2_quota,
+            **kwargs,
+        )
+        if submission.handle is None:
+            return False, submission.message or ""
+        return await self.wait_v2(
+            v2_service=v2_service,
+            handle=submission.handle,
+            requested_provider=kwargs.get("requested_provider"),
+            requested_model=kwargs.get("requested_model"),
+            image_count=kwargs.get("image_count", 1),
+        )
 
     def _reset_request_stats(self) -> None:
         self._set_request_stats(
@@ -318,221 +223,6 @@ class ImageGenerator:
         if len(valid_avatar_images) > remaining_slots:
             valid_avatar_images = valid_avatar_images[:remaining_slots]
         return valid_msg_images + valid_avatar_images, len(valid_avatar_images)
-
-    async def _generate_image_core_impl(
-        self,
-        event: AstrMessageEvent,
-        prompt: str,
-        reference_images: list[str],
-        avatar_reference: list[str],
-        override_resolution: str | None = None,
-        override_aspect_ratio: str | None = None,
-        is_tool_call: bool = False,
-        requested_provider: str | None = None,
-        requested_model: str | None = None,
-        negative_prompt: str | None = None,
-        watermark: bool | None = None,
-        quality: str | None = None,
-        image_count: int = 1,
-        suppress_resolution: bool = False,
-        template_id: str | None = None,
-    ) -> tuple[bool, tuple[list[str], list[str], str | None, str | None] | str]:
-        """
-        内部核心图像生成方法，不发送消息，只返回结果
-
-        Returns:
-            tuple[bool, tuple[list[str], list[str], str | None, str | None] | str]:
-            (是否成功, (图片URL列表, 图片路径列表, 文本内容, 思维签名) 或错误消息)
-        旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。
-        """
-        self._reset_request_stats()
-        if not self.api_client:
-            return False, _API_CLIENT_UNAVAILABLE_MESSAGE
-
-        all_reference_images, final_avatar_count = self._prepare_reference_inputs(
-            reference_images, avatar_reference
-        )
-        if final_avatar_count > 0:
-            prompt += _avatar_prompt_note(final_avatar_count)
-        request_config = ApiRequestConfig(
-            model="",
-            prompt=prompt,
-            api_type="",
-            api_base=None,
-            resolution=override_resolution,
-            aspect_ratio=override_aspect_ratio,
-            suppress_resolution=suppress_resolution,
-            reference_images=all_reference_images if all_reference_images else None,
-            enable_smart_retry=self.enable_smart_retry,
-            image_input_mode="force_base64",
-            requested_provider=requested_provider,
-            requested_model=requested_model,
-            negative_prompt=negative_prompt,
-            watermark=watermark,
-            quality=quality,
-            image_count=max(int(image_count or 1), 1),
-        )
-        tracking_job_id = await self._begin_tracking(
-            event=event,
-            prompt=prompt,
-            config=request_config,
-            is_tool_call=is_tool_call,
-            template_id=template_id,
-        )
-
-        logger.info("图像生成请求:")
-        logger.info(
-            f"  参考图片: {len(all_reference_images) if all_reference_images else 0} 张"
-        )
-
-        try:
-            logger.info("开始调用API生成图像...")
-            start_time = asyncio.get_running_loop().time()
-
-            per_retry_timeout = self.total_timeout
-            max_total_time = self.total_timeout
-            logger.debug(
-                f"超时配置: is_tool_call={is_tool_call}, per_retry_timeout={per_retry_timeout}s, max_retries={self.max_attempts_per_key}, max_total_time={max_total_time}s"
-            )
-
-            async def progress(status):
-                await self.tracker.update(tracking_job_id, status=status)
-
-            with generation_progress(
-                progress if tracking_job_id else None,
-                preview=(
-                    lambda data, fmt: self.tracker.preview(tracking_job_id, data, fmt)
-                )
-                if tracking_job_id
-                else None,
-            ):
-                (
-                    image_urls,
-                    image_paths,
-                    text_content,
-                    thought_signature,
-                ) = await self.api_client.generate_image(
-                    config=request_config,
-                    max_retries=self.max_attempts_per_key,
-                    per_retry_timeout=per_retry_timeout,
-                    max_total_time=max_total_time,
-                )
-            self._set_request_stats(
-                {
-                    "retry_count": request_config.retry_count,
-                    "token_usage": request_config.token_usage,
-                    "retry_note": request_config.retry_note,
-                    "successful_candidate_id": request_config.successful_candidate_id,
-                    "successful_provider": request_config.successful_provider,
-                    "successful_model": request_config.successful_model,
-                    "successful_model_alias": request_config.successful_model_alias,
-                    "effective_image_count": request_config.effective_image_count,
-                    "routing_mode": request_config.routing_mode,
-                    # LLM 工具据此给结果附上 gen: 引用；记录清洗 stats 时会丢掉这个键。
-                    "job_id": tracking_job_id,
-                }
-            )
-
-            end_time = asyncio.get_running_loop().time()
-            api_duration = end_time - start_time
-            logger.info(f"API调用完成，耗时: {api_duration:.2f}秒")
-            logger.info(
-                f"🖼️ API 返回图片数量: {len(image_paths)}, URL 数量: {len(image_urls)}"
-            )
-
-            log_thought_signature_debug(thought_signature, scene="图像生成完成")
-
-            resolved_paths: list[str] = []
-            for img_path in image_paths:
-                if not img_path:
-                    continue
-                if Path(img_path).exists():
-                    resolved_paths.append(img_path)
-                else:
-                    logger.warning(f"图像文件不存在或不可访问: {img_path}")
-                    resolved_paths.append(img_path)
-
-            image_paths = resolved_paths
-
-            available_paths = [p for p in image_paths if p]
-            available_urls = [u for u in image_urls if u]
-            if available_paths or available_urls:
-                await self._complete_tracking(
-                    tracking_job_id,
-                    image_urls,
-                    image_paths,
-                    text_content,
-                )
-                logger.debug(
-                    f"图像生成完成，准备返回结果，文件路径 {len(available_paths)} 张，URL {len(available_urls)} 张"
-                )
-                return True, (
-                    image_urls,
-                    image_paths,
-                    text_content,
-                    thought_signature,
-                )
-
-            error_msg = IMAGE_FILE_MISSING_MESSAGE
-            logger.error(error_msg)
-            await self._fail_tracking(tracking_job_id, error_msg)
-            return False, error_msg
-
-        except asyncio.CancelledError:
-            if tracking_job_id and self.tracker is not None:
-                try:
-                    await self.tracker.update(
-                        tracking_job_id,
-                        status="interrupted",
-                        error="生成任务已取消",
-                    )
-                    logger.debug(f"[生成追踪] 已中断: job_id={tracking_job_id}")
-                except Exception as tracking_error:
-                    logger.warning(
-                        f"[生成追踪] 生成任务取消状态写入异常: {tracking_error}"
-                    )
-            raise
-        except APIError as e:
-            status_part = (
-                f"（状态码 {e.status_code}）" if e.status_code is not None else ""
-            )
-            error_msg = f"❌ 图像生成失败{status_part}：{e.message}"
-            message_lower = (e.message or "").lower()
-            if e.error_type in ("timeout", "cancelled"):
-                error_msg += (
-                    f"\n🧐 可能原因：图像生成耗时超出插件超时限制（当前 {self.total_timeout} 秒）。"
-                    "\n✅ 建议：在插件配置中增加 total_timeout 与轮询超时，或简化提示词/减少参考图。"
-                )
-            elif e.error_type == "network":
-                error_msg += "\n🧐 可能原因：网络连接异常或上游服务不可达。\n✅ 建议：检查网络连接和 API 地址配置，稍后重试。"
-            elif e.status_code == 429:
-                error_msg += "\n🧐 可能原因：请求过于频繁或额度已用完。\n✅ 建议：稍等片刻再试，或在配置中增加可用额度/开启智能重试。"
-            elif e.status_code == 402:
-                error_msg += "\n🧐 可能原因：账户余额不足或套餐到期。\n✅ 建议：充值或更换一组可用的 API 密钥后再试。"
-            elif e.status_code == 403:
-                error_msg += "\n🧐 可能原因：API 密钥无效、权限不足或访问受限。\n✅ 建议：核对密钥权限、检查 IP 白名单，必要时重新生成密钥。"
-            elif e.status_code and 500 <= e.status_code < 600:
-                error_msg += "\n🧐 可能原因：上游服务暂时不可用。\n✅ 建议：稍后重试，若频繁出现请联系服务提供方确认故障。"
-                # t2i 公共服务繁忙提示
-                if "t2i" in message_lower:
-                    error_msg += (
-                        "\n⚠️ t2i 公共服务器当前可能繁忙，建议稍后再试；"
-                        "如需稳定产能可参考 https://docs.astrbot.app/others/self-host-t2i.html 自建。"
-                    )
-            elif e.error_type == "workspace_unavailable":
-                error_msg += "\n🧐 可能原因：无法解析当前会话的工作区目录。\n✅ 建议：查看日志确认框架工作区服务状态后重试。"
-            else:
-                error_msg += "\n🧐 可能原因：请求参数异常或服务返回未知错误。\n✅ 建议：简化提示词/减少参考图后重试，并查看日志获取更多细节。"
-            logger.error(error_msg)
-            await self._fail_tracking(tracking_job_id, error_msg)
-            return False, error_msg
-
-        except Exception as e:
-            logger.error(
-                f"生成图像时发生未预期的错误: {redact_text(e)[:240]}", exc_info=True
-            )
-            await self._fail_tracking(tracking_job_id, e)
-            return False, f"❌ 生成图像时发生错误: {str(e)}"
 
     async def prepare_v2_request(
         self,
