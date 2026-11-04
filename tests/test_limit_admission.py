@@ -5,7 +5,6 @@ import asyncio
 import json
 import os
 import shlex
-import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,6 +30,7 @@ from tl.generation_tracker import (
     ReferenceImageUnavailableError,
     record_generation_success,
 )
+from tl.image_generator import ImageGenerator
 from tl.llm_tools import GeminiImageBatchTool, GeminiImageGenerationTool
 from tl.prompt_templates import builtin_template, render_template
 from tl.provider_capabilities import parse_model_selector, select_candidates
@@ -250,24 +250,71 @@ async def test_studio_forbidden_legacy_v2_is_rejected(studio):
     assert studio._upload_ref_counts == {}
 
 
-def _tool_plugin(tmp_path):
+class _ToolClient:
+    """LLM 工具用的假 legacy 客户端：默认成功返回一张图，可改为失败/停闸。"""
+
+    def __init__(self, *, ok=True, gate=None):
+        self.ok = ok
+        self.gate = gate
+        self.configs = []
+        self.started = asyncio.Event()
+
+    async def generate_image(self, config, **kwargs):
+        self.configs.append(config)
+        self.started.set()
+        if self.gate is not None:
+            await self.gate.wait()
+        if not self.ok:
+            raise RuntimeError("provider failed")
+        # 每轮返回不同 URL：补足张数按产出去重，重复 URL 会被合并成一张。
+        serial = len(self.configs)
+        return [f"https://img.test/out-{serial}.png"], [], "ok", None
+
+
+async def _install_tool_v2(plugin, limiter):
+    """按宿主装配把共享 limiter 接到工具用的 v2 栈，返回 (service, client)。"""
+
+    client = _ToolClient()
+    stack = build_generation_stack(
+        client,
+        [{"provider": "legacy", "model": "auto"}],
+        plugin.v2_dir,
+        (REFERENCE_IMAGE_CACHE_DIR,),
+        quota=RateLimiterQuota(lambda: limiter),
+    )
+    plugin._v2_service = stack
+    return stack, client
+
+
+def _tool_plugin(tmp_path, *, allowed=True):
     config = _config()
     config.batch_max_images_per_task = 10
     config.preserve_reference_image_size = False
     config.llm_tool_timeout_reserve_percent = 100
+    config.batch_concurrency = 2
     manager = BackgroundTaskManager(tmp_path)
-    limiter = _Limiter()
+    limiter = _Limiter(allowed=allowed)
     plugin = SimpleNamespace(
         api_client=object(),
         cfg=config,
         rate_limiter=limiter,
         background_task_manager=manager,
         _check_and_consume_limit=limiter.check_and_consume,
-        _v2_service_for=lambda umo: None,
         _fetch_images_from_event=AsyncMock(return_value=([], [])),
         get_tool_timeout=lambda event: 1,
-        image_generator=SimpleNamespace(get_request_stats=lambda: {}),
+        v2_dir=tmp_path / "v2",
+        message_sender=SimpleNamespace(
+            merge_available_images=lambda urls, paths: [*(urls or []), *(paths or [])],
+            prepare_text_content=lambda text, refs: text or "",
+        ),
+        generation_tracker=SimpleNamespace(enabled=False),
     )
+    plugin.image_generator = ImageGenerator(
+        context=None,
+        api_client=plugin.api_client,
+        filter_valid_fn=lambda images, source: images or [],
+    )
+    plugin._ensure_v2_service = lambda: plugin._v2_service
     return plugin
 
 
@@ -302,34 +349,36 @@ async def test_llm_invalid_requests_do_not_consume(tmp_path, failure):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("allowed", [False, True])
-async def test_llm_batch_charges_prepared_task_count_once(
-    tmp_path, monkeypatch, allowed
-):
-    plugin = _tool_plugin(tmp_path)
-    plugin.rate_limiter.allowed = allowed
-    received = []
-
-    async def run_batch(plugin, event, task_id, items, **kwargs):
-        received.extend(items)
-
-    monkeypatch.setattr(llm_tools, "run_batch_job", run_batch)
+async def test_llm_batch_charges_prepared_task_count_once(tmp_path, allowed):
+    plugin = _tool_plugin(tmp_path, allowed=allowed)
+    service, client = await _install_tool_v2(plugin, plugin.rate_limiter)
     items = [
-        {"name": name, "prompt": name, "image_count": count, "provider": "google"}
+        {"name": name, "prompt": name, "image_count": count, "provider": "legacy"}
         for name, count in (("a", 3), ("b", 2))
     ]
-    result = await GeminiImageBatchTool(plugin=plugin).call(
-        _context(_Event()), tasks=items
-    )
-    if allowed:
-        task_id = json.loads(result)["task_id"]
-        await plugin.background_task_manager._runtime_tasks[task_id]
-        assert len(received) == 2
-    else:
-        assert result == "chat exhausted"
-        assert received == []
-        assert not plugin.background_task_manager._runtime_tasks
-    assert plugin.rate_limiter.calls == [(_Event.unified_msg_origin, 2)]
-    await plugin.background_task_manager.close()
+    try:
+        result = await GeminiImageBatchTool(plugin=plugin).call(
+            _context(_Event()), tasks=items
+        )
+        if allowed:
+            json.loads(result)
+            await service.wait(_parent_job_id(await _jobs(service)), timeout=30)
+            assert len(client.configs) == 5
+        else:
+            assert result == "global exhausted"
+            assert client.configs == []
+        assert plugin.rate_limiter.calls == [(_Event.unified_msg_origin, 2)]
+    finally:
+        await service.close()
+        await plugin.background_task_manager.close()
+
+
+async def _jobs(service):
+    return await service._scheduler.store.list_jobs()
+
+
+def _parent_job_id(jobs):
+    return next(job.job_id for job in jobs if job.request.metadata.get("batch_parent"))
 
 
 @pytest.mark.asyncio
@@ -338,66 +387,60 @@ async def test_llm_single_charges_once_across_execution_modes(
     tmp_path, monkeypatch, mode
 ):
     plugin = _tool_plugin(tmp_path)
-    calls = []
-    release = asyncio.Event()
-
-    # 保留旧单参数 fake，确保单任务不要求调用方升级签名。
-    async def allow(event):
-        calls.append(event.unified_msg_origin)
-        return True, None
-
-    async def generate(*args, **kwargs):
-        if mode == "fallback":
-            await release.wait()
-        return False, "provider failed"
-
-    async def dispatch(**kwargs):
-        return False
-
-    plugin._check_and_consume_limit = allow
-    monkeypatch.setattr(llm_tools, "invoke_generation_core", generate)
-    monkeypatch.setattr(llm_tools, "_dispatch_generation_result", dispatch)
+    service, client = await _install_tool_v2(plugin, plugin.rate_limiter)
+    gate = asyncio.Event()
+    client.gate = gate if mode == "fallback" else None
+    foreground = {"background": 0, "fallback": 0.01}.get(mode, 30)
     monkeypatch.setattr(
-        llm_tools,
-        "_resolve_foreground_wait_seconds",
-        lambda *_: 0 if mode == "background" else 0.01,
+        llm_tools, "_resolve_foreground_wait_seconds", lambda *_: foreground
     )
-    result = await GeminiImageGenerationTool(plugin=plugin).call(
-        _context(_Event()), prompt="draw", for_forum=mode == "forum"
-    )
-    if mode in {"background", "fallback"}:
-        release.set()
-        task_id = json.loads(result)["task_id"]
-        await plugin.background_task_manager._runtime_tasks[task_id]
-    else:
-        assert "provider failed" in result
-    assert calls == [_Event.unified_msg_origin]
-    await plugin.background_task_manager.close()
+
+    async def call_tool_result(**kwargs):
+        # 本模块没有真实 mcp 类型：前台结果改用可读文本断言。
+        return "\n".join([*kwargs["image_urls"], *kwargs["image_paths"]])
+
+    monkeypatch.setattr(llm_tools, "_build_call_tool_result", call_tool_result)
+    try:
+        result = await GeminiImageGenerationTool(plugin=plugin).call(
+            _context(_Event()), prompt="draw", for_forum=mode == "forum"
+        )
+        if mode in {"background", "fallback"}:
+            assert json.loads(result)["status"] == "running"
+            gate.set()
+            await _eventually(lambda: _terminal_record(plugin))
+            # 生成成功但本模块没有官方回灌 API：投递不回执，记录按部分成功收尾。
+            (record,) = plugin.background_task_manager._records.values()
+            assert record["status"] == "partial_success"
+            assert record["items"][0]["success"] is True
+            assert record["items"][0]["delivery_success"] is False
+        else:
+            # 前台路径拿到结果后直接返回图片位置；不建后台记录。
+            assert "out-1.png" in result
+            assert plugin.background_task_manager._records == {}
+        assert plugin.rate_limiter.calls == [(_Event.unified_msg_origin, 1)]
+        assert len(client.configs) == 1
+    finally:
+        await service.close()
+        await plugin.background_task_manager.close()
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["empty", "api", None])
-async def test_legacy_tool_checks_input_and_api_before_charging(
-    tmp_path, monkeypatch, failure
-):
-    monkeypatch.setitem(
-        sys.modules, "astrbot.api.message_components", SimpleNamespace(Image=object)
-    )
-    plugin = _tool_plugin(tmp_path)
-    plugin._generate_image_core_internal = AsyncMock(
-        return_value=(False, "provider failed")
-    )
-    if failure == "api":
-        plugin.api_client = None
-    result = await llm_tools.execute_image_generation_tool(
-        plugin, _Event(), "" if failure == "empty" else "draw"
-    )
-    assert result
-    assert plugin.rate_limiter.calls == (
-        [] if failure else [(_Event.unified_msg_origin, 1)]
-    )
-    assert plugin._generate_image_core_internal.await_count == (0 if failure else 1)
-    await plugin.background_task_manager.close()
+async def _terminal_record(plugin):
+    records = list(plugin.background_task_manager._records.values())
+    return bool(records) and records[0]["status"] in {
+        "succeeded",
+        "partial_success",
+        "failed",
+        "interrupted",
+    }
+
+
+async def _eventually(check, timeout=5.0):
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        if await check():
+            return
+        assert asyncio.get_running_loop().time() < deadline, "条件在限定时间内未成立"
+        await asyncio.sleep(0.01)
 
 
 def _command_class():
@@ -670,12 +713,10 @@ async def test_studio_llm_and_command_share_real_global_limiter(
     limiter = RateLimiter(config)
     studio.rate_limiter = command_plugin.rate_limiter = limiter
     plugin = _tool_plugin(tmp_path / "llm")
+    plugin.rate_limiter = limiter
     plugin._check_and_consume_limit = limiter.check_and_consume
-    monkeypatch.setattr(
-        llm_tools,
-        "invoke_generation_core",
-        AsyncMock(return_value=(False, "provider failed")),
-    )
+    service, tool_client = await _install_tool_v2(plugin, limiter)
+    tool_client.ok = False
     try:
         batch = await studio.generate(
             {"batch": [{"name": name, "prompt": name} for name in ("a", "b")]}
@@ -687,7 +728,9 @@ async def test_studio_llm_and_command_share_real_global_limiter(
         result = await GeminiImageGenerationTool(plugin=plugin).call(
             _context(llm_event), prompt="draw", deliver="return"
         )
-        assert "provider failed" in result
+        # LLM 工具按会话额度扣 1，与 Studio 的全局额度互不干扰。
+        assert "❌" in result
+        assert tool_client.configs
         with pytest.raises(StudioServiceError) as caught:
             await studio.generate({"prompt": "draw"})
         assert caught.value.status_code == 429
@@ -701,6 +744,7 @@ async def test_studio_llm_and_command_share_real_global_limiter(
         assert any("全局" in result for result in results)
         command_plugin.api_client.generate_image.assert_not_called()
     finally:
+        await service.close()
         await plugin.background_task_manager.close()
         await limiter.close()
 

@@ -406,11 +406,6 @@ class GeminiImageGenerationPlugin(Star):
         scheduler = getattr(self, "generation_scheduler", None)
         if scheduler is not None and scheduler.busy:
             return True
-        if any(
-            not task.done()
-            for task in self.background_task_manager._runtime_tasks.values()
-        ):
-            return True
         return any(
             record.get("status") == "running"
             for record in self.generation_tracker.active_and_recent()

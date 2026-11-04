@@ -11,7 +11,6 @@ from .image_splitter import resolve_split_source_to_path as resolve_split_source
 from .image_splitter import split_image as split_image
 from .key_manager import KeyManager as KeyManager
 from .llm_tools import GeminiImageGenerationTool as GeminiImageGenerationTool
-from .llm_tools import execute_image_generation_tool as execute_image_generation_tool
 from .message_sender import MessageSender as MessageSender
 from .plugin_config import QUICK_MODES as QUICK_MODES
 from .plugin_config import ConfigLoader as ConfigLoader
