@@ -148,6 +148,4 @@ DNS rebinding。
 
 ## 接入状态
 
-领域模型、协议、JobStore、JobScheduler、ProviderRouter、ReferenceService 与投递适配器均已落地。命令、LLM 工具单图/批量、WebUI 创作台和公开 SDK 已接入灰度：由默认关闭的 `scheduler_v2` 与 `scheduler_v2_sessions` 控制；WebUI 及无 `umo` 的 SDK 调用仅在名单为空时接入。WebUI 路由守卫、masked secret、出站策略和历史源链接脱敏已统一。
-
-旧路径仍保留为默认执行与回滚路径。后续工作是全量灰度验证、默认值切换评估，以及满足迁移文档条件后删除重复逻辑；每次变更继续运行完整 pytest、ruff 和 compileall。
+领域模型、协议、JobStore、JobScheduler、ProviderRouter、ReferenceService 与投递适配器均已落地。命令、LLM 工具单图/批量、WebUI 创作台和公开 SDK 已全量收敛至 v2 单轨运行，旧调度执行路径及灰度配置开关已移除。WebUI 路由守卫、masked secret、出站策略和历史源链接脱敏已统一。每次变更继续运行完整 pytest、ruff 和 compileall。
