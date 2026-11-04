@@ -68,7 +68,7 @@ class _Limiter:
     def allows_group(self, event):
         return True
 
-    async def acquire(self, umo, *, cost=1):
+    async def acquire(self, umo, *, cost=1, event=None, plugin_id=None):
         self.calls.append((umo, cost))
         return SimpleNamespace(
             allowed=self.allowed,
@@ -96,23 +96,45 @@ async def studio(tmp_path):
         _SequenceClient([]), tracker, _config(), tmp_path, rate_limiter=_Limiter()
     )
     service.upload_dir.mkdir()
+    env = await _install_v2(service, tracker)
     try:
         yield service
     finally:
+        await env.v2.close()
         await service.close()
         await tracker.close()
 
 
+async def _install_v2(service, tracker):
+    """按宿主装配把共享 _Limiter 接入 v2 准入；空客户端让供应商执行失败。"""
+
+    stack = build_generation_stack(
+        lambda: service.api_client,
+        [{"provider": "legacy", "model": "auto"}],
+        service.data_dir / "v2",
+        (),
+        quota=RateLimiterQuota(lambda: service.rate_limiter),
+        limiter=CompositeAdmissionLimiter(
+            StudioAdmissionLimiter(
+                lambda: int(getattr(service.config, "webui_max_concurrent_jobs", 2))
+            ),
+        ),
+        observers=[TrackerProjection(tracker, service.archive_images)],
+    )
+    service._v2_service_provider = lambda: stack
+    return SimpleNamespace(v2=stack, tracker=tracker)
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["input", "api", "concurrency", "upload", "closed"])
+@pytest.mark.parametrize("failure", ["input", "api", "missing", "upload", "closed"])
 async def test_studio_preflight_does_not_consume(studio, monkeypatch, failure):
     payload = {"prompt": "draw"}
     if failure == "input":
         payload["prompt"] = " "
     elif failure == "api":
         studio.api_client = None
-    elif failure == "concurrency":
-        studio._admitted_jobs = studio.config.webui_max_concurrent_jobs
+    elif failure == "missing":
+        studio._v2_service_provider = lambda: None
     elif failure == "upload":
         path = _png(studio.upload_dir / "ref.png")
         payload["upload_names"] = [path.name]
@@ -128,9 +150,6 @@ async def test_studio_preflight_does_not_consume(studio, monkeypatch, failure):
     assert studio.rate_limiter.calls == []
     assert studio.rate_limiter.refunds == []
     assert studio._upload_ref_counts == {}
-    assert not studio._runtime_tasks
-    if failure != "concurrency":
-        assert studio._admitted_jobs == 0
 
 
 @pytest.mark.asyncio
@@ -148,7 +167,6 @@ async def test_studio_rejection_releases_upload_and_admission(studio, monkeypatc
     assert studio.rate_limiter.refunds == []
     begin.assert_not_called()
     assert studio._upload_ref_counts == {}
-    assert studio._admitted_jobs == 0
 
 
 @pytest.mark.asyncio
@@ -167,11 +185,10 @@ async def test_studio_cost_counts_tasks_not_images_and_provider_failure_is_charg
     )
     # 空序列令供应商执行失败，而不是启动失败。
     result = await studio.generate(payload)
-    await studio._runtime_tasks[result["job_id"]]
+    await studio._v2_service_provider().wait(result["job_id"])
     assert studio.tracker.get(result["job_id"])["status"] == "failed"
     assert studio.rate_limiter.calls == [(None, 2 if batch else 1)]
     assert studio.rate_limiter.refunds == []
-    assert studio._admitted_jobs == 0
     await studio.close()
     assert not studio.rate_limiter.closed  # 共享 limiter 由插件统一关闭。
 
@@ -181,7 +198,7 @@ async def test_studio_fill_requests_do_not_consume_again(studio):
     paths = [_png(studio.data_dir / f"out-{i}.png", i) for i in range(3)]
     studio.api_client = _SequenceClient([([], [str(p)], None, None) for p in paths])
     result = await studio.generate({"prompt": "draw", "image_count": 3})
-    await studio._runtime_tasks[result["job_id"]]
+    await studio._v2_service_provider().wait(result["job_id"])
     assert studio.api_client.counts == [3, 2, 1]
     assert studio.rate_limiter.calls == [(None, 1)]
     assert studio.rate_limiter.refunds == []
@@ -189,24 +206,20 @@ async def test_studio_fill_requests_do_not_consume_again(studio):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("batch", [False, True])
-@pytest.mark.parametrize(
-    "error_type", [RuntimeError, asyncio.CancelledError, ReferenceImageUnavailableError]
-)
-async def test_studio_start_failure_refunds_and_releases(
+@pytest.mark.parametrize("error_type", [RuntimeError, ReferenceImageUnavailableError])
+async def test_studio_quota_rejection_never_creates_history(
     studio, monkeypatch, batch, error_type
 ):
+    """准入拒绝发生在落库前：额度回滚、不建历史记录、不留上传租约。"""
+
     path = _png(studio.upload_dir / "ref.png")
-    begin = studio.tracker.begin
-    calls = 0
+    quota = studio.rate_limiter
 
-    async def fail_begin(**kwargs):
-        nonlocal calls
-        calls += 1
-        if calls == (3 if batch else 1):
-            raise error_type("start failed")
-        return await begin(**kwargs)
+    async def reject(umo, *, cost=1, event=None, plugin_id=None):
+        quota.calls.append((umo, cost))
+        raise error_type("start failed")
 
-    monkeypatch.setattr(studio.tracker, "begin", fail_begin)
+    monkeypatch.setattr(quota, "acquire", reject)
     payload = (
         {"batch": [{"name": name, "prompt": name} for name in ("a", "b")]}
         if batch
@@ -217,77 +230,24 @@ async def test_studio_start_failure_refunds_and_releases(
         if error_type is ReferenceImageUnavailableError
         else error_type
     )
-    with pytest.raises(expected) as caught:
+    with pytest.raises(expected):
         await studio.generate({**payload, "upload_names": [path.name]})
-    if expected is StudioServiceError:
-        assert caught.value.status_code == 404
-    assert studio.rate_limiter.calls == [(None, 2 if batch else 1)]
-    assert studio.rate_limiter.refunds == ["token-1"]
+    assert quota.calls == [(None, 2 if batch else 1)]
     assert studio._upload_ref_counts == {}
-    assert studio._admitted_jobs == 0
-    assert not studio._runtime_tasks
+    assert studio.tracker.active_and_recent() == []
 
 
 @pytest.mark.asyncio
-async def test_studio_task_creation_failure_refunds(studio, monkeypatch):
-    def fail_create(coroutine):
-        raise RuntimeError("task creation failed")
+async def test_studio_forbidden_legacy_v2_is_rejected(studio):
+    """灰度关闭时 Studio 不再回退旧运行时任务，直接返回 503。"""
 
-    with monkeypatch.context() as patch:
-        patch.setattr(asyncio, "create_task", fail_create)
-        with pytest.raises(RuntimeError, match="task creation failed"):
-            await studio.generate({"prompt": "draw"})
-    assert studio.rate_limiter.refunds == ["token-1"]
-    assert studio._admitted_jobs == 0
-    assert not studio._runtime_tasks
-
-
-@pytest.mark.asyncio
-async def test_studio_post_attach_failure_does_not_refund_or_release_early(
-    studio, monkeypatch
-):
+    studio._v2_service_provider = lambda: None
     path = _png(studio.upload_dir / "ref.png")
-    start = studio._start_single
-
-    async def start_then_fail(*args):
-        await start(*args)
-        raise RuntimeError("response failed after attach")
-
-    monkeypatch.setattr(studio, "_start_single", start_then_fail)
-    with pytest.raises(RuntimeError):
-        await studio.generate({"prompt": "draw", "upload_names": [path.name]})
-    assert studio.rate_limiter.refunds == []
-    assert studio._admitted_jobs == 1
-    assert studio._upload_ref_counts == {path.name: 1}
-    await asyncio.gather(*studio._runtime_tasks.values())
-    assert studio._admitted_jobs == 0
-    assert studio._upload_ref_counts == {}
-
-
-@pytest.mark.asyncio
-async def test_studio_close_during_start_refunds_before_shutdown(studio, monkeypatch):
-    entered, release = asyncio.Event(), asyncio.Event()
-    begin = studio.tracker.begin
-
-    async def blocked_begin(**kwargs):
-        entered.set()
-        await release.wait()
-        return await begin(**kwargs)
-
-    monkeypatch.setattr(studio.tracker, "begin", blocked_begin)
-    pending = asyncio.create_task(studio.generate({"prompt": "draw"}))
-    await asyncio.wait_for(entered.wait(), 2)
-    closing = asyncio.create_task(studio.close())
-    await asyncio.sleep(0)
-    assert studio.closed
-    release.set()
     with pytest.raises(StudioServiceError) as caught:
-        await pending
-    await closing
+        await studio.generate({"prompt": "draw", "upload_names": [path.name]})
     assert caught.value.status_code == 503
-    assert studio.rate_limiter.refunds == ["token-1"]
-    assert not studio._runtime_tasks
-    assert studio._admitted_jobs == 0
+    assert studio.rate_limiter.calls == []
+    assert studio._upload_ref_counts == {}
 
 
 def _tool_plugin(tmp_path):
@@ -720,7 +680,7 @@ async def test_studio_llm_and_command_share_real_global_limiter(
         batch = await studio.generate(
             {"batch": [{"name": name, "prompt": name} for name in ("a", "b")]}
         )
-        await studio._runtime_tasks[batch["job_id"]]
+        await studio._v2_service_provider().wait(batch["job_id"])
         # Studio 两条任务不占任一会话额度，LLM 的第一条任务仍可执行。
         llm_event = _Event()
         llm_event.unified_msg_origin = "platform:FriendMessage:user-1"

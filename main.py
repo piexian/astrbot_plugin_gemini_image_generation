@@ -163,7 +163,7 @@ class GeminiImageGenerationPlugin(Star):
             self.generation_tracker,
             self.cfg,
             self._plugin_data_dir,
-            v2_service_provider=lambda: self._v2_service_for(None),
+            v2_service_provider=self._ensure_v2_service,
         )
         try:
             self.web_studio_service.import_legacy_images()
@@ -406,9 +406,11 @@ class GeminiImageGenerationPlugin(Star):
         scheduler = getattr(self, "generation_scheduler", None)
         if scheduler is not None and scheduler.busy:
             return True
-        for service in (self.web_studio_service, self.background_task_manager):
-            if any(not task.done() for task in service._runtime_tasks.values()):
-                return True
+        if any(
+            not task.done()
+            for task in self.background_task_manager._runtime_tasks.values()
+        ):
+            return True
         return any(
             record.get("status") == "running"
             for record in self.generation_tracker.active_and_recent()

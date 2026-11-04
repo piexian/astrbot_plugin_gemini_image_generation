@@ -12,8 +12,15 @@ import numpy as np
 import pytest
 
 from tl.api_types import ApiRequestConfig
+from tl.core.stack import build_generation_stack
 from tl.generation_tracker import GenerationTracker
 from tl.plugin_config import ConfigLoader, ProviderCandidate
+from tl.v2_admission import (
+    CompositeAdmissionLimiter,
+    RateLimiterQuota,
+    StudioAdmissionLimiter,
+)
+from tl.v2_tracking import TrackerProjection
 from tl.web_studio_service import StudioServiceError, WebStudioService
 
 
@@ -105,6 +112,62 @@ class _SequenceClient:
         return self.results.pop(0)
 
 
+class _RecordingQuota:
+    """记录额度调用；默认放行。"""
+
+    def __init__(self, allowed=True) -> None:
+        self.allowed = allowed
+        self.calls = []
+        self.refunds = []
+
+    async def acquire(self, umo, *, cost=1, event=None, plugin_id=None):
+        scope = "plugin" if plugin_id else ("global" if umo is None else "session")
+        self.calls.append({"umo": umo, "cost": cost, "scope": scope})
+        if not self.allowed:
+            return SimpleNamespace(
+                allowed=False,
+                message="global exhausted",
+                scope="global",
+                retry_after=17,
+                token=None,
+            )
+        return SimpleNamespace(
+            allowed=True, message=None, scope=scope, retry_after=0, token="token-1"
+        )
+
+    async def refund(self, token):
+        self.refunds.append(token)
+
+
+async def _start_v2(service, tracker, client=None, *, v2=None, rate_limiter=None):
+    """给已在用的 WebStudioService 装配 v2 栈；client 晚绑定，替换 service.api_client 即生效。"""
+
+    quota = rate_limiter or _RecordingQuota()
+    if client is not None:
+        service.api_client = client
+    stack = v2 or build_generation_stack(
+        lambda: service.api_client,
+        [{"provider": "legacy", "model": "auto"}],
+        service.data_dir / "v2",
+        (),
+        quota=RateLimiterQuota(lambda: quota),
+        limiter=CompositeAdmissionLimiter(
+            StudioAdmissionLimiter(
+                lambda: int(getattr(service.config, "webui_max_concurrent_jobs", 2))
+            ),
+        ),
+        observers=[TrackerProjection(tracker, service.archive_images)],
+    )
+    service._v2_service_provider = lambda: stack
+    env = SimpleNamespace(v2=stack, quota=quota, tracker=tracker)
+    return env
+
+
+async def _close_v2(env):
+    await env.v2.close()
+    await env.tracker.close()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("duplicate_refs", [False, True])
 async def test_single_generation_loops_until_target(
@@ -137,22 +200,23 @@ async def test_single_generation_loops_until_target(
     )
     tracker = GenerationTracker(tmp_path, 20)
     service = WebStudioService(client, tracker, _config(), tmp_path)
+    env = await _start_v2(service, tracker, client)
+    try:
+        accepted = await service.generate({"prompt": "draw", "image_count": 3})
+        await env.v2.wait(accepted["job_id"])
+        record = tracker.get(accepted["job_id"])
 
-    accepted = await service.generate({"prompt": "draw", "image_count": 3})
-    runtime_task = service._runtime_tasks[accepted["job_id"]]
-    await runtime_task
-    record = tracker.get(accepted["job_id"])
-
-    assert client.counts == [3, 2, 1]
-    assert record["status"] == "succeeded"
-    assert record["generated_images"] == 3
-    assert all((tmp_path / "gallery" / name).is_file() for name in record["images"])
-    joined = "\n".join(messages)
-    assert f"工作台任务已受理: job_id={accepted['job_id']}" in joined
-    assert "目标张数=3, 批量条目数=0" in joined
-    assert f"工作台任务完成: job_id={accepted['job_id']}" in joined
-    assert "产出张数=3, 供应商=" in joined
-    assert "gallery 归档完成: 张数=3" in joined
+        # v2 由 legacy 适配器补齐剩余张数，逐轮请求剩余张数。
+        assert client.counts == [3, 2, 1]
+        assert record["status"] == "succeeded"
+        assert record["generated_images"] == 3
+        assert all((tmp_path / "gallery" / name).is_file() for name in record["images"])
+        joined = "\n".join(messages)
+        assert f"工作台任务已受理: job_id={accepted['job_id']}" in joined
+        assert "目标张数=3, 批量条目数=0" in joined
+        assert "gallery 归档完成: 张数=3" in joined
+    finally:
+        await _close_v2(env)
 
 
 @pytest.mark.asyncio
@@ -161,12 +225,16 @@ async def test_generation_with_some_images_is_partial_success(tmp_path) -> None:
     client = _SequenceClient([([], [str(path)], "first", None), ([], [], None, None)])
     tracker = GenerationTracker(tmp_path, 20)
     service = WebStudioService(client, tracker, _config(), tmp_path)
+    env = await _start_v2(service, tracker, client)
+    try:
+        accepted = await service.generate({"prompt": "draw", "image_count": 2})
+        await env.v2.wait(accepted["job_id"])
+        record = tracker.get(accepted["job_id"])
 
-    accepted = await service.generate({"prompt": "draw", "image_count": 2})
-    record = await _wait_terminal(tracker, accepted["job_id"])
-
-    assert record["status"] == "partial_success"
-    assert record["generated_images"] == 1
+        assert record["status"] == "partial_success"
+        assert record["generated_images"] == 1
+    finally:
+        await _close_v2(env)
 
 
 @pytest.mark.asyncio
@@ -187,14 +255,18 @@ async def test_concurrency_limit_rejects_without_queueing(tmp_path) -> None:
         _config(webui_max_concurrent_jobs=1),
         tmp_path,
     )
-    await service.generate({"prompt": "first"})
-    await started.wait()
+    env = await _start_v2(service, tracker)
+    try:
+        await service.generate({"prompt": "first"})
+        await started.wait()
 
-    with pytest.raises(StudioServiceError) as exc_info:
-        await service.generate({"prompt": "second"})
-    assert exc_info.value.status_code == 429
-    release.set()
-    await service.close()
+        with pytest.raises(StudioServiceError) as exc_info:
+            await service.generate({"prompt": "second"})
+        assert exc_info.value.status_code == 429
+        assert "并发上限" in exc_info.value.message
+    finally:
+        release.set()
+        await _close_v2(env)
 
 
 @pytest.mark.asyncio
@@ -256,7 +328,7 @@ async def test_archive_accepts_file_uri_sources(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_terminate_cancels_runtime_jobs(tmp_path) -> None:
+async def test_v2_close_interrupts_studio_jobs(tmp_path) -> None:
     started = asyncio.Event()
 
     class BlockingClient:
@@ -266,12 +338,17 @@ async def test_terminate_cancels_runtime_jobs(tmp_path) -> None:
 
     tracker = GenerationTracker(tmp_path, 20)
     service = WebStudioService(BlockingClient(), tracker, _config(), tmp_path)
-    accepted = await service.generate({"prompt": "draw"})
-    await started.wait()
+    env = await _start_v2(service, tracker)
+    try:
+        accepted = await service.generate({"prompt": "draw"})
+        await started.wait()
 
-    await service.close()
+        await env.v2.close()
 
-    assert tracker.get(accepted["job_id"])["status"] == "interrupted"
+        assert tracker.get(accepted["job_id"])["status"] == "interrupted"
+    finally:
+        await service.close()
+        await tracker.close()
 
 
 @pytest.mark.asyncio
@@ -468,23 +545,26 @@ async def test_generation_passes_seed_to_request_settings(
         tmp_path,
     )
 
-    accepted = await service.generate(
-        {
-            "prompt": "draw",
-            "provider": "modelscope",
-            "model": "Qwen/Qwen-Image",
-            "seed": 42,
-            "negative_prompt": "blurry",
-        }
-    )
-    record = await _wait_terminal(tracker, accepted["job_id"])
+    env = await _start_v2(service, tracker)
+    try:
+        accepted = await service.generate(
+            {
+                "prompt": "draw",
+                "provider": "modelscope",
+                "model": "Qwen/Qwen-Image",
+                "seed": 42,
+                "negative_prompt": "blurry",
+            }
+        )
+        await env.v2.wait(accepted["job_id"])
+        record = tracker.get(accepted["job_id"])
 
-    assert client.seeds == [42]
-    assert client.provider_settings == [{"seed": 42}]
-    assert record["params"]["seed"] == 42
-    assert record["params"]["negative_prompt"] == "blurry"
-    await service.close()
-    await tracker.close()
+        assert client.seeds == [42]
+        assert client.provider_settings == [{"seed": 42}]
+        assert record["params"]["seed"] == 42
+        assert record["params"]["negative_prompt"] == "blurry"
+    finally:
+        await _close_v2(env)
     restored = GenerationTracker(tmp_path, 20)
     restored_service = WebStudioService(None, restored, service.config, tmp_path)
     reused, warning = restored_service.validate_payload(
@@ -735,13 +815,15 @@ async def test_source_urls_recorded_on_success_and_archive_failure(
         return png_bytes
 
     monkeypatch.setattr(service, "_download_remote_image", fake_download)
-    accepted = await service.generate({"prompt": "draw"})
-    await service._runtime_tasks[accepted["job_id"]]
-    record = tracker.get(accepted["job_id"])
-    assert record["status"] == "succeeded"
-    assert record["source_urls"] == ["https://cdn.example/a.png"]
-    await service.close()
-    await tracker.close()
+    env = await _start_v2(service, tracker)
+    try:
+        accepted = await service.generate({"prompt": "draw"})
+        await env.v2.wait(accepted["job_id"])
+        record = tracker.get(accepted["job_id"])
+        assert record["status"] == "succeeded"
+        assert record["source_urls"] == ["https://cdn.example/a.png"]
+    finally:
+        await _close_v2(env)
 
     second_dir = tmp_path / "second"
     second_dir.mkdir()
@@ -752,13 +834,15 @@ async def test_source_urls_recorded_on_success_and_archive_failure(
         raise TimeoutError()
 
     monkeypatch.setattr(service2, "_download_remote_image", broken_download)
-    accepted2 = await service2.generate({"prompt": "draw"})
-    await service2._runtime_tasks[accepted2["job_id"]]
-    record2 = tracker2.get(accepted2["job_id"])
-    assert record2["status"] == "failed"
-    assert record2["source_urls"] == ["https://cdn.example/a.png"]
-    await service2.close()
-    await tracker2.close()
+    env2 = await _start_v2(service2, tracker2)
+    try:
+        accepted2 = await service2.generate({"prompt": "draw"})
+        await env2.v2.wait(accepted2["job_id"])
+        record2 = tracker2.get(accepted2["job_id"])
+        assert record2["status"] == "failed"
+        assert record2["source_urls"] == ["https://cdn.example/a.png"]
+    finally:
+        await _close_v2(env2)
 
 
 def test_probe_rejects_unsupported_format_before_size_limit() -> None:
