@@ -48,6 +48,11 @@ ruff format --check . --line-length 88 --exclude plans,docs,templates
 
 只格式化本次修改的 Python 文件；不要为通过检查而重排无关文件。
 
+
+## 分支门禁
+
+`master` 已开启分支保护：合并进 `master` 的 PR 必须先通过 `Code Quality` 的五个检查——`Pytest (Python 3.12)`、`Frontend (Vue & Vite+)`、`Lint & Format`、`Syntax Check`、`Metadata Check`。未要求分支与 `master` 保持同步，也未限制管理员，直接 push `master` 仍然允许，检查只作为合并前置条件。CodeQL 的 `Analyze (actions|javascript-typescript|python)` 由代码扫描默认配置产生，不列为必过项，避免该配置关闭后检查永远停在待运行状态。
+
 ## 前端工程
 
 - Studio 前端源码在 `frontend/`（vp + pnpm + Vue 3 + TS）；构建产物提交到 `views/studio/`，由宿主按目录通配伺服，i18n 走桥接上下文。
