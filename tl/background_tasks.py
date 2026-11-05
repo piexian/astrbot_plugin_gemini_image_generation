@@ -7,7 +7,6 @@ import copy
 import json
 import os
 import uuid
-from collections.abc import Coroutine
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -41,7 +40,6 @@ class BackgroundTaskManager:
         self.retention_hours = max(int(retention_hours), 1)
         self._lock = asyncio.Lock()
         self._records: dict[str, dict[str, Any]] = self._load_records()
-        self._runtime_tasks: dict[str, asyncio.Task[Any]] = {}
         changed = self._mark_stale_tasks_interrupted()
         changed = self._prune_expired() or changed
         if changed:
@@ -94,10 +92,7 @@ class BackgroundTaskManager:
         cutoff = _now() - timedelta(hours=self.retention_hours)
         expired: list[str] = []
         for task_id, record in self._records.items():
-            if (
-                record.get("status") in {"queued", "running"}
-                or task_id in self._runtime_tasks
-            ):
+            if record.get("status") in {"queued", "running"}:
                 continue
             value = record.get("updated_at") or record.get("created_at")
             try:
@@ -239,36 +234,7 @@ class BackgroundTaskManager:
             size = max(int(limit), 0)
             return [copy.deepcopy(record) for record in rows[:size]]
 
-    def attach(
-        self,
-        task_id: str,
-        coroutine: Coroutine[Any, Any, Any],
-    ) -> asyncio.Task[Any]:
-        task = asyncio.create_task(coroutine)
-        """旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
-        self._runtime_tasks[task_id] = task
-
-        def _done(done_task: asyncio.Task[Any]) -> None:
-            self._runtime_tasks.pop(task_id, None)
-            if done_task.cancelled():
-                return
-            exc = done_task.exception()
-            if exc:
-                logger.error(
-                    f"[后台任务] {task_id} 异常终止: {redact_text(exc)[:240]}",
-                    exc_info=(type(exc), exc, exc.__traceback__),
-                )
-
-        task.add_done_callback(_done)
-        return task
-
     async def close(self) -> None:
-        tasks = list(self._runtime_tasks.values())
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
         async with self._lock:
             self._mark_stale_tasks_interrupted()
             await self._save()

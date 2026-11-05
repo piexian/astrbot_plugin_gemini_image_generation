@@ -20,11 +20,11 @@ from tests.test_v2_command_paths import (
     _png_data_uri,
     _wire_sender,
 )
-from tl.api_types import APIError
 from tl.core.errors import QueueFullError, QuotaExceededError, ServiceClosedError
 from tl.core.requests import GenerationRequest
 from tl.core.stack import build_generation_stack
 from tl.core.states import JobState
+from tl.format_error import format_error_message
 from tl.generation_errors import api_failure_message
 from tl.generation_scheduler import GenerationScheduler
 from tl.image_generator import ImageGenerator
@@ -61,8 +61,7 @@ class _AdmissionService(_FakeV2Service):
 
 def _make_v2_plugin(service):
     plugin = _make_plugin()
-    plugin.cfg.scheduler_v2 = True
-    plugin._v2_service_for = lambda umo: service
+    plugin._ensure_v2_service = lambda: service
     plugin.image_generator = ImageGenerator(
         context=None,
         api_client=plugin.api_client,
@@ -153,56 +152,46 @@ async def test_v2_group_denial_is_silent(name, args, split):
         (ServiceClosedError, "service_closed", "生成服务正在关闭"),
     ],
 )
-async def test_v2_queue_rejection_matches_legacy_wording(
+async def test_v2_queue_rejection_uses_shared_failure_wording(
     name, args, split, error_cls, error_type, message
 ):
-    # 旧路径：被 @scheduled_generation 装饰的客户端在调用时抛出 APIError。
-    legacy = _make_plugin()
-    legacy._v2_service_for = lambda umo: None
-    legacy.api_client.generate_image = AsyncMock(
-        side_effect=APIError(message, None, error_type, retryable=False)
-    )
-    legacy.image_generator = ImageGenerator(
-        context=None,
-        api_client=legacy.api_client,
-        filter_valid_fn=lambda images, source: images or [],
-    )
-    _wire_sender(legacy)
-    _, legacy_outputs = await _run(legacy, name, args, split)
-
     service = _AdmissionService(submit_error=error_cls(message))
-    _, v2_outputs = await _run(_make_v2_plugin(service), name, args, split)
+    _, outputs = await _run(_make_v2_plugin(service), name, args, split)
 
-    assert legacy_outputs[-1] == v2_outputs[-1]
-    assert message in v2_outputs[-1]
-    # 旧路径先发"生成中"再排队失败；v2 在提交时就被拒，不再发。
-    assert _has_progress(legacy_outputs)
-    assert not _has_progress(v2_outputs)
+    # 队列/服务关闭在提交时就被拒，先于"生成中"提示。
+    assert not _has_progress(outputs)
+    if split or name == "change_style":
+        assert outputs[-1] == api_failure_message(
+            message=message,
+            status_code=None,
+            error_type=error_type,
+            total_timeout=120,
+        )
+    else:
+        assert outputs[-1] == format_error_message(message)
 
 
 @pytest.mark.asyncio
-async def test_route_check_without_quota_never_touches_limiter():
+async def test_route_check_never_touches_limiter():
     plugin = _make_plugin()
     event = _Event()
 
     allowed = await plugin._check_command_generation_limit(
-        event, has_reference_images=True, consume_quota=False
+        event, has_reference_images=True
     )
     assert allowed == (True, None)
     assert plugin.rate_limiter.calls == []
 
-    # 默认仍由入口扣一次，旧路径行为不变。
-    assert await plugin._check_command_generation_limit(event) == (True, None)
-    assert plugin.rate_limiter.calls == [(event.unified_msg_origin, 1)]
+    # 群聊名单在入口之后被热更新拒绝：前置检查静默失败。
+    plugin.rate_limiter.allows_group = lambda event: False
+    assert await plugin._check_command_generation_limit(event) == (False, None)
+    assert plugin.rate_limiter.calls == []
 
-    # API 客户端未初始化时两种模式同样拒绝，且不再扣额度。
-    plugin.rate_limiter.calls.clear()
+    # API 客户端未初始化时同样拒绝，且不扣额度。
+    plugin.rate_limiter.allows_group = lambda event: True
     plugin.api_client = None
-    for consume in (True, False):
-        allowed, message = await plugin._check_command_generation_limit(
-            event, consume_quota=consume
-        )
-        assert not allowed and "API 客户端未初始化" in message
+    allowed, message = await plugin._check_command_generation_limit(event)
+    assert not allowed and "API 客户端未初始化" in message
     assert plugin.rate_limiter.calls == []
 
 
@@ -252,11 +241,10 @@ def _real_stack_plugin(tmp_path, client, limiter, fifo):
         limiter=LegacyFifoLimiter(lambda: fifo),
     )
     plugin = _make_plugin()
-    plugin.cfg.scheduler_v2 = True
     plugin.rate_limiter = limiter
     plugin.generation_scheduler = fifo
     plugin.api_client = SimpleNamespace(generate_image=client.generate_image)
-    plugin._v2_service_for = lambda umo: service
+    plugin._ensure_v2_service = lambda: service
     plugin.image_handler.fetch_images_from_event = AsyncMock(
         return_value=([_png_data_uri()], [])
     )
@@ -498,11 +486,15 @@ async def test_submit_v2_rejections_return_displayable_results():
 
 
 @pytest.mark.asyncio
-async def test_submit_v2_without_api_client_matches_legacy_message():
+async def test_submit_v2_without_api_client_matches_generate_core_message():
     generator = ImageGenerator(context=None, api_client=None)
     event = SimpleNamespace(unified_msg_origin=UMO)
-    legacy_ok, legacy_message = await generator.generate_image_core(
-        event, prompt="draw", reference_images=[], avatar_reference=[]
+    core_ok, core_message = await generator.generate_image_core(
+        event,
+        prompt="draw",
+        reference_images=[],
+        avatar_reference=[],
+        v2_service=_AdmissionService(),
     )
     service = _AdmissionService()
     submission = await generator.submit_v2(
@@ -512,8 +504,8 @@ async def test_submit_v2_without_api_client_matches_legacy_message():
         reference_images=[],
         avatar_reference=[],
     )
-    assert legacy_ok is False
-    assert submission.handle is None and submission.message == legacy_message
+    assert core_ok is False
+    assert submission.handle is None and submission.message == core_message
     assert service.requests == []
 
 

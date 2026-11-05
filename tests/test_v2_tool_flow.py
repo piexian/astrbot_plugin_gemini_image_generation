@@ -7,7 +7,6 @@ import base64
 import json
 from io import BytesIO
 from types import SimpleNamespace
-from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -164,9 +163,8 @@ def make_plugin(tmp_path, service, client, *, allowed_dirs=(), candidates=()):
             prepare_text_content=lambda text, refs: text or "",
         ),
         background_task_manager=BackgroundTaskManager(tmp_path / "bg"),
-        _check_and_consume_limit=AsyncMock(return_value=(True, None)),
         _fetch_images_from_event=AsyncMock(return_value=([], [])),
-        _v2_service_for=Mock(return_value=service),
+        _ensure_v2_service=Mock(return_value=service),
         get_tool_timeout=lambda event: 10,
         avatar_handler=SimpleNamespace(
             download_user_avatar=AsyncMock(return_value="avatar-b64")
@@ -239,11 +237,6 @@ async def make_env(tmp_path, monkeypatch, fake_mcp):
         monkeypatch.setattr(
             llm_tools, "asyncio", AsyncioView(**(asyncio_overrides or {}))
         )
-        for name in ("invoke_generation_core", "_create_generation_task"):
-            monkeypatch.setattr(llm_tools, name, Mock(side_effect=AssertionError(name)))
-        monkeypatch.setattr(
-            BackgroundTaskManager, "attach", Mock(side_effect=AssertionError("attach"))
-        )
         built.append((service, plugin))
         return SimpleNamespace(
             client=client,
@@ -258,7 +251,6 @@ async def make_env(tmp_path, monkeypatch, fake_mcp):
     for service, plugin in built:
         await service.close()
         await plugin.background_task_manager.close()
-        plugin._check_and_consume_limit.assert_not_awaited()
 
 
 def new_event():
@@ -303,7 +295,7 @@ async def test_on_time_completion_returns_call_tool_result(make_env, fake_mcp):
         "3:2",
     )
     assert config.image_count == 1
-    env.plugin._v2_service_for.assert_called_once_with(UMO)
+    env.plugin._ensure_v2_service.assert_called_once_with()
     (job,) = await stored_jobs(env)
     assert job.state is JobState.SUCCEEDED
     assert job.request.source == "llm_tool"
@@ -396,7 +388,7 @@ async def test_timeout_moves_to_background_and_delivers_through_adapter(
     task_id = payload["task_id"]
     record = await record_of(env, task_id)
     assert record["kind"] == "single" and record["status"] == "running"
-    assert env.manager._runtime_tasks == {}
+    assert env.service._scheduler._deliveries
 
     gate.set()
 
@@ -630,8 +622,6 @@ def scripted(tmp_path, monkeypatch, fake_mcp):
         )
 
     yield build
-    for plugin in built:
-        plugin._check_and_consume_limit.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -746,26 +736,9 @@ async def test_cancelling_the_tool_call_cancels_the_job(make_env, deliver):
 # ===== deliver=return =====
 
 
-class LegacyPlugin:
-    """旧路径的最小插件：经 ImageGenerator 的 legacy 分支生成。"""
-
-    def __init__(self, tmp_path, client):
-        self.generator = ImageGenerator(
-            context=None,
-            api_client=client,
-            filter_valid_fn=lambda images, source: images or [],
-        )
-        base = make_plugin(tmp_path, None, client)
-        self.__dict__.update(base.__dict__)
-        self.image_generator = self.generator
-
-    async def _generate_image_core_internal(self, **kwargs):
-        return await self.generator.generate_image_core(**kwargs)
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("outcome", ["success", "failure", "text_only"])
-async def test_return_text_matches_legacy_path(tmp_path, make_env, outcome):
+async def test_return_text_formats_each_outcome(tmp_path, make_env, outcome):
     local = tmp_path / "return-out.png"
     local.write_bytes(png_bytes())
     error = APIError("限流", 429, "rate_limit", retryable=False)
@@ -777,19 +750,16 @@ async def test_return_text_matches_legacy_path(tmp_path, make_env, outcome):
             return GatedClient(urls=[], text="只有文本")
         return GatedClient(error=error)
 
-    legacy_plugin = LegacyPlugin(tmp_path / "legacy", client())
-    legacy_plugin._v2_service_for = lambda umo: None
-    legacy = await GeminiImageGenerationTool(plugin=legacy_plugin).call(
-        _context(_Event()), prompt="draw a cat", deliver="return"
-    )
-    # 旧路径经 _check_and_consume_limit 扣额度；v2 的额度由调度器扣。
-    legacy_plugin._check_and_consume_limit.assert_awaited_once()
-
     env = await make_env(client())
-    v2_text = await call(env, deliver="return")
+    text = await call(env, deliver="return")
 
-    assert v2_text == legacy
-    assert ("[图像生成完成 - 未发送给用户]" in v2_text) == (outcome == "success")
+    if outcome == "success":
+        assert "[图像生成完成 - 未发送给用户]" in text
+        assert URL in text and str(local) in text
+        assert "森林里的小狐狸" in text
+    else:
+        assert "[图像生成完成 - 未发送给用户]" not in text
+        assert text.startswith("❌ ")
 
 
 # ===== 额度与准入 =====
@@ -958,7 +928,7 @@ async def test_existing_validation_precedes_v2_and_charges_nothing(
 
     assert expected in result
     # 先于 v2 分支：不碰服务、不提交、不扣额度。
-    env.plugin._v2_service_for.assert_not_called()
+    env.plugin._ensure_v2_service.assert_not_called()
     env.plugin.image_generator.submit_v2.assert_not_awaited()
     assert quota.calls == []
     assert await stored_jobs(env) == []
@@ -1009,22 +979,18 @@ async def test_batch_explicit_size_overrides_reference_size_config(make_env):
 
 
 @pytest.mark.asyncio
-async def test_without_v2_service_the_legacy_flow_is_untouched(tmp_path, monkeypatch):
+async def test_without_v2_service_rejects_and_generates_nothing(tmp_path):
     plugin = make_plugin(tmp_path, None, GatedClient())
-    plugin._v2_service_for = Mock(return_value=None)
     plugin.image_generator.submit_v2 = AsyncMock()
-    generate = AsyncMock(return_value=(False, "provider failed"))
-    monkeypatch.setattr(llm_tools, "invoke_generation_core", generate)
+    plugin._ensure_v2_service = Mock(return_value=None)
 
     result = await GeminiImageGenerationTool(plugin=plugin).call(
         _context(_Event()), prompt="draw", deliver="return"
     )
 
-    assert result == "❌ 图片生成失败：provider failed"
-    plugin._check_and_consume_limit.assert_awaited_once()
-    plugin._v2_service_for.assert_called_once_with(UMO)
+    assert result == "❌ 无法生成图像：生成服务尚未初始化"
+    plugin._ensure_v2_service.assert_called_once_with()
     plugin.image_generator.submit_v2.assert_not_awaited()
-    generate.assert_awaited_once()
     await plugin.background_task_manager.close()
 
 
@@ -1130,16 +1096,12 @@ async def test_batch_v2_uses_parent_children_and_delivers_without_legacy_task(
         service_options={"quota": quota},
         candidates=batch_candidates(),
     )
-    monkeypatch.setattr(
-        llm_tools, "run_batch_job", Mock(side_effect=AssertionError("legacy batch"))
-    )
-
     event = _Event()
     payload = json.loads(await call_batch(env, event, tasks=batch_tasks()))
 
     assert payload["status"] == "running"
     task_id = payload["task_id"]
-    assert env.manager._runtime_tasks == {}
+    assert env.service._scheduler._deliveries
 
     async def delivered():
         return bool(notifier.results)
@@ -1180,7 +1142,6 @@ async def test_batch_v2_uses_parent_children_and_delivers_without_legacy_task(
     assert [
         config.image_count for config in client.configs if config.prompt == "b"
     ] == [2, 1]
-    env.plugin._check_and_consume_limit.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1242,72 +1203,8 @@ async def test_v2_size_alone_does_not_override_reference_size(make_env):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "explicit",
-    [{"resolution": "2K"}, {"aspect_ratio": "16:9"}],
-)
-async def test_legacy_explicit_dimension_beats_preserve_and_ignores_size(
-    tmp_path, monkeypatch, explicit
-):
-    plugin = make_plugin(tmp_path, None, GatedClient())
-    plugin.cfg.preserve_reference_image_size = True
-    plugin._fetch_images_from_event.return_value = ([_png_data_uri()], [])
-    generate = AsyncMock(
-        return_value=(True, (["https://img.test/out.png"], [], "ok", None))
-    )
-    monkeypatch.setattr(llm_tools, "invoke_generation_core", generate)
-
-    result = await GeminiImageGenerationTool(plugin=plugin).call(
-        _context(_Event()),
-        prompt="draw",
-        deliver="return",
-        references=["current"],
-        size="1024x1024",
-        **explicit,
-    )
-
-    assert "未发送给用户" in result
-    kwargs = generate.await_args.kwargs
-    assert kwargs["suppress_resolution"] is False
-    assert kwargs["override_resolution"] == explicit.get("resolution")
-    assert kwargs["override_aspect_ratio"] == explicit.get("aspect_ratio")
-    await plugin.background_task_manager.close()
-
-
-@pytest.mark.asyncio
-async def test_legacy_size_alone_does_not_override_reference_size(
-    tmp_path, monkeypatch
-):
-    plugin = make_plugin(tmp_path, None, GatedClient())
-    plugin.cfg.preserve_reference_image_size = True
-    plugin._fetch_images_from_event.return_value = ([_png_data_uri()], [])
-    generate = AsyncMock(
-        return_value=(True, (["https://img.test/out.png"], [], "ok", None))
-    )
-    monkeypatch.setattr(llm_tools, "invoke_generation_core", generate)
-
-    result = await GeminiImageGenerationTool(plugin=plugin).call(
-        _context(_Event()),
-        prompt="draw",
-        deliver="return",
-        references=["current"],
-        size="not-a-size",
-    )
-
-    assert "未发送给用户" in result
-    kwargs = generate.await_args.kwargs
-    assert kwargs["suppress_resolution"] is True
-    assert kwargs["override_resolution"] is None
-    assert kwargs["override_aspect_ratio"] is None
-    await plugin.background_task_manager.close()
-
-
-@pytest.mark.asyncio
-async def test_legacy_custom_size_mode_ignores_tool_size(tmp_path, monkeypatch):
-    plugin = make_plugin(
-        tmp_path,
-        None,
-        GatedClient(),
+async def test_v2_custom_size_mode_ignores_tool_size(make_env):
+    env = await make_env(
         candidates=[
             ProviderCandidate(
                 id="openai#1",
@@ -1319,106 +1216,66 @@ async def test_legacy_custom_size_mode_ignores_tool_size(tmp_path, monkeypatch):
                     "model": "gpt-image",
                 },
             )
-        ],
-    )
-    generate = AsyncMock(
-        return_value=(True, (["https://img.test/out.png"], [], "ok", None))
-    )
-    monkeypatch.setattr(llm_tools, "invoke_generation_core", generate)
-
-    result = await GeminiImageGenerationTool(plugin=plugin).call(
-        _context(_Event()),
-        prompt="draw",
-        deliver="return",
-        size="1024x1024",
+        ]
     )
 
-    assert "未发送给用户" in result
-    assert generate.await_args.kwargs["override_resolution"] == "1536x1024"
-    assert generate.await_args.kwargs["override_aspect_ratio"] is None
-    await plugin.background_task_manager.close()
+    result = await call(env, deliver="return", size="1024x1024")
+
+    assert "[图像生成完成 - 未发送给用户]" in result
+    (config,) = env.client.configs
+    assert config.resolution == "1536x1024"
+    assert config.aspect_ratio is None
 
 
 @pytest.mark.asyncio
-async def test_legacy_batch_ignores_size(tmp_path, monkeypatch):
-    plugin = make_plugin(tmp_path, None, GatedClient(), candidates=batch_candidates())
-    plugin.cfg.preserve_reference_image_size = True
-    plugin._fetch_images_from_event.return_value = ([_png_data_uri()], [])
-    received = []
-
-    async def run_batch(plugin, event, task_id, items, **kwargs):
-        received.extend(items)
-
-    monkeypatch.setattr(llm_tools, "run_batch_job", run_batch)
-    result = await GeminiImageBatchTool(plugin=plugin).call(
-        _context(_Event()),
-        tasks=[
-            {
-                "name": "explicit",
-                "prompt": "a",
-                "image_count": 1,
-                "provider": "legacy",
-                "use_reference_images": True,
-                "size": "not-a-size",
-                "resolution": "4K",
-                "aspect_ratio": "1:1",
-            },
-            {
-                "name": "size-only",
-                "prompt": "b",
-                "image_count": 1,
-                "provider": "legacy",
-                "use_reference_images": True,
-                "size": "2048x2048",
-            },
-        ],
-    )
-
-    task_id = json.loads(result)["task_id"]
-    await plugin.background_task_manager._runtime_tasks[task_id]
-    explicit, size_only = received
-    assert explicit["resolution"] == "4K"
-    assert explicit["aspect_ratio"] == "1:1"
-    assert explicit["suppress_resolution"] is False
-    assert "size" not in explicit
-    assert size_only["resolution"] is None
-    assert size_only["aspect_ratio"] is None
-    assert size_only["suppress_resolution"] is True
-    await plugin.background_task_manager.close()
-
-
-@pytest.mark.asyncio
-async def test_batch_v2_ignores_size(make_env, notifier):
+async def test_v2_batch_ignores_size(make_env, notifier):
     client = BatchClient()
     env = await make_env(client, candidates=batch_candidates())
+    env.plugin.cfg.preserve_reference_image_size = True
+    env.plugin._fetch_images_from_event.return_value = ([_png_data_uri()], [])
 
     payload = json.loads(
         await call_batch(
             env,
             tasks=[
                 {
-                    "name": "a",
+                    "name": "explicit",
                     "prompt": "a",
                     "image_count": 1,
                     "provider": "legacy",
-                    "size": "1024x1024",
-                    "resolution": "2K",
-                    "aspect_ratio": "16:9",
-                }
+                    "use_reference_images": True,
+                    "size": "not-a-size",
+                    "resolution": "4K",
+                    "aspect_ratio": "1:1",
+                },
+                {
+                    "name": "size-only",
+                    "prompt": "b",
+                    "image_count": 1,
+                    "provider": "legacy",
+                    "use_reference_images": True,
+                    "size": "2048x2048",
+                },
             ],
         )
     )
 
     assert payload["status"] == "running"
 
-    async def delivered():
-        return bool(notifier.results)
+    async def generated():
+        return len(client.configs) >= 2
 
-    await eventually(delivered)
-    config = client.configs[0]
-    assert config.resolution == "2K"
-    assert config.aspect_ratio == "16:9"
-    assert config.suppress_resolution is False
+    await eventually(generated)
+
+    configs = {config.prompt: config for config in client.configs}
+    explicit = configs["a"]
+    assert explicit.resolution == "4K"
+    assert explicit.aspect_ratio == "1:1"
+    assert explicit.suppress_resolution is False
+    size_only = configs["b"]
+    assert size_only.resolution is None
+    assert size_only.aspect_ratio is None
+    assert size_only.suppress_resolution is True
 
 
 @pytest.mark.asyncio
@@ -1460,31 +1317,6 @@ async def test_required_template_rejects_before_quota(make_env, tmp_path):
     assert await stored_jobs(env) == []
 
 
-@pytest.mark.asyncio
-async def test_legacy_template_applies_prompt_and_defaults(tmp_path):
-    from tl.prompt_templates import (
-        PromptTemplateStore,
-        builtin_template,
-        render_template,
-    )
-
-    client = GatedClient(urls=[URL], text="ok")
-    plugin = LegacyPlugin(tmp_path / "legacy", client)
-    plugin.prompt_templates = PromptTemplateStore(tmp_path / "templates")
-    plugin._v2_service_for = lambda umo: None
-
-    result = await GeminiImageGenerationTool(plugin=plugin).call(
-        _context(_Event()), prompt="一只猫", template="poster", deliver="return"
-    )
-
-    assert "未发送给用户" in result
-    config = client.configs[0]
-    assert config.prompt == render_template(builtin_template("poster"), "一只猫")
-    assert config.resolution == "2K"
-    assert config.aspect_ratio == "16:9"
-    await plugin.background_task_manager.close()
-
-
 def _openai_quality_candidates():
     """legacy + openai_images：后者能力表声明 quality，用于跑通 options 白名单。"""
 
@@ -1510,10 +1342,6 @@ async def test_batch_top_level_defaults_apply_and_tasks_override(
     client = BatchClient()
     env = await make_env(client, candidates=_openai_quality_candidates())
     env.plugin.prompt_templates = PromptTemplateStore(tmp_path / "templates")
-    monkeypatch.setattr(
-        llm_tools, "run_batch_job", Mock(side_effect=AssertionError("legacy batch"))
-    )
-
     await call_batch(
         env,
         template="poster",
@@ -1586,39 +1414,3 @@ async def test_batch_template_id_reaches_v2_and_legacy_paths(make_env, tmp_path)
         if not job.request.metadata.get("batch_parent")
     ]
     assert child.request.metadata["template_id"] == "poster"
-
-
-@pytest.mark.asyncio
-async def test_batch_legacy_path_passes_template_id(tmp_path, monkeypatch):
-    from tl.prompt_templates import PromptTemplateStore
-
-    seen: list[dict[str, Any]] = []
-
-    async def fake_core(plugin, **kwargs):
-        seen.append(kwargs)
-        return True, ([], [], "ok", None)
-
-    monkeypatch.setattr(llm_tools, "invoke_generation_core", fake_core)
-    monkeypatch.setattr("tl.batch_generation.invoke_generation_core", fake_core)
-    plugin = LegacyPlugin(tmp_path / "legacy", GatedClient())
-    plugin._v2_service_for = lambda umo: None
-    plugin.prompt_templates = PromptTemplateStore(tmp_path / "templates")
-
-    result = await GeminiImageBatchTool(plugin=plugin).call(
-        _context(_Event()),
-        tasks=[
-            {
-                "name": "tpl",
-                "prompt": "cat",
-                "image_count": 1,
-                "provider": "legacy",
-                "template": "poster",
-            }
-        ],
-    )
-    task_id = json.loads(result)["task_id"]
-    await plugin.background_task_manager._runtime_tasks[task_id]
-
-    assert seen, "旧路径没有调用生成核心"
-    assert seen[0]["template_id"] == "poster"
-    await plugin.background_task_manager.close()

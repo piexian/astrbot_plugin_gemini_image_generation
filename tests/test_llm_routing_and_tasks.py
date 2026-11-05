@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import sys
 import types
@@ -44,10 +43,13 @@ sys.modules["astrbot.core.astr_agent_context"].AstrAgentContext = type(
 )
 
 from tl.background_tasks import BackgroundTaskManager  # noqa: E402
-from tl.batch_generation import run_batch_job  # noqa: E402
+from tl.core.models import Job  # noqa: E402
+from tl.core.requests import GenerationRequest  # noqa: E402
+from tl.core.states import JobState  # noqa: E402
 from tl.llm_query_tools import GeminiImageLookupTool  # noqa: E402
 from tl.llm_tools import _resolve_foreground_wait_seconds  # noqa: E402
 from tl.plugin_config import get_session_tool_timeout  # noqa: E402
+from tl.v2_tool_delivery import ToolBatchDelivery  # noqa: E402
 
 
 @pytest.mark.parametrize(
@@ -223,45 +225,34 @@ async def test_task_status_tool_enforces_session_ownership(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_batch_job_cancellation_interrupts_children(tmp_path) -> None:
+async def test_batch_cancellation_marks_record_interrupted(tmp_path) -> None:
     manager = BackgroundTaskManager(tmp_path)
     event = _Event()
-    generation_started = asyncio.Event()
-    blocker = asyncio.Event()
-
-    class _Plugin:
-        cfg = SimpleNamespace(batch_concurrency=1)
-        background_task_manager = manager
-        message_sender = _MessageSender()
-        avatar_manager = _AvatarManager()
-        image_generator = SimpleNamespace(get_request_stats=lambda: {})
-
-        @staticmethod
-        async def _generate_image_core_internal(**kwargs):
-            generation_started.set()
-            await blocker.wait()
-
-    plugin = _Plugin()
+    plugin = SimpleNamespace(
+        background_task_manager=manager,
+        message_sender=_MessageSender(),
+        image_generator=SimpleNamespace(total_timeout=120),
+    )
     record = await manager.create(
         session_id=event.unified_msg_origin,
         kind="batch",
         routing_mode="provider_retry",
         message="running",
     )
-    item = {
-        "name": "blocked-item",
-        "prompt": "draw",
-        "image_count": 1,
-        "provider": "xai",
-        "model": None,
-    }
-    task = asyncio.create_task(run_batch_job(plugin, event, record["task_id"], [item]))
-    await generation_started.wait()
+    delivery = ToolBatchDelivery(plugin, event)
+    delivery.bind_record(record["task_id"])
+    parent = Job(
+        job_id="job-batch-1",
+        request=GenerationRequest(prompt="draw", source="llm_batch", image_count=2),
+        state=JobState.CANCELLED,
+    )
 
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    await delivery.deliver_failure(parent)
 
     result = await manager.get(record["task_id"], event.unified_msg_origin)
     assert result is not None
     assert result["status"] == "interrupted"
+    assert result["message"] == "批量生成已中断"
+    assert result["current_item"] is None
+    # 取消不是生成失败：不唤醒 Agent，也不报告失败。
+    assert event.sent == []

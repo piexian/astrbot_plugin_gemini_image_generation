@@ -59,7 +59,6 @@ from .tl.generation_errors import api_failure_message
 from .tl.generation_scheduler import GenerationScheduler
 from .tl.generation_tracker import (
     GenerationTracker,
-    record_generation_success,
     requester_from_event,
 )
 from .tl.llm_query_tools import GeminiImageLookupTool, GeminiImageShareTool
@@ -124,7 +123,7 @@ class GeminiImageGenerationPlugin(Star):
 
         # 初始化状态
         self.api_client: APIClient | None = None
-        # v2 调度器（灰度）：scheduler_v2 开启且首次使用时装配。
+        # v2 调度器：首次使用时装配并常驻。
         self._v2_service = None
         self.llm_image_tool: GeminiImageGenerationTool | None = None
         self.llm_batch_tool: GeminiImageBatchTool | None = None
@@ -163,7 +162,7 @@ class GeminiImageGenerationPlugin(Star):
             self.generation_tracker,
             self.cfg,
             self._plugin_data_dir,
-            v2_service_provider=lambda: self._v2_service_for(None),
+            v2_service_provider=self._ensure_v2_service,
         )
         try:
             self.web_studio_service.import_legacy_images()
@@ -400,12 +399,12 @@ class GeminiImageGenerationPlugin(Star):
             )
 
     def _provider_jobs_busy(self) -> bool:
+        v2_service = getattr(self, "_v2_service", None)
+        if v2_service is not None and v2_service.busy:
+            return True
         scheduler = getattr(self, "generation_scheduler", None)
         if scheduler is not None and scheduler.busy:
             return True
-        for service in (self.web_studio_service, self.background_task_manager):
-            if any(not task.done() for task in service._runtime_tasks.values()):
-                return True
         return any(
             record.get("status") == "running"
             for record in self.generation_tracker.active_and_recent()
@@ -543,18 +542,18 @@ class GeminiImageGenerationPlugin(Star):
         return True
 
     def _ensure_v2_service(self):
-        """装配 v2 栈（灰度）；失败置空回退 legacy 路径，不做自动恢复。"""
+        """装配并返回常驻 v2 GenerationService 单例。"""
         if self._v2_service is not None:
             return self._v2_service
         if not self._ensure_api_client():
             return None
         try:
             service = build_generation_stack(
-                client=self.api_client,
+                client=lambda: self.api_client,
                 candidates=[{"provider": "legacy", "model": "auto"}],
                 data_dir=os.path.join(self._plugin_data_dir, "v2"),
                 allowed_local_roots=(REFERENCE_IMAGE_CACHE_DIR,),
-                # submit 准入：共享额度、WebUI 名额与旧 FIFO 生成队列由调度器统一预留。
+                # submit 准入：共享额度、WebUI 名额与 FIFO 生成队列由调度器统一预留。
                 quota=RateLimiterQuota(lambda: self.rate_limiter),
                 limiter=CompositeAdmissionLimiter(
                     StudioAdmissionLimiter(
@@ -570,22 +569,13 @@ class GeminiImageGenerationPlugin(Star):
                 ),
             )
         except Exception as e:
-            logger.warning(
-                f"[v2] 调度器装配失败，本次回退 legacy 路径: {redact_text(str(e))[:240]}"
+            logger.error(
+                f"[v2] 调度器装配失败: {redact_text(str(e))[:240]}",
+                exc_info=True,
             )
             return None
         self._v2_service = service
         return service
-
-    def _v2_service_for(self, umo: str | None):
-        """会话灰度过滤后的 v2 服务；总开关关闭或会话不在名单时走旧路径。"""
-
-        if not getattr(self.cfg, "scheduler_v2", False):
-            return None
-        sessions = getattr(self.cfg, "scheduler_v2_sessions", None) or ()
-        if sessions and umo not in sessions:
-            return None
-        return self._ensure_v2_service()
 
     def _load_api_client_from_config(self, *, quiet: bool = False):
         """从插件配置读取模型/密钥并初始化客户端"""
@@ -710,13 +700,13 @@ class GeminiImageGenerationPlugin(Star):
         requested_provider: str | None = None,
         requested_model: str | None = None,
         has_reference_images: bool = False,
-        consume_quota: bool = True,
     ) -> tuple[bool, str | None]:
-        """命令在输入准备完成后检查 API/路由，再扣减一次额度。
+        """命令入口的前置检查：群聊放行、API 客户端与路由能力。
 
-        v2 路径的额度由调度器在 submit 准入时扣减，调用方传 consume_quota=False，
-        入口只做 API 客户端与路由能力检查。
+        额度与队列准入统一由 v2 调度器在 submit 时扣减，入口不再重复计数。
         """
+        if not self.rate_limiter.allows_group(event):
+            return False, None
         if not self._ensure_api_client():
             return False, "❌ API 客户端未初始化，请检查插件供应商配置。"
         if not select_candidates(
@@ -726,9 +716,7 @@ class GeminiImageGenerationPlugin(Star):
             has_reference_images=has_reference_images,
         ):
             return False, "❌ 没有匹配本次请求能力的供应商或模型"
-        if not consume_quota:
-            return True, None
-        return await self._check_and_consume_limit(event)
+        return True, None
 
     async def _quick_generate_image(
         self,
@@ -744,7 +732,7 @@ class GeminiImageGenerationPlugin(Star):
         requested_model: str | None = None,
         template_id: str | None = None,
     ):
-        """快捷图像生成。旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
+        """快捷图像生成：提交 v2 Job，等待终态后发送结果。"""
         redact_error = globals().get("redact_text")
         if redact_error is None:
             from tl.core.errors import redact_text as redact_error
@@ -758,8 +746,11 @@ class GeminiImageGenerationPlugin(Star):
                 "✅ 建议：在 provider_settings.provider_overrides 中添加供应商条目并填写 api_keys 后重试。"
             )
             return
+        service = self._ensure_v2_service()
+        if service is None:
+            yield event.plain_result("❌ 生成服务尚未初始化")
+            return
 
-        tracking_job_id: str | None = None
         try:
             ref_images, avatars = await self.image_handler.fetch_images_from_event(
                 event, include_at_avatars=use_avatar
@@ -790,14 +781,11 @@ class GeminiImageGenerationPlugin(Star):
                 )
                 return
 
-            # v2 会话灰度须在额度检查前判定：走 v2 时额度由调度器 submit 准入扣减。
-            service = self._v2_service_for(getattr(event, "unified_msg_origin", None))
             allowed, limit_message = await self._check_command_generation_limit(
                 event,
                 requested_provider=requested_provider,
                 requested_model=requested_model,
                 has_reference_images=bool(all_ref_images),
-                consume_quota=service is None,
             )
             if not allowed:
                 if limit_message:
@@ -833,163 +821,101 @@ class GeminiImageGenerationPlugin(Star):
                 requested_model=requested_model,
             )
 
-            # 灰度：scheduler_v2 开启时命令入口改走 v2 调度器（生命周期/持久化/
-            # deadline 治理/准入）；内联参考图先经 prepare_references 落成短句柄，
-            # 避免 base64 撞请求引用长度上限。
+            # 额度与队列准入在 submit 内完成，拒绝提示必须先于"生成中"发出；
+            # 内联参考图先经 prepare_references 落成短句柄，避免 base64 撞请求
+            # 引用长度上限。
             deadline = self.cfg.total_timeout * 2
-            handle = None
-            if service is not None:
-                # 额度与队列准入在 submit 内完成，拒绝提示必须先于"生成中"发出。
-                v2_requester = requester_from_event(event)
-                umo = getattr(event, "unified_msg_origin", None)
-                if umo:
-                    v2_requester["umo"] = umo
-                try:
-                    prepared_refs = await service.prepare_references(
-                        all_ref_images, requester=v2_requester
+            v2_requester = requester_from_event(event)
+            umo = getattr(event, "unified_msg_origin", None)
+            if umo:
+                v2_requester["umo"] = umo
+            try:
+                prepared_refs = await service.prepare_references(
+                    all_ref_images, requester=v2_requester
+                )
+            except CoreError as error:
+                yield event.plain_result(
+                    v2_failure_text(
+                        str(error.code),
+                        error.message,
+                        total_timeout=self.cfg.total_timeout,
                     )
-                except CoreError as error:
-                    yield event.plain_result(
-                        v2_failure_text(
-                            str(error.code),
-                            error.message,
-                            total_timeout=self.cfg.total_timeout,
-                        )
-                    )
-                    return
-                try:
-                    handle = await service.submit(
-                        v2_command_request(
-                            prompt=enhanced_prompt,
-                            resolution=effective_resolution,
-                            aspect_ratio=effective_aspect_ratio,
-                            requested_provider=requested_provider,
-                            requested_model=requested_model,
-                            reference_images=prepared_refs,
-                            requester=v2_requester,
-                            deadline_seconds=deadline,
-                            metadata={
-                                "suppress_resolution": suppress_resolution,
-                                "enable_smart_retry": self.cfg.enable_smart_retry,
-                                "max_attempts_per_key": self.cfg.max_attempts_per_key,
-                                "total_timeout": self.cfg.total_timeout,
-                                "quota": {"cost": 1},
-                                "template_id": template_id,
-                            },
-                        ),
-                        admission={"event": event},
-                    )
-                except QuotaExceededError as error:
-                    # 消息为空对应群名单不通过：与旧路径一致，静默不回复。
-                    if not error.details.get("silent"):
-                        yield event.plain_result(error.message)
-                    return
-                except (QueueFullError, ServiceClosedError) as error:
-                    # 旧路径里这是被装饰调用抛出的 APIError，经同一格式化函数回复。
-                    yield event.plain_result(format_error_message(error.message))
-                    return
-            else:
-                try:
-                    tracking_record = await self.generation_tracker.begin(
-                        source="command",
+                )
+                return
+            try:
+                handle = await service.submit(
+                    v2_command_request(
                         prompt=enhanced_prompt,
-                        params={
-                            "resolution": effective_resolution,
-                            "aspect_ratio": effective_aspect_ratio,
-                            "provider": requested_provider,
-                            "model": requested_model,
-                            "image_count": 1,
-                            "quality": None,
+                        resolution=effective_resolution,
+                        aspect_ratio=effective_aspect_ratio,
+                        requested_provider=requested_provider,
+                        requested_model=requested_model,
+                        reference_images=prepared_refs,
+                        requester=v2_requester,
+                        deadline_seconds=deadline,
+                        metadata={
+                            "suppress_resolution": suppress_resolution,
+                            "enable_smart_retry": self.cfg.enable_smart_retry,
+                            "max_attempts_per_key": self.cfg.max_attempts_per_key,
+                            "total_timeout": self.cfg.total_timeout,
+                            "quota": {"cost": 1},
                             "template_id": template_id,
                         },
-                        requester=requester_from_event(event),
-                        requested_images=1,
-                    )
-                    tracking_job_id = tracking_record["job_id"]
-                    logger.debug(
-                        f"[生成追踪] 快捷生成开始: job_id={tracking_job_id}, "
-                        f"来源=command, 目标张数=1, prompt={enhanced_prompt[:30]!r}"
-                    )
-                except Exception as tracking_error:
-                    logger.warning(
-                        f"[生成追踪] 快捷生成创建记录失败: {redact_error(str(tracking_error))[:240]}"
-                    )
+                    ),
+                    admission={"event": event},
+                )
+            except QuotaExceededError as error:
+                # 消息为空对应群名单不通过：静默不回复。
+                if not error.details.get("silent"):
+                    yield event.plain_result(error.message)
+                return
+            except (QueueFullError, ServiceClosedError) as error:
+                yield event.plain_result(format_error_message(error.message))
+                return
 
             try:
                 yield event.plain_result("🎨  生成中...")
             except (asyncio.CancelledError, GeneratorExit):
                 # Job 已在上面提交：此处被取消或关闭，同样要取消生成。
-                if handle is not None:
-                    await asyncio.shield(service.cancel(handle.job_id))
+                await asyncio.shield(service.cancel(handle.job_id))
                 raise
 
             api_start = time.perf_counter()
-            if service is not None:
-                # 等待上限由调度器给出（deadline 之外还容纳观察者钩子时间）；
-                # 调用方被取消或等待超时都先取消 Job，与旧路径取消语义一致。
-                try:
-                    job_result = await service.wait(
-                        handle.job_id, timeout=service.result_wait_timeout(deadline)
-                    )
-                except asyncio.CancelledError:
-                    await asyncio.shield(service.cancel(handle.job_id))
-                    raise
-                except asyncio.TimeoutError:
-                    await asyncio.shield(service.cancel(handle.job_id))
-                    yield event.plain_result(
-                        api_failure_message(
-                            message="生成等待超时",
-                            status_code=None,
-                            error_type="timeout",
-                            total_timeout=self.cfg.total_timeout,
-                        )
-                    )
-                    return
-                if (
-                    job_result.state not in (JobState.SUCCEEDED, JobState.PARTIAL)
-                    or job_result.result is None
-                ):
-                    yield event.plain_result(
-                        v2_failure_message(
-                            job_result, total_timeout=self.cfg.total_timeout
-                        )
-                    )
-                    return
-                v2_result = job_result.result
-                image_urls, image_paths = v2_split_artifacts(v2_result.artifacts)
-                text_content = v2_result.text
-                thought_signature = None
-                v2_apply_result_to_config(config, v2_result)
-            else:
-                (
-                    image_urls,
-                    image_paths,
-                    text_content,
-                    thought_signature,
-                ) = await self.api_client.generate_image(
-                    config=config,
-                    max_retries=self.cfg.max_attempts_per_key,
-                    per_retry_timeout=self.cfg.total_timeout,
-                    max_total_time=self.cfg.total_timeout * 2,
+            # 等待上限由调度器给出（deadline 之外还容纳观察者钩子时间）；
+            # 调用方被取消或等待超时都先取消 Job，与旧路径取消语义一致。
+            try:
+                job_result = await service.wait(
+                    handle.job_id, timeout=service.result_wait_timeout(deadline)
                 )
+            except asyncio.CancelledError:
+                await asyncio.shield(service.cancel(handle.job_id))
+                raise
+            except asyncio.TimeoutError:
+                await asyncio.shield(service.cancel(handle.job_id))
+                yield event.plain_result(
+                    api_failure_message(
+                        message="生成等待超时",
+                        status_code=None,
+                        error_type="timeout",
+                        total_timeout=self.cfg.total_timeout,
+                    )
+                )
+                return
+            if (
+                job_result.state not in (JobState.SUCCEEDED, JobState.PARTIAL)
+                or job_result.result is None
+            ):
+                yield event.plain_result(
+                    v2_failure_message(job_result, total_timeout=self.cfg.total_timeout)
+                )
+                return
+            v2_result = job_result.result
+            image_urls, image_paths = v2_split_artifacts(v2_result.artifacts)
+            text_content = v2_result.text
+            thought_signature = None
+            v2_apply_result_to_config(config, v2_result)
             api_duration = time.perf_counter() - api_start
 
-            if tracking_job_id:
-                await record_generation_success(
-                    self.generation_tracker,
-                    tracking_job_id,
-                    image_urls=image_urls,
-                    image_paths=image_paths,
-                    text_content=text_content,
-                    stats={
-                        "provider": config.successful_provider,
-                        "model": config.successful_model,
-                        "alias": config.successful_model_alias,
-                        "retry_count": config.retry_count,
-                    },
-                    archive_images_fn=self.web_studio_service.archive_images,
-                    candidate_id=config.successful_candidate_id,
-                )
             send_start = time.perf_counter()
             await self.message_sender.send_results_with_stream_retry(
                 event=event,
@@ -1014,33 +940,8 @@ class GeminiImageGenerationPlugin(Star):
             ):
                 yield res
 
-        except asyncio.CancelledError:
-            if tracking_job_id:
-                try:
-                    await self.generation_tracker.update(
-                        tracking_job_id,
-                        status="interrupted",
-                        error="生成任务已取消",
-                    )
-                    logger.debug(f"[生成追踪] 快捷生成已中断: job_id={tracking_job_id}")
-                except Exception as tracking_error:
-                    logger.warning(
-                        f"[生成追踪] 快捷生成取消状态写入异常: {redact_error(str(tracking_error))[:240]}"
-                    )
-            raise
         except Exception as e:
             logger.error(f"快捷生成失败: {redact_error(str(e))[:240]}", exc_info=True)
-            if tracking_job_id:
-                try:
-                    await self.generation_tracker.fail(tracking_job_id, error=e)
-                    logger.debug(
-                        f"[生成追踪] 快捷生成失败: job_id={tracking_job_id}, "
-                        f"异常类型={type(e).__name__}"
-                    )
-                except Exception as tracking_error:
-                    logger.warning(
-                        f"[生成追踪] 快捷生成失败状态写入异常: {redact_error(str(tracking_error))[:240]}"
-                    )
             yield event.plain_result(format_error_message(e))
 
     def _resolve_quick_mode_params(
@@ -1436,14 +1337,15 @@ class GeminiImageGenerationPlugin(Star):
                 yield result
             return
 
-        # v2 会话灰度须在额度检查前判定：走 v2 时额度由调度器 submit 准入扣减。
-        v2_service = self._v2_service_for(event.unified_msg_origin)
+        v2_service = self._ensure_v2_service()
+        if v2_service is None:
+            yield event.plain_result("❌ 生成服务尚未初始化")
+            return
         allowed, limit_message = await self._check_command_generation_limit(
             event,
             requested_provider=requested_provider,
             requested_model=requested_model,
             has_reference_images=True,
-            consume_quota=v2_service is None,
         )
         if not allowed:
             if limit_message:
@@ -1454,55 +1356,39 @@ class GeminiImageGenerationPlugin(Star):
 
         api_start_time = time.perf_counter()
         try:
-            submission = None
-            if v2_service is not None:
-                # 额度与队列准入在 submit 内完成，拒绝提示必须先于"生成中"发出。
-                submission = await self.image_generator.submit_v2(
-                    event=event,
-                    v2_service=v2_service,
-                    prompt=full_prompt,
-                    reference_images=valid_reference_images,
-                    avatar_reference=valid_avatar_reference,
-                    override_resolution=sticker_resolution,
-                    override_aspect_ratio=sticker_aspect_ratio,
-                    requested_provider=requested_provider,
-                    requested_model=requested_model,
-                    admission={"event": event},
-                    quota={"cost": 1},
-                    template_id=template.id,
-                )
-                if submission.handle is None:
-                    if not submission.silent:
-                        yield event.plain_result(submission.message)
-                    return
+            # 额度与队列准入在 submit 内完成，拒绝提示必须先于"生成中"发出。
+            submission = await self.image_generator.submit_v2(
+                event=event,
+                v2_service=v2_service,
+                prompt=full_prompt,
+                reference_images=valid_reference_images,
+                avatar_reference=valid_avatar_reference,
+                override_resolution=sticker_resolution,
+                override_aspect_ratio=sticker_aspect_ratio,
+                requested_provider=requested_provider,
+                requested_model=requested_model,
+                admission={"event": event},
+                quota={"cost": 1},
+                template_id=template.id,
+            )
+            if submission.handle is None:
+                if not submission.silent:
+                    yield event.plain_result(submission.message)
+                return
 
             try:
                 yield event.plain_result("🎨  生成中...")
             except (asyncio.CancelledError, GeneratorExit):
                 # Job 已在上面提交：此处被取消或关闭，同样要取消生成。
-                if submission is not None:
-                    await asyncio.shield(v2_service.cancel(submission.handle.job_id))
+                await asyncio.shield(v2_service.cancel(submission.handle.job_id))
                 raise
 
-            if submission is not None:
-                success, result_data = await self.image_generator.wait_v2(
-                    v2_service=v2_service,
-                    handle=submission.handle,
-                    requested_provider=requested_provider,
-                    requested_model=requested_model,
-                )
-            else:
-                success, result_data = await self.image_generator.generate_image_core(
-                    event=event,
-                    prompt=full_prompt,
-                    reference_images=valid_reference_images,
-                    avatar_reference=valid_avatar_reference,
-                    override_resolution=sticker_resolution,
-                    override_aspect_ratio=sticker_aspect_ratio,
-                    requested_provider=requested_provider,
-                    requested_model=requested_model,
-                    template_id=template.id,
-                )
+            success, result_data = await self.image_generator.wait_v2(
+                v2_service=v2_service,
+                handle=submission.handle,
+                requested_provider=requested_provider,
+                requested_model=requested_model,
+            )
             api_duration = time.perf_counter() - api_start_time
 
             if not success or not isinstance(result_data, tuple):
@@ -2044,64 +1930,52 @@ class GeminiImageGenerationPlugin(Star):
             )
             return
 
-        # v2 会话灰度须在额度检查前判定：走 v2 时额度由调度器 submit 准入扣减。
-        v2_service = self._v2_service_for(event.unified_msg_origin)
+        v2_service = self._ensure_v2_service()
+        if v2_service is None:
+            yield event.plain_result("❌ 生成服务尚未初始化")
+            return
         allowed, limit_message = await self._check_command_generation_limit(
             event,
             requested_provider=requested_provider,
             requested_model=requested_model,
             has_reference_images=True,
-            consume_quota=v2_service is None,
         )
         if not allowed:
             if limit_message:
                 yield event.plain_result(limit_message)
             return
 
-        submission = None
-        if v2_service is not None:
-            # 额度与队列准入在 submit 内完成，拒绝提示必须先于"开始转换风格"发出。
-            submission = await self.image_generator.submit_v2(
-                event=event,
-                v2_service=v2_service,
-                prompt=full_prompt,
-                reference_images=reference_images,
-                avatar_reference=avatar_reference,
-                requested_provider=requested_provider,
-                requested_model=requested_model,
-                admission={"event": event},
-                quota={"cost": 1},
-            )
-            if submission.handle is None:
-                if not submission.silent:
-                    yield event.plain_result(submission.message)
-                return
+        # 额度与队列准入在 submit 内完成，拒绝提示必须先于"开始转换风格"发出。
+        submission = await self.image_generator.submit_v2(
+            event=event,
+            v2_service=v2_service,
+            prompt=full_prompt,
+            reference_images=reference_images,
+            avatar_reference=avatar_reference,
+            requested_provider=requested_provider,
+            requested_model=requested_model,
+            admission={"event": event},
+            quota={"cost": 1},
+        )
+        if submission.handle is None:
+            if not submission.silent:
+                yield event.plain_result(submission.message)
+            return
 
         try:
             yield event.plain_result("🎨 开始转换风格...")
         except (asyncio.CancelledError, GeneratorExit):
             # Job 已在上面提交：此处被取消或关闭，同样要取消生成。
-            if submission is not None:
-                await asyncio.shield(v2_service.cancel(submission.handle.job_id))
+            await asyncio.shield(v2_service.cancel(submission.handle.job_id))
             raise
 
         api_start = time.perf_counter()
-        if submission is not None:
-            success, result_data = await self.image_generator.wait_v2(
-                v2_service=v2_service,
-                handle=submission.handle,
-                requested_provider=requested_provider,
-                requested_model=requested_model,
-            )
-        else:
-            success, result_data = await self.image_generator.generate_image_core(
-                event=event,
-                prompt=full_prompt,
-                reference_images=reference_images,
-                avatar_reference=avatar_reference,
-                requested_provider=requested_provider,
-                requested_model=requested_model,
-            )
+        success, result_data = await self.image_generator.wait_v2(
+            v2_service=v2_service,
+            handle=submission.handle,
+            requested_provider=requested_provider,
+            requested_model=requested_model,
+        )
         api_duration = time.perf_counter() - api_start
 
         send_start = time.perf_counter()
@@ -2171,43 +2045,6 @@ class GeminiImageGenerationPlugin(Star):
             event, include_at_avatars
         )
 
-    async def _generate_image_core_internal(
-        self,
-        event: AstrMessageEvent,
-        prompt: str,
-        reference_images: list[str],
-        avatar_reference: list[str],
-        override_resolution: str | None = None,
-        override_aspect_ratio: str | None = None,
-        is_tool_call: bool = False,
-        requested_provider: str | None = None,
-        requested_model: str | None = None,
-        negative_prompt: str | None = None,
-        watermark: bool | None = None,
-        quality: str | None = None,
-        image_count: int = 1,
-        suppress_resolution: bool = False,
-        template_id: str | None = None,
-    ) -> tuple[bool, tuple[list[str], list[str], str | None, str | None] | str]:
-        """兼容旧 API：核心图像生成方法"""
-        return await self.image_generator.generate_image_core(
-            event=event,
-            prompt=prompt,
-            reference_images=reference_images,
-            avatar_reference=avatar_reference,
-            override_resolution=override_resolution,
-            override_aspect_ratio=override_aspect_ratio,
-            is_tool_call=is_tool_call,
-            requested_provider=requested_provider,
-            requested_model=requested_model,
-            negative_prompt=negative_prompt,
-            watermark=watermark,
-            quality=quality,
-            image_count=image_count,
-            suppress_resolution=suppress_resolution,
-            template_id=template_id,
-        )
-
     async def _dispatch_send_results(
         self,
         event: AstrMessageEvent,
@@ -2227,12 +2064,6 @@ class GeminiImageGenerationPlugin(Star):
             scene=scene,
         ):
             yield res
-
-    async def _check_and_consume_limit(
-        self, event: AstrMessageEvent, *, cost: int = 1
-    ) -> tuple[bool, str | None]:
-        """兼容旧 API：检查限流"""
-        return await self.rate_limiter.check_and_consume(event, cost=cost)
 
     def _get_group_id_from_event(self, event: AstrMessageEvent) -> str | None:
         """兼容旧 API：获取群ID"""

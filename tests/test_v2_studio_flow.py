@@ -100,16 +100,19 @@ async def close_env(env):
 
 
 def forbid_legacy_execution(monkeypatch, studio):
-    async def fail_async(*args, **kwargs):
-        raise AssertionError("v2 不得调用旧生成路径")
+    def fail(*args, **kwargs):
+        raise AssertionError("v2 不得调用旧调度私有方法")
 
-    def fail_attach(*args, **kwargs):
-        raise AssertionError("v2 不得创建旧运行时任务")
-
-    monkeypatch.setattr(studio, "_execute_generation", fail_async)
-    monkeypatch.setattr(studio, "_start_single", fail_async)
-    monkeypatch.setattr(studio, "_start_batch", fail_async)
-    monkeypatch.setattr(studio, "_attach", fail_attach)
+    for name in (
+        "_admit",
+        "_attach",
+        "_start_single",
+        "_start_batch",
+        "_run_single",
+        "_run_batch",
+        "_execute_generation",
+    ):
+        monkeypatch.setattr(studio, name, fail, raising=False)
 
 
 @pytest.mark.asyncio
@@ -123,8 +126,7 @@ async def test_single_v2_fills_archives_and_bypasses_legacy_entry(
     try:
         accepted = await env.studio.generate({"prompt": "draw", "image_count": 2})
         assert accepted["job_id"]
-        assert env.studio._runtime_tasks == {}
-        assert env.studio._admitted_jobs == 0
+        assert env.studio.closed is False
 
         snapshot = await env.v2.wait(accepted["job_id"])
         assert snapshot.state.value == "succeeded"
@@ -180,7 +182,7 @@ async def test_batch_v2_links_children_and_aggregates_studio_history(
         assert [child["generated_images"] for child in children] == [1, 2]
         assert sum(len(child["images"]) for child in children) == 3
         assert quota.calls == [{"umo": None, "cost": 2, "scope": "global"}]
-        assert env.studio._runtime_tasks == {}
+        assert env.studio.closed is False
     finally:
         await close_env(env)
 
@@ -276,17 +278,21 @@ async def test_studio_capacity_rejection_maps_to_429(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_none_v2_service_keeps_legacy_runtime_path(tmp_path):
+async def test_missing_v2_service_rejects_with_503(tmp_path):
+    """v2 是唯一执行链路：未装配生成服务时直接拒绝，不再回退旧运行时任务。"""
+
     client = OutputClient(tmp_path)
     tracker = GenerationTracker(tmp_path, 20)
     studio = WebStudioService(
         client, tracker, _config(), tmp_path, v2_service_provider=lambda: None
     )
     try:
-        accepted = await studio.generate({"prompt": "draw"})
-        task = studio._runtime_tasks[accepted["job_id"]]
-        await task
-        assert tracker.get(accepted["job_id"])["status"] == "succeeded"
+        with pytest.raises(StudioServiceError) as caught:
+            await studio.generate({"prompt": "draw"})
+        assert caught.value.status_code == 503
+        assert caught.value.message == "生成服务尚未初始化"
+        assert client.configs == []
+        assert tracker.active_and_recent() == []
     finally:
         await studio.close()
         await tracker.close()

@@ -20,6 +20,11 @@ class GenerationService:
         self._scheduler = scheduler
         self._reference_service = reference_service
 
+    @property
+    def busy(self) -> bool:
+        """是否存在尚未收尾的运行时任务。"""
+        return self._scheduler.busy
+
     async def prepare_references(
         self,
         references: Sequence[str],

@@ -9,7 +9,6 @@ import pytest
 
 # 复用现有宿主 stub（mcp / astrbot 桩）与事件假对象。
 from tests.test_llm_routing_and_tasks import _Event
-from tl import llm_tools
 from tl import v2_tool_delivery as delivery_module
 from tl.background_tasks import BackgroundTaskManager
 from tl.core.models import Job
@@ -30,8 +29,6 @@ RESULT = GenerationResult(
     candidate_id="cand-1",
     stats={"successful_model_alias": "别名"},
 )
-# 记录里随任务变化、与收尾字段无关的键。
-VOLATILE_KEYS = {"task_id", "created_at", "updated_at", "job_id", "session_id"}
 
 
 class Notifier:
@@ -115,35 +112,11 @@ async def read_record(plugin, event, task_id):
     return await plugin.background_task_manager.get(task_id, event.unified_msg_origin)
 
 
-def stable(record):
-    return {key: value for key, value in record.items() if key not in VOLATILE_KEYS}
-
-
-async def legacy_record(plugin, event, *, success, result_data, stats):
-    """旧路径 _await_generation_task_and_send 收尾后的记录，用于逐字对比。"""
-    task_id = await new_record(plugin, event)
-
-    async def finished():
-        return success, result_data, stats
-
-    await llm_tools._await_generation_task_and_send(
-        plugin,
-        event,
-        asyncio.create_task(finished()),
-        scene=SCENE,
-        task_id=task_id,
-        notify_llm=True,
-    )
-    return await read_record(plugin, event, task_id)
-
-
 # ===== 成功送达 =====
 
 
 @pytest.mark.asyncio
-async def test_deliver_dispatches_result_and_finalizes_record_like_legacy(
-    plugin, notifier
-):
+async def test_deliver_dispatches_result_and_finalizes_record(plugin, notifier):
     event = _Event()
     task_id = await new_record(plugin, event)
     adapter = ToolBackgroundDelivery(plugin, event, scene=SCENE)
@@ -180,21 +153,6 @@ async def test_deliver_dispatches_result_and_finalizes_record_like_legacy(
     ]
     assert (record["completed_items"], record["succeeded_items"]) == (1, 1)
     assert record["failed_items"] == 0
-
-    # 与旧路径对同一份结果收尾的记录逐字一致（除任务号、时间与 job_id）。
-    legacy = await legacy_record(
-        plugin,
-        event,
-        success=True,
-        result_data=(["https://img.test/a.png"], [TEST_IMAGE_PATH], "ok", None),
-        stats={
-            "successful_provider": "legacy",
-            "successful_model": "auto",
-            "successful_model_alias": "别名",
-            "successful_candidate_id": "cand-1",
-        },
-    )
-    assert stable(record) == stable(legacy)
 
 
 @pytest.mark.asyncio
@@ -234,19 +192,9 @@ async def test_deliver_not_delivered_marks_partial_success_and_raises(plugin, no
     )
     assert record["items"][0]["delivery_success"] is False
     assert record["job_id"] == "job-v2-1"
-    legacy = await legacy_record(
-        plugin,
-        event,
-        success=True,
-        result_data=(["https://img.test/a.png"], [TEST_IMAGE_PATH], "ok", None),
-        stats={
-            "successful_provider": "legacy",
-            "successful_model": "auto",
-            "successful_model_alias": "别名",
-            "successful_candidate_id": "cand-1",
-        },
-    )
-    assert stable(record) == stable(legacy)
+    assert record["items"][0]["provider"] == "legacy"
+    assert record["items"][0]["alias"] == "别名"
+    assert record["items"][0]["candidate_id"] == "cand-1"
 
 
 @pytest.mark.asyncio
@@ -312,7 +260,7 @@ async def test_cancel_during_deliver_propagates_and_leaves_record_alone(
 
 
 @pytest.mark.asyncio
-async def test_deliver_failure_reports_failed_job_and_finalizes_record_like_legacy(
+async def test_deliver_failure_reports_failed_job_and_finalizes_record(
     plugin, notifier
 ):
     event = _Event()
@@ -334,10 +282,8 @@ async def test_deliver_failure_reports_failed_job_and_finalizes_record_like_lega
     assert record["job_id"] == "job-v2-1"
     assert (record["completed_items"], record["failed_items"]) == (1, 1)
     assert record["items"][0]["success"] is False
-    legacy = await legacy_record(
-        plugin, event, success=False, result_data=expected, stats={}
-    )
-    assert stable(record) == stable(legacy)
+    # 失败通知已送达 Agent，投递标记随之为真。
+    assert record["items"][0]["delivery_success"] is True
 
 
 @pytest.mark.asyncio

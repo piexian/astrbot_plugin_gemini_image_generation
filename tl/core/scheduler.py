@@ -257,6 +257,11 @@ class JobScheduler:
         # 批量父 Job 的运行时登记（见 submit_batch），随父 runtime task 结束清理。
         self._batches: dict[str, _BatchPlan] = {}
 
+    @property
+    def busy(self) -> bool:
+        """是否存在尚未收尾的运行时任务。"""
+        return any(not task.done() for task in self._tasks.values())
+
     async def submit(
         self,
         request: GenerationRequest,

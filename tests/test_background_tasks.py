@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 
 import pytest
@@ -53,7 +52,7 @@ def test_restart_marks_running_tasks_interrupted(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_close_cancels_attached_tasks_and_marks_interrupted(tmp_path) -> None:
+async def test_close_marks_running_tasks_interrupted_and_persists(tmp_path) -> None:
     manager = BackgroundTaskManager(tmp_path)
     record = await manager.create(
         session_id="session",
@@ -62,10 +61,9 @@ async def test_close_cancels_attached_tasks_and_marks_interrupted(tmp_path) -> N
         message="running",
     )
 
-    async def wait_forever() -> None:
-        await asyncio.Event().wait()
-
-    manager.attach(record["task_id"], wait_forever())
     await manager.close()
 
     assert manager._records[record["task_id"]]["status"] == "interrupted"
+    # 收尾必须落盘：重启后读到的仍是中断态。
+    reloaded = BackgroundTaskManager(tmp_path)
+    assert reloaded._records[record["task_id"]]["status"] == "interrupted"

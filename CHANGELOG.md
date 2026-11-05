@@ -10,7 +10,6 @@
 - 内部引用解析器，以及生成记录的 `umo` 与共享标记。配置项 `service_settings.reference_cross_session` 默认关闭。
 - LLM 工具 `gemini_image_lookup` 查询模型、模板、可引用的生成记录和后台任务；`gemini_image_share` 由请求者本人共享或取消共享自己的生成记录。
 - 单图工具新增 `template`、`references`、`options` 和 `deliver`。生成成功后，前台结果和后台回灌会附上 `gen:` 引用。
-- `retry_settings.scheduler_v2_sessions` 会话灰度名单：填会话的 unified_msg_origin，非空时仅名单内会话的聊天命令与 LLM 工具走 v2 调度器，其余会话、WebUI 与 SDK 保持旧路径。
 - 在线模板（image-prompt-hub）：广场新增「在线模板」子页，支持本地缓存检索、实时检索（`online` 模式）、导入为本地副本、立即同步，以及密钥的申请、校验与吊销。由 `service_settings.template_hub_mode`（`cache`/`online`/`off`）、`template_hub_url` 和 `template_hub_key` 控制；`cache` 模式检索与生成都不联网。
 - LLM 工具 `gemini_image_batch`：批量生图从 `gemini_image_generation` 的 `batch_tasks` 拆为独立工具，用 `tasks` 数组提交；顶层 `model`、`template`、`references`、`resolution`、`aspect_ratio` 和 `options` 作为全部任务的默认值，条目内同名字段覆盖默认值。
 - WebUI 提示词广场：新增「提示词广场」页签，管理内置与本地模板（搜索与标签筛选、新建／编辑／复制／删除、内置恢复默认、AI 可用开关、JSON 包导入导出、填入工作台）。后端：`/templates`（列表与增删改、恢复内置默认、AI 可用开关）、`/templates/import`、`/templates/export` 与 `/template_asset/<name>`；模板预览图存插件数据目录 `template_assets/`，不受画廊容量清理影响。
@@ -20,16 +19,16 @@
 - `/快速` 的提示词改由模板库渲染，附加要求前的标签统一为“用户需求：”；生成历史记录 `template_id`。
 - 原 `gemini_image_provider_models` 与 `gemini_image_task_status` 合并为 `gemini_image_lookup`。升级后需要在 AstrBot 里重新勾选和授权。
 - 单图工具 `gemini_image_generation` 改用 `template`、`references`、`model`、`options` 和 `deliver`。移除单图参数 `provider`、`use_reference_images`、`include_user_avatar`、`reference_image_paths`、`preserve_reference_image_size`、顶层 `negative_prompt`、`watermark`、`quality`、`for_forum` 和 `batch_tasks`；调用时仍传入这些键会被忽略。批量请求改用独立工具 `gemini_image_batch`。
-- v2 调度器（`scheduler_v2`）覆盖命令入口全部生成路径：`/表情包`（含切割模式）与 `/换风格` 也经由 v2 提交；开启后生成历史由调度器生命周期投影写入，字段与旧路径一致。
+- v2 调度器全量接管命令入口、LLM 工具（单图与批量）、WebUI 创作台与公开 SDK，移除旧调度核心与 `scheduler_v2` / `scheduler_v2_sessions` 灰度配置开关；生成历史统一由调度器生命周期投影写入。
 - v2 调度器的额度与生成队列改在提交时统一准入：先预留共享额度，再预留生成队列名额，任一步被拒都不创建任务，已预留的额度自动退回；命令入口不再自行扣额度。任务一旦被接受，之后失败或取消不退还额度（与旧路径一致）。
 - v2 路径下额度不足、群名单拒绝（静默不回复）、生成队列已满时，拒绝提示先于"生成中"/"开始转换风格"发出，被拒绝的命令不再出现进度提示。
-- LLM 工具 `gemini_image_generation` 单图模式（含 `deliver="return"`）接入 v2 调度器（受 `scheduler_v2` 与灰度名单控制）：额度由调度器在提交时扣；转后台后的生成与图片回灌由调度器的投递阶段执行，不再另起后台任务；回灌未送达时任务以 `partial`（`delivery_failed`）结束并保留结果，后台任务记录同时写入 `job_id`；`references` 中通过路径守卫校验的本地图在 v2 下同样可用，`gen:` 画廊图按普通内联参考图处理。
+- LLM 工具 `gemini_image_generation` 单图模式（含 `deliver="return"`）全量接入 v2 调度器：额度由调度器在提交时扣；转后台后的生成与图片回灌由调度器的投递阶段执行，不再另起后台任务；回灌未送达时任务以 `partial`（`delivery_failed`）结束并保留结果，后台任务记录同时写入 `job_id`；`references` 中通过路径守卫校验的本地图在 v2 下同样可用，`gen:` 画廊图按普通内联参考图处理。
 - LLM 工具批量生成改由独立工具 `gemini_image_batch` 承载（参数 `tasks`），其 v2 父子 Job 行为不变：提交时创建全部子任务并按配置并发执行，各子任务独立计算执行时限，单张不足时自动补足；额度仍按批量条目数只扣一次，最终由调度器统一回灌批量汇总，不再另起旧批量后台任务。顶层 `model`、`template`、`references`、`resolution`、`aspect_ratio` 和 `options` 作为全部任务的默认值，条目内同名字段覆盖默认值。
-- WebUI 创作台在 `scheduler_v2` 开启且灰度名单为空时接入 v2：单图/批量统一由调度器执行并写入历史，参考图先入库再释放上传租约；生成队列满或服务关闭改为提交时返回 429/503（旧路径为受理后任务失败），名单非空时保持旧路径。
+- WebUI 创作台全量接入 v2 调度器：单图/批量统一由调度器执行并写入历史，参考图先入库再释放上传租约；生成队列满或服务关闭改为提交时返回 429/503。
 - WebUI 供应商配置不再返回 API Key 原文，仅显示数量与掩码预览，修改统一走 secret actions；所有插件页路由增加身份、面板/API Key 授权与 POST CSRF 校验。
 - WebUI 模型目录与生成图归档启用出站地址检查：link-local/元数据地址始终拒绝，私网/loopback 仅允许已保存供应商 `api_base` 的同名 origin；归档下载最多手动重定向 3 次并逐跳复检。
 - 生成历史与 jobs 接口的 `source_urls` 不再保留 query、fragment 或 userinfo（旧记录仅在响应中脱敏）；失败任务不能再凭带签名参数的源链接手动取回图片，成功任务的 gallery 图片不受影响。
-- 公开 SDK `get_service(1)` 在 v2 灰度范围内接入调度器：任务记录、回调、等待与取消语义保持兼容，生成队列满时稳定抛出 `code="queue_full"`；URL 参考图在执行时受 SSRF 策略约束，本地文件先转为临时句柄。
+- 公开 SDK `get_service(1)` 全量接入 v2 调度器：任务记录、回调、等待与取消语义保持兼容，生成队列满时稳定抛出 `code="queue_full"`；URL 参考图在执行时受 SSRF 策略约束，本地文件先转为临时句柄。
 - v2 下 LLM 工具调用在前台等待期间被取消时同时取消生成，不再出现取消后生成仍在后台运行却无人投递的情况。
 - v2 下 LLM 工具前台结果构建超时（如代理下载慢）不再转后台，改为直接返回图片 URL/本地路径文本，提示调用 `send_message_to_user` 的 `image` 组件发送。
 - 运行环境与 CI 基线统一为 Python 3.12。

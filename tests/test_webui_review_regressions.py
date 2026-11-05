@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.test_web_studio_service import _config, _png
+from tests.test_web_studio_service import _close_v2, _config, _png, _start_v2
 from tl.generation_tracker import GenerationTracker
 from tl.plugin_config import ProviderCandidate
 from tl.provider_capabilities import candidate_reference_limit, select_candidates
@@ -338,8 +338,12 @@ async def test_studio_pins_duplicate_candidate_through_runtime(tmp_path, monkeyp
         "model": "same",
         "candidate_id": "google#2",
     }
-    accepted = await service.generate(payload)
-    await service._runtime_tasks[accepted["job_id"]]
+    env = await _start_v2(service, tracker)
+    try:
+        accepted = await service.generate(payload)
+        await env.v2.wait(accepted["job_id"])
+    finally:
+        await _close_v2(env)
     assert seen == ["google#2"]
     assert tracker.get(accepted["job_id"])["params"]["candidate_id"] == "google#2"
     with pytest.raises(StudioServiceError):
@@ -415,7 +419,12 @@ async def test_shutdown_interrupts_job_during_archival(tmp_path, monkeypatch):
         await asyncio.Event().wait()
 
     monkeypatch.setattr(service, "archive_sources", archive)
-    accepted = await service.generate({"prompt": "draw"})
-    await started.wait()
-    await service.close()
-    assert tracker.get(accepted["job_id"])["status"] == "interrupted"
+    env = await _start_v2(service, tracker)
+    try:
+        accepted = await service.generate({"prompt": "draw"})
+        await started.wait()
+        await env.v2.close()
+        assert tracker.get(accepted["job_id"])["status"] == "interrupted"
+    finally:
+        await service.close()
+        await tracker.close()

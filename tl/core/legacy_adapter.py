@@ -51,6 +51,15 @@ class LegacyClientAdapter:
             dict(provider_settings) if provider_settings is not None else None
         )
 
+    def _resolve_client(self) -> Any:
+        if hasattr(self._client, "generate_image"):
+            return self._client
+        if callable(self._client):
+            resolved = self._client()
+            if resolved is not None:
+                return resolved
+        raise LegacyProviderError("API 客户端尚未初始化", code="client_unavailable")
+
     @property
     def name(self) -> str:
         return self._provider
@@ -161,7 +170,8 @@ class LegacyClientAdapter:
             total_timeout,
         )
         try:
-            return await self._client.generate_image(
+            client = self._resolve_client()
+            return await client.generate_image(
                 config,
                 max_retries=max_retries,
                 total_timeout=total_timeout,

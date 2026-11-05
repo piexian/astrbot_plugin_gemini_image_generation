@@ -25,7 +25,6 @@ import numpy as np
 from astrbot.api import logger
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-from .api_types import ApiRequestConfig
 from .core.errors import (
     CoreError,
     QueueFullError,
@@ -33,13 +32,11 @@ from .core.errors import (
     ReferenceResolveError,
     ServiceClosedError,
     StudioBusyError,
-    redact_text,
     redact_url,
 )
 from .core.path_policy import check_remote_url
 from .core.remote_fetch import PROBE_BYTES
 from .file_uri import file_uri_to_path
-from .generation_scheduler import generation_progress
 from .generation_tracker import (
     TERMINAL_STATUSES,
     GenerationTracker,
@@ -157,17 +154,11 @@ class WebStudioService:
         self.preferences = StudioPreferencesStore(self.data_dir)
         self.gallery_dir = self.data_dir / "gallery"
         self.upload_dir = self.data_dir / "webui_uploads"
-        self._api_semaphore = asyncio.Semaphore(
-            max(int(getattr(config, "webui_max_concurrent_jobs", 2)), 1)
-        )
-        self._runtime_tasks: dict[str, asyncio.Task[Any]] = {}
         self._gallery_lock = asyncio.Lock()
         self._upload_lock = asyncio.Lock()
         self._admission_lock = asyncio.Lock()
         self._upload_file_lock = threading.RLock()
         self._upload_ref_counts: dict[str, int] = {}
-        self._admitted_jobs = 0
-        self._attachment_count = 0
         self._closed = False
 
     @property
@@ -185,59 +176,6 @@ class WebStudioService:
     def update_api_client(self, api_client: Any) -> None:
         self.api_client = api_client
 
-    def _admit(self) -> None:
-        if self._closed:
-            raise StudioServiceError("工作台服务已关闭", status_code=503)
-        maximum = max(
-            int(getattr(self.config, "webui_max_concurrent_jobs", 2)),
-            1,
-        )
-        if self._admitted_jobs >= maximum:
-            logger.warning(
-                "[WebUI] 工作台任务被拒绝: 原因=并发已满, scope=studio, "
-                f"当前任务数={self._admitted_jobs}, 并发上限={maximum}, 状态码=429"
-            )
-            raise StudioServiceError(
-                "工作台生成任务已达到并发上限，请稍后重试",
-                status_code=429,
-            )
-        self._admitted_jobs += 1
-
-    def _attach(self, job_id: str, coroutine: Any, upload_names: list[str]) -> None:
-        """旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
-        leased = frozenset(upload_names)
-        try:
-            if self._closed:
-                raise StudioServiceError("工作台服务已关闭", status_code=503)
-            task = asyncio.create_task(coroutine)
-        except BaseException:
-            coroutine.close()
-            raise
-        self._runtime_tasks[job_id] = task
-
-        def done(done_task: asyncio.Task[Any]) -> None:
-            self._runtime_tasks.pop(job_id, None)
-            self._admitted_jobs = max(self._admitted_jobs - 1, 0)
-            # 完成回调也覆盖协程首次执行前就被取消的情况。
-            self._release_uploads(leased)
-            if done_task.cancelled():
-                logger.info(f"[WebUI] 工作台任务已取消: job_id={job_id}")
-                return
-            exception = done_task.exception()
-            if exception is not None:
-                logger.error(
-                    f"[WebUI] 任务 {job_id} 异常退出: "
-                    f"{redact_text(str(exception))[:240]}",
-                    exc_info=(
-                        type(exception),
-                        exception,
-                        exception.__traceback__,
-                    ),
-                )
-
-        task.add_done_callback(done)
-        self._attachment_count += 1
-
     @provider_operation("studio")
     async def generate(
         self,
@@ -245,62 +183,25 @@ class WebStudioService:
         requester: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         async with self._admission_lock:
+            if self._closed:
+                raise StudioServiceError("工作台服务已关闭", status_code=503)
             normalized, warning = self.validate_payload(payload)
             if self.api_client is None:
                 raise StudioServiceError("API 客户端尚未初始化", status_code=503)
             v2_service = (
                 self._v2_service_provider() if self._v2_service_provider else None
             )
-            if v2_service is not None:
-                leased = self._acquire_uploads(normalized["upload_names"])
-                try:
-                    response = await self._start_v2(
-                        v2_service, normalized, requester or {}
-                    )
-                except (CoreError, ReferenceImageUnavailableError) as exc:
-                    raise self._map_v2_error(exc) from exc
-                finally:
-                    self._release_uploads(leased)
-            else:
-                self._admit()
-                leased = frozenset()
-                limit_token: str | None = None
-                attachment_count = self._attachment_count
-                try:
-                    leased = self._acquire_uploads(normalized["upload_names"])
-                    if self.rate_limiter is not None:
-                        decision = await self.rate_limiter.acquire(
-                            None, cost=len(normalized.get("batch") or []) or 1
-                        )
-                        if not decision.allowed:
-                            logger.warning(
-                                "[WebUI] 工作台任务被限流拒绝: "
-                                f"scope={decision.scope}, "
-                                f"retry_after={decision.retry_after}"
-                            )
-                            raise StudioServiceError(
-                                decision.message or "请求过于频繁，请稍后再试",
-                                status_code=429,
-                                data={
-                                    "scope": decision.scope,
-                                    "retry_after": decision.retry_after,
-                                },
-                            )
-                        limit_token = decision.token
-                    if normalized.get("batch") is not None:
-                        response = await self._start_batch(normalized, requester or {})
-                    else:
-                        response = await self._start_single(normalized, requester or {})
-                except BaseException as exc:
-                    # 挂入后的资源由任务完成回调释放，供应商失败不退额度。
-                    if self._attachment_count == attachment_count:
-                        self._release_uploads(leased)
-                        self._admitted_jobs = max(self._admitted_jobs - 1, 0)
-                        if self.rate_limiter is not None and limit_token is not None:
-                            await self.rate_limiter.refund(limit_token)
-                    if isinstance(exc, ReferenceImageUnavailableError):
-                        raise StudioServiceError(str(exc), status_code=404) from exc
-                    raise
+            if v2_service is None:
+                raise StudioServiceError("生成服务尚未初始化", status_code=503)
+            # 参考图在 _start_v2 的 prepare_references 里入库成短句柄，
+            # 提交返回后即可释放上传文件租约。
+            leased = self._acquire_uploads(normalized["upload_names"])
+            try:
+                response = await self._start_v2(v2_service, normalized, requester or {})
+            except (CoreError, ReferenceImageUnavailableError) as exc:
+                raise self._map_v2_error(exc) from exc
+            finally:
+                self._release_uploads(leased)
         if warning:
             response["warning"] = warning
         batch_items = normalized.get("batch") or []
@@ -459,80 +360,6 @@ class WebStudioService:
         if isinstance(error, ServiceClosedError):
             return StudioServiceError(error.message, status_code=503)
         return StudioServiceError(error.message or "生成任务提交失败", status_code=400)
-
-    async def _start_single(
-        self,
-        payload: dict[str, Any],
-        requester: dict[str, Any],
-    ) -> dict[str, Any]:
-        record = await self.tracker.begin(
-            source="webui",
-            prompt=payload["prompt"],
-            params=self._history_params(payload),
-            requester=requester,
-            reference_names=payload["reference_names"],
-            requested_images=payload["image_count"],
-        )
-        self._attach(
-            record["job_id"],
-            self._run_single(record["job_id"], payload),
-            payload["upload_names"],
-        )
-        return {"job_id": record["job_id"]}
-
-    async def _start_batch(
-        self,
-        payload: dict[str, Any],
-        requester: dict[str, Any],
-    ) -> dict[str, Any]:
-        items = payload["batch"]
-        requested_images = sum(item["image_count"] for item in items)
-        parent = await self.tracker.begin(
-            source="webui",
-            prompt="",
-            params=self._history_params(payload),
-            requester=requester,
-            reference_names=payload["reference_names"],
-            requested_images=requested_images,
-        )
-        child_jobs: list[tuple[str, dict[str, Any]]] = []
-        for item in items:
-            child_payload = {**payload, **item, "batch": None}
-            child = await self.tracker.begin(
-                source="webui",
-                prompt=item["prompt"],
-                params=self._history_params(child_payload),
-                requester=requester,
-                reference_names=payload["reference_names"],
-                parent_job_id=parent["job_id"],
-                item_name=item["name"],
-                requested_images=item["image_count"],
-            )
-            child_jobs.append((child["job_id"], child_payload))
-        self._attach(
-            parent["job_id"],
-            self._run_batch(parent["job_id"], child_jobs),
-            payload["upload_names"],
-        )
-        return {
-            "job_id": parent["job_id"],
-            "item_job_ids": [job_id for job_id, _ in child_jobs],
-        }
-
-    @staticmethod
-    def _history_params(payload: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "resolution": payload.get("resolution"),
-            "aspect_ratio": payload.get("aspect_ratio"),
-            "provider": payload.get("provider"),
-            "model": payload.get("model"),
-            "candidate_id": payload.get("candidate_id"),
-            "image_count": payload.get("image_count", 1),
-            "quality": payload.get("quality"),
-            "seed": payload.get("seed"),
-            "negative_prompt": payload.get("negative_prompt"),
-            "generation_settings": payload.get("generation_settings") or {},
-        }
 
     def validate_payload(
         self,
@@ -942,245 +769,6 @@ class WebStudioService:
                 data["maximum"] = max(maximums)
             raise StudioServiceError("seed 不受目标供应商支持", data=data)
         payload["candidate_id"] = str(accepted[0].id)
-
-    async def _run_single(self, job_id: str, payload: dict[str, Any]) -> None:
-        """旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
-        try:
-            await self._execute_generation(job_id, payload)
-        except asyncio.CancelledError:
-            await self.tracker.update(
-                job_id, status="interrupted", error="工作台服务关闭，任务已中断"
-            )
-            raise
-
-    async def _run_batch(
-        self,
-        parent_job_id: str,
-        child_jobs: list[tuple[str, dict[str, Any]]],
-    ) -> None:
-        """旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
-        semaphore = asyncio.Semaphore(
-            max(int(getattr(self.config, "batch_concurrency", 3)), 1)
-        )
-
-        async def run_child(job_id: str, payload: dict[str, Any]) -> None:
-            leased = self._acquire_uploads(payload["upload_names"])
-            try:
-                async with semaphore:
-                    await self._execute_generation(job_id, payload)
-            finally:
-                self._release_uploads(leased)
-
-        try:
-            # 异常不能让父任务提前结束并释放仍被其他子任务使用的上传。
-            results = await asyncio.gather(
-                *(run_child(job_id, payload) for job_id, payload in child_jobs),
-                return_exceptions=True,
-            )
-            for result in results:
-                if isinstance(result, BaseException):
-                    raise result
-            records = [self.tracker.get(job_id) for job_id, _ in child_jobs]
-            generated = sum(
-                int(record.get("generated_images") or 0) for record in records if record
-            )
-            statuses = {record.get("status") for record in records if record}
-            if statuses == {"succeeded"}:
-                status = "succeeded"
-            elif generated:
-                status = "partial_success"
-            else:
-                status = "failed"
-            if status == "failed":
-                await self.tracker.fail(parent_job_id, error="所有批量任务均生成失败")
-            else:
-                parent_urls = [
-                    str(url)
-                    for record in records
-                    if record
-                    for url in (record.get("source_urls") or [])
-                ]
-                await self.tracker.complete(
-                    parent_job_id,
-                    image_files=[],
-                    text_content="批量生成完成",
-                    stats={},
-                    status=status,
-                    source_urls=parent_urls,
-                )
-                await self.tracker.update(
-                    parent_job_id,
-                    generated_images=generated,
-                )
-            self._log_job_outcome(parent_job_id)
-        except asyncio.CancelledError:
-            await self.tracker.update(
-                parent_job_id,
-                status="interrupted",
-                error="工作台服务关闭，任务已中断",
-            )
-            for child_job_id, _ in child_jobs:
-                record = self.tracker.get(child_job_id)
-                if record and record.get("status") in {"queued", "running"}:
-                    await self.tracker.update(
-                        child_job_id,
-                        status="interrupted",
-                        error="工作台服务关闭，任务已中断",
-                    )
-                    self._log_job_outcome(child_job_id)
-            self._log_job_outcome(parent_job_id)
-            raise
-        except Exception as exc:
-            await self.tracker.fail(parent_job_id, error=exc)
-            self._log_job_outcome(parent_job_id)
-
-    async def _execute_generation(
-        self,
-        job_id: str,
-        payload: dict[str, Any],
-    ) -> None:
-        """旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
-        target = payload["image_count"]
-        collected: list[str] = []
-        text_parts: list[str] = []
-        last_stats: dict[str, Any] = {}
-        source_candidates: dict[str, str | None] = {}
-        error: str | None = None
-        try:
-            while len(collected) < target:
-                remaining = target - len(collected)
-                request_config = ApiRequestConfig(
-                    model="",
-                    prompt=payload["prompt"],
-                    resolution=payload.get("resolution"),
-                    aspect_ratio=payload.get("aspect_ratio"),
-                    reference_images=payload.get("reference_images") or None,
-                    enable_smart_retry=bool(
-                        getattr(self.config, "enable_smart_retry", True)
-                    ),
-                    image_input_mode="force_base64",
-                    requested_provider=payload.get("provider"),
-                    requested_model=payload.get("model"),
-                    requested_candidate_id=payload.get("candidate_id"),
-                    route_all_candidates=True,
-                    negative_prompt=payload.get("negative_prompt"),
-                    quality=payload.get("quality"),
-                    seed=payload.get("seed"),
-                    generation_settings=payload.get("generation_settings") or None,
-                    image_count=remaining,
-                )
-
-                async def progress(status):
-                    await self.tracker.update(job_id, status=status)
-
-                async with self._api_semaphore:
-                    with generation_progress(
-                        progress,
-                        preview=lambda data, fmt: self.tracker.preview(
-                            job_id, data, fmt
-                        ),
-                    ):
-                        result = await self.api_client.generate_image(
-                            config=request_config,
-                            max_retries=_positive_int(
-                                getattr(self.config, "max_attempts_per_key", 3), 3
-                            ),
-                            per_retry_timeout=_positive_int(
-                                getattr(self.config, "total_timeout", 120), 120
-                            ),
-                            max_total_time=_positive_int(
-                                getattr(self.config, "total_timeout", 120), 120
-                            ),
-                        )
-                image_urls, image_paths, text_content, _signature = result
-                # 部分供应商会把同一本地文件同时放入两个列表，计数前先去重。
-                returned = dict.fromkeys(
-                    str(item)
-                    for item in (image_urls or []) + (image_paths or [])
-                    if item
-                )
-                new_images = [item for item in returned if item not in collected]
-                if not new_images:
-                    error = "供应商未返回新的图片"
-                    break
-                collected.extend(new_images[:remaining])
-                source_candidates.update(
-                    dict.fromkeys(
-                        new_images[:remaining], request_config.successful_candidate_id
-                    )
-                )
-                if text_content:
-                    text_parts.append(str(text_content))
-                last_stats = {
-                    "provider": request_config.successful_provider,
-                    "model": request_config.successful_model,
-                    "alias": request_config.successful_model_alias,
-                    "retry_count": request_config.retry_count,
-                }
-                await self.tracker.update(
-                    job_id,
-                    generated_images=len(collected),
-                    stats=last_stats,
-                )
-        except asyncio.CancelledError:
-            await self.tracker.update(
-                job_id,
-                status="interrupted",
-                error="工作台服务关闭，任务已中断",
-            )
-            self._log_job_outcome(job_id)
-            raise
-        except Exception as exc:
-            error = str(exc) or type(exc).__name__
-
-        try:
-            archived = await self.archive_sources(
-                collected, candidate_ids=source_candidates, job_id=job_id
-            )
-        except StudioServiceError as exc:
-            archived = []
-            error = exc.message
-        source_urls = [
-            item
-            for item in collected
-            if isinstance(item, str) and item.startswith(("http://", "https://"))
-        ]
-        if not archived:
-            await self.tracker.fail(job_id, error=error or "生成结果归档失败")
-            if source_urls:
-                # 投递失败保留脱敏源链接供追溯；签名参数在记录前移除。
-                await self.tracker.update(job_id, source_urls=source_urls)
-            self._log_job_outcome(job_id)
-            return
-        status = "succeeded" if len(archived) >= target else "partial_success"
-        await self.tracker.complete(
-            job_id,
-            image_files=archived[:target],
-            text_content="\n".join(text_parts) or None,
-            stats=last_stats,
-            status=status,
-            source_urls=source_urls,
-        )
-        if error:
-            await self.tracker.update(job_id, error=error)
-        self._log_job_outcome(job_id)
-
-    def _log_job_outcome(self, job_id: str) -> None:
-        record = self.tracker.get(job_id)
-        if record is None:
-            return
-        status = str(record.get("status") or "未知")
-        stats = record.get("stats") or {}
-        params = record.get("params") or {}
-        provider = stats.get("provider") or params.get("provider") or "未记录"
-        model = stats.get("model") or params.get("model") or "未记录"
-        outcome = "失败" if status in {"failed", "interrupted"} else "完成"
-        logger.info(
-            f"[WebUI] 工作台任务{outcome}: job_id={job_id}, 状态={status}, "
-            f"耗时={record.get('duration_ms') or 0}ms, "
-            f"产出张数={record.get('generated_images') or 0}, "
-            f"供应商={provider}, 模型={model}"
-        )
 
     async def archive_images(
         self,
@@ -1992,23 +1580,5 @@ class WebStudioService:
             return
         self._closed = True
         async with self._admission_lock:
-            tasks = list(self._runtime_tasks.values())
-            aborted = [
-                job_id
-                for job_id, task in self._runtime_tasks.items()
-                if not task.done()
-            ]
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
-            if aborted:
-                logger.info(
-                    f"[WebUI] 工作台关闭，取消在途任务: 任务数={len(aborted)}, "
-                    f"job_id={','.join(aborted[:5])}"
-                )
-            self._runtime_tasks.clear()
-            self._admitted_jobs = 0
             with self._upload_file_lock:
                 self._upload_ref_counts.clear()

@@ -35,8 +35,7 @@ main.py
 | `GeminiImageLookupTool.call()` | `llm_query_tools.py` | 按 kind 查询模型、模板、生成记录和后台任务 |
 | `GeminiImageShareTool.call()` | `llm_query_tools.py` | 由请求者本人共享或取消共享自己的生成记录 |
 | `BackgroundTaskManager` | `background_tasks.py` | 持久化、隔离和清理后台任务记录 |
-| `run_batch_job()` | `batch_generation.py` | 按配置并发执行命名批量任务并顺序发送结果 |
-| `execute_image_generation_tool()` | `llm_tools.py` | 兼容旧调用方式的工具入口 |
+| `GeminiImageBatchTool.call()` | `llm_tools.py` | 批量生图 FunctionTool 调用入口 |
 | `MessageSender.dispatch_send_results()` | `message_sender.py` | 图片、文本、合并转发发送结果构造入口 |
 | `MessageSender.send_results_with_stream_retry()` | `message_sender.py` | 直接发送结果；原始发送失败后按阈值尝试 NapCat Stream API 兜底 |
 | `ImageHandler.fetch_images_from_event()` | `image_handler.py` | 从消息事件收集参考图和头像图 |
@@ -354,9 +353,8 @@ StepFun provider。
 | `GeminiImageBatchTool` | AstrBot FunctionTool 实现（批量，参数 `tasks`） |
 | `GeminiImageGenerationTool.refresh_from_plugin()` | 根据当前插件配置刷新工具描述和参数 schema |
 | `GeminiImageGenerationTool.call()` | LLM Tool 调用入口 |
-| `execute_image_generation_tool()` | 兼容旧路径的执行入口 |
 | `_build_call_tool_result()` | 将图片结果封装为仅文本的 `CallToolResult`，只列本地路径或 URL，不内联图片数据 |
-| `_await_generation_task_and_send()` | LLM 后台生成完成后反向激活主 Agent，提供图片 URL/路径并要求调用主动发送工具 |
+| `ToolBackgroundDelivery` / `ToolBatchDelivery` | `v2_tool_delivery.py` 中承接 v2 调度器后台完成/失败投递并反向激活主 Agent |
 
 核心工具参数包括：
 
@@ -383,7 +381,7 @@ StepFun provider。
 
 - `GenerationTracker`：全来源（指令/LLM 工具/LLM 批量/工作台）生成记录，创建即落盘 `generation_history.json`，SSE 有界队列扇出（快照+增量+resync）；`begin/update/complete/fail` + `import_legacy`（启动迁入存量图）+ `tracking_context`（ContextVar 传播批量父子关系）。记录含 `source_urls`：持久 http(s) 源链接经 `is_temp_cache_url` 过滤、去重、上限 20 条/2048 字符；写入及 API 读取均去掉 query、fragment 与 userinfo，旧记录只在响应中脱敏、不回写磁盘。
 - `WebStudioService`：工作台生成编排（全局并发准入、循环补足目标张数、partial_success）、gallery 归档（本地复制/远程流式下载、容量整组淘汰）、上传校验与运行租约（流式截断+魔数+像素+配额，父子任务引用计数保护过期清理和容量淘汰）、`capabilities()` 扁平候选列表（白名单字段）。工作台任务归档成功或失败都记录脱敏源 URL（仅供追溯，签名参数不再保留）；批量父任务聚合子任务 `source_urls`。
-- 指令/LLM 路径的归档只是历史副本（图片按原始来源发送）：`ImageGenerator._complete_tracking` 与 `_quick_generate_image` 在归档异常或不完整时记 `partial_success` 并用 `update(error=…)` 注明原因，不再 fail，同时把交付源里的 http(s) URL 写入 `source_urls`；仅工作台路径（投递依赖画廊）归档失败才 fail。归档远程下载超时 30s（与发送侧网络条件一致），逐跳执行出站检查，最多手动重定向 3 次。
+- 指令/LLM 路径的归档只是历史副本（图片按原始来源发送）：`TrackerProjection` 与 `record_generation_success` 在归档异常或不完整时记 `partial_success` 并用 `update(error=…)` 注明原因，不再 fail，同时把交付源里的 http(s) URL 写入 `source_urls`；仅工作台路径（投递依赖画廊）归档失败才 fail。归档远程下载超时 30s（与发送侧网络条件一致），逐跳执行出站检查，最多手动重定向 3 次。
 - `WebStudioAPI`：薄 HTTP 适配层，路由前缀 `/astrbot_plugin_gemini_image_generation/webui/`，标准 `{status/data}` 信封；注册时统一检查宿主身份、面板/API Key 授权与 POST CSRF 头；图片经 `image_b64` 端点走 bridge 传输（插件页 iframe 为不透明源沙箱，`<img>` 直连不带 Cookie 必 401）。
 - JSON 请求体超限由端点经 `_service_error()` 保留 413（生成、偏好保存、历史删除）；JSON 解析或结构校验失败仍为 400。
 - 工作台参数弹窗使用独立 `GenerationSettingsEditor` 草稿，确认后才替换已应用参数并记忆；关闭、取消、模型切换或销毁均丢弃草稿。确认态编辑器离屏保存，不随长表单撑开侧栏；旧 `expanded` 偏好不再控制界面。

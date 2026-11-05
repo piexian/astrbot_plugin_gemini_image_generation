@@ -1,4 +1,4 @@
-"""v2 会话灰度、命令入口接入与 legacy/v2 请求形态对比测试。"""
+"""v2 命令入口接入与请求形态测试。"""
 
 from __future__ import annotations
 
@@ -28,27 +28,6 @@ from tl.generation_errors import api_failure_message
 from tl.image_generator import ImageGenerator, V2Submission
 from tl.reference_image import REFERENCE_IMAGE_CACHE_DIR
 from tl.v2_bridge import v2_failure_text
-
-# ===== 会话灰度范围 =====
-
-
-def test_v2_service_for_gate(command_plugin):
-    plugin = command_plugin
-    sentinel = object()
-    plugin._v2_service = sentinel
-    plugin.cfg.scheduler_v2 = False
-    plugin.cfg.scheduler_v2_sessions = ()
-    # 总开关关 → 一律旧路径。
-    assert plugin._v2_service_for("umo-a") is None
-    # 总开关开、名单空 → 全部入口走 v2。
-    plugin.cfg.scheduler_v2 = True
-    assert plugin._v2_service_for("umo-a") is sentinel
-    assert plugin._v2_service_for(None) is sentinel
-    # 名单非空且命中 → v2；未命中 → 旧路径。
-    plugin.cfg.scheduler_v2_sessions = ("umo-a",)
-    assert plugin._v2_service_for("umo-a") is sentinel
-    assert plugin._v2_service_for("umo-b") is None
-
 
 # ===== 命令入口 v2 行为 =====
 
@@ -127,7 +106,6 @@ def _wire_sender(plugin):
 @pytest.mark.asyncio
 async def test_quick_generate_v2_skips_entry_tracker_writes(command_plugin):
     plugin = command_plugin
-    plugin.cfg.scheduler_v2 = True
     service = _FakeV2Service(
         result=GenerationResult(
             artifacts=("https://img.test/a.png",),
@@ -136,7 +114,7 @@ async def test_quick_generate_v2_skips_entry_tracker_writes(command_plugin):
             model="auto",
         )
     )
-    plugin._v2_service_for = lambda umo: service
+    plugin._ensure_v2_service = lambda: service
     sent = _wire_sender(plugin)
 
     outputs = await _run_quick(plugin)
@@ -157,7 +135,6 @@ async def test_quick_generate_v2_failure_message_matches_legacy_wording(
     command_plugin,
 ):
     plugin = command_plugin
-    plugin.cfg.scheduler_v2 = True
     service = _FakeV2Service(state=JobState.FAILED)
     service.result = None
 
@@ -171,7 +148,7 @@ async def test_quick_generate_v2_failure_message_matches_legacy_wording(
         )
 
     service.wait = wait
-    plugin._v2_service_for = lambda umo: service
+    plugin._ensure_v2_service = lambda: service
     _wire_sender(plugin)
 
     outputs = await _run_quick(plugin)
@@ -188,7 +165,6 @@ def _two_phase_generator(handle=None, **submission):
     return SimpleNamespace(
         submit_v2=AsyncMock(return_value=V2Submission(handle=handle, **submission)),
         wait_v2=AsyncMock(return_value=(False, "wait failed")),
-        generate_image_core=AsyncMock(return_value=(False, "legacy failed")),
         get_request_stats=lambda: {},
     )
 
@@ -204,7 +180,7 @@ async def test_sticker_and_style_submit_then_wait_through_v2(
     plugin.cfg.enable_sticker_split = True
     sentinel = object()
     handle = SimpleNamespace(job_id="job-v2-1")
-    plugin._v2_service_for = lambda umo: sentinel
+    plugin._ensure_v2_service = lambda: sentinel
     plugin.image_generator = _two_phase_generator(handle=handle)
     event = _Event()
     event.message_str = ""
@@ -218,30 +194,8 @@ async def test_sticker_and_style_submit_then_wait_through_v2(
     wait_kwargs = generator.wait_v2.await_args.kwargs
     assert wait_kwargs["v2_service"] is sentinel
     assert wait_kwargs["handle"] is handle
-    generator.generate_image_core.assert_not_awaited()
     assert "wait failed" in outputs
     assert plugin.rate_limiter.calls == []
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("name", "args"), [("quick_sticker", ("draw",)), ("change_style", ("ink",))]
-)
-async def test_sticker_and_style_legacy_path_skips_v2_api(command_plugin, name, args):
-    plugin = command_plugin
-    plugin.cfg.enable_sticker_split = True
-    plugin._v2_service_for = lambda umo: None
-    plugin.image_generator = _two_phase_generator()
-    event = _Event()
-    event.message_str = ""
-    _ = [result async for result in getattr(plugin, name)(event, *args)]
-    generator = plugin.image_generator
-    kwargs = generator.generate_image_core.await_args.kwargs
-    assert "v2_service" not in kwargs
-    generator.submit_v2.assert_not_awaited()
-    generator.wait_v2.assert_not_awaited()
-    # 旧路径仍由入口扣一次额度。
-    assert plugin.rate_limiter.calls == [(event.unified_msg_origin, 1)]
 
 
 # ===== ImageGenerator v2 分支 =====
@@ -375,22 +329,13 @@ async def test_image_generator_v2_cancel_shields_job_cancel():
 
 
 @pytest.mark.asyncio
-async def test_image_generator_without_v2_service_keeps_legacy_path():
-    calls = []
-
-    class Client:
-        async def generate_image(self, config, **kwargs):
-            calls.append(config)
-            return [], ["/tmp/out.png"], None, None
-
-    generator = ImageGenerator(
-        context=None, api_client=Client(), filter_valid_fn=lambda i, s: i or []
-    )
-    success, _ = await generator.generate_image_core(
+async def test_image_generator_without_v2_service_reports_unavailable():
+    generator = ImageGenerator(context=None, api_client=object())
+    success, message = await generator.generate_image_core(
         event=None, prompt="draw", reference_images=[], avatar_reference=[]
     )
-    assert success is True
-    assert len(calls) == 1
+    assert success is False
+    assert message == "❌ 生成服务尚未初始化"
 
 
 # ===== legacy 与 v2 请求形态对比 =====
@@ -411,29 +356,32 @@ class _ConfigRecordingClient:
         return (["https://img.test/out.png"], [], "ok", None)
 
 
-_SHAPE_FIELDS = (
-    "prompt",
-    "resolution",
-    "aspect_ratio",
-    "suppress_resolution",
-    "requested_provider",
-    "requested_model",
-    "enable_smart_retry",
-    "image_input_mode",
-    "image_count",
-)
+def _assert_config_shape(
+    config,
+    *,
+    prompt,
+    resolution=None,
+    aspect_ratio=None,
+    requested_provider=None,
+    requested_model=None,
+):
+    assert config.prompt == prompt
+    assert config.resolution == resolution
+    assert config.aspect_ratio == aspect_ratio
+    assert config.suppress_resolution is False
+    assert config.requested_provider == requested_provider
+    assert config.requested_model == requested_model
+    assert config.enable_smart_retry is True
+    assert config.image_input_mode == "force_base64"
+    assert config.image_count == 1
 
 
-def _assert_same_shape(legacy_config, v2_config):
-    for field in _SHAPE_FIELDS:
-        assert getattr(legacy_config, field) == getattr(v2_config, field), field
-    # 参考图：旧路径为 base64 data URI，v2 为落盘文件路径，字节必须一致。
-    legacy_ref = legacy_config.reference_images[0]
-    v2_ref = v2_config.reference_images[0]
-    assert legacy_ref.startswith("data:image/")
-    assert not v2_ref.startswith("data:")
-    assert Path(v2_ref).is_file()
-    assert base64.b64decode(legacy_ref.split(",", 1)[1]) == Path(v2_ref).read_bytes()
+def _assert_reference_bytes(config, data_uri):
+    """v2 把内联参考图落盘为文件路径，字节必须与入口 data URI 一致。"""
+    (reference,) = config.reference_images
+    assert not reference.startswith("data:")
+    assert Path(reference).is_file()
+    assert base64.b64decode(data_uri.split(",", 1)[1]) == Path(reference).read_bytes()
 
 
 def _make_plugin():
@@ -459,10 +407,7 @@ def _make_plugin():
         fetch_images_from_event=AsyncMock(return_value=(["ref.png"], [])),
         filter_valid_reference_images=lambda values, **kwargs: list(values),
     )
-    plugin.image_generator = SimpleNamespace(
-        generate_image_core=AsyncMock(return_value=(False, "provider failed")),
-        get_request_stats=lambda: {},
-    )
+    plugin.image_generator = SimpleNamespace(get_request_stats=lambda: {})
     plugin.generation_tracker = SimpleNamespace(
         begin=AsyncMock(return_value={"job_id": "job-q"}),
         complete=AsyncMock(),
@@ -484,91 +429,62 @@ def command_plugin():
 
 
 @pytest.mark.asyncio
-async def test_quick_command_request_shape_legacy_vs_v2(tmp_path, command_plugin):
+async def test_quick_command_request_shape(tmp_path):
     data_uri = _png_data_uri()
-
-    # 旧路径：命令入口直连 legacy client。
-    plugin = command_plugin
-    legacy_client = _ConfigRecordingClient()
-    plugin.api_client = SimpleNamespace(generate_image=legacy_client.generate_image)
-    plugin.image_handler.fetch_images_from_event = AsyncMock(
-        return_value=([data_uri], [])
-    )
-    plugin.image_handler.filter_valid_reference_images = lambda values, **kwargs: list(
-        values
-    )
-    _wire_sender(plugin)
-    await _run_quick(plugin)
-    assert len(legacy_client.configs) == 1
-
-    # v2 路径：真实 build_generation_stack + 记录入参的假客户端。
-    v2_client = _ConfigRecordingClient()
+    client = _ConfigRecordingClient()
     service = build_generation_stack(
-        v2_client,
+        client,
         [{"provider": "legacy", "model": "auto"}],
         tmp_path / "store",
         (REFERENCE_IMAGE_CACHE_DIR,),
     )
-    plugin2 = _make_plugin()
-    plugin2.cfg.scheduler_v2 = True
-    plugin2._v2_service_for = lambda umo: service
-    plugin2.api_client = SimpleNamespace(generate_image=v2_client.generate_image)
-    plugin2._ensure_api_client = lambda: True
-    plugin2.image_handler = SimpleNamespace(
+    plugin = _make_plugin()
+    plugin._ensure_v2_service = lambda: service
+    plugin.api_client = SimpleNamespace(generate_image=client.generate_image)
+    plugin._ensure_api_client = lambda: True
+    plugin.image_handler = SimpleNamespace(
         fetch_images_from_event=AsyncMock(return_value=([data_uri], [])),
         filter_valid_reference_images=lambda values, **kwargs: list(values),
     )
-    _wire_sender(plugin2)
+    _wire_sender(plugin)
     try:
-        await _run_quick(plugin2)
-        assert len(v2_client.configs) == 1
-        _assert_same_shape(legacy_client.configs[0], v2_client.configs[0])
+        await _run_quick(plugin)
+        assert len(client.configs) == 1
+        config = client.configs[0]
+        _assert_config_shape(config, prompt="draw", resolution="2K", aspect_ratio="3:2")
+        _assert_reference_bytes(config, data_uri)
     finally:
         await service.close()
 
 
 @pytest.mark.asyncio
-async def test_sticker_generate_core_request_shape_legacy_vs_v2(tmp_path):
+async def test_sticker_generate_core_request_shape(tmp_path):
     data_uri = _png_data_uri()
-
-    legacy_client = _ConfigRecordingClient()
-    generator_legacy = ImageGenerator(
-        context=None,
-        api_client=legacy_client,
-        filter_valid_fn=lambda images, source: images or [],
-    )
-    success, _ = await generator_legacy.generate_image_core(
-        event=None,
-        prompt="表情包网格",
-        reference_images=[data_uri],
-        avatar_reference=[],
-    )
-    assert success is True
-    assert len(legacy_client.configs) == 1
-
-    v2_client = _ConfigRecordingClient()
+    client = _ConfigRecordingClient()
     service = build_generation_stack(
-        v2_client,
+        client,
         [{"provider": "legacy", "model": "auto"}],
         tmp_path / "store",
         (REFERENCE_IMAGE_CACHE_DIR,),
     )
-    generator_v2 = ImageGenerator(
+    generator = ImageGenerator(
         context=None,
-        api_client=v2_client,
+        api_client=client,
         filter_valid_fn=lambda images, source: images or [],
     )
     try:
-        success2, data2 = await generator_v2.generate_image_core(
+        success, data = await generator.generate_image_core(
             event=None,
             prompt="表情包网格",
             reference_images=[data_uri],
             avatar_reference=[],
             v2_service=service,
         )
-        assert success2 is True
-        assert data2[0] == ["https://img.test/out.png"]
-        _assert_same_shape(legacy_client.configs[0], v2_client.configs[0])
+        assert success is True
+        assert data[0] == ["https://img.test/out.png"]
+        config = client.configs[0]
+        _assert_config_shape(config, prompt="表情包网格")
+        _assert_reference_bytes(config, data_uri)
     finally:
         await service.close()
 
@@ -576,10 +492,9 @@ async def test_sticker_generate_core_request_shape_legacy_vs_v2(tmp_path):
 @pytest.mark.asyncio
 async def test_quick_generate_v2_cancel_shields_job_cancel(command_plugin):
     plugin = command_plugin
-    plugin.cfg.scheduler_v2 = True
     service = _FakeV2Service()
     service.wait_error = asyncio.CancelledError()
-    plugin._v2_service_for = lambda umo: service
+    plugin._ensure_v2_service = lambda: service
     _wire_sender(plugin)
     event = _Event()
     event.message_str = ""
@@ -704,9 +619,8 @@ async def test_quick_generate_v2_wait_timeout_yields_message_and_cancels(
     command_plugin,
 ):
     plugin = command_plugin
-    plugin.cfg.scheduler_v2 = True
     service = _FakeV2Service(wait_error=asyncio.TimeoutError())
-    plugin._v2_service_for = lambda umo: service
+    plugin._ensure_v2_service = lambda: service
     _wire_sender(plugin)
     event = _Event()
     event.message_str = ""

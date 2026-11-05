@@ -7,11 +7,15 @@ import sys
 import types
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 
 import tl.tool_path_guard as path_guard
+from tl.core.results import GenerationResult
+from tl.core.states import JobState
+from tl.image_generator import ImageGenerator
 from tl.tool_path_guard import (
     expand_allowed_dirs,
     filter_reference_paths,
@@ -418,6 +422,49 @@ class _FakeAvatarManager:
     pass
 
 
+class _FakeV2Service:
+    """轻量 v2 投影：只记录提交请求与参考图，不经过调度器。"""
+
+    def __init__(self, generated_path: Path) -> None:
+        self.generated_path = generated_path
+        self.requests: list[Any] = []
+        self.prepared_references: list[tuple[str, ...]] = []
+        self.trusted_local: list[bool] = []
+        self.closed = False
+
+    async def prepare_references(self, references, *, requester, trusted_local=False):
+        self.prepared_references.append(tuple(references))
+        self.trusted_local.append(bool(trusted_local))
+        return tuple(references)
+
+    async def submit(self, request, *, admission=None, delivery=None):
+        self.requests.append(request)
+        return SimpleNamespace(job_id="job-fake-1", umo=request.requester.get("umo"))
+
+    def result_wait_timeout(self, deadline_seconds):
+        return deadline_seconds + 50
+
+    def attach_delivery(self, job_id, delivery):
+        return False
+
+    async def wait(self, job_id, timeout=None):
+        return SimpleNamespace(
+            state=JobState.SUCCEEDED,
+            result=GenerationResult(
+                artifacts=(str(self.generated_path),),
+                text=None,
+                provider="legacy",
+                model="auto",
+                candidate_id="cand-1",
+            ),
+            error_code=None,
+            error_message=None,
+        )
+
+    async def cancel(self, job_id):
+        return None
+
+
 class _FakePlugin:
     def __init__(
         self,
@@ -440,12 +487,18 @@ class _FakePlugin:
         )
         self.generated_path = generated_path
         self.event_refs = event_refs or []
+        self.v2_service = _FakeV2Service(generated_path)
         self.captured_reference_images: list[str] | None = None
         self.captured_avatar_reference: list[str] | None = None
-        self.image_generator = SimpleNamespace(
-            max_reference_images=8, get_request_stats=lambda: {}
+        self.message_sender = SimpleNamespace(
+            merge_available_images=lambda urls, paths: [*(urls or []), *(paths or [])],
         )
         self.generation_tracker = SimpleNamespace(enabled=False)
+        self.image_generator = ImageGenerator(
+            context=None,
+            api_client=object(),
+            filter_valid_fn=lambda images, source: images or [],
+        )
         self.image_handler = SimpleNamespace(
             fetch_images_from_event=lambda event, include_at_avatars=False: (
                 self._fetch_images_from_event(
@@ -454,30 +507,15 @@ class _FakePlugin:
             )
         )
 
-    async def _check_and_consume_limit(self, event):
-        return True, None
-
-    def _v2_service_for(self, umo):
-        return None
+    def _ensure_v2_service(self):
+        return self.v2_service
 
     def get_tool_timeout(self, event):
         return 10
 
     async def _fetch_images_from_event(self, event, include_at_avatars=False):
+        self.captured_avatar_reference = []
         return list(self.event_refs), []
-
-    async def _generate_image_core_internal(
-        self,
-        *,
-        event,
-        prompt,
-        reference_images,
-        avatar_reference,
-        **kwargs,
-    ):
-        self.captured_reference_images = list(reference_images)
-        self.captured_avatar_reference = list(avatar_reference)
-        return True, ([], [str(self.generated_path)], None, None)
 
 
 def _tool_context():
@@ -511,8 +549,11 @@ async def test_tool_call_accepts_references_and_ignores_legacy_keys(tmp_path):
     )
 
     assert "图像生成完成" in result
-    assert plugin.captured_reference_images == [ref.resolve().as_uri()]
-    assert plugin.captured_avatar_reference == []
+    # 用户本地图经路径守卫放行后按 trusted_local 提交，头像引用被旧键忽略。
+    (request,) = plugin.v2_service.requests
+    assert request.reference_images == (ref.resolve().as_uri(),)
+    assert plugin.v2_service.prepared_references == [(ref.resolve().as_uri(),)]
+    assert plugin.v2_service.trusted_local == [True]
 
 
 @pytest.mark.asyncio
@@ -525,7 +566,6 @@ async def test_tool_call_rejects_reference_before_admission(tmp_path):
     outside.mkdir()
     generated = _make_img(tmp_path, "generated.png")
     plugin = _FakePlugin(allowed_dirs=[str(allowed)], generated_path=generated)
-    plugin._check_and_consume_limit = AsyncMock(return_value=(True, None))
 
     result = await GeminiImageGenerationTool(plugin=plugin).call(
         _tool_context(),
@@ -534,8 +574,8 @@ async def test_tool_call_rejects_reference_before_admission(tmp_path):
     )
 
     assert "参考图解析失败" in result
-    plugin._check_and_consume_limit.assert_not_awaited()
-    assert plugin.captured_reference_images is None
+    # 参考图解析失败发生在提交之前：没有 v2 请求，也没有建 Job。
+    assert plugin.v2_service.requests == []
 
 
 @pytest.mark.asyncio
@@ -565,14 +605,14 @@ async def test_tool_call_validates_reference_resolution_before_quota(
         max_reference_images=max_images, get_request_stats=lambda: {}
     )
     plugin.avatar_handler.download_user_avatar = AsyncMock(return_value=avatar_result)
-    plugin._check_and_consume_limit = AsyncMock(return_value=(True, None))
 
     result = await GeminiImageGenerationTool(plugin=plugin).call(
         _tool_context(), prompt="draw", references=references
     )
 
     assert expected in result
-    plugin._check_and_consume_limit.assert_not_awaited()
+    # 前置校验不通过时不提交请求，因此不经调度器扣任何额度。
+    assert plugin.v2_service.requests == []
 
 
 @pytest.mark.asyncio

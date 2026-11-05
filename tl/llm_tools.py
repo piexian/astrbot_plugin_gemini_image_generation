@@ -13,7 +13,7 @@ import json
 import math
 import os
 import re
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import Any, NamedTuple
 
 import mcp.types
 from astrbot.api import logger
@@ -23,15 +23,7 @@ from astrbot.core.astr_agent_context import AstrAgentContext
 from pydantic import Field
 from pydantic.dataclasses import dataclass
 
-from .background_dispatch import (
-    dispatch_generation_result as _dispatch_generation_result,
-)
-from .background_dispatch import (
-    generation_reference_note,
-    single_task_record_changes,
-)
-from .background_notify import report_background_failure
-from .batch_generation import run_batch_job
+from .background_dispatch import generation_reference_note
 from .core.errors import (
     CoreError,
     QueueFullError,
@@ -40,7 +32,6 @@ from .core.errors import (
     redact_text,
 )
 from .core.states import JobState
-from .generation_call import invoke_generation_core
 from .generation_errors import api_failure_message
 from .generation_tracker import requester_from_event
 from .image_generator import DEFAULT_MAX_REFERENCE_IMAGES
@@ -49,7 +40,7 @@ from .internal_references import (
     ReferenceResolver,
     parse_references,
 )
-from .llm_output import image_location_list, image_locations, sanitize_text
+from .llm_output import image_location_list, image_locations
 from .openai_image_size import (
     CUSTOM_SIZE_DEFAULT,
     validate_custom_size,
@@ -72,16 +63,10 @@ from .provider_settings import (
     first_provider_candidate as _first_candidate_from_config,
 )
 from .session_image_dir import bind_session_image_dir, reset_session_image_dir
-from .thought_signature import log_thought_signature_debug
-from .tl_utils import format_error_message
 from .tool_path_guard import filter_reference_paths
 from .v2_bridge import build_request as v2_build_request
 from .v2_bridge import split_artifacts, v2_failure_message, v2_failure_text
 from .v2_tool_delivery import ToolBackgroundDelivery, ToolBatchDelivery
-
-if TYPE_CHECKING:
-    from ..main import GeminiImageGenerationPlugin
-
 
 # 参数枚举常量（工具定义和验证共用）
 RESOLUTION_OPTIONS = ("1K", "2K", "4K")
@@ -675,147 +660,11 @@ def _resolve_foreground_wait_seconds(plugin: Any, event: Any) -> int:
     return foreground_wait_seconds
 
 
-def _create_generation_task(
-    plugin: Any,
-    event: Any,
-    prompt: str,
-    reference_images: list[str],
-    avatar_reference: list[str],
-    override_resolution: str | None = None,
-    override_aspect_ratio: str | None = None,
-    is_tool_call: bool = False,
-    requested_provider: str | None = None,
-    requested_model: str | None = None,
-    negative_prompt: str | None = None,
-    watermark: bool | None = None,
-    quality: str | None = None,
-    image_count: int = 1,
-    suppress_resolution: bool = False,
-    template_id: str | None = None,
-) -> asyncio.Task:
-    """旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
+def _resolve_v2_service(plugin: Any) -> Any:
+    """取常驻 v2 生成服务；宿主未提供装配入口时返回 None。"""
 
-    async def _run_generation():
-        success, result_data = await invoke_generation_core(
-            plugin,
-            event=event,
-            prompt=prompt,
-            reference_images=reference_images,
-            avatar_reference=avatar_reference,
-            override_resolution=override_resolution,
-            override_aspect_ratio=override_aspect_ratio,
-            is_tool_call=is_tool_call,
-            requested_provider=requested_provider,
-            requested_model=requested_model,
-            negative_prompt=negative_prompt,
-            watermark=watermark,
-            quality=quality,
-            image_count=image_count,
-            suppress_resolution=suppress_resolution,
-            template_id=template_id,
-        )
-        return success, result_data, plugin.image_generator.get_request_stats()
-
-    return asyncio.create_task(_run_generation())
-
-
-async def _await_generation_task_and_send(
-    plugin: Any,
-    event: Any,
-    generation_task: asyncio.Task,
-    *,
-    scene: str,
-    task_id: str | None = None,
-    notify_llm: bool = False,
-) -> None:
-    """旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
-    try:
-        success, result_data, stats = await generation_task
-        delivered = await _dispatch_generation_result(
-            plugin=plugin,
-            event=event,
-            success=success,
-            result_data=result_data,
-            scene=scene,
-            notify_llm=notify_llm,
-            task_id=task_id,
-            reference_note=generation_reference_note(
-                plugin, (stats or {}).get("job_id") if success else None
-            ),
-        )
-        if task_id:
-            await plugin.background_task_manager.update(
-                task_id,
-                **single_task_record_changes(
-                    success=success,
-                    delivered=delivered,
-                    result_data=result_data,
-                    stats=stats,
-                ),
-            )
-    except Exception as exc:
-        logger.error(
-            f"[{scene}] 后台图像生成异常: {redact_text(str(exc))[:240]}", exc_info=True
-        )
-        if notify_llm:
-            await report_background_failure(
-                plugin,
-                event,
-                format_error_message(exc),
-                scene=scene,
-                task_id=task_id,
-            )
-        else:
-            try:
-                await event.send(event.plain_result(format_error_message(exc)))
-            except Exception as send_error:
-                logger.warning(f"[{scene}] 发送异常消息失败: {send_error}")
-        if task_id:
-            await plugin.background_task_manager.update(
-                task_id,
-                status="failed",
-                message=f"后台生成异常: {exc}",
-                completed_items=1,
-                failed_items=1,
-            )
-
-
-def _schedule_generation_delivery(
-    plugin: Any,
-    event: Any,
-    generation_task: asyncio.Task,
-    *,
-    scene: str,
-    task_id: str | None = None,
-    notify_llm: bool = False,
-) -> asyncio.Task:
-    """旧调度路径：`scheduler_v2` 开启时由 v2 调度器替代，稳定后删除，见 docs/architecture/migration.md。"""
-    coroutine = _await_generation_task_and_send(
-        plugin=plugin,
-        event=event,
-        generation_task=generation_task,
-        scene=scene,
-        task_id=task_id,
-        notify_llm=notify_llm,
-    )
-    sender_task = (
-        plugin.background_task_manager.attach(task_id, coroutine)
-        if task_id
-        else asyncio.create_task(coroutine)
-    )
-
-    def _report_background_exception(task: asyncio.Task) -> None:
-        if task.cancelled():
-            return
-        exc = task.exception()
-        if exc:
-            logger.error(
-                f"[{scene}] 后台发送任务异常终止: {redact_text(str(exc))[:240]}",
-                exc_info=(type(exc), exc, exc.__traceback__),
-            )
-
-    sender_task.add_done_callback(_report_background_exception)
-    return sender_task
+    ensure_v2 = getattr(plugin, "_ensure_v2_service", None)
+    return ensure_v2() if callable(ensure_v2) else None
 
 
 def _event_session_id(event: Any) -> str:
@@ -907,34 +756,6 @@ def _normalize_reference_paths(plugin: Any, values: Any) -> list[str]:
             f"(mode={path_mode})"
         )
     return accepted
-
-
-def _reference_admission_error(
-    plugin: Any,
-    reference_images: list[str],
-    avatar_reference: list[str],
-    *,
-    references_required: bool,
-    avatar_required: bool,
-) -> str | None:
-    """Reject missing required inputs before charging quota or creating a task."""
-    if avatar_required and not avatar_reference:
-        return "未取得所需用户头像，未启动生成；请检查头像获取结果或减少参考图片数量。"
-    if references_required and not (reference_images or avatar_reference):
-        return (
-            "未取得所需参考图片，未启动生成；请引用、重发图片或提供有效的本地图片路径。"
-        )
-
-    max_images = getattr(
-        getattr(plugin, "image_generator", None), "max_reference_images", None
-    )
-    # 核心生成器优先保留普通参考图；本地路径合并后不能挤掉全部必需头像。
-    if max_images is not None and (
-        (references_required and max_images == 0)
-        or (avatar_required and len(reference_images) >= max_images)
-    ):
-        return "参考图片数量超过上限，无法保留所需参考图或头像，未启动生成；请减少参考图片数量或检查上限配置。"
-    return None
 
 
 async def _prepare_batch_tasks(
@@ -1741,53 +1562,10 @@ async def _run_batch_tool(
     if error or not prepared_items:
         return f"❌ 批量任务参数错误：{error or '没有有效任务'}"
 
-    v2_service = plugin._v2_service_for(getattr(event, "unified_msg_origin", None))
-    if v2_service is not None:
-        return await _run_batch_v2(plugin, event, v2_service, prepared_items)
-
-    allowed, limit_message = await plugin._check_and_consume_limit(
-        event, cost=len(prepared_items)
-    )
-    if not allowed:
-        return limit_message or "请求过于频繁，请稍后再试"
-    modes = {item["routing_mode"] for item in prepared_items}
-    batch_mode = next(iter(modes)) if len(modes) == 1 else "mixed"
-    message = routing_description(batch_mode)
-    record = await plugin.background_task_manager.create(
-        session_id=_event_session_id(event),
-        kind="batch",
-        routing_mode=batch_mode,
-        message=message,
-        total_items=len(prepared_items),
-    )
-    task_id = record["task_id"]
-    tracker = getattr(plugin, "generation_tracker", None)
-    parent_job_id = None
-    if tracker is not None:
-        try:
-            parent = await tracker.begin(
-                source="llm_batch",
-                prompt="",
-                params={},
-                requester=requester_from_event(event),
-                requested_images=sum(item["image_count"] for item in prepared_items),
-            )
-            parent_job_id = parent["job_id"]
-        except Exception as exc:
-            logger.warning(
-                f"[生成追踪] 创建批量父记录失败: {redact_text(str(exc))[:240]}"
-            )
-    logger.info(
-        f"[批量任务] v2 后台建档: task_id={task_id}, parent_job_id={parent_job_id}, "
-        f"items={len(prepared_items)}, umo={getattr(event, 'unified_msg_origin', None)}"
-    )
-    plugin.background_task_manager.attach(
-        task_id,
-        run_batch_job(
-            plugin, event, task_id, prepared_items, parent_job_id=parent_job_id
-        ),
-    )
-    return _background_json(task_id, batch_mode, message)
+    v2_service = _resolve_v2_service(plugin)
+    if v2_service is None:
+        return "❌ 无法生成图像：生成服务尚未初始化"
+    return await _run_batch_v2(plugin, event, v2_service, prepared_items)
 
 
 @dataclass
@@ -1916,369 +1694,28 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         )
         if not candidates:
             return "❌ 没有匹配所选供应商、模型、生成模式和参数能力的候选模型"
-        # v2 灰度：额度、生成与后台投递都归调度器；以下 legacy 流程保持原样。
-        v2_service = plugin._v2_service_for(getattr(event, "unified_msg_origin", None))
-        if v2_service is not None:
-            return await _run_single_v2(
-                plugin,
-                event,
-                v2_service,
-                prompt=prompt,
-                reference_images=reference_images,
-                avatar_reference=avatar_reference,
-                resolution=resolution,
-                aspect_ratio=aspect_ratio,
-                provider=provider,
-                model=model,
-                negative_prompt=negative_prompt,
-                watermark=watermark,
-                quality=quality,
-                suppress_resolution=suppress_resolution,
-                return_images=return_images,
-                config_value_notice=config_value_notice,
-                forum_mode=single.forum_mode,
-                trusted_local=single.trusted_local,
-                template_id=template_id,
-            )
-        allowed, limit_message = await plugin._check_and_consume_limit(event)
-        if not allowed:
-            return limit_message or "请求过于频繁，请稍后再试"
-        request_routing_mode = routing_mode(provider, model)
-
-        # 日志记录（仅记录长度和参数摘要，避免记录用户原始内容）
-        prompt_len = len(prompt)
-        logger.info(
-            f"[工具调用] 启动图像生成任务："
-            f"提示词长度={prompt_len} 参考图={ref_count} 张 头像={avatar_count} 张 "
-            f"尺寸/分辨率={resolution} 比例={aspect_ratio} 仅返回路径={return_images}"
-        )
-
-        # ========== deliver=return：同步等待生成完成 ==========
-        if return_images:
-            logger.info("[后台任务] 仅返回路径：同步等待图片生成完成……")
-
-            try:
-                # 直接调用核心生成逻辑，同步等待
-                success, result_data = await invoke_generation_core(
-                    plugin,
-                    event=event,
-                    prompt=prompt,
-                    reference_images=reference_images,
-                    avatar_reference=avatar_reference,
-                    override_resolution=resolution,
-                    override_aspect_ratio=aspect_ratio,
-                    is_tool_call=True,
-                    requested_provider=provider,
-                    requested_model=model,
-                    negative_prompt=negative_prompt,
-                    watermark=watermark,
-                    quality=quality,
-                    image_count=1,
-                    suppress_resolution=suppress_resolution,
-                    template_id=template_id,
-                )
-                job_id = (
-                    plugin.image_generator.get_request_stats().get("job_id")
-                    if success
-                    else None
-                )
-                return _format_returned_images(
-                    success,
-                    result_data,
-                    config_value_notice,
-                    generation_reference_note(plugin, job_id),
-                    forum=single.forum_mode,
-                )
-
-            except asyncio.TimeoutError:
-                return "❌ 图片生成超时，请稍后重试"
-            except Exception as e:
-                logger.error(
-                    f"[后台任务] 图片生成异常：{redact_text(str(e))[:240]}",
-                    exc_info=True,
-                )
-                return f"❌ 图片生成过程中出错：{str(e)}"
-
-        generation_task = _create_generation_task(
-            plugin=plugin,
-            event=event,
+        # 额度、生成与后台投递都归 v2 调度器：工具只准备请求并等待结果。
+        v2_service = _resolve_v2_service(plugin)
+        if v2_service is None:
+            return "❌ 无法生成图像：生成服务尚未初始化"
+        return await _run_single_v2(
+            plugin,
+            event,
+            v2_service,
             prompt=prompt,
             reference_images=reference_images,
             avatar_reference=avatar_reference,
-            override_resolution=resolution,
-            override_aspect_ratio=aspect_ratio,
-            is_tool_call=True,
-            requested_provider=provider,
-            requested_model=model,
+            resolution=resolution,
+            aspect_ratio=aspect_ratio,
+            provider=provider,
+            model=model,
             negative_prompt=negative_prompt,
             watermark=watermark,
             quality=quality,
-            image_count=1,
             suppress_resolution=suppress_resolution,
+            return_images=return_images,
+            config_value_notice=config_value_notice,
+            forum_mode=single.forum_mode,
+            trusted_local=single.trusted_local,
             template_id=template_id,
         )
-        foreground_wait_seconds = _resolve_foreground_wait_seconds(plugin, event)
-
-        try:
-            if foreground_wait_seconds <= 0:
-                notice = _build_background_start_notice(
-                    ref_count=ref_count,
-                    avatar_count=avatar_count,
-                    resolution=resolution,
-                    aspect_ratio=aspect_ratio,
-                    llm_notice=config_value_notice,
-                )
-                message = f"{routing_description(request_routing_mode)}。{notice}"
-                record = await plugin.background_task_manager.create(
-                    session_id=_event_session_id(event),
-                    kind="single",
-                    routing_mode=request_routing_mode,
-                    message=message,
-                )
-                task_id = record["task_id"]
-                _schedule_generation_delivery(
-                    plugin=plugin,
-                    event=event,
-                    generation_task=generation_task,
-                    scene="后台任务",
-                    task_id=task_id,
-                    notify_llm=True,
-                )
-                return _background_json(task_id, request_routing_mode, message)
-
-            request_stats: dict[str, Any] = {}
-            logger.debug(f"[前台等待] 最多等待 {foreground_wait_seconds} 秒。")
-            try:
-                success, result_data, request_stats = await asyncio.wait_for(
-                    asyncio.shield(generation_task),
-                    timeout=foreground_wait_seconds,
-                )
-            except asyncio.TimeoutError:
-                raise  # 让外层 except asyncio.TimeoutError 处理
-            if success and isinstance(result_data, tuple):
-                image_urls, image_paths, text_content, thought_signature = result_data
-                img_count = len(
-                    plugin.message_sender.merge_available_images(
-                        image_urls, image_paths
-                    )
-                )
-                logger.info(
-                    f"[前台等待] 生成完成，通过 CallToolResult 返回 {img_count} 张图片"
-                )
-                # 构建 CallToolResult（含代理下载），使用剩余前台预算做超时保护
-                try:
-                    result = await asyncio.wait_for(
-                        _build_call_tool_result(
-                            image_urls=image_urls,
-                            image_paths=image_paths,
-                            text_content=text_content,
-                            message_sender=plugin.message_sender,
-                            api_client=plugin.api_client,
-                            llm_notice=_joined_notice(
-                                config_value_notice,
-                                generation_reference_note(
-                                    plugin, request_stats.get("job_id")
-                                ),
-                            ),
-                        ),
-                        timeout=30,  # 下载最多给 30 秒
-                    )
-                    return result
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        "[前台等待] 构建 CallToolResult 超时（代理下载慢），转后台反向激活主 Agent 发送图片"
-                    )
-
-                    # 生成已完成，创建一个立即完成的 task 包装结果，走后台反向激活主 Agent 发送图片
-                    async def _already_done():
-                        return (True, result_data, request_stats)
-
-                    done_task = asyncio.create_task(_already_done())
-                    result_message = (
-                        "图片已生成，前台结果处理超时，转入后台反向激活；"
-                        "收到图片 URL/路径后请调用 send_message_to_user 发送图片。"
-                    )
-                    record = await plugin.background_task_manager.create(
-                        session_id=_event_session_id(event),
-                        kind="single",
-                        routing_mode=request_routing_mode,
-                        message=result_message,
-                    )
-                    task_id = record["task_id"]
-                    logger.info(
-                        f"[工具调用] 代理下载超时转后台: job_id={request_stats.get('job_id')}, "
-                        f"task_id={task_id}, umo={getattr(event, 'unified_msg_origin', None)}"
-                    )
-                    _schedule_generation_delivery(
-                        plugin=plugin,
-                        event=event,
-                        generation_task=done_task,
-                        scene="后台任务(代理下载超时回退)",
-                        task_id=task_id,
-                        notify_llm=True,
-                    )
-                    if config_value_notice:
-                        result_message += f"\n{config_value_notice}"
-                    return _background_json(
-                        task_id,
-                        request_routing_mode,
-                        result_message,
-                    )
-            else:
-                error_msg = (
-                    result_data if isinstance(result_data, str) else "❌ 图像生成失败"
-                )
-                return error_msg
-        except asyncio.TimeoutError:
-            logger.info(
-                f"[前台等待] 等待超时，切换为后台继续生成: job_id={request_stats.get('job_id')}, "
-                f"task_id=None, umo={getattr(event, 'unified_msg_origin', None)}, waited_seconds={foreground_wait_seconds}"
-            )
-            notice = _build_background_fallback_notice(
-                ref_count=ref_count,
-                avatar_count=avatar_count,
-                resolution=resolution,
-                aspect_ratio=aspect_ratio,
-                waited_seconds=foreground_wait_seconds,
-                llm_notice=config_value_notice,
-            )
-            message = f"{routing_description(request_routing_mode)}。{notice}"
-            record = await plugin.background_task_manager.create(
-                session_id=_event_session_id(event),
-                kind="single",
-                routing_mode=request_routing_mode,
-                message=message,
-            )
-            task_id = record["task_id"]
-            logger.info(
-                f"[工具调用] 通用后台记录已创建: job_id={request_stats.get('job_id')}, "
-                f"task_id={task_id}, umo={getattr(event, 'unified_msg_origin', None)}"
-            )
-            _schedule_generation_delivery(
-                plugin=plugin,
-                event=event,
-                generation_task=generation_task,
-                scene="后台任务",
-                task_id=task_id,
-                notify_llm=True,
-            )
-            return _background_json(task_id, request_routing_mode, message)
-        except Exception as e:
-            logger.error(
-                f"[前台等待] 图像生成异常：{redact_text(e)[:240]}", exc_info=True
-            )
-            return f"❌ 图片生成过程中出错：{str(e)}"
-
-
-# 保留旧的辅助函数以保持向后兼容（已弃用）
-@provider_operation("legacy_tool")
-async def execute_image_generation_tool(
-    plugin: GeminiImageGenerationPlugin,
-    event: Any,
-    prompt: str,
-    use_reference_images: str = "false",
-    include_user_avatar: str = "false",
-) -> list[Any]:
-    """
-    执行图像生成工具的辅助函数
-
-    已弃用：请使用 GeminiImageGenerationTool 类代替。
-    此函数保留用于向后兼容 @filter.llm_tool 装饰器方式。
-    """
-
-    prompt = str(prompt or "").strip()
-    if not prompt:
-        return ["❌ 图像描述不能为空"]
-
-    if not plugin.api_client:
-        return [
-            "❌ 无法生成图像：API 客户端尚未初始化。\n"
-            "🧐 可能原因：API 密钥未配置或加载失败。\n"
-            "✅ 建议：在插件配置中填写有效密钥并重启服务。"
-        ]
-
-    # 解析参数
-    avatar_value = str(include_user_avatar).lower()
-    logger.debug(f"include_user_avatar 参数值：{avatar_value}")
-    include_avatar = avatar_value in {"true", "1", "yes", "y", "是"}
-    include_ref_images = str(use_reference_images).lower() in {
-        "true",
-        "1",
-        "yes",
-        "y",
-        "是",
-    }
-
-    # 获取参考图片
-    reference_images, avatar_reference = await plugin._fetch_images_from_event(
-        event, include_at_avatars=include_avatar
-    )
-
-    if not include_ref_images:
-        reference_images = []
-    if not include_avatar:
-        avatar_reference = []
-
-    reference_error = _reference_admission_error(
-        plugin,
-        reference_images,
-        avatar_reference,
-        references_required=include_ref_images or include_avatar,
-        avatar_required=include_avatar,
-    )
-    if reference_error:
-        return [f"❌ {reference_error}"]
-
-    logger.info(
-        f"[工具调用] 收集到参考图：消息 {len(reference_images)} 张，"
-        f"头像 {len(avatar_reference)} 张"
-    )
-
-    if not _matching_candidates(
-        plugin,
-        provider=None,
-        model=None,
-        has_reference_images=bool(reference_images or avatar_reference),
-        negative_prompt=None,
-        watermark=None,
-        quality=None,
-    ):
-        return ["❌ 没有匹配本次请求能力的供应商或模型"]
-    allowed, limit_message = await plugin._check_and_consume_limit(event)
-    if not allowed:
-        return [limit_message or "请求过于频繁，请稍后再试。"]
-
-    # 调用核心生成逻辑
-    success, result_data = await plugin._generate_image_core_internal(
-        event=event,
-        prompt=prompt,
-        reference_images=reference_images,
-        avatar_reference=avatar_reference,
-        is_tool_call=True,
-    )
-
-    if success and isinstance(result_data, tuple):
-        image_urls, image_paths, text_content, thought_signature = result_data
-
-        log_thought_signature_debug(thought_signature, scene="Tool结果已丢弃")
-        locations = image_location_list(image_urls, image_paths)
-        results: list[str] = []
-        if text_content:
-            results.append(sanitize_text(text_content) or "")
-        if locations:
-            results.append(
-                "生成图片位置（优先使用本地路径）：\n"
-                + "\n".join(
-                    f"图片 {index}: {location}"
-                    for index, location in enumerate(locations, start=1)
-                )
-            )
-        return results or ["✅ 图片已生成"]
-
-    # 失败情况
-    error_msg = (
-        format_error_message(result_data)
-        if isinstance(result_data, str)
-        else "图像生成失败"
-    )
-    return [error_msg]
