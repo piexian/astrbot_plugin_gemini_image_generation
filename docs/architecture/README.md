@@ -1,40 +1,20 @@
-# 核心调度器 v2 重构说明
+# 核心调度器 v2
 
-> 本目录记录插件生图调度层的目标架构、当前状态、兼容承诺和贡献约定。这里的“v2”只指核心调度器重构，与供应商配置重构及 `rate_limit_buckets_v2` 无关。
+> “v2”只指核心调度器重构，与供应商配置重构及 `rate_limit_buckets_v2` 无关。
 
 ## 为什么重构
 
-命令、LLM 工具、WebUI 创作台和公开 SDK 曾分别创建后台任务、记录历史、处理限流与资源释放，导致排队、取消和清理语义不一致（见[重构前路由](current-routing.md)）。
+命令、LLM 工具、WebUI 创作台和公开 SDK 曾分别创建后台任务、记录历史、处理限流与资源释放，导致排队、取消和清理语义不一致。
 
-v2 将入口收敛为同一条链路：入口只转换 `GenerationRequest` 和兼容响应，调度器统一负责状态、准入、deadline、取消、投递和资源租约，供应商保持为纯适配器。
+v2 把入口收敛为同一条链路：入口只转换 `GenerationRequest` 和兼容响应，调度器统一负责状态、准入、deadline、取消、投递和资源租约，供应商保持为纯适配器。
 
-## 文档地图
+## 现状
 
-| 文档 | 内容 | 更新方式 |
-| --- | --- | --- |
-| [scheduler-v2.md](scheduler-v2.md) | 目标架构、状态机、Provider contract、资源与安全边界 | 设计变更时更新 |
-| [migration.md](migration.md) | 灰度开启、行为差异、数据与回滚 | 行为或兼容策略变化时更新 |
-| [current-routing.md](current-routing.md) | 重构前路由快照 | 不再更新 |
-| [开发指南](../development.md) | 环境、验证、提交约定、模块地图 | 工具链或模块边界变化时更新 |
-| 本页 | 当前状态、兼容承诺、贡献约定 | 接入状态变化时更新 |
+命令、LLM 工具（单图与批量）、WebUI 创作台和公开 SDK 已全部由 v2 执行，旧调度核心与 `scheduler_v2` / `scheduler_v2_sessions` 灰度配置已移除。`tl_api` 仍是供应商客户端的统一入口；`GenerationTracker` 与 `BackgroundTaskManager` 继续承载 `generation_history.json`、`background_tasks.json` 的旧数据格式与损坏恢复，不再各自调度生成。
 
-## 当前状态
-
-最后核对：2026-11-03。
-
-| 内容 | 状态 | 用户可见影响 |
-| --- | --- | --- |
-| 领域模型、SQLite JobStore、JobScheduler、ProviderRouter | 已完成 | 构成统一执行底座 |
-| 参考图解析、临时句柄、网络抓取与租约 | 已完成 | 本地与内联参考图按统一边界处理 |
-| 命令入口 | 已完成 | 全量走 v2 调度器 |
-| LLM 工具单图与批量 | 已完成 | 全量走 v2，支持统一投递、父子 Job 与补足张数 |
-| WebUI 创作台单图与批量 | 已完成 | 全量走 v2 单轨 |
-| 公开 SDK | 已完成 | 全量走 v2 单轨 |
-| WebUI 安全统一 | 已完成 | 统一路由守卫、Key 掩码、出站策略与源链接脱敏 |
-| Provider 契约测试、迁移与回滚文档 | 已完成 | 默认收集到 CI 测试套件 |
-| 旧调度逻辑删除 | 已完成 | 已移除双轨灰度开关与旧运行时任务路径 |
-
-v2 已全量覆盖命令、LLM 工具（单图与批量）、WebUI 创作台和公开 SDK，旧调度核心与 `scheduler_v2` / `scheduler_v2_sessions` 灰度配置已移除。
+- 目标架构、状态机、Provider contract、资源与安全边界：[scheduler-v2.md](scheduler-v2.md)
+- 升级后的行为差异、数据兼容与维护操作：[migration.md](migration.md)
+- 环境、验证步骤与提交约定：[开发指南](../development.md)
 
 ## 兼容承诺
 
@@ -46,7 +26,7 @@ v2 已全量覆盖命令、LLM 工具（单图与批量）、WebUI 创作台和�
 - 公开 SDK `get_service(1)`、提交、等待、任务状态与回调语义。
 - 现有供应商配置格式。
 
-行为差异和安全策略调整集中记录在[迁移与回滚指南](migration.md)及 `CHANGELOG.md`，不把“接口兼容”理解为所有边界行为完全一致。
+行为差异和安全策略调整集中记录在[升级与兼容说明](migration.md)及 `CHANGELOG.md`，不把“接口兼容”理解为所有边界行为完全一致。
 
 ## 贡献约定
 

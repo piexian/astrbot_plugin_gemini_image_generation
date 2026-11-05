@@ -83,4 +83,4 @@ ruff format --check . --line-length 88 --exclude plans,docs,templates
 - `v2_tool_delivery.py`：LLM 工具单图/批量结果回灌。
 - `v2_sdk_delivery.py`：公开 SDK 任务记录、等待、回调与取消适配。
 
-架构状态和接入边界见[架构说明](architecture/README.md)，灰度与回滚见[迁移指南](architecture/migration.md)。
+架构状态和接入边界见[架构说明](architecture/README.md)，升级后的行为差异与数据兼容见[升级与兼容说明](architecture/migration.md)。

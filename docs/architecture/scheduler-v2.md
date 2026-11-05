@@ -5,8 +5,8 @@
 命令、LLM Tool、WebUI Studio 和 SDK 最终都只负责把入口参数转换为
 `GenerationRequest`，调用 `GenerationService.submit()`，再把 Job 结果转换为
 各自的兼容响应。Provider 仍是适配器，不负责任务调度、历史、quota、限流或
-文件生命周期。旧 `tl_api`、`GenerationTracker` 和 `BackgroundTaskManager`
-在迁移期间保留为兼容层，待四个入口都由新调度器覆盖且测试稳定后再删除重复逻辑。
+文件生命周期。`tl_api` 仍是供应商客户端的统一入口，`GenerationTracker` 和
+`BackgroundTaskManager` 只保留旧数据文件格式与历史字段兼容，调度执行已全部收敛到 v2。
 
 ## 核心对象
 
@@ -124,14 +124,13 @@ tmp 句柄按 requester 限制容量，活动 reference lease 内不受 TTL/容�
 的本地根不因此放宽；默认 `False`，本地路径仍原样保留并在执行阶段按 PathPolicy 校验。
 
 ReferenceService 统一接收本地路径、file URI、HTTP URL、data URI、base64 和
-平台图片。PathPolicy/RemoteFetchService 必须阻止路径穿越、符号链接逃逸、
-loopback、私网、link-local、云元数据地址和重定向绕过，并限制响应体、像素数、
-连接时间和总时间。候选 provider 的 proxy 由 service 传入。source URL 在写入
+平台图片。PathPolicy 把本地路径限制在允许根内，阻止路径穿越与符号链接逃逸；
+RemoteFetchService 只接受不带 userinfo 的 http/https URL，手动跟随重定向并逐跳复检、
+跨源剥离凭据头，同时限制响应体、像素数、连接时间和总 deadline。候选 provider 的
+proxy 由 service 传入。source URL 在写入
 history、响应和日志前必须脱敏；WebUI 只能看到 masked secret 以及
 keep/replace/append/clear 状态（仅在线模板密钥 `/templates/hub/key` 按 schema
 `show_key=true` 带 `no-store` 回填给已鉴权面板）。
-DNS resolver 对实际连接 IP 再执行同一网络策略，防止校验与连接之间的
-DNS rebinding。
 
 ## 持久化与恢复
 
@@ -148,4 +147,4 @@ DNS rebinding。
 
 ## 接入状态
 
-领域模型、协议、JobStore、JobScheduler、ProviderRouter、ReferenceService 与投递适配器均已落地。命令、LLM 工具单图/批量、WebUI 创作台和公开 SDK 已全量收敛至 v2 单轨运行，旧调度执行路径及灰度配置开关已移除。WebUI 路由守卫、masked secret、出站策略和历史源链接脱敏已统一。每次变更继续运行完整 pytest、ruff 和 compileall。
+领域模型、协议、JobStore、JobScheduler、ProviderRouter、ReferenceService 与投递适配器均已落地。命令、LLM 工具单图/批量、WebUI 创作台和公开 SDK 已全量收敛至 v2 单轨运行，旧调度执行路径及灰度配置开关已移除。WebUI 路由守卫、masked secret、远端抓取边界和历史源链接脱敏已统一。
