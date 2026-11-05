@@ -53,6 +53,16 @@ ruff format --check . --line-length 88 --exclude plans,docs,templates
 
 `master` 已开启分支保护：合并进 `master` 的 PR 必须先通过 `Code Quality` 的五个检查——`Pytest (Python 3.12)`、`Frontend (Vue & Vite+)`、`Lint & Format`、`Syntax Check`、`Metadata Check`。未要求分支与 `master` 保持同步，也未限制管理员，直接 push `master` 仍然允许，检查只作为合并前置条件。CodeQL 的 `Analyze (actions|javascript-typescript|python)` 由代码扫描默认配置产生，不列为必过项，避免该配置关闭后检查永远停在待运行状态。
 
+工作流每次推送都会触发，先由 `Detect changes` 任务按改动文件判定要跑哪些检查：
+
+- 纯文档改动（`docs/**`、`*.md`、`LICENSE`、`plans/**`）：五个检查全部以跳过状态通过，等同成功。
+- Python、`_conf_schema.json`、`templates/**` 或本工作流自身改动：运行 `Pytest`、`Lint & Format`、`Syntax Check`。
+- `frontend/**`、`views/**`、`.astrbot-plugin/**` 改动：运行 `Frontend (Vue & Vite+)`；前端产物与 i18n 同时触发 pytest，因为 i18n 守门测试读取这些文件。
+- `metadata.yaml`、`_conf_schema.json` 改动：运行 `Metadata Check`。
+- `workflow_dispatch` 手动触发：全部运行。
+
+不要用工作流级 `paths:` 过滤来省时间：被路径过滤掉的工作流不产生检查运行，必过检查会一直停在待报告状态并卡死合并；用 `if:` 跳过的任务报成功，不影响合并。同一分支的重复推送由 `concurrency` 取消更早的运行。
+
 ## 前端工程
 
 - Studio 前端源码在 `frontend/`（vp + pnpm + Vue 3 + TS）；构建产物提交到 `views/studio/`，由宿主按目录通配伺服，i18n 走桥接上下文。

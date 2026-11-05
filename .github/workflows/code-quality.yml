@@ -10,8 +10,86 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      metadata: ${{ steps.filter.outputs.metadata }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Collect changed files
+        run: |
+          set -euo pipefail
+          base=""
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            base="${{ github.event.before }}"
+          fi
+          if [ -n "$base" ] && ! git rev-parse --verify -q "${base}^{commit}" >/dev/null; then
+            base=""
+          fi
+          if [ -n "$base" ]; then
+            git diff --name-only "$base" "$GITHUB_SHA" > changed.txt
+          else
+            # 首次推送、force push 或手动触发时取不到基线，按本次提交的改动判定。
+            git show --name-only --format= "$GITHUB_SHA" > changed.txt
+          fi
+          cat changed.txt
+
+      - name: Classify changes
+        id: filter
+        run: |
+          set -euo pipefail
+          code=false
+          frontend=false
+          metadata=false
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            code=true
+            frontend=true
+            metadata=true
+          else
+            while IFS= read -r file; do
+              case "$file" in
+                docs/*|*.md|LICENSE|.gitignore|plans/*) ;;
+                frontend/*|views/*|.astrbot-plugin/*)
+                  frontend=true
+                  code=true
+                  ;;
+                metadata.yaml)
+                  metadata=true
+                  ;;
+                _conf_schema.json)
+                  metadata=true
+                  code=true
+                  ;;
+                *)
+                  code=true
+                  ;;
+              esac
+            done < changed.txt
+          fi
+          echo "code=$code frontend=$frontend metadata=$metadata"
+          {
+            echo "code=$code"
+            echo "frontend=$frontend"
+            echo "metadata=$metadata"
+          } >> "$GITHUB_OUTPUT"
+
   pytest:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: Pytest (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
@@ -44,6 +122,8 @@ jobs:
         run: pytest -q
 
   frontend:
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
     name: Frontend (Vue & Vite+)
     runs-on: ubuntu-latest
     steps:
@@ -82,6 +162,8 @@ jobs:
           test -z "$(git status --porcelain -- views/studio)"
 
   lint:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: Lint & Format
     runs-on: ubuntu-latest
     steps:
@@ -114,6 +196,8 @@ jobs:
         run: ruff format --check . --line-length 88 --exclude plans,docs,templates
 
   syntax:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: Syntax Check
     runs-on: ubuntu-latest
     steps:
@@ -129,6 +213,8 @@ jobs:
         run: python -m compileall -q .
 
   metadata:
+    needs: changes
+    if: needs.changes.outputs.metadata == 'true'
     name: Metadata Check
     runs-on: ubuntu-latest
     steps:
