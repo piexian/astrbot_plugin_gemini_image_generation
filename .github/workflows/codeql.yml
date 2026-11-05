@@ -1,0 +1,57 @@
+name: CodeQL
+
+# 代码扫描改为仓库内维护：GitHub 的默认配置（default setup）不支持按路径忽略，
+# 纯文档提交也会触发三个 Analyze 检查。这里用 paths-ignore 直接过滤，
+# 因为本工作流的检查不是分支保护的必过项，被过滤掉不会卡住合并。
+on:
+  push:
+    branches: [main, master]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - '**.md'
+      - 'LICENSE'
+      - 'plans/**'
+  pull_request:
+    branches: [main, master]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - '**.md'
+      - 'LICENSE'
+      - 'plans/**'
+  schedule:
+    # 每周一深扫一次，覆盖此前被路径过滤跳过的提交。
+    - cron: '23 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions, javascript-typescript, python]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"
