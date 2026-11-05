@@ -63,6 +63,8 @@ ruff format --check . --line-length 88 --exclude plans,docs,templates
 
 不要用工作流级 `paths:` 过滤来省时间：被路径过滤掉的工作流不产生检查运行，必过检查会一直停在待报告状态并卡死合并；用 `if:` 跳过的任务报成功，不影响合并。同一分支的重复推送由 `concurrency` 取消更早的运行。
 
+代码扫描由仓库内的 `.github/workflows/codeql.yml` 执行（Python、JavaScript/TypeScript、Actions，`codeql-action@v4`），不再使用 GitHub 的默认配置：默认配置无法按路径忽略，纯文档提交也会跑三个 `Analyze` 检查。该工作流的检查不列为必过项，所以用 `paths-ignore` 过滤文档改动不会卡住合并；每周一 03:23 UTC 定时深扫一次，覆盖此前被过滤掉的提交。
+
 ## 前端工程
 
 - Studio 前端源码在 `frontend/`（vp + pnpm + Vue 3 + TS）；构建产物提交到 `views/studio/`，由宿主按目录通配伺服，i18n 走桥接上下文。
