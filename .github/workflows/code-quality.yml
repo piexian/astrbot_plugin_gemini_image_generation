@@ -90,12 +90,8 @@ jobs:
   pytest:
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    name: Pytest (Python ${{ matrix.python-version }})
+    name: Pytest (Python 3.12)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.12"]
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -103,7 +99,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.12"
           cache: pip
 
       - name: Set up Node.js
