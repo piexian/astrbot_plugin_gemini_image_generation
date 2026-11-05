@@ -2,57 +2,47 @@
 
 > **升级提示**：v1.9.0 以后的配置文件格式不兼容旧版本。升级后如遇配置模板显示错误，请查看 [配置迁移说明](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/troubleshooting.md#配置迁移说明)。
 
-## [Unreleased]
+## [4.0.0] - 2026-11-05
+
+> **升级提示**：本版有不兼容改动。AI 生图工具的名称和参数经过重构，升级后请在 AstrBot 插件设置里重新勾选并授权工具；配置中残留的旧调度开关会被自动忽略，无需手动清理。
 
 ### Added
 
-- 提示词模板库：内置快速模式提示词、本地模板与 JSON 包（`gemini-image-templates`），并定义模板源协议。模板文件在插件数据目录的 `prompt_templates.json`。
-- 内部引用解析器，以及生成记录的 `umo` 与共享标记。配置项 `service_settings.reference_cross_session` 默认关闭。
-- LLM 工具 `gemini_image_lookup` 查询模型、模板、可引用的生成记录和后台任务；`gemini_image_share` 由请求者本人共享或取消共享自己的生成记录。
-- 单图工具新增 `template`、`references`、`options` 和 `deliver`。生成成功后，前台结果和后台回灌会附上 `gen:` 引用。
-- 在线模板（image-prompt-hub）：广场新增「在线模板」子页，支持本地缓存检索、实时检索（`online` 模式）、导入为本地副本、立即同步，以及密钥的申请、校验与吊销。由 `service_settings.template_hub_mode`（`cache`/`online`/`off`）、`template_hub_url` 和 `template_hub_key` 控制；`cache` 模式检索与生成都不联网。
-- LLM 工具 `gemini_image_batch`：批量生图从 `gemini_image_generation` 的 `batch_tasks` 拆为独立工具，用 `tasks` 数组提交；顶层 `model`、`template`、`references`、`resolution`、`aspect_ratio` 和 `options` 作为全部任务的默认值，条目内同名字段覆盖默认值。
-- WebUI 提示词广场：新增「提示词广场」页签，管理内置与本地模板（搜索与标签筛选、新建／编辑／复制／删除、内置恢复默认、AI 可用开关、JSON 包导入导出、填入工作台）。后端：`/templates`（列表与增删改、恢复内置默认、AI 可用开关）、`/templates/import`、`/templates/export` 与 `/template_asset/<name>`；模板预览图存插件数据目录 `template_assets/`，不受画廊容量清理影响。
+- **提示词模板**：快速模式（头像、海报、壁纸、手办化、表情包等）的提示词改为可编辑模板，支持内置模板、自建模板和 JSON 模板包导入导出，生成历史会记下用了哪个模板。
+- **提示词广场**：WebUI 新增页签，可按关键词和标签搜索模板，新建／编辑／复制／删除、恢复内置默认、单独控制某个模板是否允许 AI 使用、把模板一键填入创作台；模板预览图不会被容量清理删除。
+- **在线模板库**：广场里可以直接搜索查看别人分享的模板、导入成本地副本、同步更新、上传自己的模板、举报以及修改删除自己的模板，并支持密钥的申请、校验、回填和吊销。联网方式在配置项「在线模板使用方式」里选择：仅本地缓存（默认）、实时检索、完全不联网。
+- **三个新的 AI 工具**：`gemini_image_lookup` 查询可用模型、模板、可引用的历史生成记录和后台任务；`gemini_image_share` 由本人共享或取消共享生成记录；`gemini_image_batch` 一次提交多张批量生成，公共参数写在顶层、单张可覆盖。
+- **生成结果可引用**：生成的图会带引用号，可直接要求 AI 拿某张已生成的图继续改图；默认只允许引用本会话的记录，跨会话引用需打开配置项「允许跨会话引用生成图」。
+- **WebUI 界面重写**：六个页签全部改为组件化实现，切换与加载更顺畅，前端改动纳入自动化检查；同时补全了从收到消息到发回结果的全过程日志，排查问题开 DEBUG 即可追踪单个任务。
 
 ### Changed
 
-- `/快速` 的提示词改由模板库渲染，附加要求前的标签统一为“用户需求：”；生成历史记录 `template_id`。
-- 原 `gemini_image_provider_models` 与 `gemini_image_task_status` 合并为 `gemini_image_lookup`。升级后需要在 AstrBot 里重新勾选和授权。
-- 单图工具 `gemini_image_generation` 改用 `template`、`references`、`model`、`options` 和 `deliver`。移除单图参数 `provider`、`use_reference_images`、`include_user_avatar`、`reference_image_paths`、`preserve_reference_image_size`、顶层 `negative_prompt`、`watermark`、`quality`、`for_forum` 和 `batch_tasks`；调用时仍传入这些键会被忽略。批量请求改用独立工具 `gemini_image_batch`。
-- v2 调度器全量接管命令入口、LLM 工具（单图与批量）、WebUI 创作台与公开 SDK，移除旧调度核心与 `scheduler_v2` / `scheduler_v2_sessions` 灰度配置开关；生成历史统一由调度器生命周期投影写入。
-- v2 调度器的额度与生成队列改在提交时统一准入：先预留共享额度，再预留生成队列名额，任一步被拒都不创建任务，已预留的额度自动退回；命令入口不再自行扣额度。任务一旦被接受，之后失败或取消不退还额度（与旧路径一致）。
-- v2 路径下额度不足、群名单拒绝（静默不回复）、生成队列已满时，拒绝提示先于"生成中"/"开始转换风格"发出，被拒绝的命令不再出现进度提示。
-- LLM 工具 `gemini_image_generation` 单图模式（含 `deliver="return"`）全量接入 v2 调度器：额度由调度器在提交时扣；转后台后的生成与图片回灌由调度器的投递阶段执行，不再另起后台任务；回灌未送达时任务以 `partial`（`delivery_failed`）结束并保留结果，后台任务记录同时写入 `job_id`；`references` 中通过路径守卫校验的本地图在 v2 下同样可用，`gen:` 画廊图按普通内联参考图处理。
-- LLM 工具批量生成改由独立工具 `gemini_image_batch` 承载（参数 `tasks`），其 v2 父子 Job 行为不变：提交时创建全部子任务并按配置并发执行，各子任务独立计算执行时限，单张不足时自动补足；额度仍按批量条目数只扣一次，最终由调度器统一回灌批量汇总，不再另起旧批量后台任务。顶层 `model`、`template`、`references`、`resolution`、`aspect_ratio` 和 `options` 作为全部任务的默认值，条目内同名字段覆盖默认值。
-- WebUI 创作台全量接入 v2 调度器：单图/批量统一由调度器执行并写入历史，参考图先入库再释放上传租约；生成队列满或服务关闭改为提交时返回 429/503。
-- WebUI 供应商配置不再返回 API Key 原文，仅显示数量与掩码预览，修改统一走 secret actions；所有插件页路由增加身份、面板/API Key 授权与 POST CSRF 校验。
-- WebUI 模型目录与生成图归档启用出站地址检查：link-local/元数据地址始终拒绝，私网/loopback 仅允许已保存供应商 `api_base` 的同名 origin；归档下载最多手动重定向 3 次并逐跳复检。
-- 生成历史与 jobs 接口的 `source_urls` 不再保留 query、fragment 或 userinfo（旧记录仅在响应中脱敏）；失败任务不能再凭带签名参数的源链接手动取回图片，成功任务的 gallery 图片不受影响。
-- 公开 SDK `get_service(1)` 全量接入 v2 调度器：任务记录、回调、等待与取消语义保持兼容，生成队列满时稳定抛出 `code="queue_full"`；URL 参考图在执行时受 SSRF 策略约束，本地文件先转为临时句柄。
-- v2 下 LLM 工具调用在前台等待期间被取消时同时取消生成，不再出现取消后生成仍在后台运行却无人投递的情况。
-- v2 下 LLM 工具前台结果构建超时（如代理下载慢）不再转后台，改为直接返回图片 URL/本地路径文本，提示调用 `send_message_to_user` 的 `image` 组件发送。
-- 运行环境与 CI 基线统一为 Python 3.12。
-- LLM 工具描述去掉内部术语，改为面向模型的用法说明：生图工具不再自称只用 Gemini 模型，明确显式传入 `resolution`/`aspect_ratio` 时优先于默认尺寸；查询工具提示任务完成会自动通知、无需轮询。`gemini_image_batch` 独立描述批量用法。
+- 命令、AI 工具（单图与批量）、WebUI 创作台和其他插件调用全部改由统一的生成任务系统处理，旧的生成流程已删除；使用方式不变。
+- 额度和队列改为提交时一次性判定：额度不足或队列已满时任务不会创建，也不再出现“先提示生成中、随后又报错”；不在允许名单的群仍然静默不回复。任务一旦开始，之后失败或取消不退还额度（与旧版一致）。
+- AI 工具更可靠：前台等待时取消请求会同时取消生成；下载慢导致前台超时时不再默默转后台，而是直接返回图片地址让 AI 发送；转后台的任务完成后会把图片发回原会话，发送失败也会保留已经生成的图片。
+- AI 工具说明改为面向实际用法的描述，去掉内部术语；明确指定分辨率和比例时优先于默认尺寸；任务完成后会自动通知，无需反复查询。
+- WebUI 不再明文显示供应商密钥，只显示数量和掩码预览，密钥的保存与读取都以配置文件为准；所有插件页面都需要登录或 API Key 授权，并校验请求来源。
+- 网络图片改为先读文件头判断是否为合法图片，不合格立即停止下载，超大非图片不再整份下载完才报错；保留重定向次数与 20MB 体积上限，并在保存前清理无用元数据减小体积。
+- 生成历史里的来源链接不再保留签名、Token 等参数（旧记录仅在展示时脱敏），失败任务不能再用这类链接手动取回图片；已成功的图片不受影响。
+- 其他插件调用公开接口时任务记录、回调、等待与取消保持兼容，队列已满会明确告知原因。
+- 运行环境统一为 Python 3.12。
 
 ### Removed
 
-- LLM 生图工具不再接受遗留的 `size` 参数，请使用 `resolution` 与 `aspect_ratio`。
-- 单图工具 `gemini_image_generation` 不再接受 `batch_tasks`；批量生成请使用独立工具 `gemini_image_batch`。
-- 移除 LLM 工具 `gemini_image_provider_models` 与 `gemini_image_task_status`。
+- 移除 AI 工具 `gemini_image_provider_models` 与 `gemini_image_task_status`，功能并入 `gemini_image_lookup`；升级后需重新勾选授权。
+- 单图工具不再接受 `batch_tasks`（改用 `gemini_image_batch`）和遗留的 `size`（改用 `resolution` 与 `aspect_ratio`），以及 `provider`、`use_reference_images`、`include_user_avatar`、`reference_image_paths`、`preserve_reference_image_size`、`negative_prompt`、`watermark`、`quality`、`for_forum`；传入这些旧键会被忽略而不报错。
+- 移除旧调度核心与 `retry_settings` 下的 `scheduler_v2`、`scheduler_v2_sessions` 两个灰度开关。
 
 ### Fixed
 
-- 修复公开 SDK 本地参考图被改写成裸绝对路径、随后被真实 `ImageHandler` 过滤而静默丢弃的问题；本地路径与 `file://` 输入现统一保留为 file URI 并传给客户端。
-- v2 路径下上游返回思维签名（如 Gemini `thoughtSignature`）的成功结果被误判为失败；现忽略该字段，仅无图且无文本时报"供应商未返回图片或文本内容"。
-- v2 路径失败的用户提示与旧路径同措辞：按错误码映射回旧路径的状态码/网络/超时等提示文案，不再输出 `v2 调度生成失败 [code]` 式调试信息。
-- v2 下生成核心路径（表情包、换风格、LLM 工具单图）收到没有任何图片的结果时与旧路径一致：按失败处理并提示“图像文件未找到”，生成历史记为失败，不再把只有文本的结果当成功；命令快捷路径（`/生图` 等）仍保留“只有文本也算成功”。
-- v2 下已成功完成的生成历史记录不会再被之后投递阶段的取消或失败改写成 interrupted/failed。
+- 修复中文环境下 WebUI 界面整页变成英文。
+- 修复供应商返回思维内容标记时，图片其实已经生成成功却被判为失败。
+- 修复只返回文字、没有图片的结果被当成成功：表情包、换风格和 AI 工具单图现在按失败提示“图像文件未找到”并记入历史（`/生图` 等快捷命令仍允许只回文字）。
+- 修复已经成功的生成记录会被之后的发送失败或取消改写成“中断／失败”。
+- 修复失败提示里出现内部调试文字，现在和旧版一样给出可读原因（网络、超时、额度等）。
+- 修复在线模板库密钥错误时会把 Dashboard 踢回登录页，现在只提示密钥无效。
+- 修复其他插件传入的本地参考图被静默丢弃，本地图片现在能正常作为参考。
 
-
-### Docs
-
-- 新增 v2 架构状态页、灰度迁移/回滚指南与开发指南，补齐 README 开发文档链接和实际接入状态。
-- 新增全量 Provider 契约测试；旧调度函数仅在文档字符串中标记弃用，不加运行时警告、不删除旧路径。
 ## [3.2.0] - 2026-10-28
 
 ### Changed
