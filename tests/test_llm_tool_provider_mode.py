@@ -4,6 +4,9 @@ import sys
 import types
 from types import SimpleNamespace
 
+import pytest
+from jsonschema import Draft202012Validator, ValidationError
+
 if "mcp" not in sys.modules:
     mcp_module = types.ModuleType("mcp")
     mcp_types_module = types.ModuleType("mcp.types")
@@ -56,6 +59,7 @@ from tl.llm_tools import (  # noqa: E402
     _is_custom_size_tool_mode,
     _resolve_tool_size_params,
 )
+from tl.plugin_config import ProviderCandidate  # noqa: E402
 from tl.provider_settings import provider_tool_profile  # noqa: E402
 
 
@@ -65,6 +69,57 @@ def _plugin_with_candidates(*candidates):
 
 def _candidate(api_type: str, settings: dict | None = None):
     return SimpleNamespace(api_type=api_type, settings=settings or {})
+
+
+@pytest.mark.parametrize("placement", ["single", "batch_defaults", "batch_override"])
+@pytest.mark.parametrize(
+    "options,valid",
+    [
+        ({}, True),
+        ({"quality": "high", "negative_prompt": "noise", "watermark": True}, True),
+        ({"quality": "", "negative_prompt": "", "watermark": False}, True),
+        ({"quality": None, "negative_prompt": None, "watermark": None}, True),
+        ({"quality": True}, False),
+        ({"quality": 1}, False),
+        ({"quality": {}}, False),
+        ({"negative_prompt": False}, False),
+        ({"negative_prompt": 1}, False),
+        ({"negative_prompt": []}, False),
+        ({"watermark": "false"}, False),
+        ({"watermark": 0}, False),
+        ({"watermark": {}}, False),
+        ({"watermark": []}, False),
+    ],
+)
+def test_optional_options_schema_validates_nullable_types(placement, options, valid):
+    candidates = [
+        ProviderCandidate(id=api_type, api_type=api_type, settings={"model": model})
+        for api_type, model in [
+            ("openai_images", "gpt-image-1"),
+            ("stepfun", "step-image-edit"),
+            ("minimax", "image-01"),
+        ]
+    ]
+    plugin = _plugin_with_candidates(*candidates)
+    if placement == "single":
+        schema = _build_tool_parameters(plugin)
+        payload = {"prompt": "draw", "options": options}
+    else:
+        schema = _build_batch_tool_parameters(plugin)
+        task = {"name": "one", "prompt": "draw", "image_count": 1}
+        payload = {"tasks": [task]}
+        if placement == "batch_defaults":
+            payload["options"] = options
+        else:
+            task["options"] = options
+
+    Draft202012Validator.check_schema(schema)
+    validator = Draft202012Validator(schema)
+    if valid:
+        validator.validate(payload)
+    else:
+        with pytest.raises(ValidationError):
+            validator.validate(payload)
 
 
 def test_openai_custom_size_tool_mode_requires_first_candidate() -> None:

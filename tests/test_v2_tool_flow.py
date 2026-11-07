@@ -1414,3 +1414,90 @@ async def test_batch_template_id_reaches_v2_and_legacy_paths(make_env, tmp_path)
         if not job.request.metadata.get("batch_parent")
     ]
     assert child.request.metadata["template_id"] == "poster"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "options,expected",
+    [
+        (
+            {"quality": None, "watermark": None, "negative_prompt": None},
+            (None, None, None),
+        ),
+        (
+            {"quality": "low", "watermark": False, "negative_prompt": "noise"},
+            ("low", False, "noise"),
+        ),
+        (
+            {"quality": "", "watermark": False, "negative_prompt": ""},
+            ("", False, ""),
+        ),
+    ],
+)
+async def test_optional_options_keep_null_as_provider_default(
+    make_env, options, expected
+):
+    from copy import deepcopy
+
+    env = await make_env(
+        candidates=[
+            *_openai_quality_candidates(),
+            ProviderCandidate(
+                id="watermark", api_type="minimax", settings={"model": "image-01"}
+            ),
+            ProviderCandidate(
+                id="negative", api_type="stepfun", settings={"model": "step-image-edit"}
+            ),
+        ]
+    )
+    original = deepcopy(options)
+    request, error = await llm_tools._prepare_single_request(
+        env.plugin, new_event(), {"options": options}, "draw"
+    )
+    assert error is None
+    assert (request.quality, request.watermark, request.negative_prompt) == expected
+    assert options == original
+    assert await stored_jobs(env) == []
+
+
+@pytest.mark.asyncio
+async def test_batch_null_options_clear_defaults_without_mutating_inputs(make_env):
+    from copy import deepcopy
+
+    env = await make_env(
+        candidates=[
+            *_openai_quality_candidates(),
+            ProviderCandidate(
+                id="watermark", api_type="minimax", settings={"model": "image-01"}
+            ),
+            ProviderCandidate(
+                id="negative", api_type="stepfun", settings={"model": "step-image-edit"}
+            ),
+        ]
+    )
+    defaults = {
+        "options": {"quality": "high", "watermark": True, "negative_prompt": "noise"}
+    }
+    tasks = [
+        {"name": "default", "prompt": "first", "image_count": 1},
+        {
+            "name": "clear",
+            "prompt": "second",
+            "image_count": 1,
+            "options": {"quality": None, "watermark": None, "negative_prompt": None},
+        },
+    ]
+    original = deepcopy((defaults, tasks))
+    requests, error = await llm_tools._prepare_batch_tasks(
+        env.plugin, new_event(), tasks, defaults
+    )
+    assert error is None
+    assert [
+        (request["quality"], request["watermark"], request["negative_prompt"])
+        for request in requests
+    ] == [
+        ("high", True, "noise"),
+        (None, None, None),
+    ]
+    assert (defaults, tasks) == original
+    assert await stored_jobs(env) == []
