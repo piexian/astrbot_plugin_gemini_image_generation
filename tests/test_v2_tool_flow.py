@@ -1428,6 +1428,10 @@ async def test_batch_template_id_reaches_v2_and_legacy_paths(make_env, tmp_path)
             {"quality": "low", "watermark": False, "negative_prompt": "noise"},
             ("low", False, "noise"),
         ),
+        (
+            {"quality": "", "watermark": False, "negative_prompt": ""},
+            ("", False, ""),
+        ),
     ],
 )
 async def test_optional_options_keep_null_as_provider_default(
@@ -1471,14 +1475,16 @@ async def test_batch_null_options_clear_defaults_without_mutating_inputs(make_en
             ),
         ]
     )
-    defaults = {"options": {"quality": "high", "watermark": True}}
+    defaults = {
+        "options": {"quality": "high", "watermark": True, "negative_prompt": "noise"}
+    }
     tasks = [
         {"name": "default", "prompt": "first", "image_count": 1},
         {
             "name": "clear",
             "prompt": "second",
             "image_count": 1,
-            "options": {"quality": None, "watermark": None},
+            "options": {"quality": None, "watermark": None, "negative_prompt": None},
         },
     ]
     original = deepcopy((defaults, tasks))
@@ -1486,9 +1492,12 @@ async def test_batch_null_options_clear_defaults_without_mutating_inputs(make_en
         env.plugin, new_event(), tasks, defaults
     )
     assert error is None
-    assert [(request["quality"], request["watermark"]) for request in requests] == [
-        ("high", True),
-        (None, None),
+    assert [
+        (request["quality"], request["watermark"], request["negative_prompt"])
+        for request in requests
+    ] == [
+        ("high", True, "noise"),
+        (None, None, None),
     ]
     assert (defaults, tasks) == original
     assert await stored_jobs(env) == []

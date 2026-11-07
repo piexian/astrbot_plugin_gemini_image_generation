@@ -179,15 +179,15 @@ def _build_tool_base_properties() -> dict[str, Any]:
 
 _OPTION_PROPERTIES: dict[str, dict[str, Any]] = {
     "quality": {
-        "type": "string",
+        "type": ["string", "null"],
         "description": "质量档位；合法值用 gemini_image_lookup（kind=models，detail=true）查询",
     },
     "negative_prompt": {
-        "type": "string",
+        "type": ["string", "null"],
         "description": "负面提示词",
     },
     "watermark": {
-        "type": "boolean",
+        "type": ["boolean", "null"],
         "description": "水印开关；省略时使用供应商配置",
     },
 }
@@ -433,6 +433,10 @@ def _build_batch_tool_parameters(plugin: Any) -> dict[str, Any]:
         "options": {
             "type": "object",
             "description": "所有任务的默认模型参数",
+            "properties": {
+                name: dict(_OPTION_PROPERTIES[name])
+                for name in _configured_option_fields(plugin)
+            },
         },
     }
     return {"type": "object", "properties": properties, "required": ["tasks"]}
