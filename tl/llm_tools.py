@@ -1460,7 +1460,12 @@ async def _prepare_single_request(
     # options 只认 schema 里声明过的字段，其余忽略。
     declared = set(_configured_option_fields(plugin))
     options = kwargs.get("options")
-    options = options if isinstance(options, dict) else {}
+    # Null optional fields mean "use the provider default", just like omission.
+    options = (
+        {name: value for name, value in options.items() if value is not None}
+        if isinstance(options, dict)
+        else {}
+    )
     negative_prompt = (
         str(options.get("negative_prompt") or "").strip()
         if "negative_prompt" in declared and "negative_prompt" in options
