@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from datetime import timedelta
 
 import pytest
@@ -193,7 +194,9 @@ async def test_submit_batch_persists_jobs_and_aggregates_in_child_order(tmp_path
                 "error_code": None,
             },
         ]
-        assert observer.children_finished == list(handle.child_job_ids)
+        # Concurrent child completion order is independent of input order.
+        # Artifacts and child statistics above still retain exact input order.
+        assert Counter(observer.children_finished) == Counter(handle.child_job_ids)
     finally:
         gate.set()
         await scheduler.close()
