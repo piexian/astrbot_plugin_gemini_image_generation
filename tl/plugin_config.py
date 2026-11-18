@@ -274,6 +274,8 @@ class PluginConfig:
     )
     # 限流规则列表
     rate_limit_rules: list[dict[str, Any]] = field(default_factory=list)
+    # 关键词触发原始配置（KeywordTriggerService 消费时归一化）
+    keyword_trigger: dict[str, Any] = field(default_factory=dict)
     # 默认限流设置（未匹配规则时使用）
     default_rate_limit: dict[str, Any] = field(
         default_factory=lambda: {
@@ -904,6 +906,12 @@ class ConfigLoader:
 
         # 限制设置
         self._load_limit_settings(config)
+
+        # 关键词触发：原始对象直接透传，归一化在 KeywordTriggerService.refresh
+        keyword_trigger = self.raw_config.get("keyword_trigger")
+        config.keyword_trigger = (
+            keyword_trigger if isinstance(keyword_trigger, dict) else {}
+        )
 
         return config
 

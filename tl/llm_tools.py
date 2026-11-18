@@ -1066,6 +1066,7 @@ async def _run_single_v2(
         image_count=1,
         suppress_resolution=suppress_resolution,
         template_id=template_id,
+        keyword_expanded=True,
         admission={"event": event},
         quota={"cost": 1},
         trusted_local=trusted_local,
@@ -1226,6 +1227,7 @@ async def _run_batch_v2(
                     },
                     trusted_local=True,
                     template_id=item.get("template_id"),
+                    keyword_expanded=True,
                 )
             )
         requester = requester_from_event(event)
@@ -1431,6 +1433,42 @@ def _apply_template(
     return template, rendered, None
 
 
+def _expand_tool_keywords(
+    plugin: Any, raw_prompt: str, references: _ToolReferences
+) -> tuple[_ToolReferences, str, str]:
+    """关键词 auto 注入：返回 (新 references, 追加提示词, 提示文本)。
+
+    匹配用模板渲染前的原始 prompt；注入的库文件路径接在消息图之后，
+    由 v2 的受信根目录放行。提示文本进入前台 notice，纯文本无图片数据。
+    """
+    trigger = getattr(plugin, "keyword_trigger", None)
+    generator = getattr(plugin, "image_generator", None)
+    if trigger is None or generator is None:
+        return references, "", ""
+    slots = max(
+        getattr(generator, "max_reference_images", 0)
+        - (len(references.images) + len(references.avatars)),
+        0,
+    )
+    expansion = trigger.expand_auto(raw_prompt, slots)
+    if expansion is None:
+        return references, "", ""
+    notice_parts = [f"关键词「{hit['name']}」命中" for hit in expansion.hits]
+    dropped = len(expansion.dropped)
+    missing = sum(1 for item in expansion.refs if item.get("missing"))
+    if dropped:
+        notice_parts.append(f"{dropped} 张超出参考图上限已丢弃")
+    if missing:
+        notice_parts.append(f"{missing} 条参考图条目缺失已跳过")
+    fragments_dropped = len(getattr(expansion, "dropped_fragments", []) or [])
+    if fragments_dropped:
+        notice_parts.append(f"{fragments_dropped} 条提示词片段超总量上限未拼接")
+    notice = f"关键词注入：{'；'.join(notice_parts)}"
+    injected = trigger.expansion_paths(expansion)
+    new_references = references._replace(images=[*references.images, *injected])
+    return new_references, expansion.prompt_append, notice
+
+
 async def _prepare_single_request(
     plugin: Any, event: Any, kwargs: dict[str, Any], prompt: str
 ) -> tuple[_SingleRequest | None, str | None]:
@@ -1440,6 +1478,7 @@ async def _prepare_single_request(
     建任务或发起生成。
     """
 
+    raw_prompt = prompt
     template = None
     template_text = str(kwargs.get("template") or "").strip()
     if template_text:
@@ -1497,6 +1536,12 @@ async def _prepare_single_request(
     references, error = await _resolve_tool_references(plugin, event, raw_references)
     if error:
         return None, error
+    # 关键词 auto 注入先于模板缺图判断：命中绑定可满足 requires=required。
+    references, keyword_append, keyword_notice = _expand_tool_keywords(
+        plugin, raw_prompt, references
+    )
+    if keyword_append:
+        prompt = f"{prompt}\n{keyword_append}"
     if (
         template is not None
         and template.reference == "required"
@@ -1526,6 +1571,8 @@ async def _prepare_single_request(
         provider=provider,
         model=model,
     )
+    if keyword_notice:
+        config_value_notice = _joined_notice(keyword_notice, config_value_notice)
     has_references = bool(references.images or references.avatars)
     preserve_size = bool(getattr(plugin.cfg, "preserve_reference_image_size", False))
     # 显式尺寸与模板默认尺寸优先满足；配置默认值只约束未指定尺寸的请求。

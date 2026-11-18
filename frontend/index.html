@@ -110,6 +110,18 @@
         <button
           type="button"
           class="tab-btn"
+          id="tab-btn-keywords"
+          role="tab"
+          aria-selected="false"
+          aria-controls="panel-keywords"
+          tabindex="-1"
+        >
+          <span class="tab-icon" data-icon="bookmark"></span>
+          <span class="tab-label" data-i18n="关键词">关键词</span>
+        </button>
+        <button
+          type="button"
+          class="tab-btn"
           id="tab-btn-templates"
           role="tab"
           aria-selected="false"
@@ -197,6 +209,16 @@
           hidden
         >
           <div id="references-root" class="references-view"></div>
+        </section>
+        <section
+          id="panel-keywords"
+          class="studio-panel"
+          role="tabpanel"
+          aria-labelledby="tab-btn-keywords"
+          aria-hidden="true"
+          hidden
+        >
+          <div id="keywords-root" class="keywords-view"></div>
         </section>
       </main>
 

@@ -7,12 +7,14 @@ import { createProviderConfigView } from "./provider-config/index";
 import { createWorkbenchView } from "./workbench/index";
 import { createTemplatesView } from "./templates/index";
 import { createReferencesView } from "./references/index";
+import { createKeywordsView } from "./keywords/index";
 
 window.__createWorkbenchView = createWorkbenchView;
 window.__createTemplatesView = createTemplatesView;
 window.__createProviderConfigView = createProviderConfigView;
 window.__createLimitsView = createLimitsView;
 window.__createReferencesView = createReferencesView;
+window.__createKeywordsView = createKeywordsView;
 window.__createGalleryView = createGalleryView;
 window.__createProgressView = createProgressView;
 

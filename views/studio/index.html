@@ -7,8 +7,8 @@
     <link rel="stylesheet" href="./style.css" />
     <link rel="stylesheet" href="./provider-config.css" />
     <link rel="stylesheet" href="./templates.css" />
-    <script type="module" crossorigin src="./assets/index-B-a92A4e.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-BorME9xV.css">
+    <script type="module" crossorigin src="./assets/index-DYTPbyGZ.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-D8iDqjyv.css">
   </head>
   <body class="studio-body">
     <div class="studio-shell">
@@ -112,6 +112,18 @@
         <button
           type="button"
           class="tab-btn"
+          id="tab-btn-keywords"
+          role="tab"
+          aria-selected="false"
+          aria-controls="panel-keywords"
+          tabindex="-1"
+        >
+          <span class="tab-icon" data-icon="bookmark"></span>
+          <span class="tab-label" data-i18n="关键词">关键词</span>
+        </button>
+        <button
+          type="button"
+          class="tab-btn"
           id="tab-btn-templates"
           role="tab"
           aria-selected="false"
@@ -199,6 +211,16 @@
           hidden
         >
           <div id="references-root" class="references-view"></div>
+        </section>
+        <section
+          id="panel-keywords"
+          class="studio-panel"
+          role="tabpanel"
+          aria-labelledby="tab-btn-keywords"
+          aria-hidden="true"
+          hidden
+        >
+          <div id="keywords-root" class="keywords-view"></div>
         </section>
       </main>
 

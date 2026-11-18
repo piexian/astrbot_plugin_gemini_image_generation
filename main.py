@@ -61,6 +61,7 @@ from .tl.generation_tracker import (
     GenerationTracker,
     requester_from_event,
 )
+from .tl.keyword_trigger import KeywordTriggerService
 from .tl.llm_query_tools import GeminiImageLookupTool, GeminiImageShareTool
 from .tl.llm_tools import GeminiImageBatchTool, GeminiImageGenerationTool
 from .tl.plugin_config import get_session_tool_timeout, max_configured_reference_images
@@ -70,7 +71,7 @@ from .tl.provider_capabilities import parse_model_selector, select_candidates
 from .tl.provider_runtime import ProviderRuntime, provider_operation
 from .tl.provider_settings import candidate_is_keyless
 from .tl.reference_image import REFERENCE_IMAGE_CACHE_DIR
-from .tl.reference_library import ReferenceLibrary
+from .tl.reference_library import ReferenceLibrary, ReferenceLibraryError
 from .tl.tl_api import APIClient, ApiRequestConfig, get_api_client
 from .tl.tl_utils import (
     AvatarManager,
@@ -185,9 +186,12 @@ class GeminiImageGenerationPlugin(Star):
             logger.warning(
                 f"[WebUI] 参考图晋升对账失败（不影响启动）: {redact_text(str(e))[:240]}"
             )
+        self.keyword_trigger = KeywordTriggerService(self._resolve_keyword_ref)
+        self.keyword_trigger.refresh(self.cfg.keyword_trigger)
         self._web_api = None
         self.studio_providers = None
         self.studio_templates = None
+        self.studio_keywords = None
         self._web_routes: list[tuple[Any, ...]] = []
         self._web_closed = False
 
@@ -332,6 +336,7 @@ class GeminiImageGenerationPlugin(Star):
             filter_valid_fn=self.image_handler.filter_valid_reference_images,
             tracker=self.generation_tracker,
             archive_images_fn=self.web_studio_service.archive_images,
+            keyword_trigger=self.keyword_trigger,
         )
 
         # 兼容旧代码的 avatar_manager
@@ -367,6 +372,50 @@ class GeminiImageGenerationPlugin(Star):
         return max_configured_reference_images(
             getattr(self.cfg, "provider_candidates", None)
         )
+
+    def _resolve_keyword_ref(self, ref_id: str) -> dict[str, Any] | None:
+        """参考图库条目按 ID 解析为注入路径与标签；缺失返回 None。"""
+        library = self.reference_library
+        entry = library.get(ref_id) if library is not None else None
+        if entry is None:
+            return None
+        try:
+            path = library.file_path(entry["file"])
+        except ReferenceLibraryError:
+            return None
+        return {"path": str(path), "label": entry.get("label") or ref_id}
+
+    def _keyword_bindings_listing(self) -> str:
+        """列出启用的关键词绑定；/快速 关键词 无参时展示。"""
+        bindings = self.keyword_trigger.enabled_bindings()
+        if not bindings:
+            return "还没有启用的关键词绑定；请在 Studio 关键词页签添加。"
+        lines = ["已配置的关键词绑定："]
+        for binding in bindings:
+            labels = []
+            for ref_id in binding.ref_ids:
+                resolved = self._resolve_keyword_ref(ref_id)
+                labels.append(resolved["label"] if resolved else f"{ref_id}（缺失）")
+            targets = "、".join(labels) if labels else "无参考图"
+            fragment = binding.prompt_append or "无提示词片段"
+            lines.append(
+                f"- {binding.name}：触发词 [{'、'.join(binding.words)}] → {targets}；{fragment}"
+            )
+        return "\n".join(lines)
+
+    def _keyword_notice(self, expansion: Any) -> str:
+        """关键词注入的可读提示；全部顺利时返回空串。"""
+        dropped = len(expansion.dropped)
+        missing = sum(1 for item in expansion.refs if item.get("missing"))
+        parts = []
+        if dropped:
+            parts.append(f"{dropped} 张超出参考图上限已丢弃")
+        if missing:
+            parts.append(f"{missing} 条参考图条目缺失已跳过")
+        fragments_dropped = len(getattr(expansion, "dropped_fragments", []) or [])
+        if fragments_dropped:
+            parts.append(f"{fragments_dropped} 条提示词片段超总量上限未拼接")
+        return f"⚠️ 关键词注入：{'；'.join(parts)}" if parts else ""
 
     def _any_candidate_text_response_enabled(self) -> bool:
         for candidate in getattr(self.cfg, "provider_candidates", []) or []:
@@ -435,6 +484,7 @@ class GeminiImageGenerationPlugin(Star):
                 )
                 return
             from .tl.provider_application import ProviderApplication
+            from .tl.studio_keywords import StudioKeywordService
             from .tl.studio_limits import StudioLimitsService
             from .tl.studio_providers import ProviderConfigService
             from .tl.studio_templates import StudioTemplateService
@@ -444,6 +494,16 @@ class GeminiImageGenerationPlugin(Star):
                 self.cfg,
                 self.rate_limiter,
                 self.context,
+                self._plugin_data_dir,
+                config_lock=self.configuration_lock,
+                is_closed=lambda: self._web_closed,
+            )
+            self.studio_keywords = StudioKeywordService(
+                self.raw_config,
+                self.cfg,
+                self.reference_library,
+                self.keyword_trigger,
+                lambda: self._max_configured_reference_images(),
                 self._plugin_data_dir,
                 config_lock=self.configuration_lock,
                 is_closed=lambda: self._web_closed,
@@ -473,6 +533,7 @@ class GeminiImageGenerationPlugin(Star):
                 self.generation_tracker,
                 self.web_studio_service,
                 limits_service=self.studio_limits,
+                keyword_service=self.studio_keywords,
                 providers_service=self.studio_providers,
                 templates_service=self.studio_templates,
                 is_closed=lambda: self._web_closed,
@@ -562,12 +623,16 @@ class GeminiImageGenerationPlugin(Star):
             return self._v2_service
         if not self._ensure_api_client():
             return None
+        library = getattr(self, "reference_library", None)
+        allowed_roots = [REFERENCE_IMAGE_CACHE_DIR]
+        if library is not None:
+            allowed_roots.append(library.directory)
         try:
             service = build_generation_stack(
                 client=lambda: self.api_client,
                 candidates=[{"provider": "legacy", "model": "auto"}],
                 data_dir=os.path.join(self._plugin_data_dir, "v2"),
-                allowed_local_roots=(REFERENCE_IMAGE_CACHE_DIR,),
+                allowed_local_roots=tuple(allowed_roots),
                 # submit 准入：共享额度、WebUI 名额与 FIFO 生成队列由调度器统一预留。
                 quota=RateLimiterQuota(lambda: self.rate_limiter),
                 limiter=CompositeAdmissionLimiter(
@@ -746,6 +811,8 @@ class GeminiImageGenerationPlugin(Star):
         requested_provider: str | None = None,
         requested_model: str | None = None,
         template_id: str | None = None,
+        keyword_match_text: str | None = None,
+        keyword_explicit_text: str | None = None,
     ):
         """快捷图像生成：提交 v2 Job，等待终态后发送结果。"""
         redact_error = globals().get("redact_text")
@@ -785,6 +852,38 @@ class GeminiImageGenerationPlugin(Star):
                 )
 
             enhanced_prompt = prompt
+            keyword_trigger = getattr(self, "keyword_trigger", None)
+            if keyword_trigger is not None:
+                remaining = max(
+                    self._max_configured_reference_images() - len(all_ref_images),
+                    0,
+                )
+                expansion = None
+                if keyword_explicit_text is not None:
+                    # 子指令显式展开：手动图与头像已占位后再吃剩余槽位
+                    expansion = keyword_trigger.expand_explicit(
+                        keyword_explicit_text, remaining
+                    )
+                    if expansion is None:
+                        yield event.plain_result(
+                            "没有命中任何关键词绑定；"
+                            "/快速 关键词（不带参数）查看已配置绑定。"
+                        )
+                        return
+                else:
+                    # 自动匹配用模板渲染前的原始用户文本，不用渲染产物
+                    expansion = keyword_trigger.expand_auto(
+                        keyword_match_text or enhanced_prompt, remaining
+                    )
+                if expansion is not None:
+                    all_ref_images.extend(keyword_trigger.expansion_paths(expansion))
+                    if expansion.prompt_append:
+                        enhanced_prompt = (
+                            f"{enhanced_prompt}\n{expansion.prompt_append}"
+                        )
+                    notice = self._keyword_notice(expansion)
+                    if notice:
+                        yield event.plain_result(notice)
             is_modification_request = is_modification
 
             if is_modification_request and not all_ref_images:
@@ -1098,6 +1197,7 @@ class GeminiImageGenerationPlugin(Star):
             event,
             full_prompt,
             use_avatar,
+            keyword_match_text=prompt,
             override_resolution=effective_resolution,
             override_aspect_ratio=effective_aspect_ratio,
             requested_provider=requested_provider,
@@ -1130,6 +1230,7 @@ class GeminiImageGenerationPlugin(Star):
             event,
             generation_prompt,
             use_avatar,
+            keyword_match_text=prompt,
             requested_provider=requested_provider,
             requested_model=requested_model,
         ):
@@ -1139,6 +1240,36 @@ class GeminiImageGenerationPlugin(Star):
     def quick_mode_group(self):
         """快速模式指令组"""
         pass
+
+    @quick_mode_group.command("关键词")
+    async def quick_keyword(self, event: AstrMessageEvent, prompt: str = ""):
+        """关键词快速模式：显式命中已配置的关键词绑定"""
+        prompt = self._extract_prompt_from_message(
+            event, prompt, ("快速",), ("关键词",)
+        )
+        keyword_trigger = getattr(self, "keyword_trigger", None)
+        if keyword_trigger is None or not keyword_trigger.enabled_bindings():
+            yield event.plain_result(
+                "还没有可用的关键词绑定；请在 Studio 关键词页签添加。"
+            )
+            return
+        if keyword_trigger.mode != "command":
+            yield event.plain_result(
+                "当前为自动匹配模式，生成文本会自动注入关键词绑定，无需此子指令。"
+            )
+            return
+        if not prompt.strip():
+            yield event.plain_result(self._keyword_bindings_listing())
+            return
+        use_avatar = await self.avatar_handler.should_use_avatar(event)
+        # 命中后再交给生成入口按剩余槽位展开：手动图与头像先占位，丢弃有提示
+        async for result in self._quick_generate_image(
+            event,
+            prompt,
+            use_avatar,
+            keyword_explicit_text=prompt,
+        ):
+            yield result
 
     @quick_mode_group.command("头像")
     async def quick_avatar(self, event: AstrMessageEvent, prompt: str = ""):
@@ -1376,6 +1507,7 @@ class GeminiImageGenerationPlugin(Star):
                 event=event,
                 v2_service=v2_service,
                 prompt=full_prompt,
+                keyword_match_text=prompt,
                 reference_images=valid_reference_images,
                 avatar_reference=valid_avatar_reference,
                 override_resolution=sticker_resolution,
@@ -1889,6 +2021,7 @@ class GeminiImageGenerationPlugin(Star):
             event,
             modification_prompt,
             use_avatar,
+            keyword_match_text=prompt,
             is_modification=True,
             requested_provider=requested_provider,
             requested_model=requested_model,
@@ -1965,6 +2098,7 @@ class GeminiImageGenerationPlugin(Star):
             event=event,
             v2_service=v2_service,
             prompt=full_prompt,
+            keyword_match_text=combined_prompt,
             reference_images=reference_images,
             avatar_reference=avatar_reference,
             requested_provider=requested_provider,

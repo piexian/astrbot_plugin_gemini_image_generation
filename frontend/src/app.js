@@ -1393,6 +1393,7 @@ class StudioApp {
       progress: document.getElementById("tab-btn-progress"),
       gallery: document.getElementById("tab-btn-gallery"),
       references: document.getElementById("tab-btn-references"),
+      keywords: document.getElementById("tab-btn-keywords"),
       limits: document.getElementById("tab-btn-limits"),
       providers: document.getElementById("tab-btn-providers"),
       templates: document.getElementById("tab-btn-templates"),
@@ -1403,6 +1404,7 @@ class StudioApp {
       progress: document.getElementById("panel-progress"),
       gallery: document.getElementById("panel-gallery"),
       references: document.getElementById("panel-references"),
+      keywords: document.getElementById("panel-keywords"),
       limits: document.getElementById("panel-limits"),
       providers: document.getElementById("panel-providers"),
       templates: document.getElementById("panel-templates"),
@@ -1508,6 +1510,20 @@ class StudioApp {
       });
     } else if (referencesRoot) {
       referencesRoot.textContent = t("参考图库组件未能加载，请刷新 Studio。");
+    }
+
+    const keywordsRoot = document.getElementById("keywords-root");
+    const createKeywordsView = window.__createKeywordsView;
+    if (keywordsRoot && typeof createKeywordsView === "function") {
+      this.keywords = createKeywordsView(keywordsRoot, {
+        bridge: BridgeClient,
+        modal: Modal,
+        t,
+        toast: Toast,
+        errorFeedback: ErrorFeedback,
+      });
+    } else if (keywordsRoot) {
+      keywordsRoot.textContent = t("关键词组件未能加载，请刷新 Studio。");
     }
 
     this.limits = window.__createLimitsView(document.getElementById("panel-limits"), {
@@ -1672,6 +1688,8 @@ class StudioApp {
       void this.templates?.open();
     } else if (tabKey === "references") {
       void this.references?.loadOnce();
+    } else if (tabKey === "keywords") {
+      void this.keywords?.reload?.();
     }
   }
 
@@ -1689,6 +1707,7 @@ class StudioApp {
     this.templates?.destroy();
     this.progress?.destroy();
     this.references?.destroy();
+    this.keywords?.destroy();
     this.gallery?.destroy();
     this.workbench?.destroy();
     this.stopwatch.stop();
