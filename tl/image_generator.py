@@ -88,6 +88,7 @@ class ImageGenerator:
         filter_valid_fn=None,
         tracker=None,
         archive_images_fn=None,
+        keyword_trigger=None,
     ):
         """
         Args:
@@ -110,6 +111,7 @@ class ImageGenerator:
         self._filter_valid_fn = filter_valid_fn
         self.tracker = tracker
         self._archive_images_fn = archive_images_fn
+        self.keyword_trigger = keyword_trigger
         initial_request_stats: dict[str, object] = {
             "retry_count": 0,
             "token_usage": None,
@@ -206,6 +208,20 @@ class ImageGenerator:
             }
         )
 
+    def _expand_keyword_refs(
+        self, prompt: str, current_refs: int
+    ) -> tuple[list[str], str]:
+        """关键词 auto 注入：按剩余槽位展开命中绑定；未启用或无命中返回空。"""
+        trigger = self.keyword_trigger
+        if trigger is None:
+            return [], ""
+        expansion = trigger.expand_auto(
+            prompt, max(self.max_reference_images - current_refs, 0)
+        )
+        if expansion is None:
+            return [], ""
+        return trigger.expansion_paths(expansion), expansion.prompt_append
+
     def _prepare_reference_inputs(
         self, reference_images: list[str] | None, avatar_reference: list[str] | None
     ) -> tuple[list[str], int]:
@@ -248,14 +264,27 @@ class ImageGenerator:
         quota: Mapping[str, Any] | Literal[False] | None = None,
         trusted_local: bool = False,
         template_id: str | None = None,
+        keyword_expanded: bool = False,
+        keyword_match_text: str | None = None,
     ) -> GenerationRequest:
         """准备单图与批量共用的 v2 请求，不提交 Job、不写生成历史。"""
 
         all_reference_images, avatar_count = self._prepare_reference_inputs(
             reference_images, avatar_reference
         )
+        if keyword_expanded:
+            keyword_paths: list[str] = []
+            keyword_append = ""
+        else:
+            keyword_paths, keyword_append = self._expand_keyword_refs(
+                keyword_match_text or prompt, len(all_reference_images)
+            )
         if avatar_count:
             prompt += _avatar_prompt_note(avatar_count)
+        if keyword_paths:
+            all_reference_images = all_reference_images + keyword_paths
+        if keyword_append:
+            prompt = f"{prompt}\n{keyword_append}"
         requester = requester_from_event(event)
         umo = getattr(event, "unified_msg_origin", None)
         if umo:
@@ -321,6 +350,8 @@ class ImageGenerator:
         quota: Mapping[str, Any] | Literal[False] | None = None,
         trusted_local: bool = False,
         template_id: str | None = None,
+        keyword_expanded: bool = False,
+        keyword_match_text: str | None = None,
     ) -> V2Submission:
         """v2 第一阶段：准备输入并提交 Job，额度与队列准入由调度器在 submit 内完成。
 
@@ -360,6 +391,8 @@ class ImageGenerator:
                     quota=quota,
                     trusted_local=trusted_local,
                     template_id=template_id,
+                    keyword_expanded=keyword_expanded,
+                    keyword_match_text=keyword_match_text,
                 )
             except asyncio.CancelledError:
                 raise

@@ -68,6 +68,8 @@ _PANEL_ONLY_METHODS = {
     "/templates/hub/tags": frozenset({"GET"}),
     "/references": frozenset({"GET", "POST"}),
     "/references/delete": frozenset({"POST"}),
+    "/keywords": frozenset({"GET", "POST"}),
+    "/keywords/preview": frozenset({"POST"}),
 }
 
 
@@ -214,6 +216,18 @@ class WebStudioAPI:
             ["GET"],
             "读取参考图库图片",
         ),
+        (
+            "/keywords",
+            "keywords",
+            ["GET", "POST"],
+            "WebUI 关键词触发配置",
+        ),
+        (
+            "/keywords/preview",
+            "keywords_preview",
+            ["POST"],
+            "WebUI 关键词触发预演",
+        ),
     )
 
     def __init__(
@@ -222,6 +236,7 @@ class WebStudioAPI:
         service: WebStudioService,
         *,
         limits_service: Any = None,
+        keyword_service: Any = None,
         providers_service: Any = None,
         templates_service: Any = None,
         is_closed: Callable[[], bool] | None = None,
@@ -229,6 +244,7 @@ class WebStudioAPI:
         self.tracker = tracker
         self.service = service
         self.limits_service = limits_service
+        self.keyword_service = keyword_service
         self.providers_service = providers_service
         self.templates_service = templates_service
         self._web_closed = False
@@ -393,6 +409,57 @@ class WebStudioAPI:
         except Exception:
             logger.error("[限流] 配置管理请求失败", exc_info=True)
             return error_response("限流配置暂时不可用", status_code=500)
+
+    def _keywords_guard(self):
+        if closed := self._closed_response():
+            return closed
+        if not getattr(request, "username", None):
+            logger.info(
+                "[WebUI] 拒绝未登录关键词配置请求: %s %s",
+                request.method,
+                getattr(request, "path", ""),
+            )
+            return error_response("请登录 AstrBot Dashboard 后操作", status_code=403)
+        if self.keyword_service is None:
+            return error_response("关键词配置服务不可用", status_code=503)
+        return None
+
+    async def keywords(self):
+        if denied := self._keywords_guard():
+            return denied
+        try:
+            if request.method == "POST":
+                payload = await self._json_body()
+                if payload is None:
+                    return error_response(
+                        "请求体必须是有效的 JSON 对象", status_code=400
+                    )
+                result = await self.keyword_service.save_keywords(payload)
+            else:
+                result = self.keyword_service.get_keywords()
+            return self._ok(result)
+        except StudioServiceError as exc:
+            return self._service_error(exc)
+        except Exception:
+            logger.error("[关键词] 配置管理请求失败", exc_info=True)
+            return error_response("关键词配置暂时不可用", status_code=500)
+
+    async def keywords_preview(self):
+        if denied := self._keywords_guard():
+            return denied
+        try:
+            payload = await self._json_body()
+            if payload is None or not isinstance(payload.get("text"), str):
+                return error_response("预演请求必须包含 text", status_code=400)
+            manual_count = payload.get("manual_count", 0)
+            if isinstance(manual_count, bool) or not isinstance(manual_count, int):
+                manual_count = 0
+            return self._ok(self.keyword_service.preview(payload["text"], manual_count))
+        except StudioServiceError as exc:
+            return self._service_error(exc)
+        except Exception:
+            logger.error("[关键词] 预演请求失败", exc_info=True)
+            return error_response("关键词预演暂时不可用", status_code=500)
 
     async def sessions(self):
         if denied := self._limits_guard():

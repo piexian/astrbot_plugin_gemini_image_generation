@@ -1501,3 +1501,77 @@ async def test_batch_null_options_clear_defaults_without_mutating_inputs(make_en
     ]
     assert (defaults, tasks) == original
     assert await stored_jobs(env) == []
+
+
+def _keyword_trigger_stub(mode="auto"):
+    from tl.keyword_trigger import KeywordTriggerService
+
+    def resolve(ref_id):
+        if ref_id == "ref-aaaaaaaaaaaa":
+            return {
+                "path": "/data/references/ref-aaaaaaaaaaaa.png",
+                "label": "画风参考",
+            }
+        return None
+
+    trigger = KeywordTriggerService(resolve)
+    trigger.refresh(
+        {
+            "mode": mode,
+            "max_refs": 3,
+            "bindings": [
+                {
+                    "name": "画风",
+                    "words": ["水彩"],
+                    "ref_ids": ["ref-aaaaaaaaaaaa"],
+                    "prompt_append": "转为水彩风格",
+                    "enabled": True,
+                }
+            ],
+        }
+    )
+    return trigger
+
+
+@pytest.mark.asyncio
+async def test_keyword_auto_injection_in_tool_prepare(make_env):
+    env = await make_env()
+    env.plugin.keyword_trigger = _keyword_trigger_stub()
+    request, error = await llm_tools._prepare_single_request(
+        env.plugin, new_event(), {}, "画一张水彩风格的猫"
+    )
+    assert error is None
+    assert list(request.reference_images) == ["/data/references/ref-aaaaaaaaaaaa.png"]
+    assert request.prompt.endswith("转为水彩风格")
+    # 工具反馈只含纯文本：无 base64、无 data: URI
+    notice = request.config_value_notice or ""
+    assert "关键词注入" in notice
+    assert "画风" in notice
+    assert "base64" not in notice.lower()
+    assert "data:" not in notice.lower()
+
+
+@pytest.mark.asyncio
+async def test_keyword_injection_gated_off_in_command_mode(make_env):
+    env = await make_env()
+    env.plugin.keyword_trigger = _keyword_trigger_stub(mode="command")
+    request, error = await llm_tools._prepare_single_request(
+        env.plugin, new_event(), {}, "画一张水彩风格的猫"
+    )
+    assert error is None
+    assert list(request.reference_images) == []
+    assert request.config_value_notice is None
+
+
+@pytest.mark.asyncio
+async def test_keyword_batch_items_carry_injected_refs(make_env):
+    env = await make_env()
+    env.plugin.keyword_trigger = _keyword_trigger_stub()
+    tasks = [{"name": "a", "prompt": "水彩猫", "image_count": 1}]
+    prepared, error = await llm_tools._prepare_batch_tasks(
+        env.plugin, new_event(), tasks
+    )
+    assert error is None
+    (item,) = prepared
+    assert item["reference_images"] == ["/data/references/ref-aaaaaaaaaaaa.png"]
+    assert item["prompt"].endswith("转为水彩风格")

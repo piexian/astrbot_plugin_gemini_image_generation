@@ -3193,5 +3193,81 @@
         }
       }
     }
+  },
+  "keyword_trigger": {
+    "description": "关键词触发",
+    "type": "object",
+    "hint": "命中关键词时注入参考图库条目与提示词片段。command 模式仅 /快速 关键词 子指令触发；auto 模式对生成请求文本自动匹配，可配置包裹符防误触。Studio 关键词页签与此处同步保存。",
+    "items": {
+      "mode": {
+        "description": "触发模式",
+        "type": "string",
+        "options": ["command", "auto"],
+        "hint": "command=仅 /快速 关键词 子指令；auto=生成请求文本自动匹配（默认关闭）",
+        "default": "command"
+      },
+      "wrapper_left": {
+        "description": "auto 包裹符（左）",
+        "type": "string",
+        "hint": "与右符同空或同有值，各不超过 2 字符；非空时仅匹配 左符+关键词+右符 形态",
+        "default": ""
+      },
+      "wrapper_right": {
+        "description": "auto 包裹符（右）",
+        "type": "string",
+        "hint": "与左符同空或同有值",
+        "default": ""
+      },
+      "max_refs": {
+        "description": "单次自动注入上限",
+        "type": "int",
+        "hint": "0-10；实际注入还受供应商参考图上限约束，手动附图优先占位",
+        "default": 3
+      },
+      "bindings": {
+        "description": "关键词绑定列表",
+        "type": "template_list",
+        "hint": "命中任一关键词的绑定按顺序注入其参考图（按条目 ID 去重）与提示词片段。",
+        "default": [],
+        "templates": {
+          "binding": {
+            "description": "关键词绑定",
+            "hint": "单条关键词绑定",
+            "items": {
+              "name": {
+                "description": "绑定名称",
+                "type": "string",
+                "hint": "便于识别的名称",
+                "default": "未命名绑定"
+              },
+              "words": {
+                "description": "触发关键词",
+                "type": "list",
+                "hint": "命中任一词即触发本绑定；子串匹配，英文不区分大小写",
+                "default": []
+              },
+              "ref_ids": {
+                "description": "参考图库条目 ID",
+                "type": "list",
+                "hint": "形如 ref-xxxxxxxxxxxx；在 Studio 关键词页签可从参考图库选择",
+                "default": []
+              },
+              "prompt_append": {
+                "description": "追加提示词片段",
+                "type": "text",
+                "hint": "命中后按绑定顺序以换行拼接到提示词尾部，可留空",
+                "default": ""
+              },
+              "enabled": {
+                "description": "启用绑定",
+                "type": "bool",
+                "hint": "关闭后不参与任何模式匹配",
+                "default": true
+              }
+            }
+          }
+        }
+      }
+    }
   }
 }
