@@ -207,8 +207,8 @@ class AvatarHandler:
         prompt_lower = prompt.lower()
         return any(kw in prompt_lower for kw in AVATAR_KEYWORDS)
 
-    async def parse_mentions(self, event: AstrMessageEvent) -> list[int]:
-        """解析消息中的@用户，返回用户ID列表"""
+    async def parse_mentions(self, event: AstrMessageEvent) -> list[int | str]:
+        """解析消息中的@用户，数字 QQ 保持 int，OpenID 保留字符串"""
         mentioned_users = []
 
         try:
@@ -220,7 +220,9 @@ class AvatarHandler:
                 if hasattr(msg_component, "qq") and str(msg_component.qq) != str(
                     event.get_self_id()
                 ):
-                    mentioned_users.append(int(msg_component.qq))
+                    user_id = str(msg_component.qq)
+                    normalized_id = int(user_id) if user_id.isdigit() else user_id
+                    mentioned_users.append(normalized_id)
                     self._log_debug(f"解析到@用户: {msg_component.qq}")
 
         except Exception as e:

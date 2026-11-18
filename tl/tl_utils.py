@@ -208,23 +208,32 @@ def _pick_avatar_url(data: dict | None) -> str | None:
 
 
 _QQ_OFFICIAL_PLATFORMS = {"qq_official", "qq_official_webhook"}
+_QQ_OFFICIAL_V2_PLATFORMS = {"qq_official_v2", "qq_official_v2_webhook"}
 
 
 def _build_qq_official_avatar_url(event, user_id: str) -> str | None:
-    """Build the QQ Official avatar URL from the bot appid and user openid."""
+    """Build the QQ Official avatar URL from the bot client and user openid."""
     try:
         platform_name = str(event.get_platform_name() or "").strip()
     except Exception:
         platform_name = str(
             getattr(getattr(event, "platform_meta", None), "name", "") or ""
         ).strip()
+
+    bot = getattr(event, "bot", None) or getattr(event, "_bot", None)
+    openid = str(user_id or "").strip()
+    if not openid:
+        return None
+
+    if platform_name in _QQ_OFFICIAL_V2_PLATFORMS:
+        url = bot.qq.avatar_url(openid, 640)
+        return str(url or "") or None
+
     if platform_name not in _QQ_OFFICIAL_PLATFORMS:
         return None
 
-    bot = getattr(event, "bot", None) or getattr(event, "_bot", None)
     appid = str(getattr(getattr(bot, "platform", None), "appid", "") or "").strip()
-    openid = str(user_id or "").strip()
-    if not appid or not openid:
+    if not appid:
         return None
 
     return (
@@ -440,30 +449,39 @@ async def download_qq_avatar(
 
     async def _resolve_avatar_url() -> str | None:
         """通过事件上下文或NapCat接口解析头像URL"""
-        # 1. 原始消息
+        message_obj = getattr(event, "message_obj", None)
+        sender_obj = getattr(message_obj, "sender", None)
+        sender_id = str(getattr(sender_obj, "user_id", "") or "")
+        get_sender_id = getattr(event, "get_sender_id", None)
+        if not sender_id and callable(get_sender_id):
+            sender_id = str(get_sender_id() or "")
+        is_sender = bool(sender_id) and sender_id == str(user_id or "")
+
+        # 1. 原始消息（仅在目标就是发送者时采用）
         try:
-            raw_msg = getattr(getattr(event, "message_obj", None), "raw_message", None)
+            raw_msg = getattr(message_obj, "raw_message", None)
             sender_raw = getattr(raw_msg, "sender", None) or (
                 raw_msg.get("sender") if isinstance(raw_msg, dict) else None
             )
-            url = _pick_avatar_url(sender_raw)
+            url = _pick_avatar_url(sender_raw) if is_sender else None
             if url:
                 logger.debug(f"从原始消息获取到头像URL: {url}")
                 return url
         except Exception as e:
             logger.debug(f"从原始消息提取头像失败: {e}")
 
-        # 2. sender 对象
+        # 2. sender 对象（同样仅限发送者本人）
         try:
-            sender_obj = getattr(getattr(event, "message_obj", None), "sender", None)
-            url = _pick_avatar_url(sender_obj.__dict__ if sender_obj else None)
+            url = _pick_avatar_url(
+                sender_obj.__dict__ if is_sender and sender_obj else None
+            )
             if url:
                 logger.debug("从 sender 对象提取到头像URL")
                 return url
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"从 sender 对象提取头像失败: {e}")
 
-        # 3. QQ 官方 API：从 bot client 读取 appid，并与用户 openid 构造直链。
+        # 3. QQ 官方 API：V2 复用原生客户端，旧版按 appid 和 openid 构造直链。
         url = _build_qq_official_avatar_url(event, user_id)
         if url:
             logger.debug("已构造 QQ 官方用户头像 URL")

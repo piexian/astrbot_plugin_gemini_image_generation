@@ -231,9 +231,9 @@ async def test_avatar_forms_exclude_auto_and_bot_mentions():
     assert sender.avatar_reference == ["avatar:100"]
     selected = await resolver.resolve(parse_references(["avatar:100"]), event)
     assert selected.avatar_reference == ["avatar:100"]
-    with pytest.raises(InternalReferenceError, match="无权引用") as caught:
-        await resolver.resolve(parse_references(["avatar:999"]), event)
-    assert caught.value.code == "reference_access_denied"
+    selected = await resolver.resolve(parse_references(["avatar:999"]), event)
+    assert selected.avatar_reference == ["avatar:999"]
+    assert avatars.calls[-1] == "999"
     avatars.fail = True
     with pytest.raises(InternalReferenceError, match="头像获取失败"):
         await resolver.resolve(parse_references(["avatar:sender"]), event)

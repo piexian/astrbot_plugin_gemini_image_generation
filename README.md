@@ -33,6 +33,7 @@
 - Python 3.12+
 - NapCat（目前主要适配 NapCat 平台）
 - QQ 官方机器人 WebSocket（`qq_official`，头像参考已通过真实实例验证）
+- QQ 官方 V2 适配器（`qq_official_v2` / `qq_official_v2_webhook`）
 
 > [!WARNING]
 > 代码同时兼容 QQ 官方机器人 Webhook（`qq_official_webhook`）的头像获取结构，但目前没有真实 Webhook 实例可供验证，不保证一定可用。

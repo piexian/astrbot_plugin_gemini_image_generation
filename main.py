@@ -2027,8 +2027,8 @@ class GeminiImageGenerationPlugin(Star):
         """兼容旧 API：根据提示词判断是否应该使用头像作为参考"""
         return await self.avatar_handler.should_use_avatar_for_prompt(event, prompt)
 
-    async def parse_mentions(self, event: AstrMessageEvent) -> list[int]:
-        """兼容旧 API：解析消息中的@用户"""
+    async def parse_mentions(self, event: AstrMessageEvent) -> list[int | str]:
+        """兼容旧 API：数字 QQ 保持 int，OpenID 保留字符串"""
         return await self.avatar_handler.parse_mentions(event)
 
     def _filter_valid_reference_images(

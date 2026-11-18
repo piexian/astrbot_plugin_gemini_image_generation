@@ -158,11 +158,6 @@ class ReferenceResolver:
             user_ids = mentioned
             label = "被提及用户头像"
         else:
-            allowed = {_sender_id(event, spec.token), *mentioned}
-            if spec.user_id not in allowed:
-                _fail(
-                    spec.token, "reference_access_denied", _item(spec.token, "无权引用")
-                )
             user_ids = [str(spec.user_id)]
             label = "指定用户头像"
         images: list[str] = []
