@@ -7,7 +7,8 @@
     <link rel="stylesheet" href="./style.css" />
     <link rel="stylesheet" href="./provider-config.css" />
     <link rel="stylesheet" href="./templates.css" />
-    <script type="module" crossorigin src="./assets/index-D2MJJ-B1.js"></script>
+    <script type="module" crossorigin src="./assets/index-B-a92A4e.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-BorME9xV.css">
   </head>
   <body class="studio-body">
     <div class="studio-shell">
@@ -99,6 +100,18 @@
         <button
           type="button"
           class="tab-btn"
+          id="tab-btn-references"
+          role="tab"
+          aria-selected="false"
+          aria-controls="panel-references"
+          tabindex="-1"
+        >
+          <span class="tab-icon" data-icon="grid"></span>
+          <span class="tab-label" data-i18n="参考图库">参考图库</span>
+        </button>
+        <button
+          type="button"
+          class="tab-btn"
           id="tab-btn-templates"
           role="tab"
           aria-selected="false"
@@ -176,6 +189,16 @@
           hidden
         >
           <div id="templates-root" class="templates-view"></div>
+        </section>
+        <section
+          id="panel-references"
+          class="studio-panel"
+          role="tabpanel"
+          aria-labelledby="tab-btn-references"
+          aria-hidden="true"
+          hidden
+        >
+          <div id="references-root" class="references-view"></div>
         </section>
       </main>
 

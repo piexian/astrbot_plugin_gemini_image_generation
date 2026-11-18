@@ -43,6 +43,7 @@ interface Props {
   installImageFallback: (img: HTMLImageElement, wrap: HTMLElement, text: string) => void;
   onRefillRequest?: (prompt: string | undefined, params: unknown, record: GalleryItem) => void;
   onSetReference?: (imageName: string) => void;
+  onSavedToReferenceLibrary?: () => void;
 }
 
 const props = defineProps<Props>();
@@ -291,6 +292,22 @@ async function download(item: GalleryItem, name: string) {
 
 async function copyPrompt(item: GalleryItem) {
   await props.clipboard.copy(item.prompt || "", props.t("提示词已复制到剪贴板"));
+}
+
+async function saveAsReference(item: GalleryItem) {
+  const name = safeImages(item)[0];
+  if (!name) return;
+  try {
+    await props.bridge.post("webui/references", {
+      gallery_name: name,
+      label: (item.prompt || "").slice(0, 32) || props.t("画廊参考图"),
+    });
+    props.toast.success(props.t("已存入参考图库"));
+    props.onSavedToReferenceLibrary?.();
+  } catch (err) {
+    console.error("[GalleryView] 存入参考图库失败:", err);
+    props.errorFeedback.show(err, props.t("存入参考图库失败"));
+  }
 }
 
 function reuse(item: GalleryItem) {
@@ -614,6 +631,16 @@ defineExpose({ fetchGallery });
             @click.stop="onSetReference?.(safeImages(item)[0]!)"
           >
             <span class="btn-icon" aria-hidden="true" v-html="icons.image"></span>
+          </button>
+          <button
+            v-if="safeImages(item)[0]"
+            type="button"
+            class="comic-btn comic-btn--outline"
+            :title="t('存入参考图库（永久保存）')"
+            :aria-label="t('存入参考图库')"
+            @click.stop="saveAsReference(item)"
+          >
+            <span class="btn-icon" aria-hidden="true" v-html="icons.bookmark"></span>
           </button>
           <button
             type="button"

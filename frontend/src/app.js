@@ -13,6 +13,7 @@ const IconSet = {
   sparkle: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/></svg>`,
   upload: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>`,
   image: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>`,
+  bookmark: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>`,
   trash: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>`,
   download: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`,
   refresh: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>`,
@@ -1391,6 +1392,7 @@ class StudioApp {
       workbench: document.getElementById("tab-btn-workbench"),
       progress: document.getElementById("tab-btn-progress"),
       gallery: document.getElementById("tab-btn-gallery"),
+      references: document.getElementById("tab-btn-references"),
       limits: document.getElementById("tab-btn-limits"),
       providers: document.getElementById("tab-btn-providers"),
       templates: document.getElementById("tab-btn-templates"),
@@ -1400,6 +1402,7 @@ class StudioApp {
       workbench: document.getElementById("panel-workbench"),
       progress: document.getElementById("panel-progress"),
       gallery: document.getElementById("panel-gallery"),
+      references: document.getElementById("panel-references"),
       limits: document.getElementById("panel-limits"),
       providers: document.getElementById("panel-providers"),
       templates: document.getElementById("panel-templates"),
@@ -1482,7 +1485,30 @@ class StudioApp {
         const added = this.workbench.addGalleryReference(imageName);
         if (added) this.switchTab("workbench");
       },
+      onSavedToReferenceLibrary: () => this.references?.reload?.(),
     });
+
+    const referencesRoot = document.getElementById("references-root");
+    const createReferencesView = window.__createReferencesView;
+    if (referencesRoot && typeof createReferencesView === "function") {
+      this.references = createReferencesView(referencesRoot, {
+        bridge: BridgeClient,
+        modal: Modal,
+        t,
+        toast: Toast,
+        errorFeedback: ErrorFeedback,
+        clipboard: Clipboard,
+        imageLoader: ImageLoader,
+        lightbox: Lightbox,
+        installImageFallback,
+        onSetReference: (imageName) => {
+          const added = this.workbench.addGalleryReference(imageName);
+          if (added) this.switchTab("workbench");
+        },
+      });
+    } else if (referencesRoot) {
+      referencesRoot.textContent = t("参考图库组件未能加载，请刷新 Studio。");
+    }
 
     this.limits = window.__createLimitsView(document.getElementById("panel-limits"), {
       bridge: BridgeClient,
@@ -1644,6 +1670,8 @@ class StudioApp {
       void this.providers?.open();
     } else if (tabKey === "templates") {
       void this.templates?.open();
+    } else if (tabKey === "references") {
+      void this.references?.loadOnce();
     }
   }
 
@@ -1660,6 +1688,7 @@ class StudioApp {
     this.providers?.destroy();
     this.templates?.destroy();
     this.progress?.destroy();
+    this.references?.destroy();
     this.gallery?.destroy();
     this.workbench?.destroy();
     this.stopwatch.stop();

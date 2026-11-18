@@ -11,7 +11,7 @@ import os
 import re
 import threading
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -340,6 +340,7 @@ class GenerationTracker:
         self._lock = asyncio.Lock()
         self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
         self._closed = False
+        self._reference_lookup: Callable[[str], Path | None] | None = None
         self._jobs = self._load_jobs() if self.enabled else {}
         changed_records = self._mark_running_interrupted()
         pruned = self._prune_locked()
@@ -629,7 +630,11 @@ class GenerationTracker:
             }
             with self.gallery_lock:
                 names = set(record["reference_names"])
-                if any(self.gallery_image_path(name) is None for name in names):
+                if any(
+                    self.gallery_image_path(name) is None
+                    and self._external_reference_path(name) is None
+                    for name in names
+                ):
                     raise ReferenceImageUnavailableError(
                         "参考图片不存在或正在清理，请重新选择"
                     )
@@ -846,6 +851,61 @@ class GenerationTracker:
             if path.parent != root or not path.is_file():
                 return None
             return path
+
+    def set_reference_lookup(self, lookup: Callable[[str], Path | None] | None) -> None:
+        """注入画廊之外的参考图可用性探测；参考图库与画廊共享命名空间。"""
+        self._reference_lookup = lookup
+
+    def _external_reference_path(self, name: str) -> Path | None:
+        if self._reference_lookup is None:
+            return None
+        try:
+            return self._reference_lookup(name)
+        except Exception:
+            return None
+
+    def _rename_image_name_locked(self, old_name: str, new_name: str) -> int:
+        """历史句柄跟随文件晋升改名；images 与 reference_names 一并替换。"""
+        renamed = 0
+        for record in self._jobs.values():
+            touched = False
+            for key in ("images", "reference_names"):
+                values = record.get(key) or []
+                if old_name in values:
+                    record[key] = [
+                        new_name if name == old_name else name for name in values
+                    ]
+                    touched = True
+            if touched:
+                renamed += 1
+        return renamed
+
+    async def rename_image_name(self, old_name: str, new_name: str) -> int:
+        """运行期改写：持锁改写、异步落盘并通知 SSE 订阅端刷新。"""
+        async with self._lock:
+            renamed = self._rename_image_name_locked(old_name, new_name)
+            if renamed:
+                await self._save()
+        if renamed:
+            self._broadcast_event({"type": "resync"})
+        return renamed
+
+    def rename_image_name_sync(self, old_name: str, new_name: str) -> int:
+        """初始化期对账用的同步变体；此时事件循环尚未承载任务。"""
+        renamed = self._rename_image_name_locked(old_name, new_name)
+        if renamed:
+            self._save_sync()
+        return renamed
+
+    async def image_used_by_records(self, name: str) -> bool:
+        """历史记录（生成图或参考图脉络）是否仍引用该文件名。"""
+        async with self._lock:
+            for record in self._jobs.values():
+                if name in (record.get("images") or []) or name in (
+                    record.get("reference_names") or []
+                ):
+                    return True
+        return False
 
     @staticmethod
     def _duration_ms(record: dict[str, Any], finished_at: Any) -> int:

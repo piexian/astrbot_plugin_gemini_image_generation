@@ -127,13 +127,15 @@ def test_lookup_and_share_schemas_do_not_promise_generation_inputs():
     assert lookup.parameters["properties"]["kind"]["enum"] == [
         "models",
         "templates",
+        "references",
         "history",
         "tasks",
     ]
     assert set(lookup.parameters["properties"]) == {"kind", "query", "limit", "detail"}
     assert share.parameters["required"] == ["references", "shared"]
     assert "template 参数" not in lookup.description
-    assert "references" not in lookup.description
+    # kind=references 只是查询参考图库，不承诺 lookup 接收 references 参数
+    assert "references 参数" not in lookup.description
     assert "明确" in share.description and "跨会话" in share.description
 
 
@@ -174,7 +176,9 @@ async def test_models_filter_limit_and_detail():
     )
     assert defaulted["total"] == 2 and defaulted["truncated"] is False
     invalid = json.loads(await tool.call(_context(_event())))
-    assert invalid["error"] == "kind 必须是 models、templates、history、tasks 之一"
+    assert invalid["error"] == (
+        "kind 必须是 models、templates、references、history、tasks 之一"
+    )
 
 
 @pytest.mark.asyncio

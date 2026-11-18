@@ -23,6 +23,12 @@ GALLERY = "\n".join(
     p.read_text(encoding="utf-8")
     for p in sorted((ROOT / "frontend/src/gallery").glob("*.vue"))
 )
+REFERENCES = "\n".join(
+    p.read_text(encoding="utf-8")
+    for pattern in ("*.vue", "*.ts")
+    for p in sorted((ROOT / "frontend/src/references").glob(pattern))
+    if "__tests__" not in p.parts
+)
 PROGRESS = "\n".join(
     p.read_text(encoding="utf-8")
     for p in sorted((ROOT / "frontend/src/progress").glob("*.vue"))
@@ -46,7 +52,7 @@ LANGS = ["en-US", "ja-JP", "ru-RU"]
 def _collect_keys():
     keys = set()
     pattern = re.compile(r"\bt\(\s*(['\"])(.+?)\1")
-    for src in (APP, PC, TPL, LIMITS, GALLERY, PROGRESS, WORKBENCH):
+    for src in (APP, PC, TPL, LIMITS, GALLERY, REFERENCES, PROGRESS, WORKBENCH):
         for m in pattern.finditer(src):
             keys.add(m.group(2))
     keys |= set(re.findall(r'data-i18n(?:-[a-z-]+)?="([^"]+)"', HTML))

@@ -32,6 +32,7 @@ from .core.errors import (
     ReferenceResolveError,
     ServiceClosedError,
     StudioBusyError,
+    redact_text,
     redact_url,
 )
 from .core.path_policy import check_remote_url
@@ -143,11 +144,13 @@ class WebStudioService:
         data_dir: str | Path,
         *,
         rate_limiter: Any = None,
+        reference_library: Any = None,
         v2_service_provider: Callable[[], Any] | None = None,
     ) -> None:
         self.api_client = api_client
         self.rate_limiter = rate_limiter
         self._v2_service_provider = v2_service_provider
+        self.reference_library = reference_library
         self.tracker = tracker
         self.config = config
         self.data_dir = Path(data_dir)
@@ -579,13 +582,221 @@ class WebStudioService:
                 try:
                     self.gallery_file(name)
                 except StudioServiceError:
-                    missing.append(name)
+                    # 与 _resolve_reference_paths 相同的共享命名空间回退
+                    if self.library_reference_path(name) is None:
+                        missing.append(name)
+                    else:
+                        available.append(name)
                 else:
                     available.append(name)
         return {
             "available_reference_names": available,
             "missing_reference_names": missing,
         }
+
+    def library_reference_path(self, name: str) -> Path | None:
+        """参考图库按名解析；用于画廊未命中时的共享命名空间回退。"""
+        library = self.reference_library
+        if library is None:
+            return None
+        try:
+            return library.file_path(name)
+        except Exception:
+            return None
+
+    async def save_reference_from_payload(
+        self, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """把画廊图/上传暂存图存入永久参考图库；标签必填，来源二选一。
+
+        画廊来源走晋升语义：入库后历史句柄改指库文件，画廊原件随即移除。
+        """
+        library = self.reference_library
+        if library is None:
+            raise StudioServiceError("参考图库不可用", status_code=503)
+        source_file = payload.get("gallery_name") or payload.get("upload_name")
+        if not source_file:
+            raise StudioServiceError("必须提供 gallery_name 或 upload_name")
+        if payload.get("gallery_name") and payload.get("upload_name"):
+            raise StudioServiceError("gallery_name 与 upload_name 只能提供一个")
+        if payload.get("gallery_name"):
+            gallery_name = str(payload["gallery_name"])
+            if gallery_name in self.tracker.protected_reference_names():
+                raise StudioServiceError(
+                    "图片正被运行中的任务用作参考图，请稍后再存", status_code=409
+                )
+            with self.tracker.gallery_lock:
+                path = self.gallery_file(gallery_name)
+            entry = await library.add_file(
+                path,
+                label=payload.get("label"),
+                description=payload.get("description") or "",
+                keywords=payload.get("keywords"),
+                source="gallery",
+                origin=gallery_name,
+            )
+            await self._finish_reference_promotion(entry, gallery_name)
+            return entry
+        with self._upload_file_lock:
+            root = self.upload_dir.resolve()
+            candidate = (self.upload_dir / str(payload["upload_name"])).resolve()
+            if candidate.parent != root or not candidate.is_file():
+                raise StudioServiceError("参考图片不存在", status_code=404)
+            path = candidate
+        return await library.add_file(
+            path,
+            label=payload.get("label"),
+            description=payload.get("description") or "",
+            keywords=payload.get("keywords"),
+            source="upload",
+        )
+
+    async def _finish_reference_promotion(
+        self, entry: dict[str, Any], origin: str
+    ) -> None:
+        """晋升收尾：历史句柄改指库文件，清除事务标记，再移除画廊原件。"""
+        library = self.reference_library
+        if library is None:  # pragma: no cover - 调用方已检查
+            return
+        await self.tracker.rename_image_name(origin, entry["file"])
+        try:
+            await library.clear_origin(entry["id"])
+        except Exception as exc:
+            logger.warning(
+                f"[WebUI] 清除晋升标记失败（将由启动对账补完）: origin={origin}, "
+                f"原因={redact_text(str(exc))[:240]}"
+            )
+        await asyncio.to_thread(self._unlink_gallery_original_sync, origin)
+
+    def _unlink_gallery_original_sync(self, name: str) -> None:
+        """移除晋升后的画廊原件及缩略图；失败仅记录，由配额清理兜底。"""
+        try:
+            with self.tracker.gallery_lock:
+                (self.gallery_dir / name).unlink(missing_ok=True)
+                (self.gallery_dir / ".thumbs" / f"{name}.jpg").unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning(
+                f"[WebUI] 删除画廊原件失败: name={name}, "
+                f"原因={redact_text(str(exc))[:240]}"
+            )
+
+    def reconcile_reference_promotions(self) -> None:
+        """启动期补完中断的晋升事务；仅初始化期调用。"""
+        library = self.reference_library
+        if library is None or not self.tracker.enabled:
+            return
+        for entry in library.list_references():
+            origin = entry.get("origin")
+            if not origin:
+                continue
+            try:
+                self.tracker.rename_image_name_sync(origin, entry["file"])
+                library.clear_origin_sync(entry["id"])
+                self._unlink_gallery_original_sync(origin)
+            except Exception as exc:
+                logger.warning(
+                    f"[WebUI] 晋升对账失败: origin={origin}, "
+                    f"原因={redact_text(str(exc))[:240]}"
+                )
+
+    async def update_reference_from_payload(
+        self, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """按 id 更新参考图元数据；label/description/keywords 仅更新出现的字段。"""
+        library = self.reference_library
+        if library is None:
+            raise StudioServiceError("参考图库不可用", status_code=503)
+        entry_id = str(payload.get("id") or "")
+        if not entry_id:
+            raise StudioServiceError("必须提供参考图 id")
+        return await library.update(
+            entry_id,
+            label=payload.get("label"),
+            description=payload.get("description"),
+            keywords=payload.get("keywords"),
+        )
+
+    async def delete_reference_entry(self, entry_id: str) -> None:
+        """删除参考图条目；文件仍被历史引用时降级回画廊，无引用才删除。"""
+        library = self.reference_library
+        if library is None:
+            raise StudioServiceError("参考图库不可用", status_code=503)
+        entry = library.get(entry_id)
+        if entry is None:
+            raise StudioServiceError("参考图不存在", status_code=404)
+        if entry["file"] in self.tracker.protected_reference_names():
+            raise StudioServiceError(
+                "图片正被运行中的任务用作参考图，请稍后再删", status_code=409
+            )
+        result = await library.remove(entry_id)
+        if result["shared"]:
+            return
+        file_name = result["file"]
+        if await self.tracker.image_used_by_records(file_name):
+            await asyncio.to_thread(self._demote_reference_file_sync, file_name)
+            logger.info(f"[WebUI] 参考图文件仍有历史引用，降级回画廊: file={file_name}")
+            return
+        await asyncio.to_thread(self._delete_reference_file_sync, file_name)
+
+    def _demote_reference_file_sync(self, file_name: str) -> None:
+        """库文件降级回画廊：同名搬移保住历史句柄，交还配额清理管理。"""
+        library = self.reference_library
+        if library is None:
+            return
+        source = library.directory / file_name
+        if not source.is_file():
+            return
+        with self.tracker.gallery_lock:
+            self.gallery_dir.mkdir(parents=True, exist_ok=True)
+            os.replace(source, self.gallery_dir / file_name)
+
+    def _delete_reference_file_sync(self, file_name: str) -> None:
+        """无引用时删除库文件。"""
+        library = self.reference_library
+        if library is None:
+            return
+        (library.directory / file_name).unlink(missing_ok=True)
+
+    async def reference_image_base64(
+        self, name: str, *, thumbnail: bool = False
+    ) -> dict[str, Any]:
+        """参考图库图片的 base64 读取；缩略图复用画廊管线与缓存。"""
+        library = self.reference_library
+        if library is None:
+            raise StudioServiceError("参考图库不可用", status_code=503)
+        path = library.file_path(name)
+        return await asyncio.to_thread(
+            self._reference_image_base64_sync, path, thumbnail
+        )
+
+    def _reference_image_base64_sync(
+        self, path: Path, thumbnail: bool
+    ) -> dict[str, Any]:
+        preview = False
+        if thumbnail:
+            raw = self._thumbnail_bytes(path)
+            mime_type = "image/jpeg"
+            limit = _THUMBNAIL_B64_MAX_BYTES
+            error_message = "缩略图响应超过 2MB 限制"
+        else:
+            limit = _ORIGINAL_B64_MAX_BYTES
+            error_message = "原图响应超过 8MB 限制，请使用下载功能"
+            try:
+                with path.open("rb") as stream:
+                    raw = stream.read(limit // 4 * 3 + 1)
+            except OSError as exc:
+                raise StudioServiceError("图片读取失败", status_code=500) from exc
+            mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            if ((len(raw) + 2) // 3) * 4 > limit:
+                raw = self._preview_bytes(path)
+                mime_type = "image/jpeg"
+                preview = True
+        if ((len(raw) + 2) // 3) * 4 > limit:
+            raise StudioServiceError(error_message, status_code=413)
+        encoded = base64.b64encode(raw).decode("ascii")
+        if len(encoded) > limit:
+            raise StudioServiceError(error_message, status_code=413)
+        return {"mime": mime_type, "b64": encoded, "preview": preview}
 
     @staticmethod
     def _optional_text(value: Any, name: str, *, limit: int = 128) -> str | None:
@@ -629,11 +840,14 @@ class WebStudioService:
         return names
 
     def _resolve_reference_paths(self, payload: dict[str, Any]) -> list[str]:
-        paths = []
-        for directory, key, source_name in (
+        sources = [
             (self.gallery_dir, "reference_names", "画廊"),
             (self.upload_dir, "upload_names", "上传暂存"),
-        ):
+        ]
+        # 参考图库文件与画廊共用 reference_names 命名空间：
+        # 画廊找不到时回退查 references/，两处都无才报错。
+        paths = []
+        for directory, key, source_name in sources:
             logger.debug(
                 f"[WebUI] 参考图解析: 来源={source_name}, 数量={len(payload[key])}"
             )
@@ -641,7 +855,14 @@ class WebStudioService:
             for name in payload[key]:
                 path = (directory / name).resolve()
                 if path.parent != root or not path.is_file():
-                    raise StudioServiceError(f"参考图片不存在: {name}")
+                    fallback = (
+                        self.library_reference_path(name)
+                        if key == "reference_names"
+                        else None
+                    )
+                    if fallback is None:
+                        raise StudioServiceError(f"参考图片不存在: {name}")
+                    path = fallback
                 paths.append(str(path))
         return paths
 
