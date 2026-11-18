@@ -19,6 +19,7 @@ from astrbot.api import logger
 from .core.errors import redact_url
 from .generation_tracker import GenerationTracker, without_session_origin
 from .prompt_templates import TemplateValidationError
+from .reference_library import ReferenceLibraryError
 from .studio_parameters import clean_browser_preferences
 from .web_studio_service import StudioServiceError, WebStudioService
 
@@ -65,6 +66,8 @@ _PANEL_ONLY_METHODS = {
     "/templates/hub/key": frozenset({"GET", "POST", "DELETE"}),
     "/templates/hub/mine": frozenset({"GET"}),
     "/templates/hub/tags": frozenset({"GET"}),
+    "/references": frozenset({"GET", "POST"}),
+    "/references/delete": frozenset({"POST"}),
 }
 
 
@@ -150,8 +153,13 @@ class WebStudioAPI:
         ("/history", "history", ["GET"], "WebUI 生成历史"),
         ("/history/<job_id>", "history_detail", ["GET"], "WebUI 历史详情"),
         ("/history/delete", "delete_history", ["POST"], "删除生成历史"),
-        ("/image/<name>", "image", ["GET"], "读取 gallery 图片"),
-        ("/image_b64/<name>", "image_b64", ["GET"], "读取 gallery 图片字节"),
+        ("/image/<name>", "image", ["GET"], "读取 gallery 图片，未命中回退参考图库"),
+        (
+            "/image_b64/<name>",
+            "image_b64",
+            ["GET"],
+            "读取 gallery 图片字节，未命中回退参考图库",
+        ),
         ("/capabilities", "capabilities", ["GET"], "WebUI 供应商能力"),
         ("/preferences", "preferences", ["GET", "POST"], "WebUI 浏览器参数记忆"),
         ("/generate", "generate", ["POST"], "WebUI 发起生成"),
@@ -186,6 +194,25 @@ class WebStudioAPI:
             "templates_hub_key",
             ["GET", "POST", "DELETE"],
             "WebUI 在线模板密钥",
+        ),
+        ("/references", "references", ["GET", "POST"], "WebUI 永久参考图库"),
+        (
+            "/references/delete",
+            "references_delete",
+            ["POST"],
+            "WebUI 删除参考图",
+        ),
+        (
+            "/references/image_b64/<name>",
+            "references_image_b64",
+            ["GET"],
+            "读取参考图库图片字节",
+        ),
+        (
+            "/references/image/<name>",
+            "references_image",
+            ["GET"],
+            "读取参考图库图片",
         ),
     )
 
@@ -511,7 +538,16 @@ class WebStudioAPI:
         try:
             path = self.service.gallery_file(name)
         except StudioServiceError as exc:
-            return self._service_error(exc)
+            # 画廊未命中时按共享命名空间回退参考图库，其余错误原样返回
+            library = getattr(self.service, "reference_library", None)
+            if library is None or exc.status_code != 404:
+                return self._service_error(exc)
+            try:
+                path = library.file_path(name)
+            except ReferenceLibraryError as fallback_exc:
+                return error_response(
+                    fallback_exc.message, status_code=fallback_exc.status_code
+                )
         content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         download = str(request.query.get("download", "") or "").lower() in {
             "1",
@@ -541,7 +577,43 @@ class WebStudioAPI:
                 thumbnail=thumbnail,
             )
         except StudioServiceError as exc:
+            # 画廊未命中时按共享命名空间回退参考图库，其余错误原样返回
+            library = getattr(self.service, "reference_library", None)
+            if library is None or exc.status_code != 404:
+                return self._service_error(exc)
+            try:
+                payload = await self.service.reference_image_base64(
+                    name, thumbnail=thumbnail
+                )
+            except StudioServiceError as fallback_exc:
+                return self._service_error(fallback_exc)
+            except ReferenceLibraryError as fallback_exc:
+                return error_response(
+                    fallback_exc.message, status_code=fallback_exc.status_code
+                )
+        return self._ok(payload)
+
+    async def references_image_b64(self, name: str):
+        if closed := self._closed_response():
+            return closed
+        library = getattr(self.service, "reference_library", None)
+        if library is None:
+            return error_response("参考图库不可用", status_code=503)
+        if not isinstance(name, str) or not _SAFE_FILE_NAME.fullmatch(name):
+            return error_response("非法图片文件名", status_code=400)
+        thumbnail = str(request.query.get("thumb", "") or "").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        try:
+            payload = await self.service.reference_image_base64(
+                name, thumbnail=thumbnail
+            )
+        except StudioServiceError as exc:
             return self._service_error(exc)
+        except ReferenceLibraryError as exc:
+            return error_response(exc.message, status_code=exc.status_code)
         return self._ok(payload)
 
     async def preferences(self):
@@ -684,6 +756,78 @@ class WebStudioAPI:
             logger.error(f"[WebUI] 上传参考图失败: {exc}", exc_info=True)
             return error_response("上传参考图失败", status_code=400)
         return self._ok({"names": names})
+
+    def _references_guard(self):
+        if closed := self._closed_response():
+            return closed
+        if getattr(self.service, "reference_library", None) is None:
+            return error_response("参考图库不可用", status_code=503)
+        return None
+
+    async def references(self):
+        if denied := self._references_guard():
+            return denied
+        library = self.service.reference_library
+        try:
+            if request.method == "POST":
+                payload = await self._json_body()
+                if payload is None:
+                    return error_response(
+                        "请求体必须是有效的 JSON 对象", status_code=400
+                    )
+                if payload.get("id"):
+                    result = await self.service.update_reference_from_payload(payload)
+                    return self._ok(result)
+                result = await self.service.save_reference_from_payload(payload)
+                return self._ok(result, status_code=201)
+            return self._ok({"references": library.list_references()})
+        except ReferenceLibraryError as exc:
+            return error_response(exc.message, status_code=exc.status_code)
+        except StudioServiceError as exc:
+            return self._service_error(exc)
+        except Exception as exc:
+            logger.error(f"[WebUI] 参考图库操作失败: {exc}", exc_info=True)
+            return error_response("参考图库操作失败", status_code=500)
+
+    async def references_delete(self):
+        if denied := self._references_guard():
+            return denied
+        payload = await self._json_body()
+        if payload is None:
+            return error_response("请求体必须是有效的 JSON 对象", status_code=400)
+        try:
+            await self.service.delete_reference_entry(str(payload.get("id") or ""))
+        except ReferenceLibraryError as exc:
+            return error_response(exc.message, status_code=exc.status_code)
+        except StudioServiceError as exc:
+            return self._service_error(exc)
+        except Exception as exc:
+            logger.error(f"[WebUI] 删除参考图失败: {exc}", exc_info=True)
+            return error_response("删除参考图失败", status_code=500)
+        return self._ok({"deleted": True})
+
+    async def references_image(self, name: str):
+        if closed := self._closed_response():
+            return closed
+        library = getattr(self.service, "reference_library", None)
+        if library is None:
+            return error_response("参考图库不可用", status_code=503)
+        try:
+            path = library.file_path(name)
+        except ReferenceLibraryError as exc:
+            return error_response(exc.message, status_code=exc.status_code)
+        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        download = str(request.query.get("download", "") or "").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        return file_response(
+            path,
+            filename=path.name if download else None,
+            content_type=content_type,
+            headers={"X-Content-Type-Options": "nosniff"},
+        )
 
     @staticmethod
     async def _json_body() -> dict[str, Any] | None:

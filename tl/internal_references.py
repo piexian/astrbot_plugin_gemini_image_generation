@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from .generation_tracker import _SAFE_FILE_NAME
@@ -16,6 +17,7 @@ _MAX_INDEX = 20
 _DISPLAY_LENGTH = 64
 _USER_ID = re.compile(r"^[0-9A-Za-z_.-]{1,64}$")
 _GEN_JOB = re.compile(r"^gen:([A-Za-z0-9_.-]{1,128})(?:#([1-9][0-9]*))?$")
+_REF_ID = re.compile(r"^ref:([A-Za-z0-9_.-]{1,64})$")
 _AUTO_AT_FLAGS = ("is_auto", "auto", "auto_at", "autoAt")
 
 
@@ -90,11 +92,13 @@ class ReferenceResolver:
         avatar_handler: Any,
         generation_tracker: Any,
         settings: Callable[[], Any],
+        reference_library: Any = None,
     ) -> None:
         self.image_handler = image_handler
         self.avatar_handler = avatar_handler
         self.generation_tracker = generation_tracker
         self._settings = settings
+        self.reference_library = reference_library
 
     async def resolve(
         self, specs: Sequence[ReferenceSpec], event: Any
@@ -107,6 +111,8 @@ class ReferenceResolver:
                 await self._resolve_avatar(spec, event, resolved)
             elif spec.kind.startswith("gen"):
                 self._resolve_generation(spec, event, resolved)
+            elif spec.kind == "reference":
+                self._resolve_reference(spec, resolved)
             elif spec.kind == "local":
                 self._resolve_local(spec, resolved)
             else:
@@ -185,6 +191,16 @@ class ReferenceResolver:
         resolved.avatar_reference.extend(images)
         resolved.sources.append({"token": spec.token, "kind": "avatar", "label": label})
 
+    def _library_reference_path(self, name: str) -> Path | None:
+        """参考图库按名解析；库文件名与画廊共用命名空间。"""
+        library = getattr(self, "reference_library", None)
+        if library is None:
+            return None
+        try:
+            return library.file_path(name)
+        except Exception:
+            return None
+
     def _resolve_generation(
         self, spec: ReferenceSpec, event: Any, resolved: ResolvedReferences
     ) -> None:
@@ -225,6 +241,9 @@ class ReferenceResolver:
         name = images[spec.index - 1]
         path = self.generation_tracker.gallery_image_path(name)
         if path is None:
+            # 晋升入库的历史图按共享命名空间回退查参考图库
+            path = self._library_reference_path(name)
+        if path is None:
             _unavailable(spec.token)
         resolved.gallery_files.append(str(path))
         resolved.gallery_names.append(name)
@@ -246,6 +265,34 @@ class ReferenceResolver:
         resolved.user_files.extend(accepted)
         resolved.sources.append(
             {"token": spec.token, "kind": "user_file", "label": "本地文件"}
+        )
+
+    def _resolve_reference(
+        self, spec: ReferenceSpec, resolved: ResolvedReferences
+    ) -> None:
+        """永久参考图库条目：文件由插件管理，直接标为受信本地文件。"""
+        library = self.reference_library
+        if library is None:
+            _unavailable(spec.token)
+        entry = library.get(spec.job_id or "")
+        if entry is None:
+            _fail(
+                spec.token,
+                "reference_resolve_failed",
+                _item(spec.token, "参考图不存在或已删除"),
+            )
+        try:
+            path = library.file_path(entry["file"])
+        except Exception:
+            _unavailable(spec.token)
+        resolved.gallery_files.append(str(path))
+        resolved.gallery_names.append(entry["file"])
+        resolved.sources.append(
+            {
+                "token": spec.token,
+                "kind": "gallery",
+                "label": f"参考图「{entry.get('label') or entry['file']}」",
+            }
         )
 
     def _latest_session_record(self, umo: str) -> dict[str, Any] | None:
@@ -337,6 +384,11 @@ def _parse_one(value: str, position: int) -> ReferenceSpec:
         if raw_has_traversal(token) or token.startswith("~"):
             _fail(token, "invalid_request", _item(token, "本地路径不合法"))
         return ReferenceSpec("local", token)
+    if token.startswith("ref:"):
+        entry_id = token[len("ref:") :]
+        if _REF_ID.fullmatch(token) is None:
+            _fail(token, "invalid_request", _item(token, "参考图引用不合法"))
+        return ReferenceSpec("reference", token, job_id=entry_id)
     if ":" in token or token.startswith("~") or not token.startswith("/"):
         _fail(token, "invalid_request", _item(token, "无法识别的引用"))
     return ReferenceSpec("local", token)

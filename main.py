@@ -70,6 +70,7 @@ from .tl.provider_capabilities import parse_model_selector, select_candidates
 from .tl.provider_runtime import ProviderRuntime, provider_operation
 from .tl.provider_settings import candidate_is_keyless
 from .tl.reference_image import REFERENCE_IMAGE_CACHE_DIR
+from .tl.reference_library import ReferenceLibrary
 from .tl.tl_api import APIClient, ApiRequestConfig, get_api_client
 from .tl.tl_utils import (
     AvatarManager,
@@ -157,18 +158,32 @@ class GeminiImageGenerationPlugin(Star):
             enabled=self.cfg.webui_history_enabled,
         )
         self.prompt_templates = PromptTemplateStore(self._plugin_data_dir)
+        self.reference_library = ReferenceLibrary(
+            self._plugin_data_dir,
+            validate_fn=WebStudioService._validate_image_bytes,
+        )
         self.web_studio_service = WebStudioService(
             self.api_client,
             self.generation_tracker,
             self.cfg,
             self._plugin_data_dir,
             v2_service_provider=self._ensure_v2_service,
+            reference_library=self.reference_library,
         )
         try:
             self.web_studio_service.import_legacy_images()
         except Exception as e:
             logger.warning(
                 f"[WebUI] 历史生成图纳入画廊失败（不影响启动）: {redact_text(str(e))[:240]}"
+            )
+        self.generation_tracker.set_reference_lookup(
+            self.web_studio_service.library_reference_path
+        )
+        try:
+            self.web_studio_service.reconcile_reference_promotions()
+        except Exception as e:
+            logger.warning(
+                f"[WebUI] 参考图晋升对账失败（不影响启动）: {redact_text(str(e))[:240]}"
             )
         self._web_api = None
         self.studio_providers = None

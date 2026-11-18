@@ -6,11 +6,13 @@ import { createLimitsView } from "./limits/index";
 import { createProviderConfigView } from "./provider-config/index";
 import { createWorkbenchView } from "./workbench/index";
 import { createTemplatesView } from "./templates/index";
+import { createReferencesView } from "./references/index";
 
 window.__createWorkbenchView = createWorkbenchView;
 window.__createTemplatesView = createTemplatesView;
 window.__createProviderConfigView = createProviderConfigView;
 window.__createLimitsView = createLimitsView;
+window.__createReferencesView = createReferencesView;
 window.__createGalleryView = createGalleryView;
 window.__createProgressView = createProgressView;
 

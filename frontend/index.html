@@ -98,6 +98,18 @@
         <button
           type="button"
           class="tab-btn"
+          id="tab-btn-references"
+          role="tab"
+          aria-selected="false"
+          aria-controls="panel-references"
+          tabindex="-1"
+        >
+          <span class="tab-icon" data-icon="grid"></span>
+          <span class="tab-label" data-i18n="参考图库">参考图库</span>
+        </button>
+        <button
+          type="button"
+          class="tab-btn"
           id="tab-btn-templates"
           role="tab"
           aria-selected="false"
@@ -175,6 +187,16 @@
           hidden
         >
           <div id="templates-root" class="templates-view"></div>
+        </section>
+        <section
+          id="panel-references"
+          class="studio-panel"
+          role="tabpanel"
+          aria-labelledby="tab-btn-references"
+          aria-hidden="true"
+          hidden
+        >
+          <div id="references-root" class="references-view"></div>
         </section>
       </main>
 

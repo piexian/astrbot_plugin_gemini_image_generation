@@ -22,7 +22,7 @@ from .internal_references import (
 from .llm_output import sanitize_task_result
 from .provider_capabilities import candidate_capability, select_candidates
 
-_KINDS = ("models", "templates", "history", "tasks")
+_KINDS = ("models", "templates", "references", "history", "tasks")
 _TASK_SUMMARY_KEYS = (
     "task_id",
     "kind",
@@ -83,6 +83,9 @@ class GeminiImageLookupTool(FunctionTool[AstrAgentContext]):
         "kind=models 查看已配置的供应商、模型和参数，只有需要参数细节时才把 detail 设为 true。"
         "kind=templates 查看可用的提示词模板（id、名称、说明、默认尺寸、是否需要参考图）。"
         "kind=history 返回可引用的 gen: 标识。"
+        "kind=references 查看参考图库（永久保存的人物/画风参考），"
+        "返回可引用的 ref: 标识与描述；用户提到某个角色或画风且库里有对应参考时，"
+        "在生成工具 references 里传 ref:标识。"
         "kind=tasks 查看当前会话的后台任务；任务完成后会自动通知，不需要反复查询。"
     )
     parameters: dict = Field(
@@ -92,7 +95,7 @@ class GeminiImageLookupTool(FunctionTool[AstrAgentContext]):
                 "kind": {
                     "type": "string",
                     "enum": list(_KINDS),
-                    "description": "查询类别：models、templates、history 或 tasks",
+                    "description": "查询类别：models、templates、references、history 或 tasks",
                 },
                 "query": {
                     "type": "string",
@@ -119,7 +122,9 @@ class GeminiImageLookupTool(FunctionTool[AstrAgentContext]):
         kind = kwargs.get("kind")
         if kind not in _KINDS:
             return _json(
-                {"error": "kind 必须是 models、templates、history、tasks 之一"}
+                {
+                    "error": "kind 必须是 models、templates、references、history、tasks 之一"
+                }
             )
         query = _query(kwargs.get("query"))
         if isinstance(query, dict):
@@ -129,6 +134,10 @@ class GeminiImageLookupTool(FunctionTool[AstrAgentContext]):
             result = self._models(query, _limit(kwargs.get("limit"), 20, 50), detail)
         elif kind == "templates":
             result = self._templates(query, _limit(kwargs.get("limit"), 10, 20), detail)
+        elif kind == "references":
+            result = self._references(
+                query, _limit(kwargs.get("limit"), 10, 20), detail
+            )
         elif kind == "history":
             result = self._history(
                 _event(context), query, _limit(kwargs.get("limit"), 5, 20)
@@ -209,6 +218,35 @@ class GeminiImageLookupTool(FunctionTool[AstrAgentContext]):
         items = [_template_item(template, detail) for _, _, template in ranked]
         result: dict[str, Any] = {
             "templates": items[:limit],
+            "total": len(items),
+            "truncated": len(items) > limit,
+        }
+        return result
+
+    def _references(self, query: str, limit: int, detail: bool) -> dict[str, Any]:
+        library = getattr(self.plugin, "reference_library", None)
+        if library is None:
+            return {"error": "参考图库不可用"}
+        words = [word.casefold() for word in query.split()]
+        items: list[dict[str, Any]] = []
+        for entry in library.list_references():
+            haystack = " ".join(
+                [entry.get("label") or "", entry.get("description") or ""]
+                + list(entry.get("keywords") or [])
+            ).casefold()
+            if words and not all(word in haystack for word in words):
+                continue
+            item: dict[str, Any] = {
+                "ref": f"ref:{entry['id']}",
+                "label": entry.get("label") or "",
+            }
+            if detail:
+                item["description"] = entry.get("description") or ""
+                item["keywords"] = list(entry.get("keywords") or [])
+                item["source"] = entry.get("source") or ""
+            items.append(item)
+        result: dict[str, Any] = {
+            "references": items[:limit],
             "total": len(items),
             "truncated": len(items) > limit,
         }
@@ -405,6 +443,7 @@ class GeminiImageShareTool(FunctionTool[AstrAgentContext]):
                 "allowed_dirs": [],
                 "global_paths": False,
             },
+            reference_library=getattr(self.plugin, "reference_library", None),
         )
         try:
             resolved = await resolver.resolve([spec], event)

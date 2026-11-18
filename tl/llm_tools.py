@@ -170,8 +170,9 @@ def _build_tool_base_properties() -> dict[str, Any]:
                 "gen:last（本会话上一次生成的图）、"
                 "gen:记录ID 或 gen:记录ID#序号（指定生成记录的第几张，"
                 "可用 gemini_image_lookup 的 history 查到）、"
+                "ref:参考图ID（参考图库条目，先用 gemini_image_lookup（kind=references）"
+                "查询可用参考图）、"
                 "本地图片的绝对路径（需位于插件允许的目录内）。"
-                '改图传 ["current"]，要在上一张生成图上继续修改传 ["gen:last"]'
             ),
         },
     }
@@ -1380,6 +1381,7 @@ async def _resolve_tool_references(
         avatar_handler=getattr(plugin, "avatar_handler", None),
         generation_tracker=getattr(plugin, "generation_tracker", None),
         settings=lambda: _reference_settings(plugin),
+        reference_library=getattr(plugin, "reference_library", None),
     )
     try:
         resolved = await resolver.resolve(parse_references(values), event)
