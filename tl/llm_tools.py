@@ -166,7 +166,7 @@ def _build_tool_base_properties() -> dict[str, Any]:
                 "current（当前消息和被引用消息里的图片）、"
                 "avatar:sender（发送者头像）、"
                 "avatar:mentioned（消息里 @ 到的用户头像）、"
-                "avatar:用户ID（发送者或被 @ 用户的头像）、"
+                "avatar:用户ID（任意指定用户的头像）、"
                 "gen:last（本会话上一次生成的图）、"
                 "gen:记录ID 或 gen:记录ID#序号（指定生成记录的第几张，"
                 "可用 gemini_image_lookup 的 history 查到）、"
@@ -213,7 +213,8 @@ def _build_tool_description(plugin: Any) -> str:
         "再用 template 直接套用，prompt 只写主体或附加要求。"
         "基于已有图片生成时传 references：对话中出现“改成”“变成”“基于”“修改”“改图”等词，"
         '传 ["current"]；提到“根据我”“我的头像”传 ["avatar:sender"]；@了某人传 '
-        '["avatar:mentioned"]；要在上一张生成图的基础上继续修改传 ["gen:last"]，'
+        '["avatar:mentioned"]；知道目标用户 ID 时传 ["avatar:用户ID"]，无需重复 @；'
+        '要在上一张生成图的基础上继续修改传 ["gen:last"]，'
         "也可以用 gemini_image_lookup 的 history 取得 gen: 标识。"
         "模型和参数取值用 gemini_image_lookup 查询，kind 设为 models，不要猜测。"
         "此工具会先在前台短时间等待；超时后转后台，完成后会自动唤醒你，"

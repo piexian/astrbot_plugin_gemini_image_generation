@@ -9,6 +9,8 @@ support_platforms:
   - aiocqhttp
   - qq_official
   - qq_official_webhook
+  - qq_official_v2
+  - qq_official_v2_webhook
   - discord
   - telegram
   - weixin_oc
