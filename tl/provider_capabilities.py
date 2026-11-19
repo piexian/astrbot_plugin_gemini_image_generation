@@ -380,6 +380,17 @@ def openai_responses_capability(candidate: Any) -> dict[str, Any]:
     )
 
 
+# 官方各 Seedream 模型族的 size 档位，工具层据此生成 resolution 选项。
+_DOUBAO_FAMILY_SIZE_TIERS: dict[str, tuple[str, ...]] = {
+    "5.5": ("1K", "1.5K", "2K"),
+    "5.0-pro": ("1K", "1.5K", "2K"),
+    "5.0-flash": ("1K", "1.5K", "2K"),
+    "5.0-lite": ("2K", "3K", "4K"),
+    "4.5": ("2K", "4K"),
+    "4.0": ("1K", "2K", "4K"),
+}
+
+
 def doubao_capability(candidate: Any) -> dict[str, Any]:
     settings = _settings(candidate)
     model = _model(candidate) or str(settings.get("endpoint_id") or "").strip()
@@ -396,15 +407,24 @@ def doubao_capability(candidate: Any) -> dict[str, Any]:
     setting_map = {"watermark": "watermark"}
     if sequential:
         setting_map["image_count"] = "sequential_max_images"
+    parameters: dict[str, Any] = {
+        "watermark": {
+            "type": "boolean",
+            "default_source": "provider_config",
+        },
+    }
+    # 已知模型族声明官方档位；未知族沿用工具层全局默认，保持既有行为。
+    size_tiers = _DOUBAO_FAMILY_SIZE_TIERS.get(family)
+    if size_tiers:
+        parameters["resolution"] = {
+            "type": "string",
+            "enum": list(size_tiers),
+            "default_source": "provider_config",
+        }
     return _profile(
         candidate,
         native_batch_limit=native_limit,
-        parameters={
-            "watermark": {
-                "type": "boolean",
-                "default_source": "provider_config",
-            }
-        },
+        parameters=parameters,
         request_setting_map=setting_map,
     )
 

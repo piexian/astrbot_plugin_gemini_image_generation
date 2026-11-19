@@ -28,9 +28,9 @@ from .reference_pipeline import reference_data_uri
 
 # 火山方舟图片生成 API 规定各模型族支持的尺寸档位。
 _DOUBAO_SIZE_PRESETS: dict[str, frozenset[str]] = {
-    "5.5": frozenset({"1k", "1.5k", "1536", "2k", "2048"}),
-    "5.0-pro": frozenset({"1k", "1.5k", "1536", "2k", "2048"}),
-    "5.0-flash": frozenset({"1k", "1.5k", "1536", "2k", "2048"}),
+    "5.5": frozenset({"1k", "1024", "1.5k", "1536", "2k", "2048"}),
+    "5.0-pro": frozenset({"1k", "1024", "1.5k", "1536", "2k", "2048"}),
+    "5.0-flash": frozenset({"1k", "1024", "1.5k", "1536", "2k", "2048"}),
     "5.0-lite": frozenset({"2k", "2048", "3k", "3072", "4k", "4096"}),
     "4.5": frozenset({"2k", "2048", "4k", "4096"}),
     "4.0": frozenset({"1k", "1024", "2k", "2048", "4k", "4096"}),
@@ -341,6 +341,9 @@ class DoubaoProvider:
                 "[doubao] 模型族 %s 不支持 layer_decomposition，已忽略",
                 family or "unknown",
             )
+            layer_decomposition = False
+        elif layer_decomposition and not config.reference_images:
+            logger.warning("[doubao] 图层拆分需要提供参考图，已忽略该开关")
             layer_decomposition = False
         elif layer_decomposition:
             payload["layer_decomposition"] = True
