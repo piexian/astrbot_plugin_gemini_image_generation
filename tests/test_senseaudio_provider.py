@@ -96,7 +96,7 @@ async def test_schema_defaults_load_as_candidate_and_build_request():
     assert "seed" not in request.payload
     cap = candidate_capability(candidate)
     assert cap["native_batch_limit"] == 1
-    assert cap["parameters"]["resolution"]["enum"] == ["1K", "2K", "4K"]
+    assert cap["parameters"]["resolution"]["enum"] == ["1K", "2K"]
     assert generation_fields(candidate)["max_reference_images"]["maximum"] == 1
     candidate.settings["model"] = "senseaudio-image-1.0-260319"
     assert generation_fields(candidate)["resolution"]["enum"] == ["1K"]

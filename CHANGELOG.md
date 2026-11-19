@@ -21,6 +21,7 @@
 - **Google/Vertex 原生出站字段对齐官方 camelCase**：`imageConfig` 默认发送 `imageSize`/`aspectRatio`，搜索接地工具键改为 `googleSearch`；此前默认的 snake_case 字段会被官方端点拒绝。配置项「分辨率参数名／长宽比参数名」留空即用新默认；旧配置中已保存的值不会被自动改写，如遇 `image_config oneof` 报错请清空这两项。
 - **MiniMax 参考图数量对齐官方口径**：图生图主体参考图按官方指南收紧为每次 1 张（此前误按 9 张截取）；生成数量 n 的官方范围仍为 1-9，不受影响。
 - **Vertex `person_generation` 出站改用官方大写枚举**（`ALLOW_ALL`/`ALLOW_ADULT`/`ALLOW_NONE`），配置界面仍是小写选项，无需改动。
+- **SenseAudio Image-2.0 尺寸白名单对齐官方**：移除 7 个已失效尺寸、补齐 9 个现役尺寸、自动档位收敛 1K/2K、image-1.0 标注官方已隐藏。
 
 ### Changed
 
