@@ -89,6 +89,8 @@ def normalize_image_mime(
     mime_type: str | None,
     *,
     error_label: str = "minimax",
+    supported: frozenset[str] = SUPPORTED_MIMES_JPEG_PNG,
+    max_bytes: int = _MAX_REFERENCE_IMAGE_BYTES,
 ) -> tuple[str, str]:
     """将参考图 base64 归一化为受支持格式（委托共享管道）。"""
     import base64
@@ -106,6 +108,6 @@ def normalize_image_mime(
         raw,
         mime_type,
         error_label=error_label,
-        supported=SUPPORTED_MIMES_JPEG_PNG,
-        max_bytes=_MAX_REFERENCE_IMAGE_BYTES,
+        supported=supported,
+        max_bytes=max_bytes,
     )

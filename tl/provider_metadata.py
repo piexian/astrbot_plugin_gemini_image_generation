@@ -33,6 +33,8 @@ class ProviderSpec:
     requires_api_keys: bool = True
     response_reader_path: str | None = None
     retry_ambiguous_transport_errors: bool = True
+    # 命中模型集时传输中断按 outcome_unknown 处理（非幂等接口防重复计费）
+    transport_retry_exempt_models: frozenset[str] = frozenset()
 
 
 _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
@@ -85,6 +87,10 @@ _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
         model_catalog_kind="openai",
         rebuild_on_retry=True,
         retry_error_arg=True,
+        parse_errors_with_provider=True,
+        transport_retry_exempt_models=frozenset(
+            {"minimax-h3-image", "minimax-h3-image-highspeed"}
+        ),
     ),
     ProviderSpec(
         "stepfun",

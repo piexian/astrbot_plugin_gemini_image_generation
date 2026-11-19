@@ -837,7 +837,7 @@
               "model": {
                 "description": "模型名称",
                 "type": "string",
-                "hint": "image-01；image-01-live",
+                "hint": "image-01；image-01-live；MiniMax-H3-Image；MiniMax-H3-Image-Highspeed",
                 "default": "image-01"
               },
               "api_base": {
@@ -855,11 +855,12 @@
               "resolution": {
                 "description": "图像分辨率",
                 "type": "string",
-                "hint": "该供应商默认图像分辨率。",
+                "hint": "该供应商默认图像分辨率；4K 仅 MiniMax-H3-Image / Highspeed 原生生效，旧模型自动降级为 2048。",
                 "default": "1K",
                 "options": [
                   "1K",
-                  "2K"
+                  "2K",
+                  "4K"
                 ]
               },
               "aspect_ratio": {
@@ -881,8 +882,8 @@
               "max_reference_images": {
                 "description": "最大参考图片数量",
                 "type": "int",
-                "hint": "MiniMax 官方图生图每次仅支持 1 张主体参考图，超出按顺序截取。",
-                "default": 1
+                "hint": "旧模型官方仅支持 1 张参考图；MiniMax-H3-Image / Highspeed 图片编辑最多 16 张，超出按顺序截取。",
+                "default": 16
               },
               "response_format": {
                 "description": "响应格式",
@@ -894,14 +895,25 @@
                   "url"
                 ]
               },
+              "output_format": {
+                "description": "H3 输出格式",
+                "type": "string",
+                "hint": "仅 MiniMax-H3-Image / Highspeed 生效；旧模型忽略。",
+                "default": "jpeg",
+                "options": [
+                  "jpeg",
+                  "png",
+                  "webp"
+                ]
+              },
               "n": {
                 "description": "生成数量",
                 "type": "int",
-                "hint": "单次请求生成图片数量，MiniMax 官方范围 1-9",
+                "hint": "单次请求生成图片数量；旧模型官方范围 1-9，MiniMax-H3-Image / Highspeed 为 1-10",
                 "default": 1,
                 "slider": {
                   "min": 1,
-                  "max": 9,
+                  "max": 10,
                   "step": 1
                 }
               },
@@ -909,6 +921,12 @@
                 "description": "提示词自动优化",
                 "type": "bool",
                 "hint": "是否开启 MiniMax prompt_optimizer",
+                "default": false
+              },
+              "disable_prompt_enhanced": {
+                "description": "关闭提示词增强",
+                "type": "bool",
+                "hint": "仅 H3 文生图生效；关闭后插件显式传递 aspect_ratio 和 area。",
                 "default": false
               },
               "aigc_watermark": {

@@ -1273,9 +1273,14 @@ class GeminiAPIClient:
                     status_code = getattr(e, "status", None)
                     err = APIError(err_msg, status_code, err_type)
                     spec = get_provider_spec(api_type)
+                    # 命中豁免模型集的非幂等接口：传输中断按结果未知处理，防止重复计费
+                    transport_retry_blocked = bool(spec) and (
+                        not spec.retry_ambiguous_transport_errors
+                        or str(model or "").lower()
+                        in (spec.transport_retry_exempt_models or frozenset())
+                    )
                     if (
-                        spec
-                        and not spec.retry_ambiguous_transport_errors
+                        transport_retry_blocked
                         and isinstance(
                             e,
                             (

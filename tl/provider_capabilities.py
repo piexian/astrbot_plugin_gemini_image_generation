@@ -242,8 +242,32 @@ def xai_capability(candidate: Any) -> dict[str, Any]:
 
 
 def minimax_capability(candidate: Any) -> dict[str, Any]:
-    # 官方：21:9 仅 image-01；显式宽高（2K 级）也仅 image-01，live 固定 ~1K 档
-    is_live = _model(candidate).lower() == "image-01-live"
+    model = _model(candidate) or str(_settings(candidate).get("model") or "")
+    model_lc = model.lower()
+    if model_lc in {"minimax-h3-image", "minimax-h3-image-highspeed"}:
+        return _profile(
+            candidate,
+            native_batch_limit=10,
+            parameters={
+                "resolution": {
+                    "type": "string",
+                    "enum": ["1K", "2K", "4K"],
+                    "default_source": "provider_config",
+                },
+                "aspect_ratio": {
+                    "type": "string",
+                    "default_source": "provider_config",
+                },
+                "watermark": {
+                    "type": "boolean",
+                    "default_source": "provider_config",
+                },
+            },
+            request_setting_map={"watermark": "aigc_watermark", "image_count": "n"},
+        )
+
+    # 旧模型：21:9 仅 image-01；显式宽高（2K 级）也仅 image-01，live 固定 ~1K 档。
+    is_live = model_lc == "image-01-live"
     ratios = ["1:1", "16:9", "4:3", "3:2", "2:3", "3:4", "9:16"] + (
         [] if is_live else ["21:9"]
     )
@@ -549,12 +573,19 @@ def candidate_reference_limit(candidate: Any) -> int:
     from .api import provider_limits as limits
 
     settings = _settings(candidate)
-    try:
-        configured = max(int(settings.get("max_reference_images", 6)), 0)
-    except (TypeError, ValueError):
-        configured = 6
     api_type = normalize_api_type(getattr(candidate, "api_type", ""))
-    model = _model(candidate).lower()
+    model = (_model(candidate) or str(settings.get("model") or "")).lower()
+    # H3 条目缺省参考图数沿用 schema 默认 16，其余沿用通用默认 6
+    default_refs = (
+        limits.MAX_REFERENCE_IMAGES_MINIMAX_H3
+        if api_type == "minimax"
+        and model in {"minimax-h3-image", "minimax-h3-image-highspeed"}
+        else 6
+    )
+    try:
+        configured = max(int(settings.get("max_reference_images", default_refs)), 0)
+    except (TypeError, ValueError):
+        configured = default_refs
     native = {
         "google": limits.MAX_REFERENCE_IMAGES_GOOGLE,
         "gemini_interactions": limits.MAX_REFERENCE_IMAGES_GEMINI_INTERACTIONS,
@@ -565,6 +596,11 @@ def candidate_reference_limit(candidate: Any) -> int:
         "senseaudio": limits.MAX_REFERENCE_IMAGES_SENSEAUDIO,
         "stepfun": 1,
     }.get(api_type, configured)
+    if api_type == "minimax" and model in {
+        "minimax-h3-image",
+        "minimax-h3-image-highspeed",
+    }:
+        native = limits.MAX_REFERENCE_IMAGES_MINIMAX_H3
     if api_type == "xai":
         from .api.xai import _MAX_EDIT_IMAGES
 

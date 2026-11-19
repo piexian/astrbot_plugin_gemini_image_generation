@@ -5,6 +5,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **MiniMax-H3-Image 接入**：支持 `MiniMax-H3-Image` / `MiniMax-H3-Image-Highspeed` 的文生图与图片编辑双端点、原生 4K、最多 16 张参考图、部分成功响应和错误码重试语义；旧 `image-01` / `image-01-live` 路径保持不变；`max_reference_images` 默认调整为 16，仅对 H3 图片编辑生效，旧模型仍按官方 1 张截取。出站模型名统一为官方大小写；H3 读取超时/连接中断按结果未知停止自动重试，避免重复计费；「保留参考图尺寸」时 H3 编辑比例自动跟随参考图；内联参考图按官方 64MiB 单张与请求体合计上限校验。
+
 ### Fixed
 
 - **Google/Vertex 原生出站字段对齐官方 camelCase**：`imageConfig` 默认发送 `imageSize`/`aspectRatio`，搜索接地工具键改为 `googleSearch`；此前默认的 snake_case 字段会被官方端点拒绝。配置项「分辨率参数名／长宽比参数名」留空即用新默认；旧配置中已保存的值不会被自动改写，如遇 `image_config oneof` 报错请清空这两项。
