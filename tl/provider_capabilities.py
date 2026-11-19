@@ -441,13 +441,9 @@ def sensenova_capability(candidate: Any) -> dict[str, Any]:
                     "default_source": "provider_config",
                 }
             },
-            request_setting_map={"watermark": "watermark", "image_count": "n"},
+            request_setting_map={"watermark": "watermark"},
         )
-    return _profile(
-        candidate,
-        native_batch_limit=4,
-        request_setting_map={"image_count": "n"},
-    )
+    return _profile(candidate, native_batch_limit=1)
 
 
 def senseaudio_capability(candidate: Any) -> dict[str, Any]:

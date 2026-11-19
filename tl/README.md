@@ -297,13 +297,13 @@ MiniMax 图片生成官方 provider。
 
 ### `api/sensenova.py`
 
-SenseNova（商汤日日新）provider，按模型分派：`sensenova-u1.5-lite`（文生图 + `/v1/images/edits` 编辑，32 倍数自由尺寸）与 `sensenova-u1-fast`（纯文生图，11 种固定尺寸；带参考图直接报错）。
+SenseNova（商汤日日新）provider，支持 `sensenova-u1.5-lite` 与 `sensenova-u1.5-fast` 两个同构模型；无参考图走 generations，有参考图走 `/v1/images/edits`。
 
 | 接口 | 说明 |
 |------|------|
-| `SenseNovaProvider.build_request()` | 按 u1.5 / u1-fast 分派文生图或编辑请求 |
-| `SenseNovaProvider.parse_response()` | 解析 `data[].url` / `data[].b64_json` 响应 |
-| `_resolve_size()` / `_resolve_u15_size()` | u1-fast 固定尺寸映射 / u1.5 档位+长宽比换算 32 倍数尺寸 |
+| `SenseNovaProvider.build_request()` | 按 U1.5 模型和是否有参考图分派文生图或编辑请求 |
+| `SenseNovaProvider.parse_response()` | 解析 `data[].url` / `data[].b64_json`，按响应或请求 `output_format` 落盘 |
+| `_resolve_u15_size()` | 按分辨率档位与长宽比换算 32 倍数尺寸 |
 
 ### `api/dashscope.py`
 

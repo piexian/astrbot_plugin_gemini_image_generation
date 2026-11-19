@@ -147,7 +147,7 @@ async def test_upload_rejects_large_dimensions_before_decoding(tmp_path, monkeyp
         ("openai_images", "gpt-image-1.5", 7, 7),
         ("dashscope", "qwen-image-3.0", 9, 3),
         ("dashscope", "qwen-image-edit-plus", 12, 9),
-        ("sensenova", "sensenova-u1.5-lite", 10, 4),
+        ("sensenova", "sensenova-u1.5-lite", 10, 5),
         ("modelscope", "Qwen/Qwen-Image-Edit", 2, 2),
         ("siliconflow", "Qwen/Qwen-Image-Edit", 10, 1),
         ("siliconflow", "Qwen/Qwen-Image-Edit-2509", 10, 3),

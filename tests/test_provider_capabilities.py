@@ -133,7 +133,7 @@ def test_config_loader_parses_alias_and_batch_limits() -> None:
                 "sensenova-u1-fast",
                 supports_edit=False,
             ),
-            4,
+            1,
         ),
         (
             _candidate(

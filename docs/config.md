@@ -522,56 +522,37 @@ H3 URL 有效期 24 小时，服务端最长等待 600 秒；接口不支持幂�
 
 ## sensenova_settings（SenseNova（商汤日日新）专用配置）
 
-配置路径：`provider_settings.provider_overrides` 中选择 `sensenova` 模板。支持两个模型：
+配置路径：`provider_settings.provider_overrides` 中选择 `sensenova` 模板。当前支持两个同构模型：
 
-- `sensenova-u1.5-lite`（默认）：生成与编辑一体，尺寸按档位+长宽比自由换算
-- `sensenova-u1-fast`：纯文生图信息图模型，11 种官方固定尺寸
+- `sensenova-u1.5-lite`（默认）：生成与编辑
+- `sensenova-u1.5-fast`：加速版，能力与 lite 相同
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `api_keys` | `[]` | SenseNova API Key 列表，控制台获取的 Bearer Token，支持多 Key 轮换 |
 | `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
-| `model` | `sensenova-u1.5-lite` | `sensenova-u1.5-lite`（文生图+编辑）或 `sensenova-u1-fast`（纯文生图） |
+| `model` | `sensenova-u1.5-lite` | 选择 U1.5 图像模型 |
 | `api_base` | `https://token.sensenova.cn` | API 端点地址 |
-| `resolution` | `2K` | 分辨率档位（`1K`/`2K`/`4K`），u1.5-lite 按档位像素预算换算尺寸 |
-| `aspect_ratio` | `1:1` | 默认长宽比，快速模式传入覆盖值时优先 |
-| `watermark` | `false` | 是否添加日日新官方水印；仅 u1.5-lite 生效（服务端默认开启，插件显式关闭） |
-| `prompt_extend` | `false` | 提示词自动润色；仅 u1.5-lite 生效（服务端默认开启，插件显式关闭） |
-| `response_format` | `b64_json` | 仅 u1.5-lite 生效：`b64_json` 直接落盘，`url` 为 24 小时有效临时链接 |
-| `default_size` | `2752x1536` | 仅 u1-fast 生效的兜底尺寸，必须为官方 11 种尺寸之一 |
+| `resolution` | `1K` | 分辨率档位，插件按档位与长宽比换算 `size` |
+| `aspect_ratio` | `1:1` | 默认长宽比 |
+| `watermark` | `false` | 是否添加水印；`false` 当前公测免费，官方预告后续转为付费能力 |
+| `prompt_extend` | `false` | 是否启用提示词自动扩写 |
+| `response_format` | `b64_json` | 响应格式；`b64_json` 直接落盘，`url` 为 24 小时临时链接 |
+| `output_format` | `png` | 生成文件格式；生成支持 `png`/`jpeg`/`webp`，编辑另接受 `jpg` |
 | `proxy` | - | 独立代理地址，优先级高于全局代理和环境变量 |
 
-`sensenova` 供应商使用 SenseNova 官方图像端点（仅 u1.5-lite 支持编辑）：
+`sensenova` 使用 SenseNova 官方图像端点：
 
 - 文生图：`POST /v1/images/generations`
-- 图像编辑（u1.5-lite）：`POST /v1/images/edits`，`images` 数组最多 4 张（官方未公布上限，超出截取），首张为主编辑图；输入仅支持公网 URL 或 `data:image/*;base64,` 形态
-
-**模型级编辑门控**：仅 `sensenova-u1.5` 系列候选参与改图/参考图请求；`sensenova-u1-fast` 带参考图直接报错（不忽略、不发起无效调用）。
+- 图像编辑：`POST /v1/images/edits`，`images` 最多 5 张，首张为主编辑图；输入使用公网 URL 或完整 `data:image/*;base64,` Data URL
 
 尺寸规则：
 
-**`sensenova-u1-fast`** 固定 11 种尺寸，按 `aspect_ratio` 映射：
+- `size` 默认由服务端按 `auto` 处理；插件生成请求按 `resolution` 与 `aspect_ratio` 计算宽高，宽高为 32 的倍数且位于 [512, 4096]，比例不超过 3:1。
+- 编辑请求可启用“保留参考图尺寸”，此时省略 `size`，由服务端按主图适配。
+- `n` 两个模型均固定为 1，插件不发送该参数。
 
-| 尺寸 | 近似比例 |
-|------|---------|
-| `2048x2048` | 1:1 |
-| `2752x1536` | 16:9 |
-| `1536x2752` | 9:16 |
-| `2368x1760` | 4:3 |
-| `1760x2368` | 3:4 |
-| `2496x1664` | 3:2 |
-| `1664x2496` | 2:3 |
-| `1824x2272` | 4:5 |
-| `2272x1824` | 5:4 |
-| `3072x1376` | 21:9 |
-| `1344x3136` | 超竖长 |
-
-**`sensenova-u1.5-lite`** 按 `resolution` 档位（1K/2K/4K）像素预算 × 长宽比换算，宽高为 [512, 4096] 内的 32 倍数，比例钳位 3:1 以内；编辑场景开启"改图保留参考图尺寸"时不下发 `size`，由服务端自动适配主图。
-
-其他注意事项：
-
-- u1-fast 的图片 URL 有效期 1 小时、u1.5-lite 为 24 小时；配置代理时插件会立即下载落盘
-- `n` 仅 u1-fast 支持（上限 4）；u1.5-lite 固定单张，不发送该参数
+配置代理时，插件会立即下载图片；b64 响应按响应顶层 `output_format` 落盘，缺失时回退请求配置，再回退为 PNG。
 
 官方文档：
 
