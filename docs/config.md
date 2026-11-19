@@ -387,33 +387,34 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 |--------|--------|------|
 | `api_keys` | `[]` | MiniMax API Key 列表，支持多 Key 轮换 |
 | `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
-| `model` | `image-01` | `image-01`（全能力，支持 21:9 与显式宽高）/ `image-01-live`（快速，仅 aspect_ratio，不支持 21:9） |
-| `api_base` | `https://api.minimax.cn` | 官方现行标注域名；旧域名 `https://api.minimaxi.com` 仍可填写作回退；国际站 `https://api.minimax.io` 规格较国内少 `image-01-live` / `style` / `aigc_watermark`；插件统一调用 `/v1/image_generation` |
-| `response_format` | `base64` | 响应格式：`base64` / `url`。官方 URL 有效期为 24 小时 |
-| `n` | `1` | 单次请求生成图片数量，官方范围 `1-9` |
-| `style_type` | 空 | 画风（**image-01-live 专属**）：`漫画` / `元气` / `中世纪` / `水彩`；留空不传，其他模型配置了自动忽略 |
-| `style_weight` | `0.8` | 画风权重，仅 `style_type` 非空时下发，范围 `(0,1]` |
-| `prompt_optimizer` | `false` | 是否开启 MiniMax 提示词自动优化 |
-| `aigc_watermark` | `false` | 是否添加 AIGC 水印 |
+| `model` | `image-01` | 旧模型：`image-01`（支持 21:9 与显式宽高）/ `image-01-live`（仅 `aspect_ratio`）；H3：`MiniMax-H3-Image` / `MiniMax-H3-Image-Highspeed` |
+| `api_base` | `https://api.minimax.cn` | 插件按模型选择旧 `/v1/image_generation` 或 H3 `/v1/images/generations`、`/v1/images/edits`；旧域名仍可作为回退 |
+| `response_format` | `base64` | 旧模型响应格式：`base64` / `url`；H3 固定使用 `url` 并由插件立即下载落盘 |
+| `output_format` | `jpeg` | 仅 H3 生效：`jpeg` / `png` / `webp`；旧模型忽略 |
+| `resolution` | `1K` | 旧模型支持 `1K`/`2K`；H3 原生支持 `1K`/`2K`/`4K`，不降级 |
+| `aspect_ratio` | `1:1` | H3 透传合法 `X:Y`；两边均需满足官方模型限制 |
+| `n` | `1` | 旧模型范围 `1-9`；H3 范围 `1-10` |
+| `disable_prompt_enhanced` | `false` | 仅 H3 文生图生效；关闭增强时插件显式发送 `aspect_ratio` 和 `area` |
+| `aigc_watermark` | `false` | 是否添加可见 AIGC 水印 |
 | `reference_image_mode` | `auto` | 参考图传递方式：`auto` / `base64` / `url` |
-| `subject_reference_type` | `character` | `subject_reference.type`，官方当前仅支持 `character`；其他值自动回退并告警 |
-| `max_reference_images` | `1` | MiniMax 官方图生图每次仅支持 1 张主体参考图，超出按顺序截取 |
-| `width` / `height` | `0` | 未传 `aspect_ratio` 时可同时设置，范围 `512-2048` 且为 `8` 的倍数；`0` 表示不传 |
-| `seed` | `0` | 固定随机种子，`0` 表示不传 |
+| `subject_reference_type` | `character` | 旧路径 `subject_reference.type`，官方仅支持 `character`；H3 忽略 |
+| `max_reference_images` | `16` | 旧模型最多 1 张；H3 图片编辑最多 16 张，超出按顺序截取 |
+| `style_type` / `style_weight` | 空 / `0.8` | 仅 `image-01-live` 生效，H3 忽略 |
+| `prompt_optimizer` / `width` / `height` / `seed` | - | 仅旧路径使用；H3 一律不发送 |
 | `proxy` | - | 独立代理地址 |
 
-`minimax` 供应商使用 MiniMax 官方单一图像端点：
+旧模型继续使用单一端点：
 
-- 文生图：`POST /v1/image_generation`
-- 图生图：同一端点，通过 `subject_reference[].image_file` 传入参考图
+- 文生图和图生图：`POST /v1/image_generation`
+- 图生图参考图位于 `subject_reference[].image_file`，官方限制为 1 张
 
-其他限制与防护：
+旧模型的其他限制与防护：
 
-- prompt 官方上限 1500 字符，超限直接报错（不发起注定失败的服务端调用）
+- prompt 官方上限 1500 字符，超限直接报错
 - `image_file` 官方仅支持 JPG/JPEG/PNG 且小于 10MB：非白名单格式（GIF/WebP/BMP 等）由插件解码后转码为 PNG（动图取首帧），源图或转码产物超过 10MB 直接报错
 - 全部图片被内容安全拦截时，错误信息会附带 `failed_count` 拦截数量
 
-供应商条目的 `resolution` 和 `aspect_ratio` 的适配规则：
+旧模型条目的 `resolution` 和 `aspect_ratio` 适配规则：
 
 | 场景 | resolution | aspect_ratio | 实际行为 |
 |------|-----------|-------------|---------|
@@ -423,12 +424,36 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 | 无比例 + 无 w/h 设置 | 2K/4K | — | 使用 `resolution` 对应的正方形尺寸 |
 | `image-01-live` 模型 | 任意 | 任意 | 仅使用 `aspect_ratio`，不发送 `width`/`height` |
 
-支持的长宽比枚举：`1:1` / `16:9` / `4:3` / `3:2` / `2:3` / `3:4` / `9:16` / `21:9`。`image-01-live` 不支持 `21:9`，插件会自动忽略。
+支持的长宽比枚举：`1:1` / `16:9` / `4:3` / `3:2` / `2:3` / `3:4` / `9:16` / `21:9`；`image-01-live` 不支持 `21:9`，插件会自动忽略。
+
+H3 按是否有参考图分派端点：
+
+- 无参考图：`POST /v1/images/generations`
+- 有参考图：`POST /v1/images/edits`，参考图为 `images[].image_url`，插件复用现有参考图归一化管线
+- H3 仅发送 `model`、`prompt`、`n`、`area`、`aspect_ratio`、`output_format`、`response_format`、`aigc_watermark`；文生图另发送 `disable_prompt_enhanced`
+- H3 prompt 上限为 32000 个 Unicode 字符；比例为 `X:Y` 时两边为 1-300 的整数，整体范围为 1:3 至 3:1，非法值回退 `auto`
+
+H3 图片编辑参考图限制：
+
+| 项目 | 限制 |
+|------|------|
+| 数量 | 1-16 张 |
+| 格式 | JPG、JPEG、PNG、WEBP、HEIC、HEIF |
+| 单张大小 | 不超过 64 MiB |
+| 宽高 | 每边 128-8192 px |
+| 长宽比 | 长边/短边不超过 4:1 |
+| 请求体 | 不超过 64 MiB |
+
+H3 URL 有效期 24 小时，服务端最长等待 600 秒；接口不支持幂等，读取超时或连接中断按「结果未知」处理，插件不再自动重试，避免重复生成与计费。H3 仅错误码 `1002`（IPM 限流）自动重试，参数、鉴权、余额、内容安全、模型和服务端生成错误均不重试。部分成功响应保留成功图片并记录失败项错误码；全部失败按 HTTP 状态返回错误。开启「保留参考图尺寸」时，H3 编辑的比例自动跟随参考图；内联参考图按官方 64MiB 单张与请求体合计上限校验，超限提示改用公网 URL。
+
+旧模型的 prompt 上限仍为 1500 字符；旧路径行为和尺寸适配保持不变。
 
 官方文档：
 
 - <https://platform.minimaxi.com/docs/api-reference/image-generation-t2i>
 - <https://platform.minimaxi.com/docs/api-reference/image-generation-i2i>
+- <https://platform.minimaxi.com/docs/api-reference/image-generation-h3-generations>
+- <https://platform.minimaxi.com/docs/api-reference/image-generation-h3-edits>
 - <https://platform.minimaxi.com/docs/api-reference/errorcode>
 - <https://platform.minimaxi.com/docs/faq/models>
 

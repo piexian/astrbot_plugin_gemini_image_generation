@@ -18,6 +18,8 @@ MAX_REFERENCE_IMAGES_OPENAI_COMPAT: Final[int] = 6
 MAX_REFERENCE_IMAGES_OPENAI_IMAGES: Final[int] = 16
 # MiniMax 官方图生图指南：每次请求仅支持一张主体参考图。
 MAX_REFERENCE_IMAGES_MINIMAX: Final[int] = 1
+# MiniMax-H3-Image 官方图片编辑接口支持 1-16 张参考图。
+MAX_REFERENCE_IMAGES_MINIMAX_H3: Final[int] = 16
 # qwen-image-3.0 系列编辑接口官方限定 1-3 张输入图
 MAX_REFERENCE_IMAGES_DASHSCOPE_QWEN3: Final[int] = 3
 # sensenova-u1.5-lite 编辑接口官方未给出上限，保守截取
