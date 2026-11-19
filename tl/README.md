@@ -278,7 +278,7 @@ MiniMax 图片生成官方 provider。
 | `_prepare_payload()` | 组装模型、比例、生成数量、水印、提示词优化和参考图；根据 `resolution` 和 `aspect_ratio` 自动选择 `aspect_ratio` 或显式 `width`/`height` |
 | `_map_resolution()` | 供应商条目的 `resolution`（1K/2K/4K）映射为目标像素尺寸（4K 降级为 2048） |
 | `_compute_dimensions_from_ratio()` | 从 W:H 比例和目标长边计算 `width`/`height`，自动对齐 8 的倍数并钳制 512-2048 |
-| `_build_subject_reference()` | 构造 MiniMax `subject_reference` |
+| `_build_subject_reference()` | 构造 MiniMax `subject_reference`，官方上限 1 张 |
 | `_to_image_file()` | 参考图按配置透传 URL 或转为 `data URI` |
 
 ### `api/doubao.py`

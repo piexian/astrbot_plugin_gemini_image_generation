@@ -8,11 +8,13 @@
 ### Fixed
 
 - **Google/Vertex 原生出站字段对齐官方 camelCase**：`imageConfig` 默认发送 `imageSize`/`aspectRatio`，搜索接地工具键改为 `googleSearch`；此前默认的 snake_case 字段会被官方端点拒绝。配置项「分辨率参数名／长宽比参数名」留空即用新默认；旧配置中已保存的值不会被自动改写，如遇 `image_config oneof` 报错请清空这两项。
+- **MiniMax 参考图数量对齐官方口径**：图生图主体参考图按官方指南收紧为每次 1 张（此前误按 9 张截取）；生成数量 n 的官方范围仍为 1-9，不受影响。
 - **Vertex `person_generation` 出站改用官方大写枚举**（`ALLOW_ALL`/`ALLOW_ADULT`/`ALLOW_NONE`），配置界面仍是小写选项，无需改动。
 
 ### Changed
 
 - 配置提示明确协议边界：Google 模板端点说明反代（含 Antigravity `/antigravity/v1beta` 入口）填根地址会自动补 `/v1beta`；Gemini Interactions 模板端点标明为 Interactions 协议，与原生 `generateContent` 不通用。OpenAI 兼容渠道继续使用 snake_case 字段（由反代转换层处理）。
+- **MiniMax 默认 API 域名迁移**：默认端点改为官方现行标注的 `https://api.minimax.cn`，旧域名 `https://api.minimaxi.com` 仍可填写用作回退；`subject_reference_type` 收敛为仅 `character`，其他值自动回退并告警。
 
 
 ## [4.0.0] - 2026-11-05

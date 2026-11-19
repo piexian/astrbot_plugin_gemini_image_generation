@@ -141,7 +141,7 @@ async def test_upload_rejects_large_dimensions_before_decoding(tmp_path, monkeyp
         ("xai", "grok-imagine-image", 2, 2),
         ("doubao", "doubao-seedream-4-0", 20, 14),
         ("doubao", "doubao-seedream-5-0-pro", 20, 10),
-        ("minimax", "image-01", 20, 9),
+        ("minimax", "image-01", 20, 1),
         ("stepfun", "step-image-edit-2", 20, 1),
         ("openai_images", "gpt-image-1.5", 20, 16),
         ("openai_images", "gpt-image-1.5", 7, 7),

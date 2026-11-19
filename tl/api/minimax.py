@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 import urllib.parse
-from typing import Any
+from typing import Any, Final
 
 import aiohttp
 from astrbot.api import logger
@@ -58,8 +58,8 @@ _ERROR_TYPES: dict[int, str] = {
     2049: "auth",
 }
 _RETRYABLE_ERROR_CODES: frozenset[int] = frozenset({1002})
-# 向后兼容别名;新代码请直接引用 provider_limits.MAX_REFERENCE_IMAGES_MINIMAX
-_MAX_IMAGES = MAX_REFERENCE_IMAGES_MINIMAX
+# MiniMax 官方 n 参数范围为 1-9，与参考图上限无关。
+_MAX_IMAGES: Final[int] = 9
 
 # 官方 prompt 硬上限（字符）
 _PROMPT_MAX_CHARS: int = 1500
@@ -412,6 +412,12 @@ class MiniMaxProvider:
             ref_images, MAX_REFERENCE_IMAGES_MINIMAX, log_prefix="[minimax] "
         )
         reference_type = str(settings.get("subject_reference_type") or "character")
+        if reference_type != "character":
+            logger.warning(
+                "[minimax] subject_reference_type=%s 官方仅支持 character，已回退为 character",
+                reference_type,
+            )
+            reference_type = "character"
         references: list[dict[str, str]] = []
         for image_input in ref_images[:MAX_REFERENCE_IMAGES_MINIMAX]:
             image_file = await self._to_image_file(
@@ -478,7 +484,7 @@ class MiniMaxProvider:
     def _normalize_api_base(value: Any) -> str:
         raw_api_base = str(value or "").strip().rstrip("/")
         if not raw_api_base:
-            return "https://api.minimaxi.com"
+            return "https://api.minimax.cn"
 
         parsed = urllib.parse.urlsplit(raw_api_base)
         if parsed.scheme and parsed.netloc:
