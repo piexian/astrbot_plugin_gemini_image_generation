@@ -65,7 +65,7 @@ class GoogleProvider:
             base = default_base
             logger.debug(f"使用默认 API Base (google): {base}")
 
-        # Google API 需要版本前缀
+        # 自定义根地址自动补 v1beta；已带版本前缀（含 /antigravity/v1beta 反代入口）直接拼接
         if not config.api_base or base == default_base:
             url = f"{base}/models/{config.model}:generateContent"
         elif not any(base.endswith(suffix) for suffix in ["/v1beta", "/v1"]):
@@ -244,9 +244,9 @@ class GoogleProvider:
         image_config: dict[str, Any] = {}
 
         _res_key = (config.resolution_param_name or "").strip()
-        resolution_key = _res_key if _res_key else "image_size"
+        resolution_key = _res_key if _res_key else "imageSize"
         _aspect_key = (config.aspect_ratio_param_name or "").strip()
-        aspect_ratio_key = _aspect_key if _aspect_key else "aspect_ratio"
+        aspect_ratio_key = _aspect_key if _aspect_key else "aspectRatio"
 
         if config.resolution and family != "legacy2_5":
             # 2.5 系固定 ~1K 输出，无 image_size 档位：不注入分辨率
@@ -273,7 +273,7 @@ class GoogleProvider:
             logger.debug(f"设置长宽比: {ratio} (参数名: {aspect_ratio_key})")
 
         if image_config:
-            # Gemini REST API 使用 camelCase，imageConfig 内的参数使用 snake_case
+            # Gemini REST API 统一 camelCase：imageConfig 参数默认 imageSize/aspectRatio
             generation_config["imageConfig"] = image_config
 
         if config.temperature is not None:
@@ -290,7 +290,7 @@ class GoogleProvider:
                     "[google] %s 不支持 Google 搜索接地，已忽略", config.model
                 )
             else:
-                tools.append({"google_search": {}})
+                tools.append({"googleSearch": {}})
 
         payload: dict[str, Any] = {
             "contents": contents,

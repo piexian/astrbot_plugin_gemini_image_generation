@@ -449,12 +449,11 @@ class GeminiAPIClient:
         enable_text_response = bool(settings.get("enable_text_response", False))
         response_modalities = "TEXT_IMAGE" if enable_text_response else "IMAGE"
 
-        resolution_param_name = (
-            str(settings.get("resolution_param_name") or "").strip() or "image_size"
-        )
-        aspect_ratio_param_name = (
-            str(settings.get("aspect_ratio_param_name") or "").strip() or "aspect_ratio"
-        )
+        # 参数名留空表示未设置，由各 provider 按自身协议决定默认字段名
+        resolution_param_name = str(settings.get("resolution_param_name") or "").strip()
+        aspect_ratio_param_name = str(
+            settings.get("aspect_ratio_param_name") or ""
+        ).strip()
 
         return replace(
             base_config,
