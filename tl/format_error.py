@@ -24,13 +24,13 @@ def format_error_message(error: Exception | str) -> str:
             return (
                 f"❌ 图像生成失败：{original_error}\n"
                 "🧐 原因：分辨率参数名配置不正确。\n"
-                "✅ 建议：请联系管理员将 resolution_param_name 修改为 imageSize（驼峰式）。"
+                "✅ 建议：请联系管理员清空 resolution_param_name（留空默认 imageSize）。"
             )
         if "_aspect_ratio" in error_str or "aspectratio" in error_str.replace("_", ""):
             return (
                 f"❌ 图像生成失败：{original_error}\n"
                 "🧐 原因：宽高比参数名配置不正确。\n"
-                "✅ 建议：请联系管理员将 aspect_ratio_param_name 修改为 aspectRatio（驼峰式）。"
+                "✅ 建议：请联系管理员清空 aspect_ratio_param_name（留空默认 aspectRatio）。"
             )
         return (
             f"❌ 图像生成失败：{original_error}\n"

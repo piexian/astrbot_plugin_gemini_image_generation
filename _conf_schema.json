@@ -96,7 +96,7 @@
               "api_base": {
                 "description": "API 端点地址",
                 "type": "string",
-                "hint": "Google AI API 地址，留空使用默认值",
+                "hint": "Google 原生 generateContent 端点；反代填根地址（如 .../antigravity），自动补 /v1beta",
                 "default": "https://generativelanguage.googleapis.com"
               },
               "proxy": {
@@ -153,14 +153,14 @@
               "resolution_param_name": {
                 "description": "分辨率参数名",
                 "type": "string",
-                "hint": "该供应商请求体中的分辨率字段名。留空使用 image_size。",
-                "default": "image_size"
+                "hint": "该供应商请求体中的分辨率字段名。留空使用 imageSize。",
+                "default": "imageSize"
               },
               "aspect_ratio_param_name": {
                 "description": "长宽比参数名",
                 "type": "string",
-                "hint": "该供应商请求体中的长宽比字段名。留空使用 aspect_ratio。",
-                "default": "aspect_ratio"
+                "hint": "该供应商请求体中的长宽比字段名。留空使用 aspectRatio。",
+                "default": "aspectRatio"
               },
               "enable_text_response": {
                 "description": "启用文本响应",
@@ -219,7 +219,7 @@
               "api_base": {
                 "description": "API 端点地址",
                 "type": "string",
-                "hint": "Google AI API 地址，留空使用默认值；",
+                "hint": "Interactions 协议端点（自动补 /v1beta/interactions），与 Google 原生 generateContent 不通用",
                 "default": "https://generativelanguage.googleapis.com"
               },
               "proxy": {

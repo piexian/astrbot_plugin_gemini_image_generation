@@ -50,8 +50,8 @@ class ApiRequestConfig:
     safety_settings: dict | None = None  # 安全设置
 
     # 自定义 API 参数名（支持不同 API 的字段命名差异）
-    resolution_param_name: str = "image_size"  # 分辨率参数名
-    aspect_ratio_param_name: str = "aspect_ratio"  # 长宽比参数名
+    resolution_param_name: str = ""  # 分辨率参数名，留空由 provider 协议默认
+    aspect_ratio_param_name: str = ""  # 长宽比参数名，留空由 provider 协议默认
     retry_count: int = 0  # 本次请求成功前发生的重试次数
     token_usage: dict[str, int] | None = None  # 本次请求返回的 token 用量
     retry_note: str | None = None  # 可展示给用户的重试说明

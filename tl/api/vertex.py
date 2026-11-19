@@ -34,6 +34,12 @@ _TOKEN_REFRESH_MARGIN_SECONDS = 120
 _GLOBAL_HOST = "aiplatform.googleapis.com"
 _API_VERSION = "v1"
 
+# 界面小写选项 → Vertex 官方 personGeneration 出站枚举
+_PERSON_GENERATION_ENUMS = {
+    "allow_all": "ALLOW_ALL",
+    "allow_adult": "ALLOW_ADULT",
+    "allow_none": "ALLOW_NONE",
+}
 # 官方安全过滤支持代码 → 类别（docs: Gemini image generation and responsible AI）
 _RAI_CODE_CATEGORIES = {
     "58061214": "儿童不当内容",
@@ -423,7 +429,9 @@ class VertexProvider(GoogleProvider):
         if person_generation:
             generation_config = payload.setdefault("generationConfig", {})
             image_config = generation_config.setdefault("imageConfig", {})
-            image_config["personGeneration"] = person_generation
+            image_config["personGeneration"] = _PERSON_GENERATION_ENUMS.get(
+                person_generation, person_generation
+            )
         return payload
 
     async def parse_response(
