@@ -1,4 +1,4 @@
-"""SenseAudio 图片同步生成与异步任务协议（2026-09 核对官方文档）。"""
+"""SenseAudio 图片同步生成与异步任务协议（2026-11 核对官方文档）。"""
 
 from __future__ import annotations
 
@@ -22,11 +22,15 @@ DEFAULT_API_BASE = "https://api.senseaudio.cn"
 # 固定白名单来自 image/sync 与 image/async；不能套用原厂同名模型的尺寸。
 MODEL_SIZES: dict[str, tuple[str, ...]] = {
     DEFAULT_MODEL: tuple(
-        "1024x1024 1536x864 864x1536 2016x864 864x2016 2048x1024 "
-        "1024x2048 2048x1152 1152x2048 2688x1152 1152x2688 2688x1344 "
-        "1344x2688 3840x1648 1648x3840 3840x1920 1920x3840 3840x2160 "
-        "2160x3840".split()
+        # 官方 ≤1.5K 档：宽×高 ≤3,000,000，按 0.5 元/张计费。
+        "1024x1024 1024x1280 1280x1024 1536x864 864x1536 "
+        "1024x1536 1536x1024 2016x864 864x2016 2048x1024 "
+        "1024x2048 2048x1152 1152x2048 2048x1360 1360x2048 "
+        # 官方 2K 档：宽×高 >3,000,000，按 0.8 元/张计费。
+        "2688x1152 1536x2048 2048x1536 2688x1344 "
+        "1344x2688 3136x1344".split()
     ),
+    # 官方已隐藏（x-hidden-enum），但服务端仍可调用。
     "senseaudio-image-1.0-260319": tuple(
         "1664x928 928x1664 1584x1056 1056x1584 1472x1140 1140x1472 1328x1328".split()
     ),
@@ -41,7 +45,7 @@ MODEL_SIZES: dict[str, tuple[str, ...]] = {
     ),
 }
 MODEL_RESOLUTIONS = {
-    DEFAULT_MODEL: ("1K", "2K", "4K"),
+    DEFAULT_MODEL: ("1K", "2K"),
     "senseaudio-image-1.0-260319": ("1K",),
     "doubao-seedream-5-0-260128": ("2K", "4K"),
     "sensenova-u1-fast": ("2K",),

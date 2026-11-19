@@ -1914,7 +1914,7 @@
               "model": {
                 "description": "模型名称",
                 "type": "string",
-                "hint": "SenseAudio 图像接口支持的模型；同名模型使用本平台协议和尺寸表。",
+                "hint": "SenseAudio 图像接口支持的模型；image-1.0 已被官方隐藏但仍可调用，同名模型使用本平台协议和尺寸表。",
                 "default": "senseaudio-image-2.0-260319",
                 "options": [
                   "senseaudio-image-2.0-260319",
