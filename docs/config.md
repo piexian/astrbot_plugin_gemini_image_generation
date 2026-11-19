@@ -202,44 +202,51 @@ Studio 保存仅更新群访问与限流字段，不修改供应商、不重载�
 
 配置路径：`provider_settings.provider_overrides` 中选择 `doubao` 模板。
 
+### 模型与能力矩阵
+
+| 模型族 | 推荐模型 ID | 尺寸档位 | 参考图 | 组图 | 其他能力 |
+|---|---|---|---:|---|---|
+| Seedream 5.5 | `doubao-seedream-5-5-261028` | 1K / 1.5K / 2K | 10 | 不支持 | RGBA、background、图层拆分，最多 99 个图层 |
+| Seedream 5.0 Pro | `doubao-seedream-5-0-pro-260628` | 1K / 1.5K / 2K | 10 | 不支持 | background、图层拆分 |
+| Seedream 5.0 Flash | `doubao-seedream-5-0-flash-260915` | 1K / 1.5K / 2K | 10 | 不支持 | background、图层拆分 |
+| Seedream 5.0 Lite | `doubao-seedream-5-0-260128` / `...-lite-260128` | 2K / 3K / 4K | 14 | 支持 | 即将下线 |
+| Seedream 4.5 | `doubao-seedream-4-5-251128` | 2K / 4K | 14 | 支持 | 即将下线 |
+| Seedream 4.0 | `doubao-seedream-4-0-250828` | 1K / 2K / 4K | 14 | 支持 | 即将下线 |
+
+### 配置项
+
 | 配置项 | 默认值 | 说明 |
-|--------|--------|------|
+|---|---|---|
 | `api_keys` | `[]` | 火山引擎 API Key 列表，支持多 Key 轮换 |
 | `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
-| `endpoint_id` | `doubao-seedream-5-0-260128` | Ark `model` 字段，可填写模型 ID、版本化模型 ID 或推理点 ID，例如 `doubao-seedream-5-0-pro-260628`、`ep-xxxx` |
-| `model_capability` | `auto` | `auto` 仅按 `endpoint_id` 中明确的 Pro 标记识别；不带 Pro 标记的 `seedream-5.0` 不会自动按 Pro 处理。若使用对应 Seedream 5.0 Pro 的 `ep-...` 推理点 ID 或其他无法从名称判断能力的 ID，请设为 `seedream_5_pro`，以启用单图和最多 10 张参考图限制 |
-| `endpoint_mode` | `official` | 接入端点：`official` 火山方舟官方图片端点；`agent_plan` Agent Plan 专属图片端点 |
-| `api_base` | `https://ark.cn-beijing.volces.com` | API 基础地址；插件按 `endpoint_mode` 自动追加 `/api/v3` 或 `/api/plan/v3`，通常无需修改 |
-| `size_mode` | `preset` | 尺寸模式：`preset` 使用 `size`；`custom` 使用 `custom_size` |
-| `size` | `2K` | Ark Images API 的 `size` 字段快捷值；5.0 Pro/Lite 支持 `2K` / `3K` / `4K`，4.5 支持 `2K` / `4K`，4.0 支持 `1K` / `2K` / `4K` |
-| `custom_size` | `2048x2048` | 自定义宽高像素值，仅 `size_mode=custom` 生效，格式 `WxH`，如 `2304x1728` |
+| `endpoint_id` | `doubao-seedream-5-5-261028` | Ark `model` 字段，可填写上表模型 ID 或 `ep-...` 推理点 ID |
+| `model_capability` | `auto` | 自动识别模型族；推理点无法从 ID 判断时设置 `seedream_5_pro`、`seedream_5_flash` 或 `seedream_5_5` |
+| `endpoint_mode` | `official` | `official` 使用官方图片端点，`agent_plan` 使用 Agent Plan 端点 |
+| `api_base` | `https://ark.cn-beijing.volces.com` | API 基础地址，通常无需修改 |
+| `size_mode` | `preset` | `preset` 使用 `size`，`custom` 使用 `custom_size` |
+| `size` | `2K` | 按模型族使用上表档位；`WxH` 可直传且不做档位校验 |
+| `custom_size` | `2048x2048` | 仅 `size_mode=custom` 生效，格式为 `WxH` |
+| `max_reference_images` | `6` | 实际官方上限按模型族为 10 或 14，超出按顺序截取 |
 | `watermark` | `false` | 是否添加水印 |
-| `output_format` | `jpeg` | 输出图片格式：`jpeg` 或 `png` |
-| `optimize_prompt_mode` | `standard` | 提示词优化模式：`standard` / `fast` |
-| `sequential_image_generation` | `disabled` | 组图生成模式：`disabled` / `auto`；Seedream 5.0 Pro 不支持组图，设置为 `auto` 时会被 provider 忽略 |
-| `sequential_max_images` | `4` | 组图最大数量，范围 `1-15` |
+| `output_format` | `jpeg` | 5.5、5.0 Pro、5.0 Flash、5.0 Lite 支持 `jpeg`/`png`；4.5/4.0 自动不发送 |
+| `background` | `""` | 仅 5.5/5.0 Pro/5.0 Flash；5.5 支持 `auto`/`transparent`/`opaque`，Pro/Flash 不支持 `auto` |
+| `layer_decomposition` | `false` | 仅 5.5/5.0 Pro/5.0 Flash；启用时必须提供一张参考图 |
+| `layer_max_images` | `30` | 仅 5.5 生效，范围 2-100，包含底图 |
+| `layer_text_recognition` | `false` | 仅 5.5 生效，用于富文本 OCR |
+| `optimize_prompt_mode` | `standard` | `standard` 全系支持；`fast` 仅 5.0 Pro 与 4.0 支持 |
+| `sequential_image_generation` | `disabled` | `auto` 仅 5.0 Lite、4.5、4.0 支持 |
+| `sequential_max_images` | `4` | 组图数量范围为 1-15 |
 
-### Seedream 5.0 Pro 适配说明
+参考图支持 URL、Base64 和 `data:image/<格式>;base64,`；官方支持 jpeg、png、webp、bmp、tiff、gif、heic、heif，单张最大 30 MB。图层拆分模式仅接受 jpeg/png，参考图会截取为一张；URL 在非强制 Base64 模式下仍由服务端校验格式和大小。
 
-当 `endpoint_id` 使用 `doubao-seedream-5-0-pro-260628` 等 Seedream 5.0 Pro 模型 ID 时，provider 会按官方能力自动处理；如果使用对应的 `ep-...` 推理点 ID，请同时将 `model_capability` 设为 `seedream_5_pro`：
-
-- 只发送单图请求；即使配置 `sequential_image_generation=auto`，也不会发送 `sequential_image_generation` 字段。
-- 参考图最多发送 10 张；其他支持多图的豆包模型仍按原有上限最多发送 14 张。
-- `output_format` 支持 `jpeg`（默认）和 `png`，base64 重试响应会按该格式保存。
-- 交互编辑通过提示词中的坐标、框选或箭头等描述完成，插件不会额外注入不受支持的组图、流式字段。
-
-豆包图片接口的请求路径由 `endpoint_mode` 选择：
+### 接入端点
 
 - `official`：`https://ark.cn-beijing.volces.com/api/v3/images/generations`
 - `agent_plan`：`https://ark.cn-beijing.volces.com/api/plan/v3/images/generations`
 
-### Agent Plan 接入
+Agent Plan 使用专属 API Key；`endpoint_id` 可填写当前套餐支持的模型或推理点 ID。
 
-将同一个 `doubao` 模板的 `endpoint_mode` 设置为 `agent_plan` 即可切换，无需改动 `api_base`。Agent Plan 必须使用 Agent Plan 专属 API Key；`endpoint_id` 可填写当前套餐支持的模型（例如 `doubao-seedream-5-0-pro-260628`）或对应的推理点 ID。若填写 `ep-...` 且该推理点对应 Seedream 5.0 Pro，请将 `model_capability` 设为 `seedream_5_pro`。模型和套餐以[支持模型及 Harness](https://docs.volcengine.com/docs/82379/2366394)为准。
-
-当前插件的 `doubao` provider 只封装图片生成接口；Agent Plan 的视频任务接口尚未纳入本插件的图片生成流程。
-
-豆包组图官方文档：<https://www.volcengine.com/docs/82379/1824121?lang=zh#fc9f85e4>
+官方文档：[图片生成 API](https://ark.volcengine.com/region:cn-beijing/docs/image-generation-api) · [图片生成教程](https://ark.volcengine.com/region:cn-beijing/docs/image-generation-tutorial) · [模型列表](https://ark.volcengine.com/docs/model-list)
 
 ## openai_responses（Responses 生图）
 

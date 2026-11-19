@@ -1605,17 +1605,19 @@
               "endpoint_id": {
                 "description": "Endpoint/Model ID",
                 "type": "string",
-                "hint": "Ark Images API 的 model 字段；可填写模型 ID，或 ep-... 推理点 ID。使用推理点 ID 时，请根据实际模型设置模型能力提示 。",
-                "default": "doubao-seedream-5-0-260128"
+                "hint": "Ark Images API 的 model 字段；支持模型 ID 或 ep-... 推理点 ID，推理点请设置模型能力提示。",
+                "default": "doubao-seedream-5-5-261028"
               },
               "model_capability": {
                 "description": "模型能力提示",
                 "type": "string",
-                "hint": "auto：按明确 Pro 标记识别；Pro 推理点或其他无明确标记的 ID 请设为 seedream_5_pro。",
+                "hint": "auto 按模型 ID 自动识别；推理点或无法判断时按文档设置对应能力值。",
                 "default": "auto",
                 "options": [
                   "auto",
-                  "seedream_5_pro"
+                  "seedream_5_pro",
+                  "seedream_5_flash",
+                  "seedream_5_5"
                 ]
               },
               "endpoint_mode": {
@@ -1643,7 +1645,7 @@
               "max_reference_images": {
                 "description": "最大参考图片数量",
                 "type": "int",
-                "hint": "单次请求最多使用的参考图片数量；超过后按顺序截取。",
+                "hint": "单次请求最多使用的参考图片数量；官方上限因模型族而异，超出按顺序截取。",
                 "default": 6
               },
               "size_mode": {
@@ -1659,10 +1661,11 @@
               "size": {
                 "description": "生成尺寸",
                 "type": "string",
-                "hint": "Ark Images API 的 size 字段。不同模型支持的快捷值不同：5.0 Pro/Lite 支持 2K/3K/4K，4.5 支持 2K/4K，4.0 支持 1K/2K/4K。",
+                "hint": "官方 size 快捷值因模型族而异，非法档自动回退 2K；WxH 直传。",
                 "default": "2K",
                 "options": [
                   "1K",
+                  "1.5K",
                   "2K",
                   "3K",
                   "4K"
@@ -1689,17 +1692,47 @@
               "output_format": {
                 "description": "输出图片格式",
                 "type": "string",
-                "hint": "输出格式：jpeg（默认）或 png。",
+                "hint": "仅 5 系模型支持；4.5/4.0 自动不发送。",
                 "default": "jpeg",
                 "options": [
                   "jpeg",
                   "png"
                 ]
               },
+
+              "background": {
+                "description": "透明背景",
+                "type": "string",
+                "hint": "透明背景模式，仅 5 系部分模型支持；留空不发送，可选值详见文档。",
+                "default": "",
+                "options": [
+                  "auto",
+                  "transparent",
+                  "opaque"
+                ]
+              },
+              "layer_decomposition": {
+                "description": "图层拆分",
+                "type": "bool",
+                "hint": "图层拆分开关，仅 5 系部分模型支持；启用时需提供一张参考图。",
+                "default": false
+              },
+              "layer_max_images": {
+                "description": "图层最大数量",
+                "type": "int",
+                "hint": "仅 5.5 生效，范围 2-100，包含底图；默认 30。",
+                "default": 30
+              },
+              "layer_text_recognition": {
+                "description": "图层文字识别",
+                "type": "bool",
+                "hint": "仅 5.5 生效；启用富文本 OCR。",
+                "default": false
+              },
               "optimize_prompt_mode": {
                 "description": "提示词优化模式",
                 "type": "string",
-                "hint": "standard：质量更高；fast：速度更快",
+                "hint": "fast 仅部分模型支持，不支持时自动回退 standard。",
                 "default": "standard",
                 "options": [
                   "standard",
@@ -1709,7 +1742,7 @@
               "sequential_image_generation": {
                 "description": "组图生成模式",
                 "type": "string",
-                "hint": "auto：模型自主判断并生成组图，仅 Seedream 5.0 Pro 支持；disabled：只生成一张。",
+                "hint": "auto：模型自主判断并生成组图，仅 5.0 Lite、4.5、4.0 支持；disabled：只生成一张。",
                 "default": "disabled",
                 "options": [
                   "disabled",

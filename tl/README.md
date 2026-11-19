@@ -290,9 +290,9 @@ MiniMax 图片生成官方 provider。
 |------|------|
 | `DoubaoProvider.build_request()` | 构造 `endpoint_mode` 对应的 `/api/v3/images/generations` 或 `/api/plan/v3/images/generations` 请求 |
 | `DoubaoProvider.parse_response()` | 解析 URL/base64 响应并处理错误码 |
-| `_prepare_payload()` | 组装模型、尺寸、水印、输出格式、组图、参考图等参数；Seedream 5.0 Pro 自动禁用组图并限制参考图数量，推理点 ID 可通过 `model_capability` 声明能力 |
-| `_map_resolution()` | 将内部 `1K/2K/4K` 或具体尺寸映射为豆包尺寸 |
-| `_process_reference_images()` | 处理图生图参考图 |
+| `_prepare_payload()` | 按模型族组装模型、尺寸、水印、输出格式、background、图层拆分、组图与参考图参数；Seedream 5.5/5 系新模型自动按官方能力门控 |
+| `_map_resolution()` | 按模型族校验 1K/1.5K/2K/3K/4K 档位并保留 WxH 直传 |
+| `_process_reference_images()` | 按模型族限制参考图数量与 MIME/30 MB，并处理图层拆分单图模式 |
 | `_build_api_error()` | 将豆包错误转为 `APIError` |
 
 ### `api/sensenova.py`

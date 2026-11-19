@@ -13,7 +13,7 @@ from ..core.errors import redact_text, redact_url
 from ..plugin_config import DOUBAO_SEQUENTIAL_IMAGES_MAX, DOUBAO_SEQUENTIAL_IMAGES_MIN
 from ..provider_hooks import (
     DOUBAO_OUTPUT_FORMATS,
-    is_doubao_seedream_5_pro,
+    doubao_model_family,
     normalize_doubao_endpoint_mode,
     normalize_doubao_output_format,
 )
@@ -25,6 +25,39 @@ from .provider_limits import (
 )
 from .reference_intake import announce_reference_intake
 from .reference_pipeline import reference_data_uri
+
+# 火山方舟图片生成 API 规定各模型族支持的尺寸档位。
+_DOUBAO_SIZE_PRESETS: dict[str, frozenset[str]] = {
+    "5.5": frozenset({"1k", "1.5k", "1536", "2k", "2048"}),
+    "5.0-pro": frozenset({"1k", "1.5k", "1536", "2k", "2048"}),
+    "5.0-flash": frozenset({"1k", "1.5k", "1536", "2k", "2048"}),
+    "5.0-lite": frozenset({"2k", "2048", "3k", "3072", "4k", "4096"}),
+    "4.5": frozenset({"2k", "2048", "4k", "4096"}),
+    "4.0": frozenset({"1k", "1024", "2k", "2048", "4k", "4096"}),
+}
+_DOUBAO_REFERENCE_LIMIT_FAMILIES = frozenset({"5.5", "5.0-pro", "5.0-flash"})
+_DOUBAO_SEQUENTIAL_FAMILIES = frozenset({"5.0-lite", "4.5", "4.0"})
+_DOUBAO_FAST_OPTIMIZE_FAMILIES = frozenset({"5.0-pro", "4.0"})
+_DOUBAO_LAYER_FAMILIES = frozenset({"5.5", "5.0-pro", "5.0-flash"})
+_DOUBAO_BACKGROUND_OPTIONS: dict[str, frozenset[str]] = {
+    "5.5": frozenset({"auto", "transparent", "opaque"}),
+    "5.0-pro": frozenset({"transparent", "opaque"}),
+    "5.0-flash": frozenset({"transparent", "opaque"}),
+}
+_DOUBAO_REFERENCE_MIMES = frozenset(
+    {
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "image/bmp",
+        "image/tiff",
+        "image/gif",
+        "image/heic",
+        "image/heif",
+    }
+)
+_DOUBAO_LAYER_REFERENCE_MIMES = frozenset({"image/jpeg", "image/png"})
+_DOUBAO_REFERENCE_MAX_BYTES = 30 * 1024 * 1024
 
 # 豆包 API 错误码分类
 # 参考文档: https://www.volcengine.com/docs/82379/1299023
@@ -252,9 +285,9 @@ class DoubaoProvider:
         model = (
             doubao_settings.get("endpoint_id")
             or config.model
-            or "doubao-seedream-5-0-260128"
+            or "doubao-seedream-5-5-261028"
         )
-        is_seedream_5_pro = is_doubao_seedream_5_pro(model, doubao_settings)
+        family = doubao_model_family(model, doubao_settings)
 
         # Response format: url by default, fallback to b64_json on retry
         response_format = "b64_json" if is_retry else "url"
@@ -268,17 +301,71 @@ class DoubaoProvider:
             "model": model,
             "prompt": config.prompt,
             "response_format": response_format,
-            "output_format": normalize_doubao_output_format(
-                doubao_settings.get("output_format")
-            ),
             "watermark": bool(watermark),
         }
+        if family not in {"4.5", "4.0"}:
+            payload["output_format"] = normalize_doubao_output_format(
+                doubao_settings.get("output_format")
+            )
 
-        size = self._resolve_size(doubao_settings, config)
+        size = self._resolve_size(doubao_settings, config, family)
         if size:
             payload["size"] = size
 
-        # Process reference images (10 for Seedream 5.0 Pro, 14 otherwise)
+        background = str(doubao_settings.get("background") or "").strip().lower()
+        if background:
+            background_options = _DOUBAO_BACKGROUND_OPTIONS.get(family)
+            if background_options is None:
+                logger.warning(
+                    "[doubao] 模型族 %s 不支持 background，已忽略",
+                    family or "unknown",
+                )
+            elif background == "auto" and family in {"5.0-pro", "5.0-flash"}:
+                logger.warning(
+                    "[doubao] 模型族 %s 不支持 background=auto，已回退为 opaque",
+                    family,
+                )
+                payload["background"] = "opaque"
+            elif background not in background_options:
+                logger.warning(
+                    "[doubao] 模型族 %s 不支持 background=%s，已忽略",
+                    family,
+                    background,
+                )
+            else:
+                payload["background"] = background
+
+        layer_decomposition = doubao_settings.get("layer_decomposition") is True
+        if layer_decomposition and family not in _DOUBAO_LAYER_FAMILIES:
+            logger.warning(
+                "[doubao] 模型族 %s 不支持 layer_decomposition，已忽略",
+                family or "unknown",
+            )
+            layer_decomposition = False
+        elif layer_decomposition:
+            payload["layer_decomposition"] = True
+            if family == "5.5":
+                layer_options: dict[str, Any] = {}
+                max_layer_images = doubao_settings.get("layer_max_images", 30)
+                if isinstance(max_layer_images, bool):
+                    max_layer_images = None
+                else:
+                    try:
+                        max_layer_images = int(max_layer_images)
+                    except (TypeError, ValueError):
+                        max_layer_images = None
+                if max_layer_images is not None and 2 <= max_layer_images <= 100:
+                    layer_options["max_images"] = max_layer_images
+                else:
+                    logger.warning(
+                        "[doubao] layer_max_images=%r 无效（范围 2-100），已忽略该键",
+                        doubao_settings.get("layer_max_images"),
+                    )
+                if doubao_settings.get("layer_text_recognition") is True:
+                    layer_options["text_recognition"] = True
+                if layer_options:
+                    payload["layer_decomposition_options"] = layer_options
+
         if config.reference_images:
             image_value = await self._process_reference_images(
                 client=client,
@@ -286,18 +373,30 @@ class DoubaoProvider:
                 image_inputs=config.reference_images,
                 model=model,
                 settings=doubao_settings,
+                family=family,
+                layer_decomposition=layer_decomposition,
             )
             if image_value:
                 payload["image"] = image_value
 
-        # Prompt optimization mode
-        optimize_mode = doubao_settings.get("optimize_prompt_mode")
-        if optimize_mode in ("standard", "fast"):
-            payload["optimize_prompt_options"] = {"mode": optimize_mode}
+        optimize_mode = (
+            str(doubao_settings.get("optimize_prompt_mode") or "").strip().lower()
+        )
+        if optimize_mode == "standard":
+            payload["optimize_prompt_options"] = {"mode": "standard"}
+        elif optimize_mode == "fast":
+            if family in _DOUBAO_FAST_OPTIMIZE_FAMILIES:
+                payload["optimize_prompt_options"] = {"mode": "fast"}
+            else:
+                logger.warning(
+                    "[doubao] 模型族 %s 不支持 optimize_prompt_mode=fast，已回退为 standard",
+                    family or "unknown",
+                )
+                payload["optimize_prompt_options"] = {"mode": "standard"}
 
-        # Seedream 5.0 Pro 不支持组图，不能发送 sequential 字段。
         seq_mode = doubao_settings.get("sequential_image_generation")
-        if seq_mode == "auto" and not is_seedream_5_pro:
+        # 官方组图仅 lite/4.5/4.0；未知模型族（如 ep- 自动识别）保留既有组图行为。
+        if seq_mode == "auto" and (family in _DOUBAO_SEQUENTIAL_FAMILIES or not family):
             payload["sequential_image_generation"] = "auto"
             max_images = doubao_settings.get("sequential_max_images")
             if (
@@ -312,40 +411,39 @@ class DoubaoProvider:
                 }
         elif seq_mode == "auto":
             logger.debug(
-                "[doubao] Seedream 5.0 Pro 不支持组图，已忽略 sequential_image_generation"
+                "[doubao] 模型族 %s 不支持组图，已忽略 sequential_image_generation",
+                family or "unknown",
             )
 
         return payload
 
     def _resolve_size(
-        self, doubao_settings: dict[str, Any], config: ApiRequestConfig
+        self,
+        doubao_settings: dict[str, Any],
+        config: ApiRequestConfig,
+        family: str = "",
     ) -> str:
         """Resolve plugin settings into Doubao's official `size` request field."""
         size_mode = str(doubao_settings.get("size_mode") or "preset").strip().lower()
         if size_mode == "custom":
             custom_size = doubao_settings.get("custom_size")
             if custom_size:
-                return self._map_resolution(custom_size) or str(custom_size)
+                return self._map_resolution(custom_size, family) or str(custom_size)
 
         configured_size = doubao_settings.get("size") or doubao_settings.get(
             "default_size"
         )
         if configured_size:
-            return self._map_resolution(configured_size) or str(configured_size)
+            return self._map_resolution(configured_size, family) or str(configured_size)
         if config.resolution:
-            return self._map_resolution(config.resolution) or str(config.resolution)
+            return self._map_resolution(config.resolution, family) or str(
+                config.resolution
+            )
         return "2K"
 
     @staticmethod
-    def _map_resolution(resolution: str | None) -> str | None:
-        """Map plugin resolution to Doubao `size`.
-
-        Supported by Doubao:
-        - doubao-seedream-5.0-pro: "2K"/"3K"/"4K" or WxH
-        - doubao-seedream-5.0-lite: "2K"/"3K"/"4K" or WxH
-        - doubao-seedream-4.5: "2K"/"4K" only (min 2560x1440=3686400 px)
-        - doubao-seedream-4.0: "1K"/"2K"/"4K" (min 1280x720=921600 px)
-        """
+    def _map_resolution(resolution: str | None, family: str = "") -> str | None:
+        """将插件尺寸映射为 Doubao 的官方 size 字段。"""
         if not resolution:
             return None
 
@@ -355,21 +453,33 @@ class DoubaoProvider:
 
         normalized = raw.lower().replace(" ", "").replace("×", "x")
 
-        # WxH format - pass through
+        # WxH 格式直接透传，不按模型族校验。
         if re.match(r"^\d{3,5}x\d{3,5}$", normalized):
             return normalized
 
-        if normalized in {"1k", "1024"}:
-            return "1K"
-        if normalized in {"2k", "2048"}:
+        size_map = {
+            "1k": "1K",
+            "1024": "1K",
+            "1.5k": "1.5K",
+            "1536": "1.5K",
+            "2k": "2K",
+            "2048": "2K",
+            "3k": "3K",
+            "3072": "3K",
+            "4k": "4K",
+            "4096": "4K",
+        }
+        if (
+            family in _DOUBAO_SIZE_PRESETS
+            and normalized not in _DOUBAO_SIZE_PRESETS[family]
+        ):
+            logger.warning(
+                "[doubao] 模型族 %s 不支持 size=%s，已回退为 2K",
+                family,
+                raw,
+            )
             return "2K"
-        if normalized in {"3k", "3072"}:
-            return "3K"
-        if normalized in {"4k", "4096"}:
-            return "4K"
-
-        # Unknown, default to 2K
-        return "2K"
+        return size_map.get(normalized, "2K")
 
     async def _process_reference_images(
         self,
@@ -379,17 +489,10 @@ class DoubaoProvider:
         image_inputs: list[Any],
         model: str | None = None,
         settings: dict[str, Any] | None = None,
+        family: str | None = None,
+        layer_decomposition: bool = False,
     ) -> str | list[str] | None:  # noqa: ANN401
-        """Prepare Doubao `image` field for i2i.
-
-        Doubao supports:
-        - Multiple images (2-10 for Seedream 5.0 Pro, 2-14 otherwise)
-
-        Returns:
-        - Single string if only one image
-        - List of strings if multiple images
-        - None if no valid images
-        """
+        """Prepare Doubao `image` field for i2i."""
         if not image_inputs:
             return None
         request_settings = settings
@@ -403,16 +506,24 @@ class DoubaoProvider:
             or getattr(config, "model", None)
             or ""
         )
+        request_family = family or doubao_model_family(request_model, request_settings)
         max_reference_images = (
             MAX_REFERENCE_IMAGES_DOUBAO_SEEDREAM_5_PRO
-            if is_doubao_seedream_5_pro(request_model, request_settings)
+            if request_family in _DOUBAO_REFERENCE_LIMIT_FAMILIES
             else MAX_REFERENCE_IMAGES_DOUBAO
         )
+        if layer_decomposition:
+            max_reference_images = 1
+            logger.info("[doubao] 图层拆分已启用，参考图仅使用 1 张")
 
         force_b64 = (
             str(getattr(config, "image_input_mode", "auto")).lower() == "force_base64"
         )
-
+        supported = (
+            _DOUBAO_LAYER_REFERENCE_MIMES
+            if layer_decomposition
+            else _DOUBAO_REFERENCE_MIMES
+        )
         processed_images: list[str] = []
 
         announce_reference_intake(
@@ -431,6 +542,7 @@ class DoubaoProvider:
                 config=config,
                 image_str=image_str,
                 force_b64=force_b64,
+                supported=supported,
             )
             if result:
                 processed_images.append(result)
@@ -438,7 +550,7 @@ class DoubaoProvider:
         if not processed_images:
             return None
 
-        # Return single string for one image, array for multiple
+        # 单张参考图发送字符串，多张发送数组。
         if len(processed_images) == 1:
             return processed_images[0]
         return processed_images
@@ -450,9 +562,9 @@ class DoubaoProvider:
         config: ApiRequestConfig,
         image_str: str,
         force_b64: bool,
+        supported: frozenset[str] = _DOUBAO_REFERENCE_MIMES,
     ) -> str | None:  # noqa: ANN401
         """Process a single image for Doubao API.
-
         Returns URL or base64 with data URI prefix.
         """
         if not image_str:
@@ -466,6 +578,8 @@ class DoubaoProvider:
             log_prefix="[doubao]",
             error_label="doubao/i2i",
             force_b64=force_b64,
+            supported=supported,
+            max_bytes=_DOUBAO_REFERENCE_MAX_BYTES,
         )
         if (
             data_uri is None

@@ -114,6 +114,38 @@ def _normalize(normalize: Any, image_input: str, config: ApiRequestConfig):
     )
 
 
+def _format_reference_data_uri(
+    b64_data: str,
+    mime_type: str | None,
+    *,
+    error_label: str,
+    supported: frozenset[str] | None,
+    max_bytes: int | None,
+) -> str:
+    if supported is None and max_bytes is None:
+        return format_data_uri(strip_data_uri_prefix(b64_data), mime_type)
+    try:
+        raw = base64.b64decode(strip_data_uri_prefix(b64_data), validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise APIError(
+            f"参考图 base64 解码失败（{error_label}）：{exc}",
+            None,
+            "invalid_reference_image",
+            retryable=False,
+        ) from exc
+    normalize_kwargs: dict[str, Any] = {"error_label": error_label}
+    if supported is not None:
+        normalize_kwargs["supported"] = supported
+    if max_bytes is not None:
+        normalize_kwargs["max_bytes"] = max_bytes
+    normalized_b64, normalized_mime = transcode_to_supported_mime(
+        raw,
+        mime_type,
+        **normalize_kwargs,
+    )
+    return format_data_uri(normalized_b64, normalized_mime)
+
+
 async def reference_data_uri(
     client: Any,  # noqa: ANN401
     config: ApiRequestConfig,
@@ -123,6 +155,8 @@ async def reference_data_uri(
     error_label: str,
     force_b64: bool | None = None,
     validate_data_uri: bool = False,
+    supported: frozenset[str] | None = None,
+    max_bytes: int | None = None,
 ) -> str | None:
     """把参考图归一化为 ``data:image/*;base64,`` 形态。
 
@@ -133,10 +167,14 @@ async def reference_data_uri(
     """
     if isinstance(image_input, (bytes, bytearray)):
         raw = bytes(image_input)
-        return (
-            format_data_uri(base64.b64encode(raw).decode(), "image/png")
-            if raw
-            else None
+        if not raw:
+            return None
+        return _format_reference_data_uri(
+            base64.b64encode(raw).decode(),
+            "image/png",
+            error_label=error_label,
+            supported=supported,
+            max_bytes=max_bytes,
         )
     image_str = str(image_input or "").strip()
     if not image_str:
@@ -148,26 +186,41 @@ async def reference_data_uri(
         else force_b64
     )
     if image_str.startswith("data:image/") and ";base64," in image_str:
-        if not validate_data_uri:
-            return image_str
         payload = image_str.split(",", 1)[1]
-        try:
-            base64.b64decode(payload, validate=True)
-        except (binascii.Error, ValueError) as exc:
-            logger.warning(
-                "%s 无效 data URI 参考图，已丢弃: %s",
-                log_prefix,
-                redact_text(str(exc))[:240],
-            )
-            return None
-        return image_str
+        constrained = supported is not None or max_bytes is not None
+        if validate_data_uri or constrained:
+            try:
+                base64.b64decode(payload, validate=True)
+            except (binascii.Error, ValueError) as exc:
+                logger.warning(
+                    "%s 无效 data URI 参考图，已丢弃: %s",
+                    log_prefix,
+                    redact_text(str(exc))[:240],
+                )
+                return None
+        if not constrained:
+            return image_str
+        mime_type = image_str.split(";", 1)[0].removeprefix("data:")
+        return _format_reference_data_uri(
+            payload,
+            mime_type,
+            error_label=error_label,
+            supported=supported,
+            max_bytes=max_bytes,
+        )
     if not image_str.startswith("data:") and not _looks_like_local_file(image_str):
         try:
             raw = base64.b64decode(image_str, validate=True)
         except (binascii.Error, ValueError):
             raw = None
         if raw is not None:
-            return format_data_uri(image_str)
+            return _format_reference_data_uri(
+                image_str,
+                _sniff_mime(raw, image_str),
+                error_label=error_label,
+                supported=supported,
+                max_bytes=max_bytes,
+            )
     if image_str.startswith(("http://", "https://")) and not force:
         if not is_temp_cache_url(image_str):
             return image_str
@@ -222,7 +275,13 @@ async def reference_data_uri(
             sniffed = None
         if sniffed:
             mime_type = sniffed
-    return format_data_uri(strip_data_uri_prefix(b64_data), mime_type)
+    return _format_reference_data_uri(
+        strip_data_uri_prefix(b64_data),
+        mime_type,
+        error_label=error_label,
+        supported=supported,
+        max_bytes=max_bytes,
+    )
 
 
 def _sniff_mime(raw: bytes, image_str: str) -> str | None:
