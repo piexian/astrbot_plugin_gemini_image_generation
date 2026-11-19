@@ -8,6 +8,7 @@
 ### Added
 
 - **MiniMax-H3-Image 接入**：支持 `MiniMax-H3-Image` / `MiniMax-H3-Image-Highspeed` 的文生图与图片编辑双端点、原生 4K、最多 16 张参考图、部分成功响应和错误码重试语义；旧 `image-01` / `image-01-live` 路径保持不变；`max_reference_images` 默认调整为 16，仅对 H3 图片编辑生效，旧模型仍按官方 1 张截取。出站模型名统一为官方大小写；H3 读取超时/连接中断按结果未知停止自动重试，避免重复计费；「保留参考图尺寸」时 H3 编辑比例自动跟随参考图；内联参考图按官方 64MiB 单张与请求体合计上限校验。
+- **Doubao Seedream 5.5 / 5.0 Flash 接入**：支持模型识别、10 张参考图、1K/1.5K/2K 档位、background 透明通道、图层拆分，以及参考图 30 MB 官方上限与宽格式。
 
 ### Fixed
 
@@ -19,6 +20,7 @@
 
 - 配置提示明确协议边界：Google 模板端点说明反代（含 Antigravity `/antigravity/v1beta` 入口）填根地址会自动补 `/v1beta`；Gemini Interactions 模板端点标明为 Interactions 协议，与原生 `generateContent` 不通用。OpenAI 兼容渠道继续使用 snake_case 字段（由反代转换层处理）。
 - **MiniMax 默认 API 域名迁移**：默认端点改为官方现行标注的 `https://api.minimax.cn`，旧域名 `https://api.minimaxi.com` 仍可填写用作回退；`subject_reference_type` 收敛为仅 `character`，其他值自动回退并告警。
+- **Doubao 默认模型与门控对齐官方**：默认切换为 `doubao-seedream-5-5-261028`；Pro 档位改为 1K/1.5K/2K；组图仅 Lite/4.5/4.0；optimize fast 仅 Pro/4.0；output_format 仅 5 系发送；Lite/4.5/4.0 官方已宣布即将下线。
 
 
 ## [4.0.0] - 2026-11-05

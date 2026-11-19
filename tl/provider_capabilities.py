@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .api_normalize import normalize_api_type
-from .provider_hooks import is_doubao_seedream_5_pro
+from .provider_hooks import doubao_model_family
 from .provider_loader import load_callable
 from .provider_metadata import get_provider_spec
 
@@ -380,13 +380,24 @@ def openai_responses_capability(candidate: Any) -> dict[str, Any]:
     )
 
 
+# 官方各 Seedream 模型族的 size 档位，工具层据此生成 resolution 选项。
+_DOUBAO_FAMILY_SIZE_TIERS: dict[str, tuple[str, ...]] = {
+    "5.5": ("1K", "1.5K", "2K"),
+    "5.0-pro": ("1K", "1.5K", "2K"),
+    "5.0-flash": ("1K", "1.5K", "2K"),
+    "5.0-lite": ("2K", "3K", "4K"),
+    "4.5": ("2K", "4K"),
+    "4.0": ("1K", "2K", "4K"),
+}
+
+
 def doubao_capability(candidate: Any) -> dict[str, Any]:
     settings = _settings(candidate)
     model = _model(candidate) or str(settings.get("endpoint_id") or "").strip()
-    is_seedream_5_pro = is_doubao_seedream_5_pro(model, settings)
-    # Seedream 5.0 Pro 仅支持单图。
-    sequential = (
-        settings.get("sequential_image_generation") == "auto" and not is_seedream_5_pro
+    family = doubao_model_family(model, settings)
+    # 组图仅由 Lite/4.5/4.0 支持；未知模型族保留既有组图行为。
+    sequential = settings.get("sequential_image_generation") == "auto" and (
+        family in {"5.0-lite", "4.5", "4.0"} or not family
     )
     try:
         configured_limit = int(settings.get("sequential_max_images", 1))
@@ -396,15 +407,24 @@ def doubao_capability(candidate: Any) -> dict[str, Any]:
     setting_map = {"watermark": "watermark"}
     if sequential:
         setting_map["image_count"] = "sequential_max_images"
+    parameters: dict[str, Any] = {
+        "watermark": {
+            "type": "boolean",
+            "default_source": "provider_config",
+        },
+    }
+    # 已知模型族声明官方档位；未知族沿用工具层全局默认，保持既有行为。
+    size_tiers = _DOUBAO_FAMILY_SIZE_TIERS.get(family)
+    if size_tiers:
+        parameters["resolution"] = {
+            "type": "string",
+            "enum": list(size_tiers),
+            "default_source": "provider_config",
+        }
     return _profile(
         candidate,
         native_batch_limit=native_limit,
-        parameters={
-            "watermark": {
-                "type": "boolean",
-                "default_source": "provider_config",
-            }
-        },
+        parameters=parameters,
         request_setting_map=setting_map,
     )
 
@@ -608,7 +628,7 @@ def candidate_reference_limit(candidate: Any) -> int:
     elif api_type == "doubao":
         native = (
             limits.MAX_REFERENCE_IMAGES_DOUBAO_SEEDREAM_5_PRO
-            if is_doubao_seedream_5_pro(model, settings)
+            if doubao_model_family(model, settings) in {"5.5", "5.0-pro", "5.0-flash"}
             else limits.MAX_REFERENCE_IMAGES_DOUBAO
         )
     elif api_type == "dashscope":

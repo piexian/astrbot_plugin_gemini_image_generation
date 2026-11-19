@@ -24,41 +24,72 @@ DOUBAO_ENDPOINT_MODES = frozenset({"official", "agent_plan"})
 _DOUBAO_ENDPOINT_MODE_ALIASES = {"plan": "agent_plan"}
 DOUBAO_OUTPUT_FORMATS = frozenset({"jpeg", "png"})
 _DOUBAO_OUTPUT_FORMAT_ALIASES = {"jpg": "jpeg"}
-DOUBAO_MODEL_CAPABILITIES = frozenset({"auto", "seedream_5_pro"})
+DOUBAO_MODEL_CAPABILITIES = frozenset(
+    {"auto", "seedream_5_pro", "seedream_5_flash", "seedream_5_5"}
+)
 _DOUBAO_MODEL_CAPABILITY_ALIASES = {
     "pro": "seedream_5_pro",
     "seedream_5_pro": "seedream_5_pro",
     "seedream_5_0_pro": "seedream_5_pro",
-    "seedream_5.0_pro": "seedream_5_pro",
+    "5_0_pro": "seedream_5_pro",
+    "flash": "seedream_5_flash",
+    "seedream_5_flash": "seedream_5_flash",
+    "seedream_5_0_flash": "seedream_5_flash",
+    "5_0_flash": "seedream_5_flash",
+    "seedream_5_5": "seedream_5_5",
+    "5_5": "seedream_5_5",
 }
+_DOUBAO_MODEL_FAMILY_BY_CAPABILITY = {
+    "seedream_5_pro": "5.0-pro",
+    "seedream_5_flash": "5.0-flash",
+    "seedream_5_5": "5.5",
+}
+_DOUBAO_SEEDREAM_5_PRO_MARKERS = (
+    "seedream-5-0-pro",
+    "seedream-5-pro",
+    "seedream-5pro",
+)
 
 
 def _normalize_doubao_model_capability(value: Any) -> str:
     raw = str(value or "auto").strip().lower()
-    normalized = raw.replace("-", "_").replace(" ", "_")
+    normalized = raw.replace("-", "_").replace(".", "_").replace(" ", "_")
     return _DOUBAO_MODEL_CAPABILITY_ALIASES.get(normalized, normalized)
+
+
+def doubao_model_family(model: Any, settings: dict[str, Any] | None = None) -> str:
+    """返回 Doubao 模型所属的 Seedream 能力族。"""
+    if isinstance(settings, dict):
+        capability = _normalize_doubao_model_capability(
+            settings.get("model_capability")
+        )
+        family = _DOUBAO_MODEL_FAMILY_BY_CAPABILITY.get(capability)
+        if family:
+            return family
+
+    normalized = "-".join(
+        str(model or "").strip().lower().replace("_", "-").split()
+    ).replace(".", "-")
+    if "seedream-5-5" in normalized:
+        return "5.5"
+    if any(marker in normalized for marker in _DOUBAO_SEEDREAM_5_PRO_MARKERS):
+        return "5.0-pro"
+    if "seedream-5-0-flash" in normalized or "seedream-5-flash" in normalized:
+        return "5.0-flash"
+    if "seedream-5-0" in normalized:
+        return "5.0-lite"
+    if "seedream-4-5" in normalized:
+        return "4.5"
+    if "seedream-4-0" in normalized:
+        return "4.0"
+    return ""
 
 
 def is_doubao_seedream_5_pro(
     model: Any, settings: dict[str, Any] | None = None
 ) -> bool:
-    """Return whether a model ID or declared endpoint capability is Seedream 5 Pro."""
-    if isinstance(settings, dict):
-        capability = _normalize_doubao_model_capability(
-            settings.get("model_capability")
-        )
-        if capability == "seedream_5_pro":
-            return True
-    normalized = "-".join(str(model or "").strip().lower().replace("_", "-").split())
-    return any(
-        marker in normalized
-        for marker in (
-            "seedream-5.0-pro",
-            "seedream-5-0-pro",
-            "seedream-5-pro",
-            "seedream-5pro",
-        )
-    )
+    """返回模型是否属于 Seedream 5.0 Pro。"""
+    return doubao_model_family(model, settings) == "5.0-pro"
 
 
 def _logger():
@@ -158,7 +189,7 @@ def normalize_doubao_settings(settings: dict[str, Any]) -> None:
     )
     if model_capability not in DOUBAO_MODEL_CAPABILITIES:
         _logger().warning(
-            "[配置加载] doubao.model_capability=%r 无效（仅支持 auto / seedream_5_pro），"
+            "[配置加载] doubao.model_capability=%r 无效（仅支持 auto / seedream_5_pro / seedream_5_flash / seedream_5_5），"
             "已回退为 auto",
             settings.get("model_capability"),
         )
