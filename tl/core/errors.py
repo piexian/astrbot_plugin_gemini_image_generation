@@ -13,7 +13,7 @@ import os
 import re
 from collections.abc import Mapping
 from typing import Any, Literal
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 _SENSITIVE_KEY_PARTS = (
     "api_key",
@@ -32,11 +32,26 @@ _CREDENTIAL_RE = re.compile(
     r"(?i)([\"']?(?:authorization|api[_-]?key|token|secret|password)[\"']?\s*[:=]\s*[\"']?(?:bearer\s+)?)([^\"'\s,;}]+)"
 )
 
+# 认证类 query 参数名；集中维护，供 artifact 持久化与 LLM 输出边界共用。
+AUTH_QUERY_KEYS = frozenset(
+    {
+        "key",
+        "token",
+        "sig",
+        "signature",
+        "expires",
+        "x-amz-algorithm",
+        "x-amz-credential",
+        "x-amz-date",
+        "x-amz-expires",
+        "x-amz-security-token",
+        "x-amz-signature",
+        "x-amz-signedheaders",
+    }
+)
 
-def redact_url(value: str) -> str:
-    parsed = urlsplit(value)
-    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
-        return value
+
+def _clean_netloc(parsed: Any) -> str:
     netloc = parsed.hostname
     try:
         port = parsed.port
@@ -44,7 +59,14 @@ def redact_url(value: str) -> str:
         port = None
     if port:
         netloc += f":{port}"
-    return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
+    return netloc
+
+
+def redact_url(value: str) -> str:
+    parsed = urlsplit(value)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        return value
+    return urlunsplit((parsed.scheme, _clean_netloc(parsed), parsed.path, "", ""))
 
 
 def redact_text(value: Any) -> str:
@@ -54,7 +76,22 @@ def redact_text(value: Any) -> str:
 
 
 def redact_artifact_reference(value: Any) -> str:
-    reference = redact_text(value)
+    """artifact 引用脱敏：本地路径转摘要，HTTP(S) URL 只移除认证 query、fragment 与 userinfo。"""
+
+    reference = str(value or "")
+    parsed = urlsplit(reference)
+    if parsed.scheme.lower() in {"http", "https"} and parsed.hostname:
+        query = urlencode(
+            [
+                (key, item)
+                for key, item in parse_qsl(parsed.query, keep_blank_values=True)
+                if key.casefold() not in AUTH_QUERY_KEYS
+            ]
+        )
+        return urlunsplit(
+            (parsed.scheme, _clean_netloc(parsed), parsed.path, query, "")
+        )
+    reference = redact_text(reference)
     parsed = urlsplit(reference)
     if parsed.scheme.lower() == "file" or os.path.isabs(reference):
         digest = hashlib.sha256(reference.encode("utf-8", "replace")).hexdigest()

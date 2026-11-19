@@ -500,6 +500,152 @@ async def test_storage_does_not_persist_signed_url(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_storage_preserves_artifact_query_across_reopen(tmp_path) -> None:
+    job = Job(
+        job_id="artifact-query",
+        request=_request(),
+        result=GenerationResult(artifacts=("https://win.example/image?id=42",)),
+    )
+    store = SQLiteJobStore(tmp_path, import_legacy=False)
+    try:
+        await store.create(job)
+        job.transition(JobState.QUEUED)
+        await store.save(job)
+        artifacts = await store.list_artifacts("artifact-query")
+        assert [artifact.artifact_id for artifact in artifacts] == [
+            "https://win.example/image?id=42"
+        ]
+    finally:
+        await store.close()
+
+    reopened = SQLiteJobStore(tmp_path, import_legacy=False)
+    try:
+        loaded = await reopened.get("artifact-query")
+        assert loaded is not None and loaded.result is not None
+        assert loaded.result.artifacts == ("https://win.example/image?id=42",)
+        with sqlite3.connect(tmp_path / "jobs.sqlite3") as connection:
+            raw = " ".join(
+                str(value or "")
+                for value in connection.execute(
+                    "SELECT result_json FROM jobs WHERE job_id = 'artifact-query'"
+                ).fetchone()
+            )
+        assert "id=42" in raw
+    finally:
+        await reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_storage_keeps_only_non_auth_artifact_query(tmp_path) -> None:
+    job = Job(
+        job_id="artifact-auth-query",
+        request=_request(),
+        result=GenerationResult(
+            artifacts=("https://win.example/image?id=1&token=abc&signature=xyz",)
+        ),
+    )
+    store = SQLiteJobStore(tmp_path, import_legacy=False)
+    try:
+        await store.create(job)
+        loaded = await store.get("artifact-auth-query")
+        assert loaded is not None and loaded.result is not None
+        assert loaded.result.artifacts == ("https://win.example/image?id=1",)
+        with sqlite3.connect(tmp_path / "jobs.sqlite3") as connection:
+            raw = " ".join(
+                str(value or "")
+                for value in connection.execute(
+                    "SELECT result_json FROM jobs WHERE job_id = 'artifact-auth-query'"
+                ).fetchone()
+            )
+        assert "id=1" in raw
+        assert "token=abc" not in raw
+        assert "signature=xyz" not in raw
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_history_import_keeps_artifact_query_but_strips_source_urls(
+    tmp_path,
+) -> None:
+    _write_history(
+        tmp_path / "generation_history.json",
+        [
+            {
+                "job_id": "history-query",
+                "status": "succeeded",
+                "source": "webui",
+                "prompt": "query prompt",
+                "image_urls": ["https://images.example/a.png?id=7&token=secret"],
+                "source_urls": ["https://images.example/s.png?id=9"],
+            }
+        ],
+    )
+    store = SQLiteJobStore(tmp_path)
+    try:
+        job = await store.get("history-query")
+        assert job is not None and job.result is not None
+        assert job.result.artifacts == (
+            "https://images.example/a.png?id=7",
+            "https://images.example/s.png",
+        )
+        assert job.metadata["source_urls"] == ["https://images.example/s.png"]
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_background_item_import_keeps_artifact_query_strips_source_urls(
+    tmp_path,
+) -> None:
+    _write_background_tasks(
+        tmp_path / "background_tasks.json",
+        {
+            "batch-query": {
+                "task_id": "batch-query",
+                "status": "succeeded",
+                "items": [
+                    {
+                        "image_urls": [
+                            "https://images.example/b1.png?id=11&token=secret"
+                        ],
+                        "source_urls": ["https://images.example/s1.png?id=13"],
+                        "text_content": "item one",
+                    },
+                    {
+                        "image_paths": ["/tmp/generated-2.png"],
+                        "image_urls": ["https://images.example/b2.png?id=12"],
+                    },
+                ],
+            }
+        },
+    )
+    store = SQLiteJobStore(tmp_path)
+    try:
+        job = await store.get("batch-query")
+        assert job is not None and job.result is not None
+        artifacts = set(job.result.artifacts)
+        assert "https://images.example/b1.png?id=11" in artifacts
+        assert "https://images.example/b2.png?id=12" in artifacts
+        assert "https://images.example/s1.png" in artifacts
+        assert not any(
+            url.startswith("https://images.example/s1.png?")
+            for url in job.result.artifacts
+        )
+        assert any(url.startswith("artifact:") for url in job.result.artifacts)
+        with sqlite3.connect(tmp_path / "jobs.sqlite3") as connection:
+            metadata_raw = str(
+                connection.execute(
+                    "SELECT metadata_json FROM jobs WHERE job_id = 'batch-query'"
+                ).fetchone()[0]
+            )
+        assert "?id=" not in metadata_raw
+        assert "token=" not in metadata_raw
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
 async def test_storage_does_not_persist_authorization(tmp_path) -> None:
     job = Job(
         job_id="authorization",

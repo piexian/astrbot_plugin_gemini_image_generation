@@ -439,7 +439,10 @@ class VertexProvider(GoogleProvider):
     ) -> tuple[list[str], list[str], str | None, str | None]:  # noqa: ANN401
         if not isinstance(response_data, dict):
             raise APIError(
-                "Vertex API 返回了非预期格式的响应。", http_status, "invalid_response"
+                "Vertex API 返回了非预期格式的响应。",
+                http_status,
+                "invalid_response",
+                retryable=False,
             )
         if http_status is not None and http_status != 200:
             raise self._error_from_http(response_data, http_status)

@@ -652,9 +652,9 @@ async def test_wait_returns_runtime_artifacts_while_store_stays_redacted(tmp_pat
         assert stored is not None and stored.result is not None
         stored_artifacts = stored.result.artifacts
         assert stored_artifacts != artifacts
-        # 存储侧脱敏：本地路径替换为 artifact:<hash>，URL 丢弃 query。
+        # 存储侧脱敏：本地路径替换为 artifact:<hash>，URL 仅移除认证 query。
         assert stored_artifacts[0].startswith("artifact:")
-        assert stored_artifacts[1] == "https://cdn.test/img.png"
+        assert stored_artifacts[1] == "https://cdn.test/img.png?exp=42"
     finally:
         await scheduler.close()
 

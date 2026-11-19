@@ -31,6 +31,7 @@ from .errors import (
     ServiceClosedError,
     StaleJobError,
     StateTransitionError,
+    redact_artifact_reference,
     redact_sensitive,
     redact_text,
 )
@@ -135,6 +136,21 @@ def _legacy_url(value: str) -> str:
     )
 
 
+# legacy 记录里的 artifact 引用字段；source_urls 仍按源链接契约全量剥离。
+_LEGACY_ARTIFACT_FIELDS = frozenset({"image_urls", "image_paths", "images"})
+
+
+def _legacy_artifact_url(value: str) -> str:
+    """Artifact locator keeps non-auth query (e.g. ?id=) for stable retrieval."""
+
+    if not value.lower().startswith(("http://", "https://")):
+        return value
+    parsed = urlsplit(value)
+    if not parsed.hostname:
+        raise ValueError("legacy URL 缺少 hostname")
+    return redact_artifact_reference(value)
+
+
 def _legacy_safe_value(value: Any, depth: int = 0) -> Any:
     if depth > 32:
         raise ValueError("legacy 元数据嵌套过深")
@@ -155,7 +171,8 @@ def _legacy_refs(record: Mapping[str, Any], field: str) -> list[str]:
         raise ValueError("legacy 图片列表无效或超过数量限制")
     if any(not isinstance(value, str) for value in values):
         raise ValueError("legacy 图片引用必须是字符串")
-    return [_legacy_url(value.strip()) for value in values if value.strip()]
+    clean = _legacy_artifact_url if field in _LEGACY_ARTIFACT_FIELDS else _legacy_url
+    return [clean(value.strip()) for value in values if value.strip()]
 
 
 def _legacy_result(
@@ -919,6 +936,11 @@ class SQLiteJobStore:
                 continue
             try:
                 clean_item = redact_sensitive(_legacy_safe_value(item))
+
+                # Artifact fields keep non-auth query; source_urls fully strips.
+                for field in _LEGACY_ARTIFACT_FIELDS:
+                    if field in item:
+                        clean_item[field] = _legacy_refs(item, field)
                 # A bad batch item must not hide output from its valid siblings.
                 _legacy_result(clean_item, JobState.SUCCEEDED, [])
             except (ValueError, TypeError, RecursionError):
