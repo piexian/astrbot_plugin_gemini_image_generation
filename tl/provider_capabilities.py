@@ -291,31 +291,53 @@ def openai_images_capability(candidate: Any) -> dict[str, Any]:
     from .api.openai_images import _is_gpt_image_model
 
     model = _model(candidate).lower()
-    if model == "dall-e-3":
-        quality_values = ["hd", "standard"]
-    elif model == "dall-e-2":
-        quality_values = ["standard"]
-    elif model.startswith(("gpt-image", "chatgpt-image")):
-        quality_values = gpt_image_quality_values(model)
-    else:
-        quality_values = ["auto", "high", "medium", "low", "hd", "standard"]
-    return _profile(
-        candidate,
-        native_batch_limit=min(max(int(_settings(candidate).get("n", 1)), 1), 10)
-        if _is_gpt_image_model(model) and not _settings(candidate).get("stream")
-        else 1,
-        parameters={
-            "quality": {
-                "type": "string",
-                "enum": quality_values,
-                "default_source": "provider_config",
-            },
+    candidate_settings = _settings(candidate)
+    # SVG 单请求仅一张：候选配置 svg 时原生批量上限收敛为 1
+    svg_output = str(candidate_settings.get("output_format") or "").lower() == "svg"
+    quality_values = gpt_image_quality_values(model)
+    parameters: dict[str, Any] = {
+        "quality": {
+            "type": "string",
+            "enum": quality_values,
+            "default_source": "provider_config",
         },
+        "output_format": {
+            "type": "string",
+            "enum": ["png", "jpeg", "webp", "gif", "svg"],
+            "default_source": "provider_config",
+        },
+    }
+    # input_fidelity 仅编辑接口按模型支持，枚举与 API 层门控一致
+    if model.startswith("gpt-image-1.5"):
+        parameters["input_fidelity"] = {
+            "type": "string",
+            "enum": ["low", "high"],
+            "default_source": "provider_config",
+        }
+    elif model.startswith("gpt-image-1-mini"):
+        parameters["input_fidelity"] = {
+            "type": "string",
+            "enum": ["low"],
+            "default_source": "provider_config",
+        }
+    profile = _profile(
+        candidate,
+        native_batch_limit=min(max(int(candidate_settings.get("n", 1)), 1), 10)
+        if _is_gpt_image_model(model)
+        and not candidate_settings.get("stream")
+        and not svg_output
+        else 1,
+        parameters=parameters,
         request_setting_map={
             "quality": "quality",
+            "output_format": "output_format",
             **({"image_count": "n"} if _is_gpt_image_model(model) else {}),
         },
     )
+    if "input_fidelity" not in parameters:
+        # 其余模型不支持 input_fidelity：工作台不显示该字段，临时覆盖也不接受
+        profile["unsupported_settings"] = {"input_fidelity"}
+    return profile
 
 
 def openai_responses_capability(candidate: Any) -> dict[str, Any]:
@@ -537,6 +559,7 @@ def candidate_reference_limit(candidate: Any) -> int:
         "google": limits.MAX_REFERENCE_IMAGES_GOOGLE,
         "gemini_interactions": limits.MAX_REFERENCE_IMAGES_GEMINI_INTERACTIONS,
         "openai": limits.MAX_REFERENCE_IMAGES_OPENAI_COMPAT,
+        "openai_images": limits.MAX_REFERENCE_IMAGES_OPENAI_IMAGES,
         "minimax": limits.MAX_REFERENCE_IMAGES_MINIMAX,
         "sensenova": limits.MAX_REFERENCE_IMAGES_SENSENOVA_U15,
         "senseaudio": limits.MAX_REFERENCE_IMAGES_SENSEAUDIO,
@@ -572,10 +595,6 @@ def candidate_reference_limit(candidate: Any) -> int:
             if _model_family(model) in {"kolors", "qwen-image-edit"}
             else limits.MAX_REFERENCE_IMAGES_SILICONFLOW
         )
-    elif api_type == "openai_images":
-        from .api.openai_images import _is_gpt_image_model
-
-        native = 16 if _is_gpt_image_model(model) else 1
     return min(configured, native)
 
 
@@ -609,6 +628,8 @@ def explicit_runtime_parameters(config: Any) -> set[str]:
         required.add("watermark")
     if getattr(config, "quality", None) not in (None, ""):
         required.add("quality")
+    if getattr(config, "output_format", None) not in (None, ""):
+        required.add("output_format")
     return required
 
 
@@ -703,13 +724,16 @@ def apply_request_overrides(
 
     capability = candidate_capability(candidate)
     setting_map = capability.get("request_setting_map") or {}
-    for request_name in ("negative_prompt", "watermark", "quality"):
+    for request_name in ("negative_prompt", "watermark", "quality", "output_format"):
         value = getattr(config, request_name, None)
         setting_name = setting_map.get(request_name)
         if value is not None and setting_name:
             set_request_value(setting_name, value)
 
     native_limit = max(int(capability.get("native_batch_limit") or 1), 1)
+    if str(getattr(config, "output_format", None) or "").lower() == "svg":
+        # 请求级选择 svg 时批量上限收敛为 1，由调度器逐张补图
+        native_limit = 1
     try:
         requested_count = max(int(getattr(config, "image_count", 1) or 1), 1)
     except (TypeError, ValueError):

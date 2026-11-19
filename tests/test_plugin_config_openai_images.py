@@ -112,3 +112,33 @@ def test_openai_images_generations_only_marks_candidate_not_edit_capable() -> No
     assert len(cfg.provider_candidates) == 1
     assert cfg.provider_candidates[0].api_type == "openai_images"
     assert cfg.provider_candidates[0].supports_image_edit is False
+
+    # 新增参数键原样进入候选 settings，不阻断配置加载
+    cfg = plugin_config.ConfigLoader(
+        {
+            "provider_settings": {
+                "provider_overrides": [
+                    {
+                        "__template_key": "openai_images",
+                        "api_keys": ["img-key"],
+                        "model": "gpt-image-1.5",
+                        "complexity": "high",
+                        "input_fidelity": "low",
+                        "output_format": "gif",
+                        "frame_count": 9,
+                        "frame_duration_ms": 200,
+                        "svg_model": "gpt-image-2.5-flare",
+                    }
+                ]
+            }
+        }
+    ).load()
+
+    assert len(cfg.provider_candidates) == 1
+    new_settings = cfg.provider_candidates[0].settings
+    assert new_settings["complexity"] == "high"
+    assert new_settings["input_fidelity"] == "low"
+    assert new_settings["output_format"] == "gif"
+    assert new_settings["frame_count"] == 9
+    assert new_settings["frame_duration_ms"] == 200
+    assert new_settings["svg_model"] == "gpt-image-2.5-flare"

@@ -265,6 +265,7 @@ def test_build_request_maps_all_fields():
         metadata={"suppress_resolution": True},
         negative_prompt="blurry",
         quality="high",
+        output_format="webp",
         watermark=False,
         image_count=3,
     )
@@ -280,6 +281,7 @@ def test_build_request_maps_all_fields():
     assert request.metadata == {"suppress_resolution": True}
     assert request.negative_prompt == "blurry"
     assert request.quality == "high"
+    assert request.output_format == "webp"
     assert request.watermark is False
     assert request.image_count == 3
     assert (
@@ -299,6 +301,7 @@ def test_command_request_delegates_to_build_request():
         reference_images=("/tmp/a.png",),
         deadline_seconds=30,
         requester={"user_id": "u"},
+        output_format="gif",
         metadata={"total_timeout": 30},
     )
     direct = build_request(
@@ -311,6 +314,7 @@ def test_command_request_delegates_to_build_request():
         reference_images=("/tmp/a.png",),
         deadline_seconds=30,
         requester={"user_id": "u"},
+        output_format="gif",
         metadata={"total_timeout": 30},
     )
     # deadline_at 各自按当前时刻生成，逐字段比较其余内容。
@@ -325,6 +329,7 @@ def test_command_request_delegates_to_build_request():
         "aspect_ratio",
         "negative_prompt",
         "quality",
+        "output_format",
         "watermark",
         "image_count",
         "reference_images",

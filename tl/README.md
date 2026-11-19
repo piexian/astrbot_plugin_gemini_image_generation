@@ -241,7 +241,7 @@ OpenAI Images 原生端点 provider。
 | `_prepare_generations_payload()` | 文生图 JSON 请求体 |
 | `_prepare_edits_payload()` | 改图 multipart 请求体 |
 | `_is_gpt_image_model(model)` | 判断 GPT image 系列 |
-| `_get_size_mapping(model)` | 按模型族选择预设尺寸映射 |
+| `_get_size_mapping(model)` | 返回预设尺寸映射表 |
 | `_resolve_size_value(model, resolution, settings)` | 计算最终 `size` |
 
 ### `api/agnes_ai.py`

@@ -25,6 +25,7 @@ def build_request(
     metadata: Mapping[str, Any] | None = None,
     negative_prompt: str | None = None,
     quality: str | None = None,
+    output_format: str | None = None,
     watermark: bool | None = None,
     image_count: int = 1,
 ) -> GenerationRequest:
@@ -43,6 +44,7 @@ def build_request(
         aspect_ratio=aspect_ratio,
         negative_prompt=negative_prompt,
         quality=quality,
+        output_format=output_format,
         watermark=watermark,
         image_count=image_count,
         reference_images=tuple(reference_images),
@@ -67,6 +69,7 @@ def command_request(
     deadline_seconds: float,
     metadata: Mapping[str, Any] | None = None,
     requester: Mapping[str, str] | None = None,
+    output_format: str | None = None,
 ) -> GenerationRequest:
     """命令入口参数装配（委托 build_request，source 固定 command）。"""
 
@@ -81,6 +84,7 @@ def command_request(
         deadline_seconds=deadline_seconds,
         metadata=metadata,
         requester=requester,
+        output_format=output_format,
     )
 
 

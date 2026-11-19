@@ -1347,7 +1347,7 @@ async def test_batch_top_level_defaults_apply_and_tasks_override(
         template="poster",
         resolution="2K",
         aspect_ratio="16:9",
-        options={"quality": "low"},
+        options={"quality": "low", "output_format": "webp"},
         tasks=[
             {
                 "name": "inherit",
@@ -1362,7 +1362,7 @@ async def test_batch_top_level_defaults_apply_and_tasks_override(
                 "provider": "legacy",
                 "resolution": "4K",
                 "aspect_ratio": "1:1",
-                "options": {"quality": "high"},
+                "options": {"quality": "high", "output_format": "jpeg"},
             },
         ],
     )
@@ -1379,10 +1379,12 @@ async def test_batch_top_level_defaults_apply_and_tasks_override(
     assert inherited.resolution == "2K"
     assert inherited.aspect_ratio == "16:9"
     assert inherited.quality == "low"
+    assert inherited.output_format == "webp"
     overridden = next(cfg for prompt, cfg in configs.items() if "ovr" in prompt)
     assert overridden.resolution == "4K"
     assert overridden.aspect_ratio == "1:1"
     assert overridden.quality == "high"
+    assert overridden.output_format == "jpeg"
 
 
 @pytest.mark.asyncio
@@ -1421,16 +1423,31 @@ async def test_batch_template_id_reaches_v2_and_legacy_paths(make_env, tmp_path)
     "options,expected",
     [
         (
-            {"quality": None, "watermark": None, "negative_prompt": None},
-            (None, None, None),
+            {
+                "quality": None,
+                "watermark": None,
+                "negative_prompt": None,
+                "output_format": None,
+            },
+            (None, None, None, None),
         ),
         (
-            {"quality": "low", "watermark": False, "negative_prompt": "noise"},
-            ("low", False, "noise"),
+            {
+                "quality": "low",
+                "watermark": False,
+                "negative_prompt": "noise",
+                "output_format": "webp",
+            },
+            ("low", False, "noise", "webp"),
         ),
         (
-            {"quality": "", "watermark": False, "negative_prompt": ""},
-            ("", False, ""),
+            {
+                "quality": "",
+                "watermark": False,
+                "negative_prompt": "",
+                "output_format": "",
+            },
+            ("", False, "", ""),
         ),
     ],
 )
@@ -1455,7 +1472,12 @@ async def test_optional_options_keep_null_as_provider_default(
         env.plugin, new_event(), {"options": options}, "draw"
     )
     assert error is None
-    assert (request.quality, request.watermark, request.negative_prompt) == expected
+    assert (
+        request.quality,
+        request.watermark,
+        request.negative_prompt,
+        request.output_format,
+    ) == expected
     assert options == original
     assert await stored_jobs(env) == []
 
@@ -1476,7 +1498,12 @@ async def test_batch_null_options_clear_defaults_without_mutating_inputs(make_en
         ]
     )
     defaults = {
-        "options": {"quality": "high", "watermark": True, "negative_prompt": "noise"}
+        "options": {
+            "quality": "high",
+            "watermark": True,
+            "negative_prompt": "noise",
+            "output_format": "webp",
+        }
     }
     tasks = [
         {"name": "default", "prompt": "first", "image_count": 1},
@@ -1484,7 +1511,12 @@ async def test_batch_null_options_clear_defaults_without_mutating_inputs(make_en
             "name": "clear",
             "prompt": "second",
             "image_count": 1,
-            "options": {"quality": None, "watermark": None, "negative_prompt": None},
+            "options": {
+                "quality": None,
+                "watermark": None,
+                "negative_prompt": None,
+                "output_format": None,
+            },
         },
     ]
     original = deepcopy((defaults, tasks))
@@ -1493,11 +1525,16 @@ async def test_batch_null_options_clear_defaults_without_mutating_inputs(make_en
     )
     assert error is None
     assert [
-        (request["quality"], request["watermark"], request["negative_prompt"])
+        (
+            request["quality"],
+            request["watermark"],
+            request["negative_prompt"],
+            request["output_format"],
+        )
         for request in requests
     ] == [
-        ("high", True, "noise"),
-        (None, None, None),
+        ("high", True, "noise", "webp"),
+        (None, None, None, None),
     ]
     assert (defaults, tasks) == original
     assert await stored_jobs(env) == []

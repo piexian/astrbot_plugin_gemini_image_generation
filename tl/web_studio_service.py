@@ -775,7 +775,9 @@ class WebStudioService:
         preview = False
         if thumbnail:
             raw = self._thumbnail_bytes(path)
-            mime_type = "image/jpeg"
+            mime_type = (
+                "image/svg+xml" if path.suffix.lower() == ".svg" else "image/jpeg"
+            )
             limit = _THUMBNAIL_B64_MAX_BYTES
             error_message = "缩略图响应超过 2MB 限制"
         else:
@@ -789,7 +791,9 @@ class WebStudioService:
             mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
             if ((len(raw) + 2) // 3) * 4 > limit:
                 raw = self._preview_bytes(path)
-                mime_type = "image/jpeg"
+                mime_type = (
+                    "image/svg+xml" if path.suffix.lower() == ".svg" else "image/jpeg"
+                )
                 preview = True
         if ((len(raw) + 2) // 3) * 4 > limit:
             raise StudioServiceError(error_message, status_code=413)
@@ -1063,7 +1067,7 @@ class WebStudioService:
             except OSError:
                 continue
             try:
-                extension = self._validate_image_bytes(data)
+                extension = self._validate_image_bytes(data, allow_svg=True)
             except StudioServiceError:
                 path.unlink(missing_ok=True)
                 continue
@@ -1137,7 +1141,9 @@ class WebStudioService:
                 else:
                     path = file_uri_to_path(source) or Path(source)
                     data = await asyncio.to_thread(path.read_bytes)
-                extension = await asyncio.to_thread(self._validate_image_bytes, data)
+                extension = await asyncio.to_thread(
+                    self._validate_image_bytes, data, allow_svg=True
+                )
                 name = self._gallery_name(extension)
                 await asyncio.to_thread(
                     self._write_atomic, self.gallery_dir / name, data
@@ -1255,11 +1261,33 @@ class WebStudioService:
         if cls._detect_extension(data) is None:
             raise StudioServiceError("不支持的图片格式")
 
+    _MAX_SVG_BYTES = 8 * 1024 * 1024
+
     @classmethod
-    def _validate_image_bytes(cls, data: bytes) -> str:
+    def _validate_svg_bytes(cls, data: bytes) -> str:
+        """SVG 非位图：校验根元素与体积，不做像素解码。"""
+
+        if len(data) > cls._MAX_SVG_BYTES:
+            raise StudioServiceError("SVG 文件超过 8MB 上限")
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise StudioServiceError("不支持的图片格式") from exc
+        lowered = text.lower()
+        if "<svg" not in lowered:
+            raise StudioServiceError("不支持的图片格式")
+        if "<script" in lowered or "javascript:" in lowered:
+            raise StudioServiceError("SVG 内容包含脚本，已拒绝归档")
+        return "svg"
+
+    @classmethod
+    def _validate_image_bytes(cls, data: bytes, *, allow_svg: bool = False) -> str:
         extension = cls._detect_extension(data)
         if extension is None:
-            raise StudioServiceError("不支持的图片格式")
+            # 仅画廊归档接受 SVG；上传参考图仍按位图校验，与参考图预处理保持一致
+            if not allow_svg:
+                raise StudioServiceError("不支持的图片格式")
+            return cls._validate_svg_bytes(data)
         try:
             with Image.open(io.BytesIO(data)) as header:
                 width, height = header.size
@@ -1610,7 +1638,9 @@ class WebStudioService:
         preview = False
         if thumbnail:
             raw = self._thumbnail_bytes(path)
-            mime_type = "image/jpeg"
+            mime_type = (
+                "image/svg+xml" if path.suffix.lower() == ".svg" else "image/jpeg"
+            )
             limit = _THUMBNAIL_B64_MAX_BYTES
             error_message = "缩略图响应超过 2MB 限制"
         else:
@@ -1627,7 +1657,9 @@ class WebStudioService:
             mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
             if ((len(raw) + 2) // 3) * 4 > limit:
                 raw = self._preview_bytes(path)
-                mime_type = "image/jpeg"
+                mime_type = (
+                    "image/svg+xml" if path.suffix.lower() == ".svg" else "image/jpeg"
+                )
                 preview = True
 
         if ((len(raw) + 2) // 3) * 4 > limit:
@@ -1641,6 +1673,9 @@ class WebStudioService:
     def _preview_bytes(source: Path) -> bytes:
         """在内存中压缩大图；下载与归档始终使用原文件。"""
         try:
+            if source.suffix.lower() == ".svg":
+                # SVG 无位图压缩路径，返回原件由上层按大小限制判定
+                return source.read_bytes()
             with Image.open(source) as original:
                 image = ImageOps.exif_transpose(original)
                 image.thumbnail((2048, 2048))
@@ -1684,6 +1719,9 @@ class WebStudioService:
             pass
 
         try:
+            if source.suffix.lower() == ".svg":
+                # SVG 无位图缩略图，直接返回原件
+                return source.read_bytes()
             source_bytes = source.read_bytes()
         except OSError as exc:
             raise StudioServiceError("图片读取失败", status_code=500) from exc

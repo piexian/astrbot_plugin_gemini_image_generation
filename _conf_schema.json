@@ -1137,7 +1137,7 @@
               "model": {
                 "description": "模型名称",
                 "type": "string",
-                "hint": "自由输入，支持 GPT Image 2.5 Flare/Sunburst 及日期快照、GPT Image 2/1.5/1 和兼容服务模型。",
+                "hint": "自由输入，支持 GPT Image 2.5/2.6 Flare/Sunburst 及日期快照、GPT Image 2/1.5/1-mini 和兼容服务模型。",
                 "default": "gpt-image-2.5-flare"
               },
               "api_base": {
@@ -1190,13 +1190,13 @@
               "max_reference_images": {
                 "description": "最大参考图片数量",
                 "type": "int",
-                "hint": "GPT Image 最多 16 张；DALL·E 仅单图。实际数量还受候选配置限制。",
+                "hint": "GPT Image 最多 16 张。实际数量还受候选配置限制。",
                 "default": 6
               },
               "quality": {
                 "description": "图像质量",
                 "type": "string",
-                "hint": "GPT Image 2.5 支持 xhigh/max；旧 GPT Image 最高 high；hd/standard 用于 DALL·E。",
+                "hint": "GPT Image 2.5 支持 xhigh/max；旧 GPT Image 最高 high。",
                 "default": "",
                 "options": [
                   "",
@@ -1205,19 +1205,19 @@
                   "medium",
                   "high",
                   "xhigh",
-                  "max",
-                  "hd",
-                  "standard"
+                  "max"
                 ]
               },
-              "response_format": {
-                "description": "响应格式",
+              "complexity": {
+                "description": "规划复杂度",
                 "type": "string",
-                "hint": "url 返回临时链接（60分钟有效），b64_json 返回 base64 编码。",
-                "default": "b64_json",
+                "hint": "提示词规划复杂度 low/medium/high，省略用模型默认。仅 GPT image 模型支持，留空不传",
+                "default": "",
                 "options": [
-                  "b64_json",
-                  "url"
+                  "",
+                  "low",
+                  "medium",
+                  "high"
                 ]
               },
               "size_mode": {
@@ -1240,17 +1240,6 @@
                   "size_mode": "custom"
                 }
               },
-              "style": {
-                "description": "图像风格",
-                "type": "string",
-                "hint": "vivid 生成超现实戏剧性图像，natural 生成更自然的图像。仅 dall-e-3 支持，留空不传",
-                "default": "",
-                "options": [
-                  "",
-                  "vivid",
-                  "natural"
-                ]
-              },
               "background": {
                 "description": "背景透明度",
                 "type": "string",
@@ -1266,13 +1255,15 @@
               "output_format": {
                 "description": "输出图像格式",
                 "type": "string",
-                "hint": "png 支持透明背景，jpeg 文件更小，webp 兼顾两者。仅 GPT image 模型支持，留空不传",
+                "hint": "png 支持透明背景，jpeg 文件更小，webp 兼顾两者；gif 可配帧数，svg 需项目访问权限且仅单张。仅 GPT image 模型支持，留空不传",
                 "default": "",
                 "options": [
                   "",
                   "png",
                   "jpeg",
-                  "webp"
+                  "webp",
+                  "gif",
+                  "svg"
                 ]
               },
               "output_compression": {
@@ -1286,6 +1277,29 @@
                   "step": 1
                 }
               },
+              "frame_count": {
+                "description": "GIF 帧数",
+                "type": "int",
+                "hint": "仅 output_format=gif 时发送，留空或 0 用服务端默认 9，范围 2–16。",
+                "default": 0,
+                "slider": {
+                  "min": 0,
+                  "max": 16,
+                  "step": 1
+                }
+              },
+              "frame_duration_ms": {
+                "description": "GIF 帧时长",
+                "type": "int",
+                "hint": "仅 output_format=gif 时发送，留空或 0 用服务端默认 200，最小 20。",
+                "default": 0
+              },
+              "svg_model": {
+                "description": "SVG 作者模型",
+                "type": "string",
+                "hint": "仅 output_format=svg 时发送，SVG 作者模型名。",
+                "default": ""
+              },
               "moderation": {
                 "description": "审核模式",
                 "type": "string",
@@ -1294,6 +1308,17 @@
                 "options": [
                   "",
                   "low"
+                ]
+              },
+              "input_fidelity": {
+                "description": "编辑保真度",
+                "type": "string",
+                "hint": "仅编辑接口生效：gpt-image-1.5 支持 low/high，gpt-image-1-mini 仅 low，其余模型配置会在请求期报错。留空不传",
+                "default": "",
+                "options": [
+                  "",
+                  "low",
+                  "high"
                 ]
               },
               "generations_only": {

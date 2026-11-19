@@ -185,7 +185,6 @@ def test_provider_specific_optional_parameter_capabilities() -> None:
     minimax = candidate_capability(_candidate("minimax", "image-01"))
     dashscope_wan = candidate_capability(_candidate("dashscope", "wan2.7-image-pro"))
     dashscope_qwen = candidate_capability(_candidate("dashscope", "qwen-image-2.0"))
-    dall_e_3 = candidate_capability(_candidate("openai_images", "dall-e-3"))
     doubao_pro = candidate_capability(
         _candidate(
             "doubao",
@@ -199,7 +198,6 @@ def test_provider_specific_optional_parameter_capabilities() -> None:
     assert "watermark" in minimax["parameters"]
     assert "negative_prompt" not in dashscope_wan["parameters"]
     assert "negative_prompt" in dashscope_qwen["parameters"]
-    assert dall_e_3["parameters"]["quality"]["enum"] == ["hd", "standard"]
 
 
 def test_stepfun_negative_prompt_only_for_edit_models() -> None:
