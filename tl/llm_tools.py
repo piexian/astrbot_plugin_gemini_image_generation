@@ -183,6 +183,13 @@ _OPTION_PROPERTIES: dict[str, dict[str, Any]] = {
         "type": ["string", "null"],
         "description": "质量档位；合法值用 gemini_image_lookup（kind=models，detail=true）查询",
     },
+    "output_format": {
+        "type": ["string", "null"],
+        "description": (
+            "输出格式 png/jpeg/webp/gif/svg；"
+            "合法值用 gemini_image_lookup（kind=models，detail=true）查询"
+        ),
+    },
     "negative_prompt": {
         "type": ["string", "null"],
         "description": "负面提示词",
@@ -695,6 +702,7 @@ def _runtime_values(
     negative_prompt: str | None,
     watermark: bool | None,
     quality: str | None,
+    output_format: str | None,
 ) -> tuple[set[str], dict[str, Any]]:
     required: set[str] = set()
     values: dict[str, Any] = {}
@@ -707,6 +715,9 @@ def _runtime_values(
     if quality not in (None, ""):
         required.add("quality")
         values["quality"] = quality
+    if output_format not in (None, ""):
+        required.add("output_format")
+        values["output_format"] = output_format
     return required, values
 
 
@@ -719,11 +730,13 @@ def _matching_candidates(
     negative_prompt: str | None,
     watermark: bool | None,
     quality: str | None,
+    output_format: str | None,
 ) -> list[Any]:
     required, values = _runtime_values(
         negative_prompt=negative_prompt,
         watermark=watermark,
         quality=quality,
+        output_format=output_format,
     )
     candidates = list(getattr(plugin.cfg, "provider_candidates", []) or [])
     if not candidates:
@@ -845,6 +858,7 @@ async def _prepare_batch_tasks(
                 "negative_prompt": single.negative_prompt,
                 "watermark": single.watermark,
                 "quality": single.quality,
+                "output_format": single.output_format,
                 "reference_images": single.reference_images,
                 "avatar_reference": single.avatar_reference,
                 "resolution": single.resolution,
@@ -1030,6 +1044,7 @@ async def _run_single_v2(
     negative_prompt: str | None,
     watermark: bool | None,
     quality: str | None,
+    output_format: str | None,
     suppress_resolution: bool,
     return_images: bool,
     forum_mode: bool,
@@ -1063,6 +1078,7 @@ async def _run_single_v2(
         negative_prompt=negative_prompt,
         watermark=watermark,
         quality=quality,
+        output_format=output_format,
         image_count=1,
         suppress_resolution=suppress_resolution,
         template_id=template_id,
@@ -1215,6 +1231,7 @@ async def _run_batch_v2(
                     negative_prompt=item.get("negative_prompt"),
                     watermark=item.get("watermark"),
                     quality=item.get("quality"),
+                    output_format=item.get("output_format"),
                     image_count=image_count,
                     suppress_resolution=bool(item.get("suppress_resolution", False)),
                     deadline_seconds=None,
@@ -1327,6 +1344,7 @@ class _SingleRequest(NamedTuple):
     negative_prompt: str | None
     watermark: bool | None
     quality: str | None
+    output_format: str | None
     reference_images: list[str]
     avatar_reference: list[str]
     trusted_local: bool
@@ -1527,6 +1545,11 @@ async def _prepare_single_request(
         if "quality" in declared and "quality" in options
         else None
     )
+    output_format = (
+        str(options.get("output_format") or "").strip()
+        if "output_format" in declared and "output_format" in options
+        else None
+    )
 
     raw_references = kwargs.get("references") or []
     if isinstance(raw_references, str):
@@ -1591,6 +1614,7 @@ async def _prepare_single_request(
             negative_prompt=negative_prompt,
             watermark=watermark,
             quality=quality,
+            output_format=output_format,
             reference_images=references.images,
             avatar_reference=references.avatars,
             # 只有过了路径守卫的用户本地文件需要受信读取；画廊图已内联为 data URI，
@@ -1732,6 +1756,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
         negative_prompt = single.negative_prompt
         watermark = single.watermark
         quality = single.quality
+        output_format = single.output_format
         reference_images = single.reference_images
         avatar_reference = single.avatar_reference
         resolution = single.resolution
@@ -1750,6 +1775,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
             negative_prompt=negative_prompt,
             watermark=watermark,
             quality=quality,
+            output_format=output_format,
         )
         if not candidates:
             return "❌ 没有匹配所选供应商、模型、生成模式和参数能力的候选模型"
@@ -1771,6 +1797,7 @@ class GeminiImageGenerationTool(FunctionTool[AstrAgentContext]):
             negative_prompt=negative_prompt,
             watermark=watermark,
             quality=quality,
+            output_format=output_format,
             suppress_resolution=suppress_resolution,
             return_images=return_images,
             config_value_notice=config_value_notice,

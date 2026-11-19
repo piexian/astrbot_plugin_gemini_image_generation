@@ -62,6 +62,7 @@ class TrackerProjection:
                 "model": request.model,
                 "image_count": request.image_count,
                 "quality": request.quality,
+                "output_format": request.output_format,
                 "seed": metadata.get("seed"),
                 "negative_prompt": request.negative_prompt,
                 "template_id": metadata.get("template_id"),

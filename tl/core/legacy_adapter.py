@@ -123,6 +123,7 @@ class LegacyClientAdapter:
                 aspect_ratio=request.aspect_ratio,
                 negative_prompt=request.negative_prompt,
                 quality=request.quality,
+                output_format=request.output_format,
                 seed=metadata.get("seed"),
                 generation_settings=metadata.get("generation_settings") or None,
                 watermark=request.watermark,

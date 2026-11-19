@@ -112,6 +112,7 @@ class GenerationRequest:
     aspect_ratio: str | None = None
     negative_prompt: str | None = None
     quality: str | None = None
+    output_format: str | None = None
     watermark: bool | None = None
     reference_images: tuple[str, ...] = ()
     deadline_at: datetime | None = None
@@ -140,6 +141,7 @@ class GenerationRequest:
             "aspect_ratio",
             "negative_prompt",
             "quality",
+            "output_format",
             "parent_job_id",
         ):
             _clean_optional_text(getattr(self, name), name)
@@ -188,7 +190,9 @@ class GenerationRequest:
             )
         else:
             raise InvalidRequestError("reference_images 必须是数组")
-        return cls(**values)
+        # 忽略本版本未知的字段，回滚后旧代码仍能读取新版写入的任务记录
+        known = cls.__dataclass_fields__
+        return cls(**{key: value for key, value in values.items() if key in known})
 
 
 @dataclass(frozen=True, slots=True)

@@ -891,6 +891,7 @@ class SQLiteJobStore:
             aspect_ratio=params.get("aspect_ratio"),
             negative_prompt=params.get("negative_prompt"),
             quality=params.get("quality"),
+            output_format=params.get("output_format"),
             reference_images=references,
             requester=record.get("requester") or {},
             metadata={"legacy_source": "generation_history.json"},

@@ -41,6 +41,7 @@ _PARAM_KEYS = (
     "candidate_id",
     "image_count",
     "quality",
+    "output_format",
     "seed",
     "negative_prompt",
     "generation_settings",

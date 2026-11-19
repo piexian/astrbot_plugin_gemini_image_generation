@@ -27,6 +27,7 @@ GENERATION_SETTING_KEYS = frozenset(
         "response_format",
         "reference_image_mode",
         "quality",
+        "complexity",
         "n",
         "prompt_optimizer",
         "aigc_watermark",
@@ -42,11 +43,14 @@ GENERATION_SETTING_KEYS = frozenset(
         "text_mode",
         "size_mode",
         "custom_size",
-        "style",
         "background",
         "output_format",
         "output_compression",
+        "frame_count",
+        "frame_duration_ms",
+        "svg_model",
         "moderation",
+        "input_fidelity",
         "action",
         "partial_images",
         "stream",
@@ -116,7 +120,7 @@ def generation_fields(candidate: Any) -> dict[str, dict[str, Any]]:
         field["runtime_parameter"] = reverse_map.get(name, name)
         field["multiline"] = name in {"negative_prompt", "loras"}
         runtime = runtime_fields.get(reverse_map.get(name, name), {})
-        # 模型能力提供更准确的枚举（例如 DALL-E 与 GPT Image 的画质）。
+        # 模型能力提供更准确的枚举（例如 GPT Image 2.5 与旧 GPT Image 的画质）。
         for key in ("enum", "minimum", "maximum"):
             if key in runtime and name != "n":
                 field[key] = copy.deepcopy(runtime[key])
@@ -129,6 +133,9 @@ def generation_fields(candidate: Any) -> dict[str, dict[str, Any]]:
         if name == "max_reference_images":
             field["minimum"] = 0
             field["maximum"] = native_reference_limit(candidate)
+        if name == "frame_count":
+            # 0 表示用服务端默认帧数；非零值由请求层校验 2–16
+            field["minimum"] = 0
         if name == "generations_only":
             field["disables_references_when"] = True
         if name == "n":

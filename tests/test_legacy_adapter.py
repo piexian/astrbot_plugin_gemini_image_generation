@@ -246,6 +246,7 @@ async def test_config_mapping_and_fresh_instances_per_factory_call():
         aspect_ratio="16:9",
         negative_prompt="blurry",
         quality="high",
+        output_format="webp",
         watermark=False,
         reference_images=("/tmp/a.png", "/tmp/b.png"),
     )
@@ -278,6 +279,7 @@ async def test_config_mapping_and_fresh_instances_per_factory_call():
     assert config.aspect_ratio == "16:9"
     assert config.negative_prompt == "blurry"
     assert config.quality == "high"
+    assert config.output_format == "webp"
     assert config.watermark is False
     assert config.proxy == "http://proxy.test:7890"
     assert config.provider_settings == {"api_type": "openai"}

@@ -306,7 +306,7 @@ const ImageLoader = {
       const mime = String(payload?.mime || "").toLowerCase();
       const b64 = String(payload?.b64 || "");
       if (
-        !/^image\/(?:png|jpeg|webp|gif|bmp)$/.test(mime) ||
+        !/^image\/(?:png|jpeg|webp|gif|bmp|svg)$/.test(mime) ||
         !b64 ||
         !/^[A-Za-z0-9+/]*={0,2}$/.test(b64)
       ) {

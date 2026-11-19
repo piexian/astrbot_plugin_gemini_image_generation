@@ -44,6 +44,13 @@ except (ImportError, AttributeError):
 PLUGIN_NAME = "astrbot_plugin_gemini_image_generation"
 WEBUI_PREFIX = f"/{PLUGIN_NAME}/webui"
 _SAFE_FILE_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+def _served_filename(path_name: str, download: bool) -> str | None:
+    # SVG 一律按附件返回：直接导航不渲染内嵌脚本，面板 <img> 子资源不受影响
+    return path_name if download or path_name.lower().endswith(".svg") else None
+
+
 _JSON_MAX_BYTES = 2 * 1024 * 1024
 _PREFERENCES_COOKIE = "gemini_studio_browser"
 _BROWSER_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -623,7 +630,7 @@ class WebStudioAPI:
         }
         return file_response(
             path,
-            filename=path.name if download else None,
+            filename=_served_filename(path.name, download),
             content_type=content_type,
             headers={"X-Content-Type-Options": "nosniff"},
         )
@@ -891,7 +898,7 @@ class WebStudioAPI:
         }
         return file_response(
             path,
-            filename=path.name if download else None,
+            filename=_served_filename(path.name, download),
             content_type=content_type,
             headers={"X-Content-Type-Options": "nosniff"},
         )
@@ -1004,6 +1011,7 @@ class WebStudioAPI:
         content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         return file_response(
             path,
+            filename=_served_filename(path.name, False),
             content_type=content_type,
             headers={"X-Content-Type-Options": "nosniff"},
         )

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from astrbot.api import logger
+
 from ..api_types import APIError
 
 
@@ -18,10 +20,16 @@ def gpt_image_quality_values(model: str) -> list[str]:
 
 
 def gpt_image_output_options(model: str, settings: dict[str, Any]) -> dict[str, Any]:
+    if settings.get("quality") in ("hd", "standard"):
+        # 退役 DALL·E 画质档残留：视为未设置并提示，不让升级后的请求直接失败
+        logger.warning(
+            f"[openai_images] 忽略已退役的画质档 {settings.get('quality')!r}，使用模型默认画质"
+        )
+        settings = {**settings, "quality": None}
     options: dict[str, Any] = {}
     allowed = {
         "quality": gpt_image_quality_values(model),
-        "output_format": ["png", "jpeg", "webp"],
+        "output_format": ["png", "jpeg", "webp", "gif", "svg"],
         "background": ["auto", "opaque", "transparent"],
         "moderation": ["auto", "low"],
     }
@@ -37,7 +45,11 @@ def gpt_image_output_options(model: str, settings: dict[str, Any]) -> dict[str, 
             )
         options[key] = value
     output_format = options.get("output_format", "png")
-    if options.get("background") == "transparent" and output_format == "jpeg":
+    if options.get("background") == "transparent" and output_format in {
+        "jpeg",
+        "gif",
+        "svg",
+    }:
         raise APIError(
             "透明背景只支持 PNG 或 WebP。",
             error_type="invalid_parameter",

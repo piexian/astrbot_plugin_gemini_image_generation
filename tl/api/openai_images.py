@@ -30,19 +30,7 @@ from .base import ProviderRequest
 from .openai_image_options import gpt_image_output_options
 from .reference_pipeline import load_reference_bytes
 
-# ---------- 按模型族分的合法尺寸映射 ----------
-
-_SIZE_MAP_DALLE2: dict[str, str] = {
-    "1K": "1024x1024",
-    "2K": "1024x1024",  # dall-e-2 最大 1024x1024
-    "4K": "1024x1024",
-}
-
-_SIZE_MAP_DALLE3: dict[str, str] = {
-    "1K": "1024x1024",
-    "2K": "1792x1024",
-    "4K": "1024x1792",
-}
+# ---------- 合法尺寸映射 ----------
 
 _SIZE_MAP_GPT_IMAGE: dict[str, str] = {
     "1K": "1024x1024",
@@ -52,20 +40,14 @@ _SIZE_MAP_GPT_IMAGE: dict[str, str] = {
 
 
 def _is_gpt_image_model(model: str) -> bool:
-    """判断是否为 GPT image 系列模型（gpt-image-1 / gpt-image-1-mini / gpt-image-1.5 等）"""
+    """判断是否为 GPT image 系列模型（gpt-image-1-mini、gpt-image-1.5、gpt-image-2 等）"""
     m = (model or "").lower()
     return m.startswith("gpt-image") or m == "chatgpt-image-latest"
 
 
 def _get_size_mapping(model: str) -> dict[str, str]:
-    """根据模型名称返回对应的尺寸映射表"""
-    m = (model or "").lower()
-    if _is_gpt_image_model(m):
-        return _SIZE_MAP_GPT_IMAGE
-    if "dall-e-2" in m or "dalle2" in m:
-        return _SIZE_MAP_DALLE2
-    # dall-e-3 及其他未知模型使用 dall-e-3 映射
-    return _SIZE_MAP_DALLE3
+    """返回合法尺寸映射表；未知模型名统一沿用 GPT Image 预设。"""
+    return _SIZE_MAP_GPT_IMAGE
 
 
 def _resolve_size_value(
@@ -86,12 +68,6 @@ def _resolve_size_value(
     if suppress_resolution:
         return None
     if settings.get("size_mode") == "auto":
-        if model.lower().startswith("dall-e-"):
-            raise APIError(
-                "DALL·E 不支持 auto 尺寸，请使用预设尺寸。",
-                error_type="invalid_size",
-                retryable=False,
-            )
         return "auto"
     try:
         size_mode = normalize_size_mode(settings.get("size_mode"))
@@ -218,8 +194,24 @@ def _gpt_request_options(
 ) -> dict[str, Any]:
     model = config.model or "gpt-image-2.5-flare"
     options = gpt_image_output_options(
-        model, {**settings, "quality": config.quality or settings.get("quality")}
+        model,
+        {
+            **settings,
+            "quality": config.quality or settings.get("quality"),
+            # config 的 output_format 字段可能不存在，缺省回落候选配置
+            "output_format": getattr(config, "output_format", None)
+            or settings.get("output_format"),
+        },
     )
+    complexity = settings.get("complexity")
+    if complexity not in (None, ""):
+        if complexity not in ("low", "medium", "high"):
+            raise APIError(
+                f"complexity 仅支持 low/medium/high，当前值 {complexity!r}。",
+                error_type="invalid_parameter",
+                retryable=False,
+            )
+        options["complexity"] = complexity
     count = settings.get("n", config.effective_image_count)
     if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 10:
         raise APIError(
@@ -228,6 +220,60 @@ def _gpt_request_options(
             retryable=False,
         )
     options["n"] = count
+    output_format = options.get("output_format")
+    if output_format in {"gif", "svg"}:
+        if settings.get("stream", False):
+            raise APIError(
+                f"{output_format.upper()} 输出不支持流式生成。",
+                error_type="invalid_parameter",
+                retryable=False,
+            )
+        partial = settings.get("partial_images", 0)
+        if isinstance(partial, int) and not isinstance(partial, bool) and partial > 0:
+            raise APIError(
+                f"{output_format.upper()} 输出不支持 partial_images 生成预览。",
+                error_type="invalid_parameter",
+                retryable=False,
+            )
+    if output_format == "svg" and count != 1:
+        raise APIError(
+            "SVG 输出仅支持单张图片（n=1）。",
+            error_type="invalid_parameter",
+            retryable=False,
+        )
+    if output_format == "gif":
+        frame_count = settings.get("frame_count")
+        if frame_count not in (None, 0, "") or isinstance(frame_count, bool):
+            if (
+                isinstance(frame_count, bool)
+                or not isinstance(frame_count, int)
+                or not 2 <= frame_count <= 16
+            ):
+                raise APIError(
+                    "frame_count 必须是 2–16 的整数。",
+                    error_type="invalid_parameter",
+                    retryable=False,
+                )
+            options["frame_count"] = frame_count
+        frame_duration_ms = settings.get("frame_duration_ms")
+        if frame_duration_ms not in (None, 0, "") or isinstance(
+            frame_duration_ms, bool
+        ):
+            if (
+                isinstance(frame_duration_ms, bool)
+                or not isinstance(frame_duration_ms, int)
+                or frame_duration_ms < 20
+            ):
+                raise APIError(
+                    "frame_duration_ms 必须是不小于 20 的整数。",
+                    error_type="invalid_parameter",
+                    retryable=False,
+                )
+            options["frame_duration_ms"] = frame_duration_ms
+    elif output_format == "svg":
+        svg_model = str(settings.get("svg_model") or "").strip()
+        if svg_model:
+            options["svg"] = {"model": svg_model}
     if settings.get("stream", False):
         if count != 1:
             raise APIError(
@@ -345,6 +391,7 @@ class OpenAIImagesProvider:
         # ---------- 推断输出格式 ----------
         resp_output_format = (
             response_data.get("output_format")
+            or (request_config.output_format if request_config else None)
             or (
                 (request_config.provider_settings or {}).get("output_format")
                 if request_config
@@ -354,7 +401,7 @@ class OpenAIImagesProvider:
         )
         save_ext = (
             resp_output_format
-            if resp_output_format in {"png", "jpeg", "webp"}
+            if resp_output_format in {"png", "jpeg", "webp", "gif", "svg"}
             else "png"
         )
 
@@ -425,7 +472,7 @@ class OpenAIImagesProvider:
                             retryable=False,
                         )
 
-            # 记录修订后的提示词（dall-e-3 only）
+            # 记录修订后的提示词
             revised = image_item.get("revised_prompt")
             if revised:
                 text_content = f"修订提示词: {revised}"
@@ -476,35 +523,12 @@ class OpenAIImagesProvider:
         if size_value:
             payload["size"] = size_value
 
-        # ---- quality ----
-        quality = str(settings.get("quality") or "").strip()
-        if quality:
-            payload["quality"] = quality
-
-        # ---- response_format（gpt-image 系恒返回 b64，官方不支持该参数）----
-        response_format = str(settings.get("response_format") or "").strip()
-        if response_format and not _is_gpt_image_model(model):
-            payload["response_format"] = response_format
-
-        # ---- style (dall-e-3 only) ----
-        style = str(settings.get("style") or "").strip()
-        if style and model.startswith("dall-e-3"):
-            payload["style"] = style
-
-        # ---- GPT image 模型专属参数 ----
-        is_gpt = _is_gpt_image_model(model)
-
-        if is_gpt:
-            payload.update(_gpt_request_options(config, settings))
-
-        # ---- seed ----
-        if config.seed is not None and not is_gpt:
-            payload["seed"] = config.seed
+        # ---- GPT Image 协议参数（非 GPT 名统一按 GPT 行为发送，由端点自行报错）----
+        payload.update(_gpt_request_options(config, settings))
 
         logger.debug(
             f"[openai_images] generations payload: model={model} size={payload.get('size')} "
-            f"quality={payload.get('quality')} style={payload.get('style')} "
-            f"response_format={payload.get('response_format')} prompt_len={len(config.prompt)}"
+            f"quality={payload.get('quality')} prompt_len={len(config.prompt)}"
         )
         return payload
 
@@ -524,11 +548,7 @@ class OpenAIImagesProvider:
         form = aiohttp.FormData()
 
         # ---- image (required): 第一张参考图 ----
-        limit = (
-            min(max(int(settings.get("max_reference_images", 6)), 1), 16)
-            if _is_gpt_image_model(model)
-            else 1
-        )
+        limit = min(max(int(settings.get("max_reference_images", 6)), 1), 16)
         ref_images = (config.reference_images or [])[:limit]
         if not ref_images:
             raise APIError(
@@ -549,14 +569,14 @@ class OpenAIImagesProvider:
                 retryable=False,
             )
         form.add_field(
-            "image[]" if _is_gpt_image_model(model) else "image",
+            "image[]",
             image_data,
             filename="image." + self._image_format(image_data),
             content_type="image/" + self._image_format(image_data),
         )
 
-        # ---- 多图支持 (GPT image 模型支持多张 image) ----
-        if _is_gpt_image_model(model) and len(ref_images) > 1:
+        # ---- 多图支持 ----
+        if len(ref_images) > 1:
             for idx, extra_ref in enumerate(ref_images[1:], start=2):
                 extra_data = await load_reference_bytes(
                     client, config, extra_ref, log_prefix="[openai_images]"
@@ -590,17 +610,36 @@ class OpenAIImagesProvider:
         if size_value:
             form.add_field("size", size_value)
 
-        if _is_gpt_image_model(model):
-            for key, value in _gpt_request_options(config, settings).items():
+        for key, value in _gpt_request_options(config, settings).items():
+            if isinstance(value, dict):
+                # svg 等对象参数序列化为 JSON 字符串进表单
+                form.add_field(key, json.dumps(value, ensure_ascii=False))
+            else:
                 form.add_field(
                     key, str(value).lower() if isinstance(value, bool) else str(value)
                 )
-        else:
-            response_format = str(settings.get("response_format") or "b64_json").strip()
-            form.add_field("response_format", response_format)
-            quality = str(settings.get("quality") or "").strip()
-            if quality:
-                form.add_field("quality", quality)
+
+        # ---- input_fidelity（仅编辑接口，按模型门控）----
+        input_fidelity = str(settings.get("input_fidelity") or "").strip()
+        if input_fidelity:
+            model_lower = model.lower()
+            if model_lower.startswith("gpt-image-1.5"):
+                allowed_fidelity = ("low", "high")
+            elif model_lower.startswith("gpt-image-1-mini"):
+                allowed_fidelity = ("low",)
+            else:
+                raise APIError(
+                    f"{model} 不支持 input_fidelity 参数，请清空该候选的编辑保真度配置。",
+                    error_type="invalid_parameter",
+                    retryable=False,
+                )
+            if input_fidelity not in allowed_fidelity:
+                raise APIError(
+                    f"{model} 的 input_fidelity 仅支持 {'/'.join(allowed_fidelity)}。",
+                    error_type="invalid_parameter",
+                    retryable=False,
+                )
+            form.add_field("input_fidelity", input_fidelity)
 
         logger.debug(
             f"[openai_images] edits payload: model={model} ref_images={len(ref_images)} "

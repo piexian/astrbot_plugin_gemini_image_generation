@@ -368,6 +368,7 @@ class Job:
             if self.request.negative_prompt
             else None,
             "quality": self.request.quality,
+            "output_format": self.request.output_format,
             "watermark": self.request.watermark,
             "reference_images": [
                 reference_descriptor(item) for item in self.request.reference_images

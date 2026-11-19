@@ -76,12 +76,39 @@ def _candidate(api_type: str, settings: dict | None = None):
     "options,valid",
     [
         ({}, True),
-        ({"quality": "high", "negative_prompt": "noise", "watermark": True}, True),
-        ({"quality": "", "negative_prompt": "", "watermark": False}, True),
-        ({"quality": None, "negative_prompt": None, "watermark": None}, True),
+        (
+            {
+                "quality": "high",
+                "negative_prompt": "noise",
+                "watermark": True,
+                "output_format": "webp",
+            },
+            True,
+        ),
+        (
+            {
+                "quality": "",
+                "negative_prompt": "",
+                "watermark": False,
+                "output_format": "",
+            },
+            True,
+        ),
+        (
+            {
+                "quality": None,
+                "negative_prompt": None,
+                "watermark": None,
+                "output_format": None,
+            },
+            True,
+        ),
         ({"quality": True}, False),
         ({"quality": 1}, False),
         ({"quality": {}}, False),
+        ({"output_format": True}, False),
+        ({"output_format": 1}, False),
+        ({"output_format": {}}, False),
         ({"negative_prompt": False}, False),
         ({"negative_prompt": 1}, False),
         ({"negative_prompt": []}, False),

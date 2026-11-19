@@ -40,6 +40,7 @@ class ApiRequestConfig:
     negative_prompt: str | None = None  # 请求级负面提示词覆盖
     watermark: bool | None = None  # 请求级水印覆盖
     quality: str | None = None  # 请求级质量覆盖
+    output_format: str | None = None  # 请求级输出格式覆盖
     image_count: int = 1  # 本次上游请求期望返回的图片数量
     effective_image_count: int = 1  # 当前候选实际单次请求数量
     model_alias: str | None = None  # 当前候选展示别名
