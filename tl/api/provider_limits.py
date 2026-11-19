@@ -22,8 +22,8 @@ MAX_REFERENCE_IMAGES_MINIMAX: Final[int] = 1
 MAX_REFERENCE_IMAGES_MINIMAX_H3: Final[int] = 16
 # qwen-image-3.0 系列编辑接口官方限定 1-3 张输入图
 MAX_REFERENCE_IMAGES_DASHSCOPE_QWEN3: Final[int] = 3
-# sensenova-u1.5-lite 编辑接口官方未给出上限，保守截取
-MAX_REFERENCE_IMAGES_SENSENOVA_U15: Final[int] = 4
+# 官方 images/edits 至多 5 张参考图
+MAX_REFERENCE_IMAGES_SENSENOVA_U15: Final[int] = 5
 # SenseAudio 的 reference 字段为单个 URL / Data URI。
 MAX_REFERENCE_IMAGES_SENSEAUDIO: Final[int] = 1
 # ModelScope 编辑接口官方仅证实单图输入，保守默认 1 张（用户可在配置调高）

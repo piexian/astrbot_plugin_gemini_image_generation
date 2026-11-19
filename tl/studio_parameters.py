@@ -60,7 +60,6 @@ GENERATION_SETTING_KEYS = frozenset(
         "optimize_prompt_mode",
         "sequential_image_generation",
         "sequential_max_images",
-        "default_size",
         "prompt_extend",
         "thinking_mode",
         "enable_sequential",

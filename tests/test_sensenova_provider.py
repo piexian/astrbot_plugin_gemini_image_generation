@@ -56,15 +56,3 @@ async def test_u15_size_4k_preserves_aspect_ratio() -> None:
         assert width % 32 == 0 and height % 32 == 0
         assert 512 <= width <= 4096 and 512 <= height <= 4096
         assert abs(width / height - expected) < 0.05
-
-
-@pytest.mark.asyncio
-async def test_u1_fast_with_reference_raises() -> None:
-    provider = SenseNovaProvider()
-    config = _make_config(
-        provider_settings={"model": "sensenova-u1-fast"},
-        reference_images=["https://example.com/a.png"],
-    )
-    with pytest.raises(Exception) as exc_info:
-        await provider.build_request(client=_FakeClient(), config=config)
-    assert getattr(exc_info.value, "retryable", True) is False

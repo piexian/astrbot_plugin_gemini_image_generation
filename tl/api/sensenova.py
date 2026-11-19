@@ -1,9 +1,8 @@
 """SenseNova（商汤日日新）图像生成供应商实现。
 
-支持两个模型分支：
-- ``sensenova-u1-fast``：文生图专用，11 种官方固定尺寸，n 上限 4
-- ``sensenova-u1.5-lite``：生成与编辑一体，size 为 32 倍数自由尺寸，n 仅 1，
-  编辑走独立的 ``/v1/images/edits`` 接口
+支持两个模型：
+- ``sensenova-u1.5-lite``：生成与编辑一体，编辑走独立的 ``/v1/images/edits`` 接口
+- ``sensenova-u1.5-fast``：加速版，能力与 lite 同构
 """
 
 from __future__ import annotations
@@ -29,43 +28,10 @@ _DEFAULT_MODEL: str = "sensenova-u1.5-lite"
 # u1.5-lite 分支前缀
 _U15_MODEL_PREFIX: str = "sensenova-u1.5"
 
-# u1-fast 官方固定 prompt 上限（token）
-_PROMPT_CHAR_SOFT_LIMIT: int = 4096
 
 # u1.5-lite prompt 硬上限
 _U15_PROMPT_MAX_CHARS: int = 4096
 
-# u1-fast 的 11 种官方支持尺寸（width x height）
-_ALLOWED_SIZES: tuple[str, ...] = (
-    "1664x2496",  # 2:3
-    "2496x1664",  # 3:2
-    "1760x2368",  # 3:4
-    "2368x1760",  # 4:3
-    "1824x2272",  # 4:5
-    "2272x1824",  # 5:4
-    "2048x2048",  # 1:1
-    "2752x1536",  # 16:9
-    "1536x2752",  # 9:16
-    "3072x1376",  # 21:9
-    "1344x3136",  # 9:21
-)
-
-# aspect_ratio → size 映射（覆盖插件配置中所有 aspect_ratio 选项）
-_ASPECT_TO_SIZE: dict[str, str] = {
-    "1:1": "2048x2048",
-    "2:3": "1664x2496",
-    "3:2": "2496x1664",
-    "3:4": "1760x2368",
-    "4:3": "2368x1760",
-    "4:5": "1824x2272",
-    "5:4": "2272x1824",
-    "16:9": "2752x1536",
-    "9:16": "1536x2752",
-    "21:9": "3072x1376",
-    "9:21": "1344x3136",
-}
-
-_DEFAULT_SIZE: str = "2752x1536"
 
 # u1.5-lite 尺寸约束：32 的倍数，[512, 4096]，比例上限 3:1
 _U15_DIM_MIN: int = 512
@@ -101,48 +67,6 @@ def _normalize_aspect_ratio(value: Any) -> str | None:
     if w <= 0 or h <= 0:
         return None
     return f"{w}:{h}"
-
-
-def _resolve_size(
-    *,
-    explicit_size: Any,
-    aspect_ratio: str | None,
-    default_size: str | None,
-) -> str:
-    """u1-fast：决定最终 size。
-
-    优先级：
-    1. ``explicit_size`` 合法且在白名单 → 直接使用
-    2. ``aspect_ratio`` 能映射到白名单 → 使用映射结果
-    3. ``default_size`` 合法且在白名单 → 使用
-    4. 兜底使用 ``_DEFAULT_SIZE``
-    """
-    if explicit_size:
-        text = str(explicit_size).strip().lower().replace("×", "x")
-        if text in _ALLOWED_SIZES:
-            return text
-        logger.warning(
-            "[sensenova] 显式 size=%s 不在官方支持列表，将根据 aspect_ratio 重选",
-            explicit_size,
-        )
-
-    ratio = _normalize_aspect_ratio(aspect_ratio)
-    if ratio and ratio in _ASPECT_TO_SIZE:
-        return _ASPECT_TO_SIZE[ratio]
-    if ratio:
-        logger.info(
-            "[sensenova] aspect_ratio=%s 不在官方支持列表，将回退到默认尺寸", ratio
-        )
-
-    if default_size:
-        text = str(default_size).strip().lower().replace("×", "x")
-        if text in _ALLOWED_SIZES:
-            return text
-        logger.warning(
-            "[sensenova] sensenova_settings.default_size=%s 非法，已忽略", default_size
-        )
-
-    return _DEFAULT_SIZE
 
 
 def _round_to_step(value: float, step: int, lo: int, hi: int) -> int:
@@ -185,14 +109,6 @@ def _resolve_u15_size(
     elif height == _U15_DIM_MAX and width < _U15_DIM_MAX:
         width = _round_to_step(height * w_h, _U15_DIM_STEP, _U15_DIM_MIN, _U15_DIM_MAX)
     return f"{width}x{height}"
-
-
-def _coerce_n(value: Any, default: int = 1) -> int:
-    try:
-        n = int(value)
-    except (TypeError, ValueError):
-        return default
-    return max(1, min(n, 4))
 
 
 def _ensure_v1_endpoint(api_base: str, resource: str = "images/generations") -> str:
@@ -254,70 +170,13 @@ class SenseNovaProvider:
                 model=model,
                 prompt=prompt,
             )
-        return self._build_u1_fast_request(
-            settings=settings, config=config, model=model, prompt=prompt
+        raise APIError(
+            "SenseNova 当前官方仅支持 sensenova-u1.5-lite / "
+            "sensenova-u1.5-fast，请修改模型配置",
+            None,
+            "unsupported_model",
+            retryable=False,
         )
-
-    # ------------------------------------------------------------------
-    # sensenova-u1-fast（文生图专用）
-    # ------------------------------------------------------------------
-
-    def _build_u1_fast_request(
-        self,
-        *,
-        settings: dict[str, Any],
-        config: ApiRequestConfig,
-        model: str,
-        prompt: str,
-    ) -> ProviderRequest:
-        api_base = config.api_base or settings.get("api_base") or _DEFAULT_API_BASE
-        url = _ensure_v1_endpoint(str(api_base))
-
-        # 防护：u1-fast 不支持图像输入，直接报错避免无效消耗
-        if config.reference_images:
-            raise APIError(
-                "sensenova-u1-fast 不支持参考图，请改用 sensenova-u1.5-lite 或去掉参考图",
-                None,
-                "invalid_reference_image",
-                retryable=False,
-            )
-
-        if len(prompt) > _PROMPT_CHAR_SOFT_LIMIT:
-            logger.warning(
-                "[sensenova] prompt 长度 %d 超过软上限 %d，可能被服务端截断",
-                len(prompt),
-                _PROMPT_CHAR_SOFT_LIMIT,
-            )
-
-        size = _resolve_size(
-            explicit_size=settings.get("size"),
-            aspect_ratio=config.aspect_ratio,
-            default_size=settings.get("default_size"),
-        )
-
-        n = _coerce_n(settings.get("n", 1))
-
-        payload: dict[str, Any] = {
-            "model": model,
-            "prompt": prompt,
-            "size": size,
-            "n": n,
-        }
-
-        headers = {
-            "Authorization": f"Bearer {config.api_key}",
-            "Content-Type": "application/json",
-        }
-
-        logger.debug(
-            "[sensenova] build_request: url=%s model=%s size=%s n=%s prompt_len=%s",
-            url,
-            model,
-            size,
-            n,
-            len(prompt),
-        )
-        return ProviderRequest(url=url, headers=headers, payload=payload)
 
     # ------------------------------------------------------------------
     # sensenova-u1.5-lite（生成 + 编辑）
@@ -333,6 +192,13 @@ class SenseNovaProvider:
         ensure_prompt_length(
             prompt, max_chars=_U15_PROMPT_MAX_CHARS, provider="SenseNova"
         )
+        output_format = str(settings.get("output_format") or "png").strip().lower()
+        if output_format not in {"png", "jpeg", "webp"}:
+            logger.warning(
+                "[sensenova] output_format=%s 无效，已回退为 png",
+                settings.get("output_format"),
+            )
+            output_format = "png"
         return {
             "model": model,
             "prompt": prompt,
@@ -340,6 +206,7 @@ class SenseNovaProvider:
             "watermark": bool(settings.get("watermark", False)),
             "response_format": str(settings.get("response_format") or "b64_json"),
             "prompt_extend": bool(settings.get("prompt_extend", False)),
+            "output_format": output_format,
         }
 
     def _build_u15_generation_request(
@@ -458,6 +325,41 @@ class SenseNovaProvider:
                 "invalid_response",
                 retryable=True,
             )
+        response_output_format = (
+            str(response_data.get("output_format") or "").strip().lower()
+        )
+        request_output_format = ""
+        if request_config is not None:
+            request_settings = getattr(request_config, "provider_settings", None) or {}
+            request_output_format = (
+                str(
+                    getattr(request_config, "output_format", None)
+                    or (
+                        request_settings.get("output_format")
+                        if isinstance(request_settings, dict)
+                        else ""
+                    )
+                    or ""
+                )
+                .strip()
+                .lower()
+            )
+        save_extension = (
+            response_output_format
+            if response_output_format in {"png", "jpeg", "jpg", "webp"}
+            else (
+                request_output_format
+                if request_output_format in {"png", "jpeg", "jpg", "webp"}
+                else "png"
+            )
+        )
+        usage = response_data.get("usage")
+        images_count = usage.get("images_count") if isinstance(usage, dict) else None
+        logger.debug(
+            "[sensenova] 响应元数据: size=%s images_count=%s",
+            response_data.get("size"),
+            images_count,
+        )
 
         for item in data:
             if not isinstance(item, dict):
@@ -480,7 +382,7 @@ class SenseNovaProvider:
                 continue
             b64 = item.get("b64_json")
             if isinstance(b64, str) and b64:
-                saved = await save_base64_image(b64, "png")
+                saved = await save_base64_image(b64, save_extension)
                 if saved:
                     image_urls.append(saved)
                     image_paths.append(saved)
