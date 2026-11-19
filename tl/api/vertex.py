@@ -437,6 +437,9 @@ class VertexProvider(GoogleProvider):
         is_retry: bool = False,
         request_config: ApiRequestConfig | None = None,
     ) -> tuple[list[str], list[str], str | None, str | None]:  # noqa: ANN401
+        if http_status is not None and http_status != 200:
+            error_response = response_data if isinstance(response_data, dict) else {}
+            raise self._error_from_http(error_response, http_status)
         if not isinstance(response_data, dict):
             raise APIError(
                 "Vertex API 返回了非预期格式的响应。",
@@ -444,8 +447,6 @@ class VertexProvider(GoogleProvider):
                 "invalid_response",
                 retryable=False,
             )
-        if http_status is not None and http_status != 200:
-            raise self._error_from_http(response_data, http_status)
 
         blocked = self._detect_safety_block(response_data)
         if blocked and self._prompt_blocked(response_data):

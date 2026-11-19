@@ -214,12 +214,22 @@ async def test_google_non_dict_response_raises_non_retryable_invalid_response():
 
 
 @pytest.mark.asyncio
-async def test_google_candidates_not_list_treated_as_no_candidates():
-    """candidates 非 list：记录有限结构警告并按无有效候选处理。"""
-    provider = get_api_provider("google")
-    result = await provider.parse_response(
-        client=_GoogleParseClient(),
-        response_data={"candidates": "oops"},
-        session=None,
+async def test_google_non_list_candidates_raises_invalid_response(monkeypatch):
+    """candidates 非 list：抛出不可重试的结构错误并记录畸形警告。"""
+    logged_warnings: list[tuple] = []
+    monkeypatch.setattr(
+        "tl.api.google.logger.warning",
+        lambda *args, **kwargs: logged_warnings.append(args),
     )
-    assert result == ([], [], None, None)
+    provider = get_api_provider("google")
+    with pytest.raises(APIError) as excinfo:
+        await provider.parse_response(
+            client=_GoogleParseClient(),
+            response_data={"candidates": "oops"},
+            session=None,
+        )
+    assert excinfo.value.error_type == "invalid_response"
+    assert excinfo.value.retryable is False
+    assert any(
+        "candidates 不是列表" in str(args[0]) for args in logged_warnings if args
+    )

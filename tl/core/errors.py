@@ -25,6 +25,10 @@ _SENSITIVE_KEY_PARTS = (
     "credential",
 )
 MAX_METADATA_BYTES = 64 * 1024
+# artifact URL/query 解析在进入持久化前受资源边界约束。
+MAX_ARTIFACT_URL_CHARS = 4_096
+MAX_ARTIFACT_QUERY_CHARS = 2_048
+MAX_ARTIFACT_QUERY_FIELDS = 128
 MAX_EVENT_DATA_BYTES = 32 * 1024
 MAX_ARTIFACTS = 256
 _URL_RE = re.compile(r"https?://[^\s<>'\"]+", re.IGNORECASE)
@@ -40,6 +44,17 @@ AUTH_QUERY_KEYS = frozenset(
         "sig",
         "signature",
         "expires",
+        "api_key",
+        "apikey",
+        "x-api-key",
+        "x-goog-api-key",
+        "googleaccessid",
+        "x-goog-algorithm",
+        "x-goog-credential",
+        "x-goog-date",
+        "x-goog-expires",
+        "x-goog-signedheaders",
+        "x-goog-signature",
         "x-amz-algorithm",
         "x-amz-credential",
         "x-amz-date",
@@ -79,12 +94,31 @@ def redact_artifact_reference(value: Any) -> str:
     """artifact 引用脱敏：本地路径转摘要，HTTP(S) URL 只移除认证 query、fragment 与 userinfo。"""
 
     reference = str(value or "")
+    if (
+        reference.lower().startswith(("http://", "https://"))
+        and len(reference) > MAX_ARTIFACT_URL_CHARS
+    ):
+        raise ValueError(f"artifact URL 超过 {MAX_ARTIFACT_URL_CHARS} 字符限制")
     parsed = urlsplit(reference)
     if parsed.scheme.lower() in {"http", "https"} and parsed.hostname:
+        if len(parsed.query) > MAX_ARTIFACT_QUERY_CHARS:
+            raise ValueError(
+                f"artifact URL query 超过 {MAX_ARTIFACT_QUERY_CHARS} 字符限制"
+            )
+        try:
+            query_items = parse_qsl(
+                parsed.query,
+                keep_blank_values=True,
+                max_num_fields=MAX_ARTIFACT_QUERY_FIELDS,
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"artifact URL query 字段数超过 {MAX_ARTIFACT_QUERY_FIELDS} 限制"
+            ) from exc
         query = urlencode(
             [
                 (key, item)
-                for key, item in parse_qsl(parsed.query, keep_blank_values=True)
+                for key, item in query_items
                 if key.casefold() not in AUTH_QUERY_KEYS
             ]
         )

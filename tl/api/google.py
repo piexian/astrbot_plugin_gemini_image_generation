@@ -334,7 +334,14 @@ class GoogleProvider:
         thought_signature = None
         fallback_texts = client._collect_fallback_texts(response_data)
 
+        candidates_present = "candidates" in response_data
         candidates = response_data.get("candidates")
+        candidates_type = type(candidates).__name__
+        malformed_candidates = (
+            candidates_present
+            and candidates is not None
+            and not isinstance(candidates, list)
+        )
         if not isinstance(candidates, list):
             if candidates is not None:
                 logger.warning(
@@ -371,6 +378,15 @@ class GoogleProvider:
                 logger.error("响应中没有 candidates，fallback 提取也失败")
                 logger.debug(f"响应结构摘要: {_structure_summary(response_data)}")
                 logger.debug(f"fallback_texts 长度: {[len(t) for t in fallback_texts]}")
+            if malformed_candidates:
+                raise APIError(
+                    "图像生成失败：响应结构异常（candidates 应为列表但实际为 "
+                    f"{candidates_type}） | 结构摘要: "
+                    f"{_structure_summary(response_data)[:200]}",
+                    None,
+                    "invalid_response",
+                    retryable=False,
+                )
             return [], [], None, None
 
         logger.debug(f"找到 {len(candidates)} 个候选结果")
