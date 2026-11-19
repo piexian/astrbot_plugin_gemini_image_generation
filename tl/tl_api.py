@@ -1287,6 +1287,11 @@ class GeminiAPIClient:
                         )
                         and not isinstance(e, aiohttp.ClientConnectorError)
                     ):
+                        logger.warning(
+                            "传输异常按 outcome_unknown 处理: %s: %s",
+                            type(e).__name__,
+                            redact_text(str(e))[:240],
+                        )
                         err = APIError(
                             "生图连接中断，任务结果未知，已停止自动重试。",
                             status_code,

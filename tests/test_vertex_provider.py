@@ -6,6 +6,7 @@ import pytest
 
 from tl.api.registry import get_api_provider
 from tl.api.vertex import VertexProvider
+from tl.api_types import APIError
 from tl.provider_hooks import validate_vertex_settings
 
 
@@ -66,3 +67,65 @@ def test_vertex_entry_with_multiple_keys_is_rejected_at_load() -> None:
     assert config.provider_candidates == []
     assert any("最多填写一个 API Key" in e for e in config.provider_config_errors)
     assert any("配置无效" in e for e in config.provider_config_errors)
+
+
+# ===== Vertex 共享 Google 解析器的 S1 兼容 =====
+
+
+class _VertexParseClient:
+    """vertex 解析所需的最小 client 桩。"""
+
+    def _collect_fallback_texts(self, payload: dict) -> list[str]:  # noqa: ANN001
+        return []
+
+
+@pytest.mark.asyncio
+async def test_vertex_parse_response_extracts_image_via_shared_parser(monkeypatch):
+    """Vertex 正常响应经共享 google 解析器仍成功出图。"""
+
+    async def fake_save(data: str, fmt: str) -> str:
+        return f"/tmp/vertex_parse_ok.{fmt}"
+
+    # registry 隔离测试会重建 tl.api.google 模块对象，补丁必须落在实际被调用的
+    # _parse_gresponse 函数全局上，才能与导入顺序无关地命中旧绑定。
+    monkeypatch.setitem(
+        VertexProvider._parse_gresponse.__globals__, "save_base64_image", fake_save
+    )
+    provider = _make_provider()
+    response = {
+        "candidates": [
+            {
+                "finishReason": "STOP",
+                "content": {
+                    "parts": [
+                        {"inlineData": {"mimeType": "image/png", "data": "aGVsbG8="}}
+                    ]
+                },
+            }
+        ]
+    }
+    image_urls, image_paths, text_content, sig = await provider.parse_response(
+        client=_VertexParseClient(),
+        response_data=response,
+        session=None,
+        http_status=200,
+    )
+    assert image_paths == ["/tmp/vertex_parse_ok.png"]
+    assert image_urls == ["/tmp/vertex_parse_ok.png"]
+    assert text_content is None
+    assert sig is None
+
+
+@pytest.mark.asyncio
+async def test_vertex_non_dict_response_is_non_retryable_invalid_response():
+    """非对象响应：invalid_response 且不可重试。"""
+    provider = _make_provider()
+    with pytest.raises(APIError) as excinfo:
+        await provider.parse_response(
+            client=_VertexParseClient(),
+            response_data=[1],
+            session=None,
+            http_status=200,
+        )
+    assert excinfo.value.error_type == "invalid_response"
+    assert excinfo.value.retryable is False

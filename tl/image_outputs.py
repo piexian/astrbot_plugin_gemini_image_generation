@@ -11,22 +11,9 @@ from urllib.parse import parse_qsl, urlsplit
 
 from astrbot.api import logger
 
+from .core.errors import AUTH_QUERY_KEYS
 from .tl_utils import save_base64_image
 
-_AUTH_QUERY_KEYS = {
-    "key",
-    "token",
-    "sig",
-    "signature",
-    "expires",
-    "x-amz-algorithm",
-    "x-amz-credential",
-    "x-amz-date",
-    "x-amz-expires",
-    "x-amz-security-token",
-    "x-amz-signature",
-    "x-amz-signedheaders",
-}
 _DATA_URI_RE = re.compile(
     r"^data:(image/[\w.+-]+);base64,(.+)$", re.IGNORECASE | re.DOTALL
 )
@@ -39,7 +26,7 @@ def _auth_like_url(value: str) -> bool:
     keys = {
         key.casefold() for key, _ in parse_qsl(parsed.query, keep_blank_values=True)
     }
-    return bool(keys & _AUTH_QUERY_KEYS)
+    return bool(keys & AUTH_QUERY_KEYS)
 
 
 def _decode_inline(value: str) -> tuple[str, str] | None:

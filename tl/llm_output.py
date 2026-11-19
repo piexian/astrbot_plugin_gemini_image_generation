@@ -11,22 +11,9 @@ from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from astrbot.api import logger
 
+from .core.errors import AUTH_QUERY_KEYS
 from .file_uri import file_uri_to_path
 
-_AUTH_QUERY_KEYS = {
-    "key",
-    "token",
-    "sig",
-    "signature",
-    "expires",
-    "x-amz-algorithm",
-    "x-amz-credential",
-    "x-amz-date",
-    "x-amz-expires",
-    "x-amz-security-token",
-    "x-amz-signature",
-    "x-amz-signedheaders",
-}
 _DATA_SCHEME_RE = re.compile(r"data:\S+", re.IGNORECASE)
 _BARE_BASE64_RE = re.compile(
     r"(?<![A-Za-z0-9+/=_-])([A-Za-z0-9+/=_-]{64,})(?![A-Za-z0-9+/=_-])"
@@ -52,7 +39,7 @@ def _public_url(value: str) -> str | None:
     query_keys = {
         key.casefold() for key, _ in parse_qsl(parsed.query, keep_blank_values=True)
     }
-    if query_keys & _AUTH_QUERY_KEYS:
+    if query_keys & AUTH_QUERY_KEYS:
         return None
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, parsed.query, ""))
 

@@ -13,7 +13,7 @@ import os
 import re
 from collections.abc import Mapping
 from typing import Any, Literal
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 _SENSITIVE_KEY_PARTS = (
     "api_key",
@@ -25,6 +25,10 @@ _SENSITIVE_KEY_PARTS = (
     "credential",
 )
 MAX_METADATA_BYTES = 64 * 1024
+# artifact URL/query 解析在进入持久化前受资源边界约束。
+MAX_ARTIFACT_URL_CHARS = 4_096
+MAX_ARTIFACT_QUERY_CHARS = 2_048
+MAX_ARTIFACT_QUERY_FIELDS = 128
 MAX_EVENT_DATA_BYTES = 32 * 1024
 MAX_ARTIFACTS = 256
 _URL_RE = re.compile(r"https?://[^\s<>'\"]+", re.IGNORECASE)
@@ -32,11 +36,37 @@ _CREDENTIAL_RE = re.compile(
     r"(?i)([\"']?(?:authorization|api[_-]?key|token|secret|password)[\"']?\s*[:=]\s*[\"']?(?:bearer\s+)?)([^\"'\s,;}]+)"
 )
 
+# 认证类 query 参数名；集中维护，供 artifact 持久化与 LLM 输出边界共用。
+AUTH_QUERY_KEYS = frozenset(
+    {
+        "key",
+        "token",
+        "sig",
+        "signature",
+        "expires",
+        "api_key",
+        "apikey",
+        "x-api-key",
+        "x-goog-api-key",
+        "googleaccessid",
+        "x-goog-algorithm",
+        "x-goog-credential",
+        "x-goog-date",
+        "x-goog-expires",
+        "x-goog-signedheaders",
+        "x-goog-signature",
+        "x-amz-algorithm",
+        "x-amz-credential",
+        "x-amz-date",
+        "x-amz-expires",
+        "x-amz-security-token",
+        "x-amz-signature",
+        "x-amz-signedheaders",
+    }
+)
 
-def redact_url(value: str) -> str:
-    parsed = urlsplit(value)
-    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
-        return value
+
+def _clean_netloc(parsed: Any) -> str:
     netloc = parsed.hostname
     try:
         port = parsed.port
@@ -44,7 +74,14 @@ def redact_url(value: str) -> str:
         port = None
     if port:
         netloc += f":{port}"
-    return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
+    return netloc
+
+
+def redact_url(value: str) -> str:
+    parsed = urlsplit(value)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        return value
+    return urlunsplit((parsed.scheme, _clean_netloc(parsed), parsed.path, "", ""))
 
 
 def redact_text(value: Any) -> str:
@@ -54,7 +91,41 @@ def redact_text(value: Any) -> str:
 
 
 def redact_artifact_reference(value: Any) -> str:
-    reference = redact_text(value)
+    """artifact 引用脱敏：本地路径转摘要，HTTP(S) URL 只移除认证 query、fragment 与 userinfo。"""
+
+    reference = str(value or "")
+    if (
+        reference.lower().startswith(("http://", "https://"))
+        and len(reference) > MAX_ARTIFACT_URL_CHARS
+    ):
+        raise ValueError(f"artifact URL 超过 {MAX_ARTIFACT_URL_CHARS} 字符限制")
+    parsed = urlsplit(reference)
+    if parsed.scheme.lower() in {"http", "https"} and parsed.hostname:
+        if len(parsed.query) > MAX_ARTIFACT_QUERY_CHARS:
+            raise ValueError(
+                f"artifact URL query 超过 {MAX_ARTIFACT_QUERY_CHARS} 字符限制"
+            )
+        try:
+            query_items = parse_qsl(
+                parsed.query,
+                keep_blank_values=True,
+                max_num_fields=MAX_ARTIFACT_QUERY_FIELDS,
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"artifact URL query 字段数超过 {MAX_ARTIFACT_QUERY_FIELDS} 限制"
+            ) from exc
+        query = urlencode(
+            [
+                (key, item)
+                for key, item in query_items
+                if key.casefold() not in AUTH_QUERY_KEYS
+            ]
+        )
+        return urlunsplit(
+            (parsed.scheme, _clean_netloc(parsed), parsed.path, query, "")
+        )
+    reference = redact_text(reference)
     parsed = urlsplit(reference)
     if parsed.scheme.lower() == "file" or os.path.isabs(reference):
         digest = hashlib.sha256(reference.encode("utf-8", "replace")).hexdigest()

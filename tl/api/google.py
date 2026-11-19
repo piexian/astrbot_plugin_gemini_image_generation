@@ -19,6 +19,32 @@ from .provider_limits import MAX_REFERENCE_IMAGES_GOOGLE
 from .reference_intake import announce_reference_intake
 
 
+def _structure_summary(value: Any, depth: int = 0) -> str:
+    """结构摘要：仅含类型、键名与计数，字符串只记长度，Base64 不进日志。"""
+    if isinstance(value, str):
+        return f"str(len={len(value)})"
+    if value is None or isinstance(value, (bool, int, float)):
+        return repr(value)
+    if isinstance(value, dict):
+        if depth >= 3:
+            return f"dict(keys={list(value.keys())[:8]})"
+        head = ",".join(
+            f"{key}:{_structure_summary(item, depth + 1)}"
+            for key, item in list(value.items())[:8]
+        )
+        tail = ",…" if len(value) > 8 else ""
+        return "{" + head + tail + "}"
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return "[]"
+        if depth >= 3:
+            return f"list(len={len(value)})"
+        head = ",".join(_structure_summary(item, depth + 1) for item in value[:3])
+        tail = ",…" if len(value) > 3 else ""
+        return "[" + head + tail + "]"
+    return type(value).__name__
+
+
 class GoogleProvider:
     name = "google"
 
@@ -290,15 +316,44 @@ class GoogleProvider:
         parse_start = asyncio.get_running_loop().time()
         logger.debug("开始解析API响应数据...")
 
+        if not isinstance(response_data, dict):
+            logger.warning(
+                f"Google 响应不是对象而是 {type(response_data).__name__}，"
+                f"结构摘要: {_structure_summary(response_data)[:400]}"
+            )
+            raise APIError(
+                f"图像生成失败：响应结构异常（响应不是对象而是 {type(response_data).__name__}）",
+                None,
+                "invalid_response",
+                retryable=False,
+            )
+
         image_urls: list[str] = []
         image_paths: list[str] = []
         text_chunks: list[str] = []
         thought_signature = None
         fallback_texts = client._collect_fallback_texts(response_data)
 
-        if "candidates" not in response_data or not response_data["candidates"]:
+        candidates_present = "candidates" in response_data
+        candidates = response_data.get("candidates")
+        candidates_type = type(candidates).__name__
+        malformed_candidates = (
+            candidates_present
+            and candidates is not None
+            and not isinstance(candidates, list)
+        )
+        if not isinstance(candidates, list):
+            if candidates is not None:
+                logger.warning(
+                    f"Google 响应 candidates 不是列表而是 "
+                    f"{type(candidates).__name__}，按无有效候选处理，"
+                    f"结构摘要: {_structure_summary(response_data)[:400]}"
+                )
+            candidates = []
+
+        if not candidates:
             logger.warning(
-                "Google 响应缺少 candidates 字段，尝试从 fallback 文本提取图像"
+                "Google 响应没有可用 candidates，尝试从 fallback 文本提取图像"
             )
             appended = False
             if fallback_texts:
@@ -321,24 +376,63 @@ class GoogleProvider:
                 logger.warning(f"请求被阻止: {feedback}")
             else:
                 logger.error("响应中没有 candidates，fallback 提取也失败")
-                logger.debug(f"完整响应: {str(response_data)[:1000]}")
-                logger.debug(f"fallback_texts: {fallback_texts}")
+                logger.debug(f"响应结构摘要: {_structure_summary(response_data)}")
+                logger.debug(f"fallback_texts 长度: {[len(t) for t in fallback_texts]}")
+            if malformed_candidates:
+                raise APIError(
+                    "图像生成失败：响应结构异常（candidates 应为列表但实际为 "
+                    f"{candidates_type}） | 结构摘要: "
+                    f"{_structure_summary(response_data)[:200]}",
+                    None,
+                    "invalid_response",
+                    retryable=False,
+                )
             return [], [], None, None
 
-        candidates = response_data["candidates"]
         logger.debug(f"找到 {len(candidates)} 个候选结果")
 
         for idx, candidate in enumerate(candidates):
+            if not isinstance(candidate, dict):
+                logger.warning(
+                    f"候选 {idx} 不是对象而是 {type(candidate).__name__}，"
+                    f"跳过并继续处理后续候选"
+                )
+                continue
+
             finish_reason = candidate.get("finishReason")
             if finish_reason in ["SAFETY", "RECITATION"]:
                 logger.warning(f"候选 {idx} 生成被阻止: {finish_reason}")
                 continue
 
-            content = candidate.get("content", {})
-            parts = content.get("parts") or []
+            if "content" in candidate:
+                content = candidate["content"]
+                if not isinstance(content, dict):
+                    logger.warning(
+                        f"候选 {idx} 的content不是对象而是 "
+                        f"{type(content).__name__}，按空对象处理"
+                    )
+                    content = {}
+            else:
+                content = {}
+
+            if "parts" in content:
+                parts = content["parts"]
+                if not isinstance(parts, list):
+                    logger.warning(
+                        f"候选 {idx} 的content.parts不是列表而是 "
+                        f"{type(parts).__name__}，按空列表处理"
+                    )
+                    parts = []
+            else:
+                parts = []
             logger.debug(f"候选 {idx} 包含 {len(parts)} 个部分")
 
             for i, part in enumerate(parts):
+                if not isinstance(part, dict):
+                    logger.warning(
+                        f"候选 {idx} 的第 {i} 个part不是对象而是 {type(part).__name__}，跳过"
+                    )
+                    continue
                 try:
                     logger.debug(f"检查候选 {idx} 的第 {i} 个part: {list(part.keys())}")
 
@@ -449,7 +543,7 @@ class GoogleProvider:
             else None
         )
         if text_content:
-            logger.debug(f"找到文本内容: {text_content[:100]}...")
+            logger.debug(f"找到文本内容: 长度 {len(text_content)}")
 
         if not (image_paths or image_urls) and fallback_texts:
             appended = await client._append_images_from_texts(
@@ -472,16 +566,19 @@ class GoogleProvider:
 
         if text_content:
             logger.warning("API只返回了文本响应，未生成图像，将触发重试")
-            logger.debug(f"Google响应内容: {str(response_data)[:1000]}")
+            logger.debug(f"响应结构摘要: {_structure_summary(response_data)}")
             raise APIError(
-                f"图像生成失败：API只返回了文本响应，正在重试... | 响应预览: {str(response_data)[:300]}",
+                f"图像生成失败：API只返回了文本响应，正在重试... | 结构摘要: {_structure_summary(response_data)[:200]}",
                 500,
                 "no_image_retry",
             )
 
-        logger.warning(f"未在响应中找到图像数据，响应内容: {str(response_data)[:500]}")
+        logger.warning(
+            f"未在响应中找到图像数据，结构摘要: {_structure_summary(response_data)}"
+        )
         raise APIError(
-            f"图像生成失败：响应格式异常，未找到有效的图像数据 | 响应: {str(response_data)[:300]}",
+            f"图像生成失败：响应格式异常，未找到有效的图像数据 | 结构摘要: {_structure_summary(response_data)[:200]}",
             None,
             "invalid_response",
+            retryable=False,
         )

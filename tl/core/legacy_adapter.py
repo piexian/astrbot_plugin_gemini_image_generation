@@ -8,13 +8,15 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlsplit
 
 from astrbot.api import logger
 
 from ..api_types import APIError, ApiRequestConfig
 from ..generation_scheduler import emit_generation_count
-from .errors import LegacyProviderError, redact_text
+from .errors import AUTH_QUERY_KEYS, LegacyProviderError, redact_text, redact_url
 from .remote_fetch import _remaining
 from .requests import GenerationRequest, ProviderAttempt
 from .results import GenerationResult
@@ -27,6 +29,17 @@ _LEGACY_MAX_RETRIES = 3
 # 否则 Router 的外层超时会连同已累积的产出一起取消。
 _FILL_DEADLINE_MARGIN_SECONDS = 1.0
 _FILL_ERROR_MAX_CHARS = 200
+
+
+def _auth_like_url(value: str) -> bool:
+    """Detect HTTP(S) image URLs carrying authentication query parameters."""
+    parsed = urlsplit(value)
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return False
+    query_keys = {
+        key.casefold() for key, _ in parse_qsl(parsed.query, keep_blank_values=True)
+    }
+    return bool(query_keys & AUTH_QUERY_KEYS)
 
 
 class LegacyClientAdapter:
@@ -322,6 +335,80 @@ class LegacyClientAdapter:
             details={"status_code": status_code, "error_type": error_type},
         )
 
+    async def _download_authenticated_url(
+        self, value: str, *, config: Any
+    ) -> str | None:
+        client = self._resolve_client()
+        session_getter = getattr(client, "_get_session", None)
+        downloader = getattr(client, "_download_image", None)
+        if not callable(session_getter) or not callable(downloader):
+            raise RuntimeError("legacy client 不支持图片下载")
+
+        request_proxy = getattr(config, "proxy", None) or self._proxy
+        session = await session_getter(request_proxy)
+        proxy_getter = getattr(client, "_request_http_proxy", None)
+        download_proxy = (
+            proxy_getter(config) if callable(proxy_getter) else request_proxy
+        )
+        downloaded = await downloader(
+            value,
+            session,
+            use_cache=False,
+            proxy=download_proxy,
+        )
+        local_path = (
+            downloaded[1]
+            if isinstance(downloaded, tuple) and len(downloaded) > 1
+            else None
+        )
+        if not local_path or not Path(local_path).is_file():
+            return None
+        return str(local_path)
+
+    async def _materialize_artifacts(
+        self, urls: Any, paths: Any, *, config: Any
+    ) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
+        materialized_urls: list[Any] = []
+        materialized_paths: list[Any] = []
+        seen_urls: set[Any] = set()
+        seen_paths: set[Any] = set()
+        seen_auth_urls: set[str] = set()
+        for values, source in ((urls or (), "url"), (paths or (), "path")):
+            for value in values:
+                if isinstance(value, str) and _auth_like_url(value):
+                    if value in seen_auth_urls:
+                        continue
+                    seen_auth_urls.add(value)
+                    try:
+                        local_path = await self._download_authenticated_url(
+                            value, config=config
+                        )
+                    except Exception as error:
+                        logger.warning(
+                            "legacy parse_response 认证图片下载失败，已丢弃: url=%s error=%s",
+                            redact_url(value),
+                            redact_text(str(error))[:240],
+                        )
+                        continue
+                    if local_path:
+                        if local_path not in seen_paths:
+                            materialized_paths.append(local_path)
+                            seen_paths.add(local_path)
+                    else:
+                        logger.warning(
+                            "legacy parse_response 认证图片下载未落盘，已丢弃: url=%s",
+                            redact_url(value),
+                        )
+                    continue
+                if source == "url":
+                    if value not in seen_urls:
+                        materialized_urls.append(value)
+                        seen_urls.add(value)
+                elif value not in seen_paths:
+                    materialized_paths.append(value)
+                    seen_paths.add(value)
+        return tuple(materialized_urls), tuple(materialized_paths)
+
     async def parse_response(
         self,
         response: Any,
@@ -336,6 +423,7 @@ class LegacyClientAdapter:
         # 忽略不持久化，避免成功结果被误判失败。
         urls, paths, text, _thought_signature = legacy_tuple
 
+        urls, paths = await self._materialize_artifacts(urls, paths, config=config)
         if (request.metadata or {}).get("require_images") and not any(
             (*(urls or ()), *(paths or ()))
         ):

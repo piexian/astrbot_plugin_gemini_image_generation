@@ -44,8 +44,12 @@ async def test_invalid_output_combinations_fail_before_request(model, settings):
 async def test_transport_timeout_does_not_resubmit(monkeypatch):
     client = GeminiAPIClient(["test"])
     monkeypatch.setattr(client, "_get_session", AsyncMock(return_value=object()))
-    perform = AsyncMock(side_effect=asyncio.TimeoutError())
+    perform = AsyncMock(side_effect=asyncio.TimeoutError("sock read timeout token=abc"))
     monkeypatch.setattr(client, "_perform_request", perform)
+    logged_warnings: list[tuple] = []
+    monkeypatch.setattr(
+        "tl.tl_api.logger.warning", lambda *args, **kwargs: logged_warnings.append(args)
+    )
     with pytest.raises(APIError) as exc:
         await client._make_request(
             "https://gateway.test/v1/responses",
@@ -58,6 +62,13 @@ async def test_transport_timeout_does_not_resubmit(monkeypatch):
         )
     assert exc.value.error_type == "outcome_unknown"
     assert perform.await_count == 1
+    # 转换为 outcome_unknown 前记录根因（异常类型 + 脱敏消息）。
+    assert len(logged_warnings) == 1
+    assert "TimeoutError" in logged_warnings[0]
+    warning_text = str(logged_warnings[0])
+    assert "sock read timeout" in warning_text
+    assert "token=abc" not in warning_text
+    assert "token=***" in warning_text
 
 
 @pytest.mark.asyncio
