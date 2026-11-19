@@ -843,8 +843,8 @@
               "api_base": {
                 "description": "API 端点地址",
                 "type": "string",
-                "hint": "MiniMax API 地址",
-                "default": "https://api.minimaxi.com"
+                "hint": "官方现行标注域名为 https://api.minimax.cn；旧域名 https://api.minimaxi.com 仍可填写作回退；国际站 https://api.minimax.io 的规格较国内少 image-01-live/style/aigc_watermark。",
+                "default": "https://api.minimax.cn"
               },
               "proxy": {
                 "description": "代理地址",
@@ -881,8 +881,8 @@
               "max_reference_images": {
                 "description": "最大参考图片数量",
                 "type": "int",
-                "hint": "插件按最大 9 张截取；超过按顺序截取。",
-                "default": 9
+                "hint": "MiniMax 官方图生图每次仅支持 1 张主体参考图，超出按顺序截取。",
+                "default": 1
               },
               "response_format": {
                 "description": "响应格式",
@@ -931,8 +931,11 @@
               "subject_reference_type": {
                 "description": "参考主体类型",
                 "type": "string",
-                "hint": "MiniMax subject_reference.type，默认 character 用于人物主体一致性",
-                "default": "character"
+                "hint": "MiniMax subject_reference.type，官方当前仅支持 character，其他值会自动回退并告警。",
+                "default": "character",
+                "options": [
+                  "character"
+                ]
               },
               "style_type": {
                 "description": "画风",

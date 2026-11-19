@@ -43,7 +43,7 @@ async def test_prompt_over_1500_raises_non_retryable() -> None:
 
 
 @pytest.mark.asyncio
-async def test_subject_reference_truncated_to_nine() -> None:
+async def test_subject_reference_truncated_to_one() -> None:
     provider = MiniMaxProvider()
     config = _make_config(
         reference_images=[f"https://example.com/{i}.png" for i in range(11)]
@@ -51,7 +51,7 @@ async def test_subject_reference_truncated_to_nine() -> None:
     references = await provider._build_subject_reference(
         client=_FakeClient(), config=config, settings={}
     )
-    assert len(references) == 9
+    assert len(references) == 1
     assert references[0]["type"] == "character"
 
 

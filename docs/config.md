@@ -388,7 +388,7 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 | `api_keys` | `[]` | MiniMax API Key 列表，支持多 Key 轮换 |
 | `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
 | `model` | `image-01` | `image-01`（全能力，支持 21:9 与显式宽高）/ `image-01-live`（快速，仅 aspect_ratio，不支持 21:9） |
-| `api_base` | `https://api.minimaxi.com` | API 端点地址，插件会统一调用 `/v1/image_generation` |
+| `api_base` | `https://api.minimax.cn` | 官方现行标注域名；旧域名 `https://api.minimaxi.com` 仍可填写作回退；国际站 `https://api.minimax.io` 规格较国内少 `image-01-live` / `style` / `aigc_watermark`；插件统一调用 `/v1/image_generation` |
 | `response_format` | `base64` | 响应格式：`base64` / `url`。官方 URL 有效期为 24 小时 |
 | `n` | `1` | 单次请求生成图片数量，官方范围 `1-9` |
 | `style_type` | 空 | 画风（**image-01-live 专属**）：`漫画` / `元气` / `中世纪` / `水彩`；留空不传，其他模型配置了自动忽略 |
@@ -396,8 +396,8 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 | `prompt_optimizer` | `false` | 是否开启 MiniMax 提示词自动优化 |
 | `aigc_watermark` | `false` | 是否添加 AIGC 水印 |
 | `reference_image_mode` | `auto` | 参考图传递方式：`auto` / `base64` / `url` |
-| `subject_reference_type` | `character` | `subject_reference.type`，默认用于人物主体一致性 |
-| `max_reference_images` | `9` | 参考图上限（官方未公布数量上限，按 9 张截取） |
+| `subject_reference_type` | `character` | `subject_reference.type`，官方当前仅支持 `character`；其他值自动回退并告警 |
+| `max_reference_images` | `1` | MiniMax 官方图生图每次仅支持 1 张主体参考图，超出按顺序截取 |
 | `width` / `height` | `0` | 未传 `aspect_ratio` 时可同时设置，范围 `512-2048` 且为 `8` 的倍数；`0` 表示不传 |
 | `seed` | `0` | 固定随机种子，`0` 表示不传 |
 | `proxy` | - | 独立代理地址 |
@@ -427,9 +427,10 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 
 官方文档：
 
-- <https://platform.minimaxi.com/docs/guides/image-generation>
 - <https://platform.minimaxi.com/docs/api-reference/image-generation-t2i>
 - <https://platform.minimaxi.com/docs/api-reference/image-generation-i2i>
+- <https://platform.minimaxi.com/docs/api-reference/errorcode>
+- <https://platform.minimaxi.com/docs/faq/models>
 
 ## stepfun_settings（StepFun 图片生成 API 专用配置）
 
