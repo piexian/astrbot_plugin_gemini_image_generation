@@ -6,6 +6,7 @@ import base64
 import io
 import json
 
+import aiohttp
 import pytest
 from PIL import Image
 
@@ -66,6 +67,8 @@ class _FakeSession:
     def get(self, url: str, **kwargs) -> _FakePollResponse:  # noqa: ANN003
         self.calls.append({"url": url, **kwargs})
         item = self._bodies.pop(0) if len(self._bodies) > 1 else self._bodies[0]
+        if isinstance(item, Exception):
+            raise item
         status, body = item if isinstance(item, tuple) else (200, item)
         return _FakePollResponse(body, status)
 
@@ -349,3 +352,58 @@ async def test_sync_response_skips_polling() -> None:
     )
     assert urls == ["https://imgen.x.ai/tmp/sync.jpeg"]
     assert session.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "exc",
+    [aiohttp.ClientConnectionError("reset"), aiohttp.ClientPayloadError("truncated")],
+    ids=["connection", "payload"],
+)
+async def test_poll_transport_error_continues_same_task(exc) -> None:
+    session = _FakeSession([exc, _done_body()])
+    config = _make_config(
+        provider_settings={"model": "grok-imagine-image-2.0", "poll_interval": 0.001}
+    )
+    urls, _paths, _text, _sig = await XAIProvider().parse_response(
+        client=_FakeClient(),
+        response_data={"request_id": "req-1"},
+        session=session,
+        api_base="https://api.x.ai",
+        http_status=200,
+        request_config=config,
+    )
+    assert urls == ["https://imgen.x.ai/tmp/a.jpeg"]
+    assert len(session.calls) == 2
+    assert all(c["url"].endswith("/v1/images/req-1") for c in session.calls)
+
+
+@pytest.mark.asyncio
+async def test_rebuild_accepts_is_retry_and_poll_uses_current_key() -> None:
+    provider = XAIProvider()
+    config = _make_config()
+    # tl_api 重建分支同步后的状态：config.api_key 为轮换后的 Key
+    config.api_key = "key-B"
+    request = await provider.build_request(
+        client=_FakeClient(), config=config, is_retry=True
+    )
+    assert request.headers["Authorization"] == "Bearer key-B"
+    session = _FakeSession([_done_body()])
+    await provider.parse_response(
+        client=_FakeClient(),
+        response_data={"request_id": "req-1"},
+        session=session,
+        api_base="https://api.x.ai",
+        http_status=200,
+        request_config=config,
+    )
+    assert session.calls[0]["headers"]["Authorization"] == "Bearer key-B"
+
+
+def test_xai_spec_polling_safety_flags() -> None:
+    from tl.provider_metadata import get_provider_spec
+
+    spec = get_provider_spec("xai")
+    assert spec is not None
+    assert spec.rebuild_on_retry is True
+    assert spec.retry_ambiguous_transport_errors is False

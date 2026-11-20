@@ -74,7 +74,7 @@ class XAIProvider:
     name = "xai"
 
     async def build_request(
-        self, *, client: Any, config: ApiRequestConfig
+        self, *, client: Any, config: ApiRequestConfig, is_retry: bool = False
     ) -> ProviderRequest:  # noqa: ANN401
         settings: dict[str, Any] = (
             getattr(config, "provider_settings", None)
@@ -637,6 +637,15 @@ class XAIProvider:
                 if loop.time() >= deadline:
                     raise _timeout_error() from None
                 logger.warning("[xai] deferred 轮询 GET 超时，继续等待")
+                continue
+            except (aiohttp.ClientConnectionError, aiohttp.ClientPayloadError) as exc:
+                # GET 幂等：传输中断继续查询原任务，不重新提交
+                if loop.time() >= deadline:
+                    raise _timeout_error() from None
+                logger.warning(
+                    "[xai] deferred 轮询传输中断，继续查询原任务: %s",
+                    redact_text(str(exc))[:240],
+                )
                 continue
             if poll_status == 404:
                 raise APIError(

@@ -9,6 +9,7 @@ import pytest
 from tl.core.errors import (
     CoreError,
     InvalidRequestError,
+    LegacyProviderError,
     NoSupportedProviderError,
     ProviderRouteError,
 )
@@ -379,3 +380,74 @@ async def test_naive_deadline_rejected():
 def test_empty_candidates_rejected():
     with pytest.raises(InvalidRequestError):
         ProviderRouter([])
+
+
+class TerminalUpstreamError(Exception):
+    """provider 显式上报的终态错误（携带 error_type 属性）。"""
+
+    error_type = "timeout"
+    retryable = False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_type", ["timeout", "outcome_unknown", "cancelled"])
+async def test_terminal_error_stops_candidate_fallback(error_type):
+    first = ScriptedProvider(
+        "first",
+        fail_times=1,
+        error=LegacyProviderError(
+            "任务结果未知",
+            code="provider_timeout",
+            retryable=False,
+            details={"error_type": error_type},
+        ),
+    )
+    second = ScriptedProvider("second")
+    router = ProviderRouter(
+        [ProviderCandidate(first, "c1"), ProviderCandidate(second, "c2")],
+        backoff=0.0,
+    )
+    with pytest.raises(ProviderRouteError) as exc_info:
+        await router.execute(make_request())
+    assert exc_info.value.code == "terminal_error"
+    assert exc_info.value.retryable is False
+    assert first.send_count == 1
+    assert second.send_count == 0
+
+
+@pytest.mark.asyncio
+async def test_terminal_error_type_attribute_stops_fallback():
+    first = ScriptedProvider(
+        "first", fail_times=1, error=TerminalUpstreamError("轮询超时")
+    )
+    second = ScriptedProvider("second")
+    router = ProviderRouter(
+        [ProviderCandidate(first, "c1"), ProviderCandidate(second, "c2")],
+        backoff=0.0,
+    )
+    with pytest.raises(ProviderRouteError) as exc_info:
+        await router.execute(make_request())
+    assert exc_info.value.code == "terminal_error"
+    assert second.send_count == 0
+
+
+@pytest.mark.asyncio
+async def test_non_terminal_error_still_falls_back():
+    first = ScriptedProvider(
+        "first",
+        fail_times=1,
+        error=LegacyProviderError(
+            "上游错误",
+            code="legacy_provider_failed",
+            retryable=False,
+            details={"error_type": "api_error"},
+        ),
+    )
+    second = ScriptedProvider("second")
+    router = ProviderRouter(
+        [ProviderCandidate(first, "c1"), ProviderCandidate(second, "c2")],
+        backoff=0.0,
+    )
+    result = await router.execute(make_request())
+    assert result.provider == "second"
+    assert first.send_count == 1

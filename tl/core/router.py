@@ -55,6 +55,22 @@ def _error_summary(error: BaseException) -> str:
     return f"{type(error).__name__}: {detail}" if detail else type(error).__name__
 
 
+# 与旧路径 provider_polling 一致的终态错误类型：中止全部候选，防止重复生成计费
+_TERMINAL_ERROR_TYPES = frozenset({"cancelled", "timeout", "outcome_unknown"})
+
+
+def _is_terminal_error(error: BaseException | None) -> bool:
+    """终态错误（取消/超时/结果未知）不允许回退到下一候选。"""
+    if error is None:
+        return False
+    error_type = getattr(error, "error_type", None)
+    if not error_type:
+        details = getattr(error, "details", None)
+        if isinstance(details, dict):
+            error_type = details.get("error_type")
+    return error_type in _TERMINAL_ERROR_TYPES
+
+
 def is_route_retryable(error: BaseException) -> bool:
     """Router 统一错误分类：瞬时错误重试同一候选，其余转下一候选。"""
 
@@ -232,6 +248,19 @@ class ProviderRouter:
             if result is not None:
                 return self._annotate(result, candidate, attempts_total)
             last_error = error
+            if _is_terminal_error(error):
+                logger.warning(
+                    "[v2] Router 终态错误，停止候选回退: candidate=%s error=%s",
+                    candidate.display_id,
+                    _error_summary(error),
+                )
+                raise ProviderRouteError(
+                    redact_text(str(error))[:MAX_OUTCOME_MESSAGE_CHARS]
+                    or "provider 终态错误",
+                    code="terminal_error",
+                    retryable=False,
+                    details={"candidates": [item.to_dict() for item in outcomes]},
+                ) from error
             remaining = _remaining_seconds(deadline)
             if remaining is not None and remaining <= 0:
                 logger.warning(
