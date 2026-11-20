@@ -204,6 +204,7 @@ class GeminiImageGenerationPlugin(Star):
             self.keyword_media.resolve_address,
         )
         self.keyword_trigger.refresh(self.cfg.keyword_trigger)
+        self._keyword_media_task = asyncio.create_task(self._register_keyword_media())
         self._web_api = None
         self.studio_providers = None
         self.studio_templates = None
@@ -408,6 +409,19 @@ class GeminiImageGenerationPlugin(Star):
         if not path.is_relative_to(root.resolve()) or not path.is_file():
             return None
         return {"path": str(path), "label": path.name}
+
+    async def _register_keyword_media(self) -> None:
+        """首载与热重载后摄入关键词绑定素材；失败只告警。"""
+        try:
+            trigger_cfg = self.cfg.keyword_trigger
+            bindings = (
+                trigger_cfg.get("bindings") if isinstance(trigger_cfg, dict) else None
+            )
+            await self.keyword_media.ensure_registered(bindings)
+        except Exception as e:
+            logger.warning(
+                f"[关键词素材] 注册失败（不影响加载）: {redact_text(str(e))[:240]}"
+            )
 
     def _keyword_bindings_listing(self) -> str:
         """列出启用的关键词绑定；/快速 关键词 无参时展示。"""
@@ -796,16 +810,6 @@ class GeminiImageGenerationPlugin(Star):
             logger.info("Gemini 图像生成插件已加载")
         else:
             logger.error("API 客户端未初始化，请检查插件 API 配置")
-        try:
-            trigger_cfg = self.cfg.keyword_trigger
-            bindings = (
-                trigger_cfg.get("bindings") if isinstance(trigger_cfg, dict) else None
-            )
-            await self.keyword_media.ensure_registered(bindings)
-        except Exception as e:
-            logger.warning(
-                f"[关键词素材] 启动注册失败（不影响加载）: {redact_text(str(e))[:240]}"
-            )
 
     async def _ensure_font_for_local_mode(self):
         """确保 local 渲染模式所需的字体已下载"""

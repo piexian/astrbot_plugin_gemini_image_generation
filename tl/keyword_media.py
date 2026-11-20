@@ -25,6 +25,7 @@ from .core.errors import redact_text
 from .core.remote_fetch import RemoteFetchService
 from .keyword_trigger import normalize_bindings
 from .reference_image import REFERENCE_IMAGE_CACHE_DIR, save_reference_image_cache
+from .reference_library import _MAX_LABEL
 
 _SYSTEM_USER_ID = "keyword"
 _SYSTEM_UMO = "plugin:keyword_media"
@@ -98,20 +99,19 @@ class KeywordMediaService:
         return None
 
     async def ensure_registered(self, raw_bindings: Any) -> None:
-        """为绑定里的每份素材补注册；单份失败只告警，不影响注入。"""
-        if self.library is None or self.tracker is None:
+        """摄入绑定素材并补 gen 记录；解绑后的失效状态一并清理。"""
+        if self.library is None:
             return
-        if not getattr(self.tracker, "enabled", True):
-            return
-        sources: list[tuple[str, str]] = []
+        sources: list[tuple[str, str, str]] = []
         for binding in normalize_bindings(raw_bindings):
             sources.extend(("file", rel, rel) for rel in binding.ref_files)
             for address in binding.ref_addresses:
                 kind, target = _address_kind(address)
                 sources.append((kind, address, target))
-        if not sources:
-            return
         async with self._lock:
+            current = {source for _, source, _ in sources}
+            for source in [s for s in self._state if s not in current]:
+                del self._state[source]
             for kind, source, target in sources:
                 try:
                     await self._ensure_one(kind, source, target)
@@ -127,16 +127,10 @@ class KeywordMediaService:
         job_id = media_job_id(source)
         entry = self._state.get(source) or {}
         library_file = str(entry.get("library_file") or "")
-        record = self.tracker.get(job_id)
         if kind == "url" and library_file and self._library_file_exists(library_file):
-            if (
-                record is None
-                or record.get("images") != [library_file]
-                or not record.get("shared")
-            ):
-                await self._register_record(
-                    job_id, kind, source, library_file, Path(library_file).name
-                )
+            await self._register_record(
+                job_id, kind, source, library_file, Path(library_file).name
+            )
             return
         if kind == "file":
             data, label = self._read_upload(target)
@@ -148,19 +142,32 @@ class KeywordMediaService:
         if kind == "url":
             mime = "image/jpeg" if extension == "jpg" else f"image/{extension}"
             save_reference_image_cache(source, data, mime, REFERENCE_IMAGE_CACHE_DIR)
-        lib_entry = await self.library.add_bytes(data, label=label, source="keyword")
-        library_file = str(lib_entry["file"])
-        await self._register_record(job_id, kind, source, library_file, label)
+        expected_file = f"{hashlib.sha256(data).hexdigest()}.{extension}"
+        if library_file != expected_file or not self._library_file_exists(library_file):
+            lib_entry = await self.library.add_bytes(
+                data, label=label[:_MAX_LABEL], source="keyword"
+            )
+            library_file = str(lib_entry["file"])
+        # 先落状态再注册记录，淘汰保护立即覆盖新素材
         self._state[source] = {
             "kind": kind,
             "library_file": library_file,
             "job_id": job_id,
         }
+        await self._register_record(job_id, kind, source, library_file, label)
 
     async def _register_record(
         self, job_id: str, kind: str, source: str, library_file: str, label: str
     ) -> None:
+        if self.tracker is None or not getattr(self.tracker, "enabled", True):
+            return
         record = self.tracker.get(job_id)
+        if (
+            record is not None
+            and record.get("images") == [library_file]
+            and record.get("shared")
+        ):
+            return
         if record is None:
             await self.tracker.begin(
                 source="keyword",

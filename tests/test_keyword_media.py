@@ -26,9 +26,11 @@ class _Library:
     def __init__(self, tmp_path):
         self.dir = tmp_path / "library"
         self.dir.mkdir()
+        self.calls = []
 
     async def add_bytes(self, data, *, label, source="upload", **kwargs):
-        name = f"lib-{hashlib.sha256(data).hexdigest()[:12]}.png"
+        self.calls.append(label)
+        name = f"{hashlib.sha256(data).hexdigest()}.png"
         (self.dir / name).write_bytes(data)
         return {"file": name}
 
@@ -40,6 +42,7 @@ class _Tracker:
     def __init__(self):
         self.records = {}
         self.enabled = True
+        self.on_complete = None
 
     def get(self, job_id):
         return self.records.get(job_id)
@@ -66,6 +69,8 @@ class _Tracker:
         status="succeeded",
         source_urls=None,
     ):
+        if self.on_complete:
+            self.on_complete(job_id, list(image_files))
         record = self.records[job_id]
         record["images"] = list(image_files)
         record["status"] = status
@@ -180,3 +185,69 @@ async def test_missing_upload_reported_without_failure(tmp_path):
     await service.ensure_registered([{"words": ["水彩"], "ref_files": [_REL]}])
     assert service.tracker.records == {}
     assert service.resolve_address("/data/missing.png") is None
+
+
+@pytest.mark.asyncio
+async def test_history_disabled_still_ingests_local_address(tmp_path):
+    service = _service(tmp_path)
+    service.tracker.enabled = False
+    local = tmp_path / "local.png"
+    local.write_bytes(_PNG)
+    await service.ensure_registered(
+        [{"words": ["水彩"], "ref_addresses": [str(local)]}]
+    )
+    assert service.tracker.records == {}
+    resolved = service.resolve_address(str(local))
+    assert resolved is not None
+    assert resolved["path"].startswith(str(service.library.dir))
+
+
+@pytest.mark.asyncio
+async def test_unbound_media_state_and_protection_pruned(tmp_path):
+    service = _service(tmp_path)
+    _write_upload(service)
+    bindings = [{"words": ["水彩"], "ref_files": [_REL]}]
+    await service.ensure_registered(bindings)
+    assert service.protected_names()
+    await service.ensure_registered([])
+    assert service.protected_names() == set()
+    assert service.media_state() == {}
+
+
+@pytest.mark.asyncio
+async def test_unchanged_content_reuses_library_entry(tmp_path):
+    service = _service(tmp_path)
+    _write_upload(service)
+    bindings = [{"words": ["水彩"], "ref_files": [_REL]}]
+    await service.ensure_registered(bindings)
+    await service.ensure_registered(bindings)
+    assert len(service.library.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_long_filename_label_truncated(tmp_path):
+    service = _service(tmp_path)
+    long_rel = (
+        "files/keyword_trigger/bindings/templates/binding/ref_files/"
+        + "a" * 100
+        + ".png"
+    )
+    (service.data_dir / long_rel).write_bytes(_PNG)
+    await service.ensure_registered([{"words": ["水彩"], "ref_files": [long_rel]}])
+    assert service.library.calls
+    assert all(len(label) <= 64 for label in service.library.calls)
+    assert service.tracker.get(media_job_id(long_rel)) is not None
+
+
+@pytest.mark.asyncio
+async def test_protection_covers_new_media_before_record_complete(tmp_path):
+    service = _service(tmp_path)
+    _write_upload(service)
+    seen = []
+
+    def on_complete(job_id, files):
+        seen.append(set(files) <= service.protected_names())
+
+    service.tracker.on_complete = on_complete
+    await service.ensure_registered([{"words": ["水彩"], "ref_files": [_REL]}])
+    assert seen == [True]

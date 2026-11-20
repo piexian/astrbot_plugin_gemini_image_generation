@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import tempfile
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -125,8 +126,12 @@ class StudioKeywordService:
             raise StudioServiceError("仅支持 png/jpg/jpeg/webp/gif/bmp 图片文件名")
         folder = self.data_dir / KEYWORD_FILES_FOLDER
         folder.mkdir(parents=True, exist_ok=True)
+        target = folder / name
+        if target.exists() and await asyncio.to_thread(target.read_bytes) != data:
+            stem, _, ext = name.rpartition(".")
+            name = f"{stem}-{uuid.uuid4().hex[:6]}.{ext}"
         await asyncio.to_thread((folder / name).write_bytes, data)
-        return {"path": rel}
+        return {"path": f"{KEYWORD_FILES_FOLDER}/{name}"}
 
     async def delete_file(self, rel: str) -> dict[str, Any]:
         rel = str(rel or "").replace("\\", "/")

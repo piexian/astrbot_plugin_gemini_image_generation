@@ -458,3 +458,17 @@ async def test_file_upload_list_and_delete_guard(tmp_path):
     )
     await service.delete_file(rel)
     assert rel not in service.list_files()["files"]
+
+
+@pytest.mark.asyncio
+async def test_same_name_upload_keeps_existing_file(tmp_path):
+    raw = _RawConfig({"bindings": []})
+    service, _ = _service(raw)
+    service.data_dir = tmp_path
+    first = await service.save_file("cat.png", b"first")
+    second = await service.save_file("cat.png", b"second")
+    assert first["path"] != second["path"]
+    assert (tmp_path / first["path"]).read_bytes() == b"first"
+    assert (tmp_path / second["path"]).read_bytes() == b"second"
+    again = await service.save_file("cat.png", b"first")
+    assert again["path"] == first["path"]
