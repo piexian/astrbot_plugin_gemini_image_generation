@@ -629,6 +629,9 @@ async def test_background_item_import_preserves_source_artifact_query(
         assert "https://images.example/b2.png?id=12" in artifacts
         assert "https://images.example/s1.png?id=13" in artifacts
         assert any(url.startswith("artifact:") for url in job.result.artifacts)
+        assert job.metadata["items"][0]["source_urls"] == [
+            "https://images.example/s1.png"
+        ]
         with sqlite3.connect(tmp_path / "jobs.sqlite3") as connection:
             metadata_raw = str(
                 connection.execute(
