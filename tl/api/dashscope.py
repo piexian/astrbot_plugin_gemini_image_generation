@@ -1,11 +1,12 @@
 """DashScope（阿里云百炼）图像生成供应商实现。
 
-接入 multimodal-generation 同步接口，支持 wan2.7 / qwen-image-2.0 系列。
+接入 multimodal-generation 同步接口，支持 wan2.7 / qwen-image-2.0/2.1/3.0 系列与 z-image-turbo。
 端点、参数门控与尺寸规则详见 docs/config.md 的 dashscope_settings 章节。
 """
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from typing import Any
@@ -20,9 +21,10 @@ from .provider_limits import (
     MAX_REFERENCE_IMAGES_DASHSCOPE_QWEN3,
 )
 from .reference_values import resolve_reference_api_values
+from .size_utils import size_from_budget
 
 # 官方默认 API Base
-_DEFAULT_API_BASE: str = "https://dashscope.aliyuncs.com"
+_DEFAULT_API_BASE: str = "https://maas.qianwenaiapi.com"
 
 # Token Plan 套餐端点
 _TOKEN_PLAN_API_BASE: str = "https://token-plan.cn-beijing.maas.aliyuncs.com"
@@ -47,10 +49,12 @@ _MAX_TIER_BY_MODEL_DEFAULT: str = "2K"
 _MAX_TIER_WAN27_PRO: str = "4K"
 
 
-def _max_tier_for(model: str, *, has_reference: bool = False) -> str:
+def _max_tier_for(
+    model: str, *, has_reference: bool = False, sequential: bool = False
+) -> str:
     name = (model or "").strip().lower()
-    # 4K 仅 wan2.7-image-pro 文生图支持；带参考图的编辑请求同样 2K 封顶
-    if not has_reference and name.startswith("wan2.7-image-pro"):
+    # 4K 仅 wan2.7-image-pro 文生图且非顺序模式支持；编辑或顺序模式 2K 封顶
+    if not has_reference and not sequential and name.startswith("wan2.7-image-pro"):
         return _MAX_TIER_WAN27_PRO
     return _MAX_TIER_BY_MODEL_DEFAULT
 
@@ -170,10 +174,7 @@ def _to_wire_size(value: str) -> str | None:
 def _compute_size(tier: str, rw: int, rh: int) -> str:
     """按档位像素预算推算表外比例的尺寸（16 对齐，钳位 [512, 4096]）。"""
     budget = _TIER_PIXELS.get(tier, _TIER_PIXELS["2K"])
-    h = round(math.sqrt(budget / (rw / rh)))
-    w = round(h * rw / rh)
-    w = max(512, min(4096, round(w / 16) * 16))
-    h = max(512, min(4096, round(h / 16) * 16))
+    w, h = size_from_budget(budget, rw, rh)
     logger.info(
         "[dashscope] 比例 %s:%s 不在推荐表，按 %s 档推算为 %s*%s", rw, rh, tier, w, h
     )
@@ -201,7 +202,9 @@ def _resolve_size(
         tier = "2K"
 
     max_tier = _max_tier_for(
-        model, has_reference=bool(getattr(config, "reference_images", None))
+        model,
+        has_reference=bool(getattr(config, "reference_images", None)),
+        sequential=bool(settings.get("enable_sequential", False)),
     )
     if _TIER_PIXELS[tier] > _TIER_PIXELS[max_tier]:
         logger.info(
@@ -230,6 +233,81 @@ def _coerce_n(value: Any, n_max: int) -> int:
     if n < 1 or n > n_max:
         logger.warning("[dashscope] n=%s 越界，已钳位到 [1, %d]", value, n_max)
     return max(1, min(n, n_max))
+
+
+_MAX_SEED: int = 2147483647
+
+
+def _coerce_seed(value: Any) -> int | None:
+    """解析 seed；0 或非法返回 None（服务端随机），超出上限钳位。"""
+    try:
+        seed = int(value)
+    except (TypeError, ValueError):
+        return None
+    if seed <= 0:
+        return None
+    if seed > _MAX_SEED:
+        logger.warning("[dashscope] seed=%s 越界，已钳位到 %d", value, _MAX_SEED)
+        return _MAX_SEED
+    return seed
+
+
+def _coerce_extend_mode(value: Any, has_reference: bool) -> str:
+    """qwen 改写方式 direct/agent；agent 仅文生图，非法或带参考图回退 direct。"""
+    mode = str(value or "direct").strip().lower()
+    if mode not in ("direct", "agent"):
+        logger.warning("[dashscope] prompt_extend_mode=%s 非法，已回退 direct", value)
+        return "direct"
+    if mode == "agent" and has_reference:
+        logger.info("[dashscope] agent 改写仅文生图支持，已回退 direct")
+        return "direct"
+    return mode
+
+
+def _parse_color_palette(value: Any) -> list[dict[str, str]] | None:
+    """解析 wan2.7 配色 JSON；3-10 项、占比和 100%，非法返回 None 并告警。"""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        logger.warning("[dashscope] color_palette 不是合法 JSON，已忽略")
+        return None
+    if not isinstance(data, list) or not 3 <= len(data) <= 10:
+        logger.warning("[dashscope] color_palette 需 3-10 项，已忽略")
+        return None
+    palette: list[dict[str, str]] = []
+    total = 0.0
+    for item in data:
+        if not isinstance(item, dict):
+            logger.warning("[dashscope] color_palette 项须为对象，已忽略")
+            return None
+        hex_val = str(item.get("hex") or "").strip()
+        ratio = str(item.get("ratio") or "").strip()
+        if not re.fullmatch(r"#?[0-9a-fA-F]{6}", hex_val):
+            logger.warning("[dashscope] color_palette 色值 %s 非法，已忽略", hex_val)
+            return None
+        if not hex_val.startswith("#"):
+            hex_val = "#" + hex_val
+        try:
+            pct = float(ratio.rstrip("%"))
+        except ValueError:
+            logger.warning("[dashscope] color_palette 占比 %s 非法，已忽略", ratio)
+            return None
+        if not math.isfinite(pct) or not 0 < pct <= 100:
+            logger.warning(
+                "[dashscope] color_palette 占比 %s 须为 0-100 的有限正数，已忽略", ratio
+            )
+            return None
+        total += pct
+        palette.append({"hex": hex_val.upper(), "ratio": f"{pct:g}%"})
+    if abs(total - 100.0) > 0.5:
+        logger.warning(
+            "[dashscope] color_palette 占比和须为 100%%（当前 %.2f），已忽略", total
+        )
+        return None
+    return palette
 
 
 def _build_api_error(code: str, message: str, http_status: int | None) -> APIError:
@@ -295,6 +373,8 @@ class DashScopeProvider:
         model_lc = model.lower()
         is_wan27 = model_lc.startswith("wan2.7")
         is_zimage = model_lc.startswith("z-image")
+        is_qwen21 = model_lc.startswith("qwen-image-2.1")
+        is_qwen_thinking = model_lc.startswith(("qwen-image-3.0", "qwen-image-2.1"))
         enable_seq = is_wan27 and bool(settings.get("enable_sequential", False))
 
         params: dict[str, Any] = {}
@@ -308,26 +388,30 @@ class DashScopeProvider:
             n_max = 12
         elif is_wan27:
             n_max = 4
-        elif model_lc.startswith(("qwen-image-2.0", "qwen-image-3.0")):
+        elif model_lc.startswith(
+            ("qwen-image-2.0", "qwen-image-2.1", "qwen-image-3.0")
+        ):
             n_max = 6
         else:
             n_max = 1
         params["n"] = _coerce_n(settings.get("n", 1), n_max)
+        seed = _coerce_seed(settings.get("seed", 0))
+        if seed is not None:
+            params["seed"] = seed
 
         if is_zimage:
-            # z-image-turbo 仅文生图：参数保持最小集合
+            # z-image-turbo 仅文生图：不支持 watermark/negative_prompt
             if settings.get("watermark"):
                 logger.info("[dashscope] %s 不支持 watermark，已忽略", model)
             if settings.get("negative_prompt"):
                 logger.info("[dashscope] %s 不支持 negative_prompt，已忽略", model)
-            if settings.get("prompt_extend"):
-                logger.info("[dashscope] %s 不支持 prompt_extend，已忽略", model)
+            params["prompt_extend"] = bool(settings.get("prompt_extend", False))
         else:
             params["watermark"] = bool(settings.get("watermark", False))
 
             neg = str(settings.get("negative_prompt") or "").strip()
             if neg:
-                if is_wan27:
+                if is_wan27 or is_qwen21:
                     logger.info("[dashscope] %s 不支持 negative_prompt，已忽略", model)
                 else:
                     params["negative_prompt"] = neg
@@ -338,11 +422,21 @@ class DashScopeProvider:
                     params["enable_sequential"] = True
                 else:
                     params["thinking_mode"] = bool(settings.get("thinking_mode", True))
+                    palette = _parse_color_palette(settings.get("color_palette"))
+                    if palette:
+                        params["color_palette"] = palette
             else:
                 if settings.get("enable_sequential"):
                     logger.info("[dashscope] enable_sequential 仅 wan2.7 支持，已忽略")
                 # 服务端默认 true，需显式关闭
                 params["prompt_extend"] = bool(settings.get("prompt_extend", False))
+                if is_qwen_thinking and params["prompt_extend"]:
+                    params["prompt_extend_mode"] = _coerce_extend_mode(
+                        settings.get("prompt_extend_mode"), bool(image_values)
+                    )
+                    params["enable_thinking"] = bool(
+                        settings.get("enable_thinking", True)
+                    )
 
         payload: dict[str, Any] = {
             "model": model,
@@ -384,11 +478,16 @@ class DashScopeProvider:
                 "invalid_reference_image",
                 retryable=False,
             )
-        max_count = (
+        model_cap = (
             MAX_REFERENCE_IMAGES_DASHSCOPE_QWEN3
             if model.startswith("qwen-image-3.0")
             else MAX_REFERENCE_IMAGES_DASHSCOPE
         )
+        try:
+            user_max = int(settings.get("max_reference_images", model_cap))
+        except (TypeError, ValueError):
+            user_max = model_cap
+        max_count = max(1, min(user_max, model_cap))
         return await resolve_reference_api_values(
             client,
             config,

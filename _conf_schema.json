@@ -2070,20 +2070,8 @@
               "model": {
                 "description": "模型名称",
                 "type": "string",
-                "hint": "推荐 wan2.7-image-pro ；千问 qwen-image-3.0-pro 各端点模型支持差异见 docs/config.md。",
-                "default": "wan2.7-image-pro",
-                "options": [
-                  "wan2.7-image-pro",
-                  "wan2.7-image",
-                  "qwen-image-3.0-pro",
-                  "qwen-image-3.0",
-                  "qwen-image-2.0-pro",
-                  "qwen-image-2.0",
-                  "z-image-turbo",
-                  "qwen-image-plus",
-                  "qwen-image-max",
-                  "qwen-image"
-                ]
+                "hint": "推荐 wan2.7-image-pro；千问 qwen-image-3.0-pro / qwen-image-2.1-pro 等可自由填写，各端点模型支持差异见 docs/config.md。",
+                "default": "wan2.7-image-pro"
               },
               "endpoint_mode": {
                 "description": "接入端点",
@@ -2110,7 +2098,7 @@
               "max_reference_images": {
                 "description": "最大参考图片数量",
                 "type": "int",
-                "hint": "超过按顺序截取。",
+                "hint": "参考图数量上限，超过按顺序截取；不超过模型硬上限（详见 docs/config.md）。",
                 "default": 9
               },
               "size_mode": {
@@ -2173,6 +2161,12 @@
                 "hint": "按成功生成张数计费，测试建议 1。超出自动钳制。",
                 "default": 1
               },
+              "seed": {
+                "description": "随机种子",
+                "type": "int",
+                "hint": "0 表示随机；相同种子结果更一致（不完全相同）。范围 1-2147483647。",
+                "default": 0
+              },
               "watermark": {
                 "description": "添加水印",
                 "type": "bool",
@@ -2182,19 +2176,35 @@
               "negative_prompt": {
                 "description": "负向提示词",
                 "type": "string",
-                "hint": "描述要排除的元素。不支持，会自动跳过并记录日志。",
+                "hint": "描述要排除的元素。wan2.7、z-image、qwen-image-2.1 不支持，自动跳过。",
                 "default": ""
               },
               "prompt_extend": {
                 "description": "提示词智能改写",
                 "type": "bool",
-                "hint": "默认关闭并显式发送。不支持此参数会自动跳过。",
+                "hint": "默认关闭并显式发送。wan2.7 不支持会自动跳过。",
                 "default": false
+              },
+              "prompt_extend_mode": {
+                "description": "提示词改写方式",
+                "type": "string",
+                "hint": "仅 qwen-image-3.0/2.1 且 prompt_extend 开启时生效。direct 直接增强；agent 智能体增强（仅文生图）。",
+                "default": "direct",
+                "options": [
+                  "direct",
+                  "agent"
+                ]
+              },
+              "enable_thinking": {
+                "description": "千问思考模式",
+                "type": "bool",
+                "hint": "仅 qwen-image-3.0/2.1 且 prompt_extend 开启时生效，提升画质但增加耗时。",
+                "default": true
               },
               "thinking_mode": {
                 "description": "增强推理",
                 "type": "bool",
-                "hint": "提升提示词理解与画质；不支持此参数会自动跳过。",
+                "hint": "仅 wan2.7 非顺序模式生效，提升提示词理解与画质。",
                 "default": true
               },
               "enable_sequential": {
@@ -2202,6 +2212,12 @@
                 "type": "bool",
                 "hint": "仅 wan2.7 生效。开启后 n 上限提高到 12，生成风格一致的多图",
                 "default": false
+              },
+              "color_palette": {
+                "description": "自定义配色（wan2.7）",
+                "type": "string",
+                "hint": "仅 wan2.7 非顺序模式生效。JSON 数组，3-10 项，每项含 hex 色值与 ratio 占比（百分比字符串），占比和须 100%。留空不发送。",
+                "default": ""
               }
             }
           },
