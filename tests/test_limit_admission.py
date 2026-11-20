@@ -701,6 +701,7 @@ async def test_plugin_closes_limiter_after_request_producers(command_plugin):
     plugin.api_client = module("api")
     plugin.rate_limiter = module("limiter")
     plugin._v2_service = module("v2")
+    plugin.reference_library = module("library")
     await plugin.terminate()
     assert plugin._web_closed
     assert closed[-1] == "limiter"
@@ -713,12 +714,51 @@ async def test_plugin_closes_limiter_after_request_producers(command_plugin):
         "v2",
         "api",
         "limiter",
+        "library",
     }
     # v2 栈在后台任务之后、生成历史之前关闭（投影取消 Job 时 tracker 仍开放），
     # 并早于 legacy client。
     assert closed.index("background") < closed.index("v2")
     assert closed.index("v2") < closed.index("tracker")
     assert closed.index("v2") < closed.index("api")
+
+
+@pytest.mark.asyncio
+async def test_terminate_cancels_media_task_before_closing_library(command_plugin):
+    plugin = command_plugin
+    closed = []
+
+    def module(name):
+        async def close():
+            closed.append(name)
+
+        return SimpleNamespace(close=close)
+
+    plugin._web_routes = []
+    plugin._web_api = None
+    plugin.studio_providers = None
+    plugin.provider_runtime = SimpleNamespace(closed=False)
+    plugin.configuration_lock = asyncio.Lock()
+    plugin._public_service = module("service")
+    plugin.generation_scheduler = module("scheduler")
+    plugin.web_studio_service = module("studio")
+    plugin.reference_library = module("library")
+    plugin.generation_tracker = module("tracker")
+    plugin.background_task_manager = module("background")
+    plugin.api_client = module("api")
+    plugin.rate_limiter = module("limiter")
+    plugin._v2_service = module("v2")
+    started = asyncio.Event()
+
+    async def slow_register():
+        started.set()
+        await asyncio.sleep(30)
+
+    plugin._keyword_media_task = asyncio.create_task(slow_register())
+    await started.wait()
+    await plugin.terminate()
+    assert plugin._keyword_media_task.cancelled()
+    assert closed.index("library") < closed.index("tracker")
 
 
 @pytest.mark.asyncio

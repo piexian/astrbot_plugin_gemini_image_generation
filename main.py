@@ -595,6 +595,11 @@ class GeminiImageGenerationPlugin(Star):
         """插件卸载/重载时调用"""
         self._web_closed = True
         self.provider_runtime.closed = True
+        # 素材任务可能仍在下载：先取消并等待协程退出，避免旧实例在重载后写盘。
+        media_task = getattr(self, "_keyword_media_task", None)
+        if media_task is not None and not media_task.done():
+            media_task.cancel()
+            await asyncio.gather(media_task, return_exceptions=True)
         await self._public_service.close()
         await self.generation_scheduler.close()
         if self.studio_providers is not None:
@@ -608,6 +613,10 @@ class GeminiImageGenerationPlugin(Star):
             await self.web_studio_service.close()
         except Exception as e:
             logger.warning(f"[WebUI] 关闭工作台服务失败: {redact_text(e)[:240]}")
+        try:
+            await self.reference_library.close()
+        except Exception as e:
+            logger.warning(f"[参考图库] 关闭参考图库失败: {redact_text(str(e))[:240]}")
         route_count = len(self._web_routes)
         try:
             if self._web_api is not None:

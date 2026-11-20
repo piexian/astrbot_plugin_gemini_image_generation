@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -251,3 +252,26 @@ async def test_protection_covers_new_media_before_record_complete(tmp_path):
     service.tracker.on_complete = on_complete
     await service.ensure_registered([{"words": ["水彩"], "ref_files": [_REL]}])
     assert seen == [True]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_registration_writes_nothing(tmp_path, monkeypatch):
+    service = _service(tmp_path)
+    url = "https://example.com/a.png"
+    entered = asyncio.Event()
+
+    async def hang_fetch(u, **kwargs):
+        entered.set()
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(service._fetcher, "fetch", hang_fetch)
+    task = asyncio.create_task(
+        service.ensure_registered([{"words": ["水彩"], "ref_addresses": [url]}])
+    )
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert service.media_state() == {}
+    assert not (tmp_path / "keyword_media.json").exists()
+    assert service.library.calls == []
