@@ -69,7 +69,7 @@ from .v2_bridge import split_artifacts, v2_failure_message, v2_failure_text
 from .v2_tool_delivery import ToolBackgroundDelivery, ToolBatchDelivery
 
 # 参数枚举常量（工具定义和验证共用）
-RESOLUTION_OPTIONS = ("1K", "2K", "4K")
+RESOLUTION_OPTIONS = ("1K", "1.5K", "2K", "4K")
 ASPECT_RATIO_OPTIONS = SUPPORTED_ASPECT_RATIOS
 VALID_ASPECT_RATIOS = set(ASPECT_RATIO_OPTIONS)
 
@@ -102,9 +102,9 @@ def _tool_resolution_options(
 
     unique = list(dict.fromkeys(values))
 
-    def resolution_sort_key(value: str) -> tuple[int, int, str]:
-        match = re.fullmatch(r"(\d+)K", value)
-        return (0, int(match.group(1)), "") if match else (1, 0, value)
+    def resolution_sort_key(value: str) -> tuple[int, float, str]:
+        match = re.fullmatch(r"(\d+(?:\.\d+)?)K", value)
+        return (0, float(match.group(1)), "") if match else (1, 0.0, value)
 
     return tuple(sorted(unique, key=resolution_sort_key))
 

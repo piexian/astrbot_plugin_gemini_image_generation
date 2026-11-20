@@ -62,6 +62,7 @@ class ApiRequestConfig:
     successful_model_alias: str | None = None
     routing_mode: str = "full_polling"
     request_deadline: float | None = None  # 单调时钟；仅在一次请求生命周期内有效
+    request_source: str | None = None  # 任务来源（command/llm_tool/llm_batch/webui/plugin）
 
     def __post_init__(self) -> None:
         if self.seed is None:

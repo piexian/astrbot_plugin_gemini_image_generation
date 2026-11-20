@@ -38,6 +38,7 @@ const GENERAL = new Set([
   "service_account_files",
   "project_id",
   "location",
+  "user",
 ]);
 const GENERATION = new Set([
   "resolution",
@@ -56,6 +57,9 @@ const GENERATION = new Set([
   "style",
   "style_type",
   "style_weight",
+  "deferred",
+  "poll_interval",
+  "poll_timeout",
 ]);
 
 // ---------- 状态 ----------

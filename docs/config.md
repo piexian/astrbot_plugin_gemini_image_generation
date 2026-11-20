@@ -344,11 +344,18 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 |--------|--------|------|
 | `api_keys` | `[]` | API Key 列表，支持多 Key 轮换 |
 | `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
-| `model` | `grok-imagine-image-2.0` | 当前模型；旧模型名仍可手填但可能已被官方退役 |
+| `model` | `grok-imagine-image-2.0` | 当前模型；`grok-imagine-image-quality` / `grok-imagine-image-pro` 已退役，官方重定向到 2.0 并按 `low` 质量服务 |
 | `api_base` | `https://api.x.ai` | API 端点地址 |
+| `resolution` | `1K` | 分辨率档位：`1K` / `1.5K` / `2K`（1.5K 来自官方 API 枚举，能力页暂只列 1K/2K）；`4K` 自动降级为 `2K` |
+| `aspect_ratio` | `1:1` | 输出长宽比，官方枚举见下文；不支持的取值自动忽略并记录日志 |
+| `max_reference_images` | `5` | 单次请求最多使用的参考图数量，与官方编辑上限一致 |
 | `response_format` | `url` | 响应格式：`url` / `b64_json` |
-| `quality` | - | 仅 `grok-imagine-image-2.0` 支持，官方仅 `low` / `medium`（服务端默认 `medium`）；`high` 自动降级为 `medium`，留空不传 |
+| `quality` | - | 仅 `grok-imagine-image-2.0` 支持：`low` / `medium` / `auto`；留空不传（服务端默认 `auto`，生成按 `low`、编辑按 `medium` 服务并计费）；`high` 自动降级为 `medium` |
 | `n` | `1` | 单次请求生成数量，官方上限 `10` |
+| `user` | `AstrBot` | 随请求体发送的终端用户标识（官方 `user` 参数），供 xAI 滥用监控；可自定义，留空不发送 |
+| `deferred` | `true` | LLM 工具与批量后台任务优先用官方 `deferred` 异步提交并轮询结果；仅 `response_format=url` 时生效，指令与工作台请求不受影响 |
+| `poll_interval` | `5` | deferred 轮询间隔（秒） |
+| `poll_timeout` | `100` | deferred 轮询总超时（秒），且不超过请求总时限 |
 | `proxy` | - | 独立代理地址 |
 
 `xai` 供应商会自动走 xAI 官方 JSON 图像接口：
@@ -356,9 +363,11 @@ WebUI 中切换为 `size_mode=custom` 后，`resolution` 和 `aspect_ratio` 会�
 - 文生图：`/v1/images/generations`
 - 改图：`/v1/images/edits`
 
-改图请求会把参考图统一内联为 `data URI`，不使用 `multipart/form-data`。单次编辑最多支持 `3` 张参考图（超出截取前 3 张并记录日志），分辨率支持 `1k/2k`；多图编辑默认输出比例跟随第一张输入图，可用 `aspect_ratio` 覆盖，单图编辑始终跟随输入图。
+改图请求会把参考图统一内联为 `data URI`，不使用 `multipart/form-data`；官方输入仅接受 JPEG/PNG/WebP，其余格式（HEIC/GIF 等）自动转码为 PNG。单次编辑最多支持 `5` 张参考图（超出截取前 5 张并记录日志）；多图编辑默认输出比例跟随第一张输入图，可用 `aspect_ratio` 覆盖，单图编辑始终跟随输入图。
 
-`aspect_ratio` 官方枚举：`1:1` / `16:9` / `9:16` / `4:3` / `3:4` / `3:2` / `2:3` / `2:1` / `1:2` / `19.5:9` / `9:19.5` / `20:9` / `9:20` / `auto`；`4:5` / `5:4` / `21:9` 不受支持，传入自动忽略并记录日志。
+后台任务（LLM 工具单图与批量）默认发送 `deferred: true`：请求立即返回 `request_id`，插件轮询 `GET /v1/images/{request_id}` 直到 `done`/`failed`（结果官方保留 24 小时）。轮询超时按不可重试失败处理，避免重复计费；网关忽略 `deferred` 直接返回图片时按同步结果正常解析。
+
+`aspect_ratio` 官方枚举：`1:1` / `16:9` / `9:16` / `4:3` / `3:4` / `3:2` / `2:3` / `2:1` / `1:2` / `19.5:9` / `9:19.5` / `20:9` / `9:20` / `21:9` / `5:2` / `auto`；`4:5` / `5:4` 不受支持，传入自动忽略并记录日志。
 
 官方文档：
 
