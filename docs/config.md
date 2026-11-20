@@ -31,11 +31,11 @@
 ### 模型目录与视觉提供商
 
 - 视觉下拉对齐本体 `provider` / `provider_sources` 配置，筛选已启用的 `chat_completion`；启用但未加载的条目仍可见并标注状态。刷新失败保留名单和选择，手填作为回退。
-- 生图目录当前接入 Google、Gemini Interactions、OpenAI 兼容、OpenAI Images、Agnes AI、MiniMax、阶跃星辰、ModelScope、xAI、SiliconFlow；其余渠道仍可手填。保留当前自定义路径及 StepPlan 前缀，不偷偷回退普通端点；列表来自上游，不保证每个模型都支持生图。
+- 生图目录当前接入 Google、Gemini Interactions、OpenAI 兼容、OpenAI Images、Agnes AI、MiniMax、ModelScope、xAI、SiliconFlow；其余渠道仍可手填。保留当前自定义路径及 StepPlan 前缀，不偷偷回退普通端点；列表来自上游，不保证每个模型都支持生图。
 - 仅点击时使用当前连接草稿和第一个有效 Key 查询，代理优先级不变，不保存配置、不扣生成额度；使用已有 Key 请求变更后的地址或代理时先确认目标。视觉模型由选中的已加载本体实例提供，查询不会改变其配置。
 - 查询上限为 2 并发、2 排队、20 秒总时限、2 MiB 响应及 2000 个模型；Google 最多 5 页。禁止自动重定向，失败、空列表或迟到响应不会清空当前模型。
 - 官方目录协议：[Google](https://ai.google.dev/api/models)、[OpenAI](https://developers.openai.com/api/reference/resources/models/methods/list)、[xAI](https://docs.x.ai/developers/rest-api-reference/inference/models)、[SiliconFlow](https://docs.siliconflow.com/en/api-reference/models/get-model-list)。
-- 新增目录依据：[Agnes 客户端指南](https://wiki.agnes-ai.com/en/docs/cid6.md)、[MiniMax](https://platform.minimaxi.com/docs/api-reference/models/openai/list-models)、[阶跃星辰](https://platform.stepfun.com/docs/zh/api-reference/models/list)、[ModelScope 推理目录](https://api-inference.modelscope.cn/v1/models)。
+- 新增目录依据：[Agnes 客户端指南](https://wiki.agnes-ai.com/en/docs/cid6.md)、[MiniMax](https://platform.minimaxi.com/docs/api-reference/models/openai/list-models)、[ModelScope 推理目录](https://api-inference.modelscope.cn/v1/models)。
 
 ## provider_settings.provider_overrides
 
@@ -76,10 +76,10 @@ google / openai_images / minimax
 支持的模板：
 
 ```text
-google / gemini_interactions / vertex / openai / agnes_ai / xai / minimax / stepfun / openai_images / openai_responses / doubao / sensenova / senseaudio / dashscope / modelscope / siliconflow
+google / gemini_interactions / vertex / openai / agnes_ai / xai / minimax / openai_images / openai_responses / doubao / sensenova / senseaudio / dashscope / modelscope / siliconflow
 ```
 
-下方 `doubao_settings`、`openai_images_settings`、`agnes_ai_settings`、`xai_settings`、`minimax_settings`、`stepfun_settings`、`sensenova_settings`、`dashscope_settings`、`modelscope_settings`、`siliconflow_settings` 章节对应这些模板的专用字段；`gemini_interactions` 无历史投影字段，全部配置都在模板内。代码中的同名 `*_settings` 字段仅作为兼容旧调用的首个候选投影；多候选场景以 `provider_settings.provider_overrides` 和运行时派生的 `provider_settings_by_type` 为准。
+下方 `doubao_settings`、`openai_images_settings`、`agnes_ai_settings`、`xai_settings`、`minimax_settings`、`sensenova_settings`、`dashscope_settings`、`modelscope_settings`、`siliconflow_settings` 章节对应这些模板的专用字段；`gemini_interactions` 无历史投影字段，全部配置都在模板内。代码中的同名 `*_settings` 字段仅作为兼容旧调用的首个候选投影；多候选场景以 `provider_settings.provider_overrides` 和运行时派生的 `provider_settings_by_type` 为准。
 
 ## image_generation_settings
 
@@ -473,61 +473,6 @@ H3 URL 有效期 24 小时，服务端最长等待 600 秒；接口不支持幂�
 - <https://platform.minimaxi.com/docs/api-reference/errorcode>
 - <https://platform.minimaxi.com/docs/faq/models>
 
-## stepfun_settings（StepFun 图片生成 API 专用配置）
-
-配置路径：`provider_settings.provider_overrides` 中选择 `stepfun` 模板。适配 `step-image-edit-2`（文生图 + 编辑；官方 2026-10-10 下线）与 `step-2x-large`（纯文生图）。
-
-| 配置项 | 默认值 | 说明 |
-|--------|--------|------|
-| `api_keys` | `[]` | StepFun API Key 列表，支持多 Key 轮换 |
-| `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
-| `model` | `step-image-edit-2` | 图片模型名称；`step-2x-large` 为纯文生图模型，不支持编辑/负向提示词/text_mode。编辑模型官方 2026-10-10 下线，请尽快切换 |
-| `api_base` | `https://api.stepfun.com` | API 端点；同时兼容 `https://api.stepfun.com/step_plan/v1` 写法，自动识别 `/v1` 后缀 |
-| `response_format` | `url` | `url` 返回临时签名链接（`res.stepfun.com`），`b64_json` 返回 base64 并由插件落盘 |
-| `steps` | `0` | 采样步数，`0` 表示不传（服务端默认 edit-2 `8` / 2x-large `50`）；非零值钳位到 [1, 50] |
-| `cfg_scale` | `0` | 提示词引导强度，`0` 表示不传（服务端默认 edit-2 `1.0` / 2x-large `6`）；非零值钳位到 [1.0, 10.0] |
-| `negative_prompt` | `""` | 负向提示词，留空不传；仅 `step-image-edit` 系列支持，其他模型自动忽略并记录日志 |
-| `text_mode` | `false` | 是否启用 `text_mode`；仅 `step-image-edit` 系列支持，其他模型自动忽略并记录日志 |
-| `seed` | `0` | 固定随机种子，`0` 表示不传 |
-| `proxy` | - | 独立代理地址，优先级高于全局代理和环境变量 |
-
-`stepfun` 供应商使用阶跃星辰官方图片端点：
-
-- 文生图：`POST /v1/images/generations`（JSON 请求体）
-- 图生图：`POST /v1/images/edits`（`multipart/form-data`）
-
-尺寸适配规则（按模型自动选择官方支持的预设集合）：
-
-**`step-image-edit-2` 文生图（generations）** 支持五档尺寸：
-
-| 通用尺寸/比例 | 实际下发 |
-|--------------|---------|
-| 正方形 | `1024x1024` |
-| 竖图 9:16 / 3:4 | `768x1360` |
-| 竖图 接近 4:5 | `896x1184` |
-| 横图 16:9 / 4:3 | `1360x768` |
-| 横图 接近 5:4 | `1184x896` |
-
-**`step-2x-large` 文生图（generations）** 支持六档：`256x256` / `512x512` / `768x768` / `1024x1024` / `1280x800`（16:9）/ `800x1280`（9:16），按目标长宽比自动选最近预设。已下线的 `step-1x-medium` 沿用同尺寸表。
-
-**模型级编辑门控**：仅 `step-image-edit` 系列候选参与改图/参考图请求，`step-2x-large` 等纯文生图模型自动跳过。
-
-**图生图（edits）**：
-
-- `step-image-edit-2`：官方仅支持单图输入，传入多图会自动取首张并打 debug 日志；`size` 参数官方明确"该参数不生效"，因此插件不再下发，输出尺寸始终与输入图一致。
-- `step-1x-edit`：`size` 仅在 `512x512` / `768x768` / `1024x1024` 三档内透传。
-
-- 两个模型的 prompt 均为 512 字符硬上限，超限请求直接报错（不发起注定失败的服务端调用）。
-
-其他注意事项：
-
-- 请求被安全审核拦截时，StepFun 会返回 `HTTP 451`，插件统一识别为安全类错误（`category="safety"`，不重试）。
-- `b64_json` 模式下生成的图片会保存为本地文件，避免 URL 过期问题。
-
-官方文档：
-
-- <https://platform.stepfun.com/docs/llm/image-edit>
-- <https://platform.stepfun.com/docs/api-reference/image-edit>
 
 ## sensenova_settings（SenseNova（商汤日日新）专用配置）
 

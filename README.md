@@ -14,7 +14,7 @@
 - **快速预设**：头像、海报、壁纸、卡片、手机壁纸、手办化、表情包一键生成。
 - **智能参考图**：自动读取消息图片、引用图片、合并转发、群文件，以及用户头像和 @ 对象头像。
 - **生成记录引用**：生成结果带 `gen:` 引用号，可以直接要求 AI 拿某张已生成的图继续改图；默认只允许引用本会话的记录，跨会话引用需打开「允许跨会话引用生成图」。
-- **多供应商支持**：Google Gemini、Gemini Interactions（Nano Banana 系列）、Vertex AI（服务账号 JSON / Express API Key 双认证）、OpenAI 兼容、OpenAI Images、OpenAI Responses（可自定义顶层模型与生图模型）、Agnes AI、xAI Images、MiniMax、阶跃星辰、豆包、SenseNova、SenseAudio（同步 / 异步图片生成）、DashScope（通义万相/千问图像/z-image）。
+- **多供应商支持**：Google Gemini、Gemini Interactions（Nano Banana 系列）、Vertex AI（服务账号 JSON / Express API Key 双认证）、OpenAI 兼容、OpenAI Images、OpenAI Responses（可自定义顶层模型与生图模型）、Agnes AI、xAI Images、MiniMax、豆包、SenseNova、SenseAudio（同步 / 异步图片生成）、DashScope（通义万相/千问图像/z-image）。
 - **供应商与模型路由**：支持供应商、原始模型或别名选择；未指定时按配置轮询，显式指定时只在匹配候选内重试。
 - **LLM 工具集成**：`gemini_image_generation` 单图生图改图、`gemini_image_batch` 批量提交、`gemini_image_lookup` 查询模型／模板／参考图库／可引用的生成记录／后台任务、`gemini_image_share` 由本人共享或取消共享生成记录；任务完成后自动通知，前台等待超时直接返回图片地址继续发送。详见 [LLM 工具集成](docs/usage.md#llm-工具集成)。
 - **插件接入接口**：其他 AstrBot 插件可获取公开服务实例、查询就绪状态并提交后台生图任务，支持查询、等待及完成回调；会话与使用者信息可选。详见 [其他插件接入指南](docs/plugin-api.md)。
@@ -96,7 +96,7 @@ https://github.com/piexian/astrbot_plugin_gemini_image_generation
 各供应商的端点、参数、尺寸适配规则等完整说明见 [完整配置参考](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/config.md)：
 
 ```text
-google / gemini_interactions / vertex / openai / agnes_ai / xai / minimax / stepfun / openai_images / openai_responses / doubao / sensenova / senseaudio / dashscope / modelscope / siliconflow
+google / gemini_interactions / vertex / openai / agnes_ai / xai / minimax / openai_images / openai_responses / doubao / sensenova / senseaudio / dashscope / modelscope / siliconflow
 ```
 
 ## 项目结构

@@ -25,7 +25,6 @@ tl/
     ├── doubao.py           # 火山引擎 Ark / 豆包 Seedream
     ├── sensenova.py        # SenseNova(商汤日日新)
     ├── senseaudio.py       # SenseAudio 同步/异步图片生成
-    ├── stepfun.py          # StepFun
     ├── modelscope.py       # ModelScope 魔搭社区（异步任务制：提交+轮询）
     ├── siliconflow.py      # SiliconFlow 硅基流动（同步单端点：文生图 + 编辑共用）
     ├── provider_limits.py  # 各 provider 参考图上限常量(共享)
@@ -47,7 +46,6 @@ tl/
 | `agnes_ai` | `AgnesAIProvider` | Agnes AI `/v1/images/generations` |
 | `xai` | `XAIProvider` | xAI 官方图像接口 |
 | `minimax` | `MiniMaxProvider` | MiniMax `/v1/image_generation` |
-| `stepfun` | `StepfunProvider` | StepFun `/v1/images/generations` 与 `/v1/images/edits` |
 | `openai_images` | `OpenAIImagesProvider` | OpenAI `/v1/images/generations` 与 `/v1/images/edits` |
 | `openai_responses` | `OpenAIResponsesProvider` | Responses `image_generation` 工具，独立顶层/生图模型与 SSE 完成事件解析 |
 | `doubao` | `DoubaoProvider` | 火山引擎 Ark / 豆包图片接口（支持 official / Agent Plan 端点） |

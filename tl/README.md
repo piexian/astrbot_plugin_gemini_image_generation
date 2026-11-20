@@ -317,15 +317,6 @@ DashScope（阿里云百炼）provider，接入原生 multimodal-generation 同�
 | `_resolve_size()` | preset 档位+比例查官方推荐表或按像素预算推算，custom 直接透传 |
 | `_build_api_error()` | 将 DashScope 错误码转为带重试语义的 `APIError` |
 
-### `api/stepfun.py`
-
-StepFun provider。
-
-| 接口 | 说明 |
-|------|------|
-| `StepfunProvider.build_request()` | 根据是否有参考图选择 `/v1/images/generations` 或 `/v1/images/edits` |
-| `StepfunProvider.parse_response()` | 解析 StepFun 图像响应 |
-| `_is_temp_cache_url()` | 判断是否为需立即下载的临时缓存 URL |
 
 ## 图像生成与 LLM Tool
 
@@ -401,7 +392,7 @@ StepFun provider。
 - `KeyManager.clone_for_config()`：先严格恢复并持久化用量检查点，再重建候选索引；`api_key_usage.__shared_keys_v1` 按供应商类型、Key 保存计数，兼容原候选桶，排序和重启不会重置用量。
 - `pages/studio/provider-config.js/css`：独立、懒加载的二级 Tab 配置视图；表格与弹窗分离，密钥草稿只留内存，Pointer Events 手柄提供鼠标／触摸排序及键盘替代。
 - `editor.keys` 独立维护密钥管理草稿，替换当前弹窗主体而不叠加 Modal；批量导入、行编辑、取消与完成分层处理。返回条目时仅确认的 Key 变更写入 `editor.entry`，并丢弃过期模型目录结果。
-- 模型目录的 OpenAI 协议同时用于 Agnes AI、MiniMax、阶跃星辰、ModelScope；识别 MiniMax `/image_generation` 完整路径并保留套餐/网关前缀，不改变生成端点或构造静态模型列表。
+- 模型目录的 OpenAI 协议同时用于 Agnes AI、MiniMax、ModelScope；识别 MiniMax `/image_generation` 完整路径并保留套餐/网关前缀，不改变生成端点或构造静态模型列表。
 
 ### `thought_signature.py`
 

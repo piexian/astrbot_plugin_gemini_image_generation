@@ -75,7 +75,6 @@ _DISPLAY_NAMES = {
     "agnes_ai": "Agnes AI",
     "xai": "xAI",
     "minimax": "MiniMax",
-    "stepfun": "StepFun",
     "openai_images": "OpenAI Images",
     "doubao": "Doubao Seedream",
     "sensenova": "SenseNova",

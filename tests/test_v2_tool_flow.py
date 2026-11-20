@@ -1463,7 +1463,9 @@ async def test_optional_options_keep_null_as_provider_default(
                 id="watermark", api_type="minimax", settings={"model": "image-01"}
             ),
             ProviderCandidate(
-                id="negative", api_type="stepfun", settings={"model": "step-image-edit"}
+                id="negative",
+                api_type="dashscope",
+                settings={"model": "qwen-image-2.0"},
             ),
         ]
     )
@@ -1493,7 +1495,9 @@ async def test_batch_null_options_clear_defaults_without_mutating_inputs(make_en
                 id="watermark", api_type="minimax", settings={"model": "image-01"}
             ),
             ProviderCandidate(
-                id="negative", api_type="stepfun", settings={"model": "step-image-edit"}
+                id="negative",
+                api_type="dashscope",
+                settings={"model": "qwen-image-2.0"},
             ),
         ]
     )

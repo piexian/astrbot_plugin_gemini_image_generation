@@ -1,7 +1,7 @@
 """load_reference_bytes：data URI/本地路径/URL 的共享参考图解析回归。
 
 复现 job-143ae2afb961：Studio 把画廊/上传参考图解析为本地绝对路径后，
-openai_images 与 stepfun 的 edits 只认 base64，直接报「无法解码参考图为二进制数据」。
+openai_images 的 edits 只认 base64，直接报「无法解码参考图为二进制数据」。
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ import pytest
 
 from tl.api.openai_images import OpenAIImagesProvider
 from tl.api.reference_pipeline import load_reference_bytes
-from tl.api.stepfun import StepfunProvider
 from tl.api_types import APIError, ApiRequestConfig
 
 PNG_BYTES = base64.b64decode(
@@ -160,25 +159,6 @@ async def test_openai_images_edits_undecodable_first_ref_keeps_error(png_file) -
         )
     assert "无法解码参考图" in str(error.value)
     assert error.value.retryable is False
-
-
-@pytest.mark.asyncio
-async def test_stepfun_edits_build_request_accepts_local_path(png_file) -> None:
-    provider = StepfunProvider()
-    request = await provider.build_request(
-        client=FakeClient(),
-        config=_config(
-            api_type="stepfun",
-            model="step-image-edit-2",
-            reference_images=[str(png_file)],
-            provider_settings={"model": "step-image-edit-2"},
-        ),
-    )
-    assert request.url.endswith("/v1/images/edits")
-    payload = request.payload
-    assert payload["_multipart"] is True
-    values = [field[2] for field in payload["_form_data"]._fields]
-    assert PNG_BYTES in values
 
 
 @pytest.mark.asyncio

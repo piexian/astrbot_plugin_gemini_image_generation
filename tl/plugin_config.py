@@ -14,6 +14,7 @@ from .provider_loader import load_callable
 from .provider_metadata import (
     get_provider_spec,
     is_known_api_type,
+    is_retired_api_type,
     iter_provider_specs,
     normalize_api_type,
     supports_image_edit,
@@ -182,7 +183,6 @@ class PluginConfig:
     # 供应商特定设置
     doubao_settings: dict[str, Any] = field(default_factory=dict)
     minimax_settings: dict[str, Any] = field(default_factory=dict)
-    stepfun_settings: dict[str, Any] = field(default_factory=dict)
     sensenova_settings: dict[str, Any] = field(default_factory=dict)
     xai_settings: dict[str, Any] = field(default_factory=dict)
     openai_images_settings: dict[str, Any] = field(default_factory=dict)
@@ -523,6 +523,9 @@ class ConfigLoader:
                     config.provider_config_errors.append(message)
                     logger.error(f"[配置加载] {message}")
                     continue
+                if is_retired_api_type(template_key):
+                    logger.info(f"[配置加载] 供应商已下线，已忽略: {template_key}")
+                    continue
                 if not is_known_api_type(template_key):
                     message = f"未知供应商配置: {template_key}"
                     config.provider_config_errors.append(message)
@@ -655,6 +658,9 @@ class ConfigLoader:
                 if not api_type or api_type in seen:
                     continue
                 seen.add(api_type)
+                if is_retired_api_type(api_type):
+                    logger.info(f"[配置加载] 轮询表供应商已下线，已忽略: {api_type}")
+                    continue
                 if not is_known_api_type(api_type):
                     message = f"轮询表包含未知供应商: {api_type}"
                     config.provider_config_errors.append(message)

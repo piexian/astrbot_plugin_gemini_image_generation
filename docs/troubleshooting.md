@@ -27,7 +27,8 @@ v2.0.0 重构了生图供应商配置，`api_settings` 和旧的全局 `api_type
 |------|----------|
 | API 错误 | 检查 `provider_settings.provider_overrides` 中的 API Key、模型名称和供应商模板是否正确 |
 | 日志提示 `未找到任何有效供应商配置` | 在 `provider_settings.provider_overrides` 中添加供应商模板，并确认模板名称、模型字段和 `api_keys` 有效 |
-| 轮询表供应商未生效 | `provider_polling` 只能填写 `google/openai/agnes_ai/xai/minimax/stepfun/openai_images/doubao/sensenova/dashscope` 等模板名；重复项会去重，未知项会跳过 |
+| 轮询表供应商未生效 | `provider_polling` 只能填写 `google/openai/agnes_ai/xai/minimax/openai_images/doubao/sensenova/dashscope` 等模板名；重复项会去重，未知项会跳过 |
+| 日志提示 `供应商已下线，已忽略: stepfun` | 阶跃星辰图像渠道自 2026-10-10 起整体停服（模型与 images 接口均下线），插件已移除该渠道；旧配置里的 stepfun 条目会自动忽略，请改用其他供应商 |
 | 生成超时 | 降低分辨率、简化提示词、增加工具超时时间，推荐 `100s+` |
 | LLM 工具生图后报 `413` 或上下文爆炸 | 当前版本会过滤 `thought_signature`；如仍出现请检查代理或网关是否把工具结果重新注入上下文 |
 | 无法获取头像 | 确认使用 NapCat 平台，并检查网络权限 |

@@ -14,7 +14,6 @@ _PROVIDER_MODULES = (
     "tl.api.agnes_ai",
     "tl.api.xai",
     "tl.api.minimax",
-    "tl.api.stepfun",
     "tl.api.openai_images",
     "tl.api.doubao",
     "tl.api.sensenova",

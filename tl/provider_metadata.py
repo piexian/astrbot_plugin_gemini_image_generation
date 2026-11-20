@@ -97,14 +97,6 @@ _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
         ),
     ),
     ProviderSpec(
-        "stepfun",
-        "tl.api.stepfun.StepfunProvider",
-        settings_attr="stepfun_settings",
-        edit_capability_path="tl.provider_hooks.stepfun_edit_capability",
-        capability_profile_path="tl.provider_capabilities.stepfun_capability",
-        model_catalog_kind="openai",
-    ),
-    ProviderSpec(
         "openai_images",
         "tl.api.openai_images.OpenAIImagesProvider",
         settings_attr="openai_images_settings",
@@ -213,6 +205,15 @@ def get_provider_spec(api_type: Any) -> ProviderSpec | None:
 def is_known_api_type(api_type: Any) -> bool:
     """Return whether the value is a registered provider key."""
     return get_provider_spec(api_type) is not None
+
+
+# 已整体下线的供应商：保留键名以便旧配置静默忽略，不再注册 ProviderSpec
+RETIRED_API_TYPES: Final[frozenset[str]] = frozenset({"stepfun"})
+
+
+def is_retired_api_type(api_type: Any) -> bool:
+    """Return whether the value is a retired provider key (silently ignored)."""
+    return normalize_api_type(api_type) in RETIRED_API_TYPES
 
 
 def iter_api_types() -> tuple[str, ...]:

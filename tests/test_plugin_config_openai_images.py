@@ -9,12 +9,16 @@ class _DummyLogger:
     def __init__(self) -> None:
         self.warnings: list[str] = []
         self.errors: list[str] = []
+        self.infos: list[str] = []
 
     def warning(self, message: str) -> None:
         self.warnings.append(message)
 
     def debug(self, message: str) -> None:
         return None
+
+    def info(self, message: str) -> None:
+        self.infos.append(message)
 
     def error(self, message: str) -> None:
         self.errors.append(message)
@@ -142,3 +146,34 @@ def test_openai_images_generations_only_marks_candidate_not_edit_capable() -> No
     assert new_settings["frame_count"] == 9
     assert new_settings["frame_duration_ms"] == 200
     assert new_settings["svg_model"] == "gpt-image-2.5-flare"
+
+
+def test_retired_stepfun_provider_silently_ignored() -> None:
+    """旧配置里的 stepfun 条目更新后静默跳过，不报错也不产生候选。"""
+    logger = _DummyLogger()
+    plugin_config = _import_plugin_config_module(logger)
+    cfg = plugin_config.ConfigLoader(
+        {
+            "provider_settings": {
+                "provider_polling": ["google", "stepfun"],
+                "provider_overrides": [
+                    {
+                        "__template_key": "google",
+                        "api_keys": ["x"],
+                        "model": "gemini-2.5-flash-image",
+                    },
+                    {
+                        "__template_key": "stepfun",
+                        "api_keys": ["y"],
+                        "model": "step-image-edit-2",
+                    },
+                ],
+            }
+        }
+    ).load()
+
+    assert [c.api_type for c in cfg.provider_candidates] == ["google"]
+    assert not any("stepfun" in m for m in cfg.provider_config_errors)
+    assert not any("未知供应商" in m for m in cfg.provider_config_errors)
+    assert logger.errors == []
+    assert any("已下线" in m for m in logger.infos)

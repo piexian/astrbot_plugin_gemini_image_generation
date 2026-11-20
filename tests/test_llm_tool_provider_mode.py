@@ -123,7 +123,7 @@ def test_optional_options_schema_validates_nullable_types(placement, options, va
         ProviderCandidate(id=api_type, api_type=api_type, settings={"model": model})
         for api_type, model in [
             ("openai_images", "gpt-image-1"),
-            ("stepfun", "step-image-edit"),
+            ("dashscope", "qwen-image-2.0"),
             ("minimax", "image-01"),
         ]
     ]

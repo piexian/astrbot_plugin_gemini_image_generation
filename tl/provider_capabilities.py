@@ -294,22 +294,6 @@ def minimax_capability(candidate: Any) -> dict[str, Any]:
     )
 
 
-def stepfun_capability(candidate: Any) -> dict[str, Any]:
-    # negative_prompt/text_mode 仅 step-image-edit 系列支持，其余模型不声明
-    if not _model(candidate).lower().startswith("step-image-edit"):
-        return _profile(candidate)
-    return _profile(
-        candidate,
-        parameters={
-            "negative_prompt": {
-                "type": "string",
-                "default_source": "provider_config",
-            }
-        },
-        request_setting_map={"negative_prompt": "negative_prompt"},
-    )
-
-
 def openai_images_capability(candidate: Any) -> dict[str, Any]:
     from .api.openai_image_options import gpt_image_quality_values
     from .api.openai_images import _is_gpt_image_model
@@ -621,7 +605,6 @@ def candidate_reference_limit(candidate: Any) -> int:
         "minimax": limits.MAX_REFERENCE_IMAGES_MINIMAX,
         "sensenova": limits.MAX_REFERENCE_IMAGES_SENSENOVA_U15,
         "senseaudio": limits.MAX_REFERENCE_IMAGES_SENSEAUDIO,
-        "stepfun": 1,
     }.get(api_type, configured)
     if api_type == "minimax" and model in {
         "minimax-h3-image",
