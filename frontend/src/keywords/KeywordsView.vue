@@ -106,13 +106,9 @@ function toForm(entry: Record<string, unknown>): Binding {
     wordsText: words.join("，"),
     ref_ids: Array.isArray(entry.ref_ids) ? (entry.ref_ids as string[]) : [],
     ref_files: Array.isArray(entry.ref_files) ? (entry.ref_files as string[]) : [],
-    ref_addresses: Array.isArray(entry.ref_addresses)
-      ? (entry.ref_addresses as string[])
-      : [],
+    ref_addresses: Array.isArray(entry.ref_addresses) ? (entry.ref_addresses as string[]) : [],
     files: Array.isArray(entry.files) ? (entry.files as FileState[]) : [],
-    addresses: Array.isArray(entry.addresses)
-      ? (entry.addresses as AddressState[])
-      : [],
+    addresses: Array.isArray(entry.addresses) ? (entry.addresses as AddressState[]) : [],
     addressInput: "",
     prompt_append: String(entry.prompt_append || ""),
     enabled: entry.enabled !== false,
@@ -383,7 +379,12 @@ defineExpose({ reload });
         <p class="muted">{{ t("命中关键词时自动注入参考图库条目与提示词片段。") }}</p>
       </div>
       <div class="keywords-actions">
-        <button type="button" class="comic-btn" :disabled="loading || unavailable()" @click="reload">
+        <button
+          type="button"
+          class="comic-btn"
+          :disabled="loading || unavailable()"
+          @click="reload"
+        >
           {{ t("刷新") }}
         </button>
       </div>
@@ -486,10 +487,7 @@ defineExpose({ reload });
             {{ t("添加地址") }}
           </button>
         </div>
-        <div
-          v-if="binding.files.length || binding.addresses.length"
-          class="keywords-media-list"
-        >
+        <div v-if="binding.files.length || binding.addresses.length" class="keywords-media-list">
           <span v-for="file in binding.files" :key="file.path" class="keywords-media-chip">
             <span class="keywords-media-label" :title="file.path">{{ file.label }}</span>
             <span v-if="file.missing" class="keywords-missing">{{ t("缺失") }}</span>
@@ -509,11 +507,7 @@ defineExpose({ reload });
               ×
             </button>
           </span>
-          <span
-            v-for="addr in binding.addresses"
-            :key="addr.address"
-            class="keywords-media-chip"
-          >
+          <span v-for="addr in binding.addresses" :key="addr.address" class="keywords-media-chip">
             <span class="keywords-media-label" :title="addr.address">{{ addr.address }}</span>
             <span class="keywords-kind">{{ addr.kind === "url" ? t("URL") : t("本地") }}</span>
             <span v-if="addr.missing" class="keywords-missing">{{ t("缺失") }}</span>

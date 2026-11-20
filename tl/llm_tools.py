@@ -35,12 +35,12 @@ from .core.states import JobState
 from .generation_errors import api_failure_message
 from .generation_tracker import requester_from_event
 from .image_generator import DEFAULT_MAX_REFERENCE_IMAGES
-from .keyword_media import media_job_id
 from .internal_references import (
     InternalReferenceError,
     ReferenceResolver,
     parse_references,
 )
+from .keyword_media import media_job_id
 from .llm_output import image_location_list, image_locations
 from .openai_image_size import (
     CUSTOM_SIZE_DEFAULT,

@@ -61,8 +61,8 @@ from .tl.generation_tracker import (
     GenerationTracker,
     requester_from_event,
 )
-from .tl.keyword_trigger import KeywordTriggerService
 from .tl.keyword_media import KeywordMediaService
+from .tl.keyword_trigger import KeywordTriggerService
 from .tl.llm_query_tools import GeminiImageLookupTool, GeminiImageShareTool
 from .tl.llm_tools import GeminiImageBatchTool, GeminiImageGenerationTool
 from .tl.plugin_config import get_session_tool_timeout, max_configured_reference_images

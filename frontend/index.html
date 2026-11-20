@@ -42,107 +42,123 @@
           data-i18n-aria-label="向左滚动"
           hidden
         >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <polyline points="15 18 9 12 15 6" />
+          </svg>
         </button>
-      <nav class="studio-nav" role="tablist" aria-label="页面导航" data-i18n-aria-label="页面导航">
-        <button
-          type="button"
-          class="tab-btn tab-btn--active"
-          id="tab-btn-workbench"
-          role="tab"
-          aria-selected="true"
-          aria-controls="panel-workbench"
-          tabindex="0"
+        <nav
+          class="studio-nav"
+          role="tablist"
+          aria-label="页面导航"
+          data-i18n-aria-label="页面导航"
         >
-          <span class="tab-icon" data-icon="brush"></span>
-          <span class="tab-label" data-i18n="工作台">工作台</span>
-        </button>
-        <button
-          type="button"
-          class="tab-btn"
-          id="tab-btn-progress"
-          role="tab"
-          aria-selected="false"
-          aria-controls="panel-progress"
-          tabindex="-1"
-        >
-          <span class="tab-icon" data-icon="clock"></span>
-          <span class="tab-label" data-i18n="任务进度">任务进度</span>
-          <span class="tab-badge" id="active-jobs-count" style="display: none">0</span>
-        </button>
-        <button
-          type="button"
-          class="tab-btn"
-          id="tab-btn-gallery"
-          role="tab"
-          aria-selected="false"
-          aria-controls="panel-gallery"
-          tabindex="-1"
-        >
-          <span class="tab-icon" data-icon="grid"></span>
-          <span class="tab-label" data-i18n="历史画廊">历史画廊</span>
-        </button>
-        <button
-          type="button"
-          class="tab-btn"
-          id="tab-btn-limits"
-          role="tab"
-          aria-selected="false"
-          aria-controls="panel-limits"
-          tabindex="-1"
-        >
-          <span class="tab-icon" data-icon="sliders"></span>
-          <span class="tab-label" data-i18n="限流控制">限流控制</span>
-        </button>
-        <button
-          type="button"
-          class="tab-btn"
-          id="tab-btn-providers"
-          role="tab"
-          aria-selected="false"
-          aria-controls="panel-providers"
-          tabindex="-1"
-        >
-          <span class="tab-icon" data-icon="sliders"></span>
-          <span class="tab-label" data-i18n="供应商配置">供应商配置</span>
-        </button>
-        <button
-          type="button"
-          class="tab-btn"
-          id="tab-btn-references"
-          role="tab"
-          aria-selected="false"
-          aria-controls="panel-references"
-          tabindex="-1"
-        >
-          <span class="tab-icon" data-icon="grid"></span>
-          <span class="tab-label" data-i18n="参考图库">参考图库</span>
-        </button>
-        <button
-          type="button"
-          class="tab-btn"
-          id="tab-btn-keywords"
-          role="tab"
-          aria-selected="false"
-          aria-controls="panel-keywords"
-          tabindex="-1"
-        >
-          <span class="tab-icon" data-icon="bookmark"></span>
-          <span class="tab-label" data-i18n="关键词">关键词</span>
-        </button>
-        <button
-          type="button"
-          class="tab-btn"
-          id="tab-btn-templates"
-          role="tab"
-          aria-selected="false"
-          aria-controls="panel-templates"
-          tabindex="-1"
-        >
-          <span class="tab-icon" data-icon="brush"></span>
-          <span class="tab-label" data-i18n="提示词广场">提示词广场</span>
-        </button>
-      </nav>
+          <button
+            type="button"
+            class="tab-btn tab-btn--active"
+            id="tab-btn-workbench"
+            role="tab"
+            aria-selected="true"
+            aria-controls="panel-workbench"
+            tabindex="0"
+          >
+            <span class="tab-icon" data-icon="brush"></span>
+            <span class="tab-label" data-i18n="工作台">工作台</span>
+          </button>
+          <button
+            type="button"
+            class="tab-btn"
+            id="tab-btn-progress"
+            role="tab"
+            aria-selected="false"
+            aria-controls="panel-progress"
+            tabindex="-1"
+          >
+            <span class="tab-icon" data-icon="clock"></span>
+            <span class="tab-label" data-i18n="任务进度">任务进度</span>
+            <span class="tab-badge" id="active-jobs-count" style="display: none">0</span>
+          </button>
+          <button
+            type="button"
+            class="tab-btn"
+            id="tab-btn-gallery"
+            role="tab"
+            aria-selected="false"
+            aria-controls="panel-gallery"
+            tabindex="-1"
+          >
+            <span class="tab-icon" data-icon="grid"></span>
+            <span class="tab-label" data-i18n="历史画廊">历史画廊</span>
+          </button>
+          <button
+            type="button"
+            class="tab-btn"
+            id="tab-btn-limits"
+            role="tab"
+            aria-selected="false"
+            aria-controls="panel-limits"
+            tabindex="-1"
+          >
+            <span class="tab-icon" data-icon="sliders"></span>
+            <span class="tab-label" data-i18n="限流控制">限流控制</span>
+          </button>
+          <button
+            type="button"
+            class="tab-btn"
+            id="tab-btn-providers"
+            role="tab"
+            aria-selected="false"
+            aria-controls="panel-providers"
+            tabindex="-1"
+          >
+            <span class="tab-icon" data-icon="sliders"></span>
+            <span class="tab-label" data-i18n="供应商配置">供应商配置</span>
+          </button>
+          <button
+            type="button"
+            class="tab-btn"
+            id="tab-btn-references"
+            role="tab"
+            aria-selected="false"
+            aria-controls="panel-references"
+            tabindex="-1"
+          >
+            <span class="tab-icon" data-icon="grid"></span>
+            <span class="tab-label" data-i18n="参考图库">参考图库</span>
+          </button>
+          <button
+            type="button"
+            class="tab-btn"
+            id="tab-btn-keywords"
+            role="tab"
+            aria-selected="false"
+            aria-controls="panel-keywords"
+            tabindex="-1"
+          >
+            <span class="tab-icon" data-icon="bookmark"></span>
+            <span class="tab-label" data-i18n="关键词">关键词</span>
+          </button>
+          <button
+            type="button"
+            class="tab-btn"
+            id="tab-btn-templates"
+            role="tab"
+            aria-selected="false"
+            aria-controls="panel-templates"
+            tabindex="-1"
+          >
+            <span class="tab-icon" data-icon="brush"></span>
+            <span class="tab-label" data-i18n="提示词广场">提示词广场</span>
+          </button>
+        </nav>
         <button
           type="button"
           class="nav-arrow"
@@ -151,7 +167,18 @@
           data-i18n-aria-label="向右滚动"
           hidden
         >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <polyline points="9 18 15 12 9 6" />
+          </svg>
         </button>
       </div>
 

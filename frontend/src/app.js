@@ -1661,8 +1661,7 @@ class StudioApp {
       const updateArrows = () => {
         const overflow = nav.scrollWidth > nav.clientWidth + 1;
         arrowLeft.hidden = !overflow || nav.scrollLeft <= 1;
-        arrowRight.hidden =
-          !overflow || nav.scrollLeft + nav.clientWidth >= nav.scrollWidth - 1;
+        arrowRight.hidden = !overflow || nav.scrollLeft + nav.clientWidth >= nav.scrollWidth - 1;
       };
       const onLeft = () => nav.scrollBy({ left: -160, behavior: "smooth" });
       const onRight = () => nav.scrollBy({ left: 160, behavior: "smooth" });
