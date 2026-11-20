@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import tempfile
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -15,14 +16,19 @@ from typing import Any
 from astrbot.api import logger
 
 from .core.errors import redact_text
+from .keyword_media import media_job_id
 from .keyword_trigger import (
     MAX_BINDINGS,
     MAX_PROMPT_APPEND_TOTAL,
     REF_ID,
     normalize_binding,
     normalize_trigger_settings,
+    valid_address,
+    valid_ref_file,
 )
 from .web_studio_service import StudioServiceError
+
+KEYWORD_FILES_FOLDER = "files/keyword_trigger/bindings/templates/binding/ref_files"
 
 
 def _short_revision(value: Any) -> str:
@@ -43,6 +49,7 @@ class StudioKeywordService:
         *,
         config_lock=None,
         is_closed=None,
+        keyword_media=None,
     ):
         self.raw_config = raw_config
         self.config = config
@@ -52,6 +59,7 @@ class StudioKeywordService:
         self.data_dir = Path(data_dir)
         self._config_lock = config_lock if config_lock is not None else asyncio.Lock()
         self._is_closed = is_closed or (lambda: False)
+        self.keyword_media = keyword_media
 
     def _raw_section(self) -> dict[str, Any]:
         section = self.raw_config.get("keyword_trigger")
@@ -69,6 +77,76 @@ class StudioKeywordService:
             "missing": entry is None,
         }
 
+    def _media_entry(self, source: str) -> dict[str, str]:
+        if self.keyword_media is None:
+            return {}
+        return self.keyword_media.media_state().get(source) or {}
+
+    def _file_state(self, rel: str) -> dict[str, Any]:
+        safe = valid_ref_file(rel.replace("\\", "/"))
+        path = self.data_dir / rel
+        entry = self._media_entry(rel)
+        return {
+            "path": rel,
+            "label": rel.rsplit("/", 1)[-1],
+            "missing": not safe or not path.is_file(),
+            "gen": f"gen:{entry.get('job_id') or media_job_id(rel)}",
+        }
+
+    def _address_state(self, address: str) -> dict[str, Any]:
+        entry = self._media_entry(address)
+        is_url = address.lower().startswith(("http://", "https://"))
+        resolved = (
+            self.keyword_media.resolve_address(address)
+            if self.keyword_media is not None
+            else None
+        )
+        return {
+            "address": address,
+            "kind": "url" if is_url else "path",
+            "missing": resolved is None,
+            "gen": f"gen:{entry.get('job_id') or media_job_id(address)}",
+        }
+
+    def list_files(self) -> dict[str, Any]:
+        """列出绑定文件目录里已上传的图片（与宿主 file 字段同目录）。"""
+        folder = self.data_dir / KEYWORD_FILES_FOLDER
+        files = []
+        if folder.is_dir():
+            for path in sorted(folder.iterdir()):
+                rel = f"{KEYWORD_FILES_FOLDER}/{path.name}"
+                if path.is_file() and valid_ref_file(rel):
+                    files.append(rel)
+        return {"files": files}
+
+    async def save_file(self, filename: str, data: bytes) -> dict[str, Any]:
+        name = os.path.basename(str(filename or "").replace("\\", "/")).strip()
+        rel = f"{KEYWORD_FILES_FOLDER}/{name}"
+        if not name or not valid_ref_file(rel):
+            raise StudioServiceError("仅支持 png/jpg/jpeg/webp/gif/bmp 图片文件名")
+        folder = self.data_dir / KEYWORD_FILES_FOLDER
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / name
+        if target.exists() and await asyncio.to_thread(target.read_bytes) != data:
+            stem, _, ext = name.rpartition(".")
+            name = f"{stem}-{uuid.uuid4().hex[:6]}.{ext}"
+        await asyncio.to_thread((folder / name).write_bytes, data)
+        return {"path": f"{KEYWORD_FILES_FOLDER}/{name}"}
+
+    async def delete_file(self, rel: str) -> dict[str, Any]:
+        rel = str(rel or "").replace("\\", "/")
+        if not rel.startswith(KEYWORD_FILES_FOLDER + "/") or not valid_ref_file(rel):
+            raise StudioServiceError("文件路径非法")
+        for entry in self._raw_section().get("bindings") or []:
+            if isinstance(entry, dict) and rel in (entry.get("ref_files") or []):
+                raise StudioServiceError(
+                    "文件仍被绑定引用，请先从绑定移除", status_code=409
+                )
+        path = self.data_dir / rel
+        if path.is_file():
+            await asyncio.to_thread(path.unlink)
+        return {"deleted": rel}
+
     def get_keywords(self) -> dict[str, Any]:
         """页面数据：设置、绑定及每条绑定的参考图标签与缺失态。"""
         raw = copy.deepcopy(self._raw_section())
@@ -83,7 +161,16 @@ class StudioKeywordService:
                     self._ref_state(str(ref_id))
                     for ref_id in entry.get("ref_ids") or []
                 ]
-                bindings.append({**entry, "refs": refs})
+                files = [
+                    self._file_state(str(rel)) for rel in entry.get("ref_files") or []
+                ]
+                addresses = [
+                    self._address_state(str(addr))
+                    for addr in entry.get("ref_addresses") or []
+                ]
+                bindings.append(
+                    {**entry, "refs": refs, "files": files, "addresses": addresses}
+                )
         return {
             "revision": self._revision(),
             "settings": {
@@ -121,6 +208,7 @@ class StudioKeywordService:
                     "id": item["id"],
                     "label": item["label"],
                     "missing": item["missing"],
+                    "kind": item.get("kind", "library"),
                 }
                 for item in expansion.refs
             ],
@@ -176,6 +264,26 @@ class StudioKeywordService:
                     raise StudioServiceError(
                         f"第 {index} 条绑定引用的参考图库条目不存在: {ref_id}"
                     )
+            ref_files = entry.get("ref_files") or []
+            if not isinstance(ref_files, list):
+                raise StudioServiceError(f"第 {index} 条绑定的 ref_files 必须是数组")
+            for raw_rel in ref_files:
+                rel = str(raw_rel or "").replace("\\", "/")
+                if not valid_ref_file(rel):
+                    raise StudioServiceError(
+                        f"第 {index} 条绑定的上传文件路径非法: {rel}"
+                    )
+            addresses = entry.get("ref_addresses") or []
+            if not isinstance(addresses, list):
+                raise StudioServiceError(
+                    f"第 {index} 条绑定的 ref_addresses 必须是数组"
+                )
+            for raw_addr in addresses:
+                address = str(raw_addr or "").strip()
+                if not valid_address(address):
+                    raise StudioServiceError(
+                        f"第 {index} 条绑定的参考图地址非法: {address}"
+                    )
             binding = normalize_binding(entry, index - 1)
             if binding is None:
                 raise StudioServiceError(f"第 {index} 条绑定缺少触发关键词")
@@ -185,6 +293,8 @@ class StudioKeywordService:
                     "name": binding.name,
                     "words": binding.words,
                     "ref_ids": binding.ref_ids,
+                    "ref_files": binding.ref_files,
+                    "ref_addresses": binding.ref_addresses,
                     "prompt_append": binding.prompt_append,
                     "enabled": binding.enabled,
                 }
@@ -273,6 +383,14 @@ class StudioKeywordService:
                 )
             self.config.keyword_trigger = copy.deepcopy(merged)
             self.keyword_trigger.refresh(merged)
+            if self.keyword_media is not None:
+                try:
+                    await self.keyword_media.ensure_registered(bindings)
+                except Exception as exc:
+                    logger.warning(
+                        "[关键词] 素材注册失败，配置已生效: "
+                        f"{redact_text(str(exc))[:200]}"
+                    )
             logger.info(
                 f"[关键词] Studio 配置已保存并即时生效: "
                 f"绑定条数={len(bindings)}, 模式={normalized.mode}"

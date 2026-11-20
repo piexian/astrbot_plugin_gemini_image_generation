@@ -61,6 +61,7 @@ from .tl.generation_tracker import (
     GenerationTracker,
     requester_from_event,
 )
+from .tl.keyword_media import KeywordMediaService
 from .tl.keyword_trigger import KeywordTriggerService
 from .tl.llm_query_tools import GeminiImageLookupTool, GeminiImageShareTool
 from .tl.llm_tools import GeminiImageBatchTool, GeminiImageGenerationTool
@@ -163,6 +164,17 @@ class GeminiImageGenerationPlugin(Star):
             self._plugin_data_dir,
             validate_fn=WebStudioService._validate_image_bytes,
         )
+        self.keyword_media = KeywordMediaService(
+            library=self.reference_library,
+            tracker=self.generation_tracker,
+            data_dir=self._plugin_data_dir,
+            files_root=os.path.join(self._plugin_data_dir, "files"),
+            validate_fn=WebStudioService._validate_image_bytes,
+            proxy_fn=lambda: self.cfg.proxy,
+        )
+        self.generation_tracker.set_extra_protected_fn(
+            self.keyword_media.protected_names
+        )
         self.web_studio_service = WebStudioService(
             self.api_client,
             self.generation_tracker,
@@ -186,8 +198,13 @@ class GeminiImageGenerationPlugin(Star):
             logger.warning(
                 f"[WebUI] 参考图晋升对账失败（不影响启动）: {redact_text(str(e))[:240]}"
             )
-        self.keyword_trigger = KeywordTriggerService(self._resolve_keyword_ref)
+        self.keyword_trigger = KeywordTriggerService(
+            self._resolve_keyword_ref,
+            self._resolve_keyword_file,
+            self.keyword_media.resolve_address,
+        )
         self.keyword_trigger.refresh(self.cfg.keyword_trigger)
+        self._keyword_media_task = asyncio.create_task(self._register_keyword_media())
         self._web_api = None
         self.studio_providers = None
         self.studio_templates = None
@@ -385,6 +402,27 @@ class GeminiImageGenerationPlugin(Star):
             return None
         return {"path": str(path), "label": entry.get("label") or ref_id}
 
+    def _resolve_keyword_file(self, rel: str) -> dict[str, Any] | None:
+        """上传绑定文件解析为配置 files 目录下的注入路径；缺失返回 None。"""
+        root = Path(self._plugin_data_dir) / "files"
+        path = (Path(self._plugin_data_dir) / rel).resolve()
+        if not path.is_relative_to(root.resolve()) or not path.is_file():
+            return None
+        return {"path": str(path), "label": path.name}
+
+    async def _register_keyword_media(self) -> None:
+        """首载与热重载后摄入关键词绑定素材；失败只告警。"""
+        try:
+            trigger_cfg = self.cfg.keyword_trigger
+            bindings = (
+                trigger_cfg.get("bindings") if isinstance(trigger_cfg, dict) else None
+            )
+            await self.keyword_media.ensure_registered(bindings)
+        except Exception as e:
+            logger.warning(
+                f"[关键词素材] 注册失败（不影响加载）: {redact_text(str(e))[:240]}"
+            )
+
     def _keyword_bindings_listing(self) -> str:
         """列出启用的关键词绑定；/快速 关键词 无参时展示。"""
         bindings = self.keyword_trigger.enabled_bindings()
@@ -396,6 +434,13 @@ class GeminiImageGenerationPlugin(Star):
             for ref_id in binding.ref_ids:
                 resolved = self._resolve_keyword_ref(ref_id)
                 labels.append(resolved["label"] if resolved else f"{ref_id}（缺失）")
+            for rel in binding.ref_files:
+                resolved = self._resolve_keyword_file(rel)
+                name = rel.rsplit("/", 1)[-1]
+                labels.append(resolved["label"] if resolved else f"{name}（缺失）")
+            for address in binding.ref_addresses:
+                resolved = self.keyword_media.resolve_address(address)
+                labels.append(address if resolved else f"{address}（缺失）")
             targets = "、".join(labels) if labels else "无参考图"
             fragment = binding.prompt_append or "无提示词片段"
             lines.append(
@@ -507,6 +552,7 @@ class GeminiImageGenerationPlugin(Star):
                 self._plugin_data_dir,
                 config_lock=self.configuration_lock,
                 is_closed=lambda: self._web_closed,
+                keyword_media=self.keyword_media,
             )
             self.studio_templates = StudioTemplateService(
                 self.prompt_templates,
@@ -549,6 +595,11 @@ class GeminiImageGenerationPlugin(Star):
         """插件卸载/重载时调用"""
         self._web_closed = True
         self.provider_runtime.closed = True
+        # 素材任务可能仍在下载：先取消并等待协程退出，避免旧实例在重载后写盘。
+        media_task = getattr(self, "_keyword_media_task", None)
+        if media_task is not None and not media_task.done():
+            media_task.cancel()
+            await asyncio.gather(media_task, return_exceptions=True)
         await self._public_service.close()
         await self.generation_scheduler.close()
         if self.studio_providers is not None:
@@ -562,6 +613,10 @@ class GeminiImageGenerationPlugin(Star):
             await self.web_studio_service.close()
         except Exception as e:
             logger.warning(f"[WebUI] 关闭工作台服务失败: {redact_text(e)[:240]}")
+        try:
+            await self.reference_library.close()
+        except Exception as e:
+            logger.warning(f"[参考图库] 关闭参考图库失败: {redact_text(str(e))[:240]}")
         route_count = len(self._web_routes)
         try:
             if self._web_api is not None:
@@ -627,6 +682,7 @@ class GeminiImageGenerationPlugin(Star):
         allowed_roots = [REFERENCE_IMAGE_CACHE_DIR]
         if library is not None:
             allowed_roots.append(library.directory)
+        allowed_roots.append(os.path.join(self._plugin_data_dir, "files"))
         try:
             service = build_generation_stack(
                 client=lambda: self.api_client,

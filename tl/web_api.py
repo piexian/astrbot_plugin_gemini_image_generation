@@ -77,6 +77,8 @@ _PANEL_ONLY_METHODS = {
     "/references/delete": frozenset({"POST"}),
     "/keywords": frozenset({"GET", "POST"}),
     "/keywords/preview": frozenset({"POST"}),
+    "/keywords/files": frozenset({"GET", "POST"}),
+    "/keywords/files/delete": frozenset({"POST"}),
 }
 
 
@@ -234,6 +236,18 @@ class WebStudioAPI:
             "keywords_preview",
             ["POST"],
             "WebUI 关键词触发预演",
+        ),
+        (
+            "/keywords/files",
+            "keywords_files",
+            ["GET", "POST"],
+            "WebUI 关键词绑定文件",
+        ),
+        (
+            "/keywords/files/delete",
+            "keywords_files_delete",
+            ["POST"],
+            "WebUI 关键词绑定文件删除",
         ),
     )
 
@@ -467,6 +481,52 @@ class WebStudioAPI:
         except Exception:
             logger.error("[关键词] 预演请求失败", exc_info=True)
             return error_response("关键词预演暂时不可用", status_code=500)
+
+    async def keywords_files(self):
+        if denied := self._keywords_guard():
+            return denied
+        try:
+            if request.method == "POST":
+                config = getattr(self.service, "config", None)
+                maximum = (
+                    min(
+                        max(int(getattr(config, "webui_upload_max_mb", 20)), 1) * 4, 200
+                    )
+                    * 1024
+                    * 1024
+                    + 65536
+                )
+                with _bounded_request(maximum):
+                    uploaded = await request.files()
+                files = []
+                for key in uploaded.keys():
+                    files.extend(uploaded.getlist(key))
+                if not files:
+                    return error_response("未收到上传文件", status_code=400)
+                upload = files[0]
+                data = await upload.read()
+                result = await self.keyword_service.save_file(upload.filename, data)
+                return self._ok(result, status_code=201)
+            return self._ok(self.keyword_service.list_files())
+        except StudioServiceError as exc:
+            return self._service_error(exc)
+        except Exception:
+            logger.error("[关键词] 绑定文件请求失败", exc_info=True)
+            return error_response("关键词绑定文件暂时不可用", status_code=500)
+
+    async def keywords_files_delete(self):
+        if denied := self._keywords_guard():
+            return denied
+        try:
+            payload = await self._json_body()
+            if payload is None or not isinstance(payload.get("path"), str):
+                return error_response("请求体必须包含 path", status_code=400)
+            return self._ok(await self.keyword_service.delete_file(payload["path"]))
+        except StudioServiceError as exc:
+            return self._service_error(exc)
+        except Exception:
+            logger.error("[关键词] 绑定文件删除失败", exc_info=True)
+            return error_response("关键词绑定文件暂时不可用", status_code=500)
 
     async def sessions(self):
         if denied := self._limits_guard():

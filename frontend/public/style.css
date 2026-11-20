@@ -195,14 +195,56 @@ pre,
 }
 
 /* 4. 导航条 (Navigation Tabs) */
+.studio-nav-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 28px;
+}
+
 .studio-nav {
   display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
   gap: 12px;
-  margin-bottom: 28px;
+  overflow-x: auto;
+  scroll-behavior: smooth;
+  scrollbar-width: none;
+}
+
+.studio-nav::-webkit-scrollbar {
+  display: none;
+}
+
+.nav-arrow {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: var(--border-comic);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  box-shadow: 2px 2px 0 var(--ink);
+}
+
+.nav-arrow[hidden] {
+  display: none;
+}
+
+.nav-arrow:active {
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0 var(--ink);
 }
 
 .tab-btn {
   display: inline-flex;
+  flex: 0 0 auto;
+  white-space: nowrap;
   align-items: center;
   gap: 8px;
   padding: 10px 22px;
@@ -2167,16 +2209,16 @@ pre,
   .brand-desc {
     font-size: 12px;
   }
-  .studio-nav {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px;
+  .studio-nav-wrap {
     margin-bottom: 24px;
+  }
+  .studio-nav {
+    gap: 8px;
   }
   .tab-btn {
     justify-content: center;
     gap: 6px;
-    padding: 10px 4px;
+    padding: 10px 14px;
     font-size: 13px;
     white-space: nowrap;
   }

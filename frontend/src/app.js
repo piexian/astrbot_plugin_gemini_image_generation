@@ -1654,6 +1654,30 @@ class StudioApp {
         });
       }
     });
+    const nav = document.querySelector(".studio-nav");
+    const arrowLeft = document.getElementById("nav-arrow-left");
+    const arrowRight = document.getElementById("nav-arrow-right");
+    if (nav && arrowLeft && arrowRight) {
+      const updateArrows = () => {
+        const overflow = nav.scrollWidth > nav.clientWidth + 1;
+        arrowLeft.hidden = !overflow || nav.scrollLeft <= 1;
+        arrowRight.hidden = !overflow || nav.scrollLeft + nav.clientWidth >= nav.scrollWidth - 1;
+      };
+      const onLeft = () => nav.scrollBy({ left: -160, behavior: "smooth" });
+      const onRight = () => nav.scrollBy({ left: 160, behavior: "smooth" });
+      arrowLeft.addEventListener("click", onLeft);
+      arrowRight.addEventListener("click", onRight);
+      nav.addEventListener("scroll", updateArrows, { passive: true });
+      window.addEventListener("resize", updateArrows);
+      this.navArrows = { updateArrows };
+      this.navCleanups.push(() => {
+        arrowLeft.removeEventListener("click", onLeft);
+        arrowRight.removeEventListener("click", onRight);
+        nav.removeEventListener("scroll", updateArrows);
+        window.removeEventListener("resize", updateArrows);
+      });
+      updateArrows();
+    }
   }
 
   switchTab(tabKey) {
@@ -1677,6 +1701,11 @@ class StudioApp {
         panel.classList.toggle("studio-panel--active", isActive);
       }
     });
+    const activeBtn = this.tabBtns[tabKey];
+    if (activeBtn && this.navArrows) {
+      activeBtn.scrollIntoView({ behavior: "smooth", inline: "nearest", block: "nearest" });
+      this.navArrows.updateArrows();
+    }
 
     if (tabKey === "gallery") {
       this.gallery.fetchGallery();

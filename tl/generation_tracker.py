@@ -31,7 +31,7 @@ TERMINAL_STATUSES = {
     "failed",
     "interrupted",
 }
-_KNOWN_SOURCES = {"command", "llm_tool", "llm_batch", "webui", "plugin"}
+_KNOWN_SOURCES = {"command", "llm_tool", "llm_batch", "webui", "plugin", "keyword"}
 _SAFE_FILE_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 _PARAM_KEYS = (
     "resolution",
@@ -342,6 +342,7 @@ class GenerationTracker:
         self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
         self._closed = False
         self._reference_lookup: Callable[[str], Path | None] | None = None
+        self._extra_protected_fn: Callable[[], set[str]] | None = None
         self._jobs = self._load_jobs() if self.enabled else {}
         changed_records = self._mark_running_interrupted()
         pruned = self._prune_locked()
@@ -403,7 +404,16 @@ class GenerationTracker:
     async def _save(self) -> None:
         if not self.enabled:
             return
-        await asyncio.to_thread(self._save_sync)
+        write = asyncio.ensure_future(asyncio.to_thread(self._save_sync))
+        try:
+            await asyncio.shield(write)
+        except asyncio.CancelledError:
+            # 写盘线程已提交：等它结束再退出，避免锁释放后与 close 的保存并发。
+            try:
+                await write
+            except asyncio.CancelledError:
+                pass
+            raise
 
     def import_legacy(self, records: list[dict[str, Any]]) -> int:
         """启动时批量补录历史图片记录（同步、仅在初始化期调用）。
@@ -452,11 +462,13 @@ class GenerationTracker:
 
     def protected_reference_names(self) -> set[str]:
         with self.gallery_lock:
-            return (
+            leased = (
                 set().union(*self._reference_leases.values())
                 if self._reference_leases
                 else set()
             )
+        extra = self._extra_protected_fn() if self._extra_protected_fn else set()
+        return leased | set(extra)
 
     def _release_reference_lease(self, job_id: str) -> None:
         with self.gallery_lock:
@@ -856,6 +868,10 @@ class GenerationTracker:
     def set_reference_lookup(self, lookup: Callable[[str], Path | None] | None) -> None:
         """注入画廊之外的参考图可用性探测；参考图库与画廊共享命名空间。"""
         self._reference_lookup = lookup
+
+    def set_extra_protected_fn(self, fn: Callable[[], set[str]] | None) -> None:
+        """注入额外受保护图片名（如关键词绑定素材），淘汰时跳过。"""
+        self._extra_protected_fn = fn
 
     def _external_reference_path(self, name: str) -> Path | None:
         if self._reference_lookup is None:

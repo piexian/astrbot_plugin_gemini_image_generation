@@ -3207,7 +3207,7 @@
       "bindings": {
         "description": "关键词绑定列表",
         "type": "template_list",
-        "hint": "命中任一关键词的绑定按顺序注入其参考图（按条目 ID 去重）与提示词片段。",
+        "hint": "命中任一关键词的绑定按顺序注入其参考图（图库条目、上传与地址，按参考值去重）与提示词片段。",
         "default": [],
         "templates": {
           "binding": {
@@ -3230,6 +3230,19 @@
                 "description": "参考图库条目 ID",
                 "type": "list",
                 "hint": "形如 ref-xxxxxxxxxxxx；在 Studio 关键词页签可从参考图库选择",
+                "default": []
+              },
+              "ref_files": {
+                "description": "上传参考图",
+                "type": "file",
+                "file_types": ["png", "jpg", "jpeg", "webp", "gif", "bmp"],
+                "hint": "上传绑定图片，保存在插件数据目录，命中后与图库条目一起注入；Studio 关键词页签可管理",
+                "default": []
+              },
+              "ref_addresses": {
+                "description": "参考图地址",
+                "type": "list",
+                "hint": "图片 http(s) URL 或本地绝对路径；绑定时由插件下载/复制进参考图库并注册 gen 引用，AI 用 gen: 直接引用",
                 "default": []
               },
               "prompt_append": {
