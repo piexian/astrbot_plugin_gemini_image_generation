@@ -308,7 +308,7 @@ SenseNova（商汤日日新）provider，支持 `sensenova-u1.5-lite` 与 `sense
 
 ### `api/dashscope.py`
 
-DashScope（阿里云百炼）provider，接入原生 multimodal-generation 同步端点，支持 wan2.7 / qwen-image-2.0 / qwen-image-3.0 系列（文生图 + 多图编辑）与 z-image-turbo（纯文生图）；返回 URL 24 小时过期，故解析时强制下载落盘。
+DashScope（阿里云百炼）provider，接入原生 multimodal-generation 同步端点，支持 wan2.7 / qwen-image-2.0 / 2.1 / 3.0 系列（文生图 + 多图编辑）与 z-image-turbo（纯文生图）；返回 URL 24 小时过期，故解析时强制下载落盘。
 
 | 接口 | 说明 |
 |------|------|

@@ -437,6 +437,7 @@ _sensenova_edit_gate = _make_model_prefix_edit_gate("sensenova-u1.5")
 _dashscope_edit_gate = _make_model_prefix_edit_gate(
     "wan2.7",
     "qwen-image-2.0",
+    "qwen-image-2.1",
     "qwen-image-3.0",
     "qwen-image-edit",
 )
@@ -453,7 +454,7 @@ def sensenova_edit_capability(settings: dict[str, Any]) -> bool:
 
 
 def dashscope_edit_capability(settings: dict[str, Any]) -> bool:
-    """wan2.7 / qwen-image-2.0 / qwen-image-3.0 / qwen-image-edit 系列支持图像输入。"""
+    """wan2.7 / qwen-image-2.0 / 2.1 / 3.0 / qwen-image-edit 系列支持图像输入。"""
     return _dashscope_edit_gate(settings)
 
 

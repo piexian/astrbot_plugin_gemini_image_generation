@@ -487,11 +487,12 @@ def dashscope_capability(candidate: Any) -> dict[str, Any]:
     model = _model(candidate).lower()
     is_wan27 = model.startswith("wan2.7")
     is_zimage = model.startswith("z-image")
+    is_qwen21 = model.startswith("qwen-image-2.1")
     if is_wan27 and bool(settings.get("enable_sequential", False)):
         native_limit = 12
     elif is_wan27:
         native_limit = 4
-    elif model.startswith(("qwen-image-2.0", "qwen-image-3.0")):
+    elif model.startswith(("qwen-image-2.0", "qwen-image-2.1", "qwen-image-3.0")):
         native_limit = 6
     else:
         native_limit = 1
@@ -513,12 +514,14 @@ def dashscope_capability(candidate: Any) -> dict[str, Any]:
             "default_source": "provider_config",
         }
         setting_map["watermark"] = "watermark"
-    if not is_wan27 and not is_zimage:
+    if not is_wan27 and not is_zimage and not is_qwen21:
         parameters["negative_prompt"] = {
             "type": "string",
             "default_source": "provider_config",
         }
         setting_map["negative_prompt"] = "negative_prompt"
+    # seed 仅声明供工作台展示，不参与运行期注入（与 modelscope/siliconflow 一致）
+    parameters["seed"] = {"type": "integer", "default_source": "provider_config"}
     return _profile(
         candidate,
         native_batch_limit=native_limit,

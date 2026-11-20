@@ -634,33 +634,37 @@ Image 2.0 固定尺寸白名单与计费档位：
 
 ## dashscope_settings（DashScope 阿里云百炼专用配置）
 
-配置路径：`provider_settings.provider_overrides` 中选择 `dashscope` 模板。接入 DashScope **原生** multimodal-generation 同步接口（非 OpenAI 兼容格式），支持通义万相 `wan2.7-image-pro` / `wan2.7-image`（文生图 + 多图编辑）、千问图像 `qwen-image-3.0` / `qwen-image-2.0` 系列与 `z-image-turbo`（纯文生图）。
+配置路径：`provider_settings.provider_overrides` 中选择 `dashscope` 模板。接入 DashScope **原生** multimodal-generation 同步接口（非 OpenAI 兼容格式），默认端点 `https://maas.qianwenaiapi.com`。支持通义万相 `wan2.7-image-pro` / `wan2.7-image`（文生图 + 多图编辑）、千问图像 `qwen-image-3.0` / `qwen-image-2.1` / `qwen-image-2.0` 系列与 `z-image-turbo`（纯文生图）。
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `api_keys` | `[]` | DashScope API Key 列表（控制台获取的 Bearer Token），支持多 Key 轮换 |
 | `daily_limit_per_key` | `0` | 每个 Key 每日调用上限，`0` 表示不限制 |
-| `model` | `wan2.7-image-pro` | 推荐 `wan2.7-image-pro` / `wan2.7-image`；千问图像可选 `qwen-image-3.0-pro` / `qwen-image-3.0` / `qwen-image-2.0-pro` / `qwen-image-2.0`；`z-image-turbo` 仅快速文生图。仅支持同步调用模型，wan2.5 及更早的纯异步模型不适用 |
-| `endpoint_mode` | `dashscope` | 接入端点：`dashscope` 阿里云百炼官方端点；`token_plan` 千问 AI 平台 Token Plan 套餐端点 |
+| `model` | `wan2.7-image-pro` | 自由填写。推荐 `wan2.7-image-pro` / `wan2.7-image`；千问图像可选 `qwen-image-3.0-pro` / `qwen-image-3.0` / `qwen-image-2.1-pro` / `qwen-image-2.1-turbo` / `qwen-image-2.0-pro` / `qwen-image-2.0`；`z-image-turbo` 仅快速文生图。仅支持同步调用模型，wan2.5 及更早的纯异步模型不适用 |
+| `endpoint_mode` | `dashscope` | 接入端点：`dashscope` 千问 AI 平台官方端点（`https://maas.qianwenaiapi.com`）；`token_plan` Token Plan 套餐端点 |
 | `api_base` | - | 可选覆盖；留空按 `endpoint_mode` 自动选择地址，仅自建反代等特殊场景需要填写 |
-| `max_reference_images` | `9` | 最大参考图数量：wan2.7 / qwen-image-2.0 上限 9 张，qwen-image-3.0 上限 3 张；z-image 系列不支持参考图（直接报错） |
+| `max_reference_images` | `9` | 用户参考图上限，超过按顺序截取；实际不超过模型硬上限（wan2.7 / qwen-image-2.0/2.1 为 9，qwen-image-3.0 为 3）。z-image 系列不支持参考图（直接报错） |
 | `size_mode` | `preset` | `preset` 按分辨率+长宽比换算官方推荐像素；`custom` 直接发送 `custom_size` |
 | `resolution` | `2K` | 分辨率档位（`1K`/`2K`/`4K`）。4K 仅 `wan2.7-image-pro` 文生图支持，带参考图（编辑）及其余模型上限 2K，超出自动降档 |
 | `aspect_ratio` | `1:1` | 默认长宽比，快速模式传入覆盖值时优先 |
 | `custom_size` | `2048*2048` | 仅 `size_mode=custom` 生效。格式 `WxH`（x/×/* 均可，发送时统一为 `W*H`），或 wan2.7 简写 `1K`/`2K`/`4K`。custom 为显式覆盖，原样发送、不参与 `resolution` 的自动降档 |
 | `n` | `1` | 单次生成图片数量，按成功张数计费，超出范围自动钳制 |
 | `watermark` | `false` | 是否添加水印；z-image 系列不支持（自动跳过并记录日志） |
-| `negative_prompt` | - | 负向提示词，wan2.7 与 z-image 系列不支持（自动跳过并记录日志） |
-| `prompt_extend` | `false` | 提示词智能改写。服务端默认开启（增加 3-4 秒延迟）；插件提示词已增强，默认关闭并显式发送。wan2.7 不支持 |
-| `thinking_mode` | `true` | 增强推理，仅 wan2.7 生效；顺序模式下不可用 |
+| `negative_prompt` | - | 负向提示词，wan2.7、z-image、qwen-image-2.1 系列不支持（自动跳过并记录日志） |
+| `prompt_extend` | `false` | 提示词智能改写。服务端默认开启（增加 3-5 秒延迟）；插件提示词已增强，默认关闭并显式发送。wan2.7 不支持，z-image 与千问系列支持 |
+| `thinking_mode` | `true` | 增强推理，仅 wan2.7 非顺序文生图生效（带参考图或顺序模式下服务端忽略） |
 | `enable_sequential` | `false` | 顺序组图生成，仅 wan2.7 生效；开启后 `n` 上限提高到 12，`thinking_mode` 随之失效 |
+| `seed` | `0` | 随机种子，`0` 表示随机；范围 1-2147483647，相同种子结果更一致（不完全相同），全模型支持 |
+| `prompt_extend_mode` | `direct` | 仅 qwen-image-3.0/2.1 且 `prompt_extend` 开启时生效。`direct` 直接增强；`agent` 智能体增强（仅文生图，带参考图自动回退 direct） |
+| `enable_thinking` | `true` | 千问思考模式，仅 qwen-image-3.0/2.1 且 `prompt_extend` 开启时生效，提升画质但增加耗时 |
+| `color_palette` | - | 仅 wan2.7 非顺序模式生效。JSON 数组，3-10 项 `{"hex":"#RRGGBB","ratio":"25%"}`，占比和须 100%；留空不发送，非法自动跳过并告警 |
 | `proxy` | - | 独立代理地址，优先级高于全局代理和环境变量 |
 
 `dashscope` 供应商使用 DashScope 原生同步端点：
 
 - 文生图 / 图像编辑：`POST /api/v1/services/aigc/multimodal-generation/generation`
 - 生成图片仅返回 URL 且 **24 小时后过期**，provider 会立即下载落盘；下载失败时兜底返回直链
-- 不支持纯异步 legacy 模型（wan2.5 及更早、wanx 系列）；`color_palette`（wan2.7 品牌色）暂不支持配置
+- 不支持纯异步 legacy 模型（wan2.5 及更早、wanx 系列）；`color_palette`（wan2.7 品牌色）经 JSON 配置支持
 
 ### Token Plan（千问 AI 平台套餐）接入
 
@@ -673,17 +677,20 @@ Image 2.0 固定尺寸白名单与计费档位：
 
 参数门控规则（由 provider 按模型自动处理）：
 
-| 参数 | wan2.7 系列 | qwen-image-2.0 / 3.0 系列 | z-image-turbo | 其他（qwen-image-plus/max 等） |
-|------|------------|--------------------|---------------|-------------------------------|
-| `negative_prompt` | 不支持（跳过） | 支持 | 不支持（跳过） | 支持 |
-| `prompt_extend` | 不支持（跳过） | 显式发送 | 不支持（跳过） | 显式发送 |
-| `watermark` | 支持 | 支持 | 不支持（跳过） | 支持 |
-| `thinking_mode` | 支持（非顺序模式） | 不发送 | 不发送 | 不发送 |
-| `enable_sequential` | 支持 | 不发送 | 不发送 | 不发送 |
-| `n` 范围 | 标准 1-4 / 顺序 1-12 | 1-6 | 仅 1 | 仅 1 |
-| 参考图上限 | 9 | qwen-image-2.0：9；qwen-image-3.0：3 | 不支持（报错） | 仅 qwen-image-edit 系列 |
+| 参数 | wan2.7 系列 | qwen-image-2.0 / 3.0 | qwen-image-2.1 | z-image-turbo | 其他（qwen-image-plus/max 等） |
+|------|------------|--------------------|--------------|---------------|-------------------------------|
+| `negative_prompt` | 不支持（跳过） | 支持 | 不支持（跳过） | 不支持（跳过） | 支持 |
+| `prompt_extend` | 不支持（跳过） | 显式发送 | 显式发送 | 显式发送 | 显式发送 |
+| `prompt_extend_mode` / `enable_thinking` | 不发送 | 仅 3.0 支持 | 支持 | 不发送 | 不发送 |
+| `watermark` | 支持 | 支持 | 支持 | 不支持（跳过） | 支持 |
+| `thinking_mode` | 支持（非顺序文生图） | 不发送 | 不发送 | 不发送 | 不发送 |
+| `enable_sequential` | 支持 | 不发送 | 不发送 | 不发送 | 不发送 |
+| `color_palette` | 支持（非顺序模式） | 不发送 | 不发送 | 不发送 | 不发送 |
+| `seed` | 支持 | 支持 | 支持 | 支持 | 支持 |
+| `n` 范围 | 标准 1-4 / 顺序 1-12 | 1-6 | 1-6 | 仅 1 | 仅 1 |
+| 参考图上限 | 9 | 2.0：9；3.0：3 | 9 | 不支持（报错） | 仅 qwen-image-edit 系列 |
 
-**模型级编辑门控**：仅 wan2.7 / qwen-image-2.0 / qwen-image-3.0 / qwen-image-edit 系列候选参与改图/参考图请求，`z-image-turbo` 等纯文生图模型自动跳过。
+**模型级编辑门控**：仅 wan2.7 / qwen-image-2.0 / qwen-image-2.1 / qwen-image-3.0 / qwen-image-edit 系列候选参与改图/参考图请求，`z-image-turbo` 等纯文生图模型自动跳过。
 
 preset 模式尺寸换算表（分辨率档位 × 长宽比 → 官方推荐像素）：
 
