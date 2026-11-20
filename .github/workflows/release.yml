@@ -1,0 +1,74 @@
+name: Release
+
+# 推送 v* 标签自动发版：读取 CHANGELOG 对应版本节，按 v4.0.0 的清单打包，
+# 正文末尾附 GitHub 自动生成的 PR 与贡献者列表。
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Verify tag and metadata version
+        id: ver
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          grep -q "^version: ${TAG}$" metadata.yaml \
+            || { echo "::error::metadata.yaml version 与 tag ${TAG} 不一致"; exit 1; }
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Extract changelog section
+        run: |
+          awk -v head="## [${{ steps.ver.outputs.version }}]" '
+            index($0, head) == 1 { found = 1 }
+            found && /^## \[/ && index($0, head) != 1 { exit }
+            found { print }
+          ' CHANGELOG.md > section.md
+          test -s section.md \
+            || { echo "::error::CHANGELOG.md 缺少 ${{ steps.ver.outputs.version }} 一节"; exit 1; }
+
+      - name: Build plugin zip
+        run: |
+          STAGE=astrbot_plugin_gemini_image_generation
+          mkdir "$STAGE"
+          cp -r .astrbot-plugin docs templates tl views "$STAGE"/
+          cp CHANGELOG.md LICENSE README.md _conf_schema.json logo.png \
+             main.py metadata.yaml requirements.txt "$STAGE"/
+          zip -qr "${STAGE}-${{ steps.ver.outputs.tag }}.zip" "$STAGE"
+
+      - name: Generate PR and contributor notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api "repos/${{ github.repository }}/releases/generate-notes" \
+            -f tag_name="${{ steps.ver.outputs.tag }}" --jq '.body' > whats-new.md
+
+      - name: Assemble release body
+        run: |
+          {
+            cat section.md
+            printf '\n## 预构建包\n\n'
+            printf '`astrbot_plugin_gemini_image_generation-%s.zip` 含 AstrBot 运行需要的全部文件，已带 Studio 前端构建产物，解压即用，不需要 Node 环境；`docs/` 与 `CHANGELOG.md` 一并保留。不含测试、前端工程（`frontend/`）与 CI 配置。\n\n' "${{ steps.ver.outputs.tag }}"
+            printf '完整记录见 [CHANGELOG](https://github.com/%s/blob/%s/CHANGELOG.md).\n\n' "${{ github.repository }}" "${{ steps.ver.outputs.tag }}"
+            cat whats-new.md
+          } > body.md
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.ver.outputs.tag }}" \
+            "astrbot_plugin_gemini_image_generation-${{ steps.ver.outputs.tag }}.zip" \
+            --title "${{ steps.ver.outputs.tag }}" \
+            --notes-file body.md \
+            --verify-tag
