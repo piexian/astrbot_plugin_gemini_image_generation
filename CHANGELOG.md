@@ -5,30 +5,40 @@
 
 ## [Unreleased]
 
+## [4.1.0] - 2026-11-20
+
 ### Added
 
-- **MiniMax-H3-Image 接入**：支持 `MiniMax-H3-Image` / `MiniMax-H3-Image-Highspeed` 的文生图与图片编辑双端点、原生 4K、最多 16 张参考图、部分成功响应和错误码重试语义；旧 `image-01` / `image-01-live` 路径保持不变；`max_reference_images` 默认调整为 16，仅对 H3 图片编辑生效，旧模型仍按官方 1 张截取。出站模型名统一为官方大小写；H3 读取超时/连接中断按结果未知停止自动重试，避免重复计费；「保留参考图尺寸」时 H3 编辑比例自动跟随参考图；内联参考图按官方 64MiB 单张与请求体合计上限校验。
-- **Doubao Seedream 5.5 / 5.0 Flash 接入**：支持模型识别、10 张参考图、1K/1.5K/2K 档位、background 透明通道、图层拆分，以及参考图 30 MB 官方上限与宽格式。
-
-- **SenseNova U1.5 Fast 接入与 `output_format` 支持**：新增 u1.5-fast 门面，出站请求与落盘扩展名按 `output_format` 对齐，编辑参考图官方上限调整为 5 张。
-
-### Removed
-
-- **移除 `sensenova-u1-fast`**：官方模型阵容已下架；配置该模型的条目将收到明确报错提示迁移。
-
-### Fixed
-
-- **Google/Vertex 原生出站字段对齐官方 camelCase**：`imageConfig` 默认发送 `imageSize`/`aspectRatio`，搜索接地工具键改为 `googleSearch`；此前默认的 snake_case 字段会被官方端点拒绝。配置项「分辨率参数名／长宽比参数名」留空即用新默认；旧配置中已保存的值不会被自动改写，如遇 `image_config oneof` 报错请清空这两项。
-- **MiniMax 参考图数量对齐官方口径**：图生图主体参考图按官方指南收紧为每次 1 张（此前误按 9 张截取）；生成数量 n 的官方范围仍为 1-9，不受影响。
-- **Vertex `person_generation` 出站改用官方大写枚举**（`ALLOW_ALL`/`ALLOW_ADULT`/`ALLOW_NONE`），配置界面仍是小写选项，无需改动。
-- **SenseAudio Image-2.0 尺寸白名单对齐官方**：移除 7 个已失效尺寸、补齐 9 个现役尺寸、自动档位收敛 1K/2K、image-1.0 标注官方已隐藏。
+- **参考图库**：新增永久参考图库与 WebUI 页签，支持上传、搜索、编辑、删除；画廊图片可存入图库长期保留；AI 可用 `ref:图片ID` 引用库中图片。
+- **关键词触发**：命中关键词自动注入绑定的参考图与提示词片段，支持命令与自动匹配两种模式，Studio 提供关键词管理页签。
+- **MiniMax-H3-Image**：文生图与编辑双端点，原生 4K，最多 16 张参考图。
+- **Doubao Seedream 5.5 / 5.0 Flash**：10 张参考图、1K/1.5K/2K 档位、透明背景与图层拆分。
+- **SenseNova U1.5 Fast**：支持 output_format，编辑参考图上限 5 张。
+- **xAI 异步生成**：LLM 工具与批量后台任务默认走官方 deferred 异步提交，新增用户标识参数与 1.5K 分辨率。
+- **DashScope**：接入 qwen-image-2.1，新增 seed、自定义配色、千问思考模式与提示词改写方式。
+- **OpenAI Images**：新增规划复杂度、GIF/SVG 输出与编辑保真度参数。
 
 ### Changed
 
-- 配置提示明确协议边界：Google 模板端点说明反代（含 Antigravity `/antigravity/v1beta` 入口）填根地址会自动补 `/v1beta`；Gemini Interactions 模板端点标明为 Interactions 协议，与原生 `generateContent` 不通用。OpenAI 兼容渠道继续使用 snake_case 字段（由反代转换层处理）。
-- **MiniMax 默认 API 域名迁移**：默认端点改为官方现行标注的 `https://api.minimax.cn`，旧域名 `https://api.minimaxi.com` 仍可填写用作回退；`subject_reference_type` 收敛为仅 `character`，其他值自动回退并告警。
-- **Doubao 默认模型与门控对齐官方**：默认切换为 `doubao-seedream-5-5-261028`；Pro 档位改为 1K/1.5K/2K；组图仅 Lite/4.5/4.0；optimize fast 仅 Pro/4.0；output_format 仅 5 系发送；Lite/4.5/4.0 官方已宣布即将下线。
+- DashScope 默认端点迁移至 `https://maas.qianwenaiapi.com`，模型改为自由填写。
+- MiniMax 默认域名迁移至 `https://api.minimax.cn`；图生图主体参考图按官方口径收紧为 1 张。
+- Doubao 默认模型切换为 `doubao-seedream-5-5-261028`，档位与功能门控对齐官方。
+- Google/Vertex 原生出站字段对齐官方 camelCase 与大写枚举；旧配置自定义参数名如遇报错清空即可。
+- SenseAudio Image-2.0 尺寸白名单对齐官方。
+- QQ 官方 V2 机器人的头像可用作参考图。
+- 配置提示明确 Google 模板端点与 Interactions 的协议边界。
 
+### Fixed
+
+- AI 工具可选图像参数接受 null，不再错误覆盖供应商默认值。
+- Google 异常响应给出可读报错；生成记录工件链接保留取回参数，认证参数仍剥离。
+- xAI deferred 轮询防重复计费，密钥轮换时同步。
+
+### Removed
+
+- 移除 StepFun 图像渠道（官方已下线），旧配置静默忽略。
+- 移除 `sensenova-u1-fast`（官方已下架），配置该模型的条目会明确报错提示迁移。
+- 移除 OpenAI Images 的 DALL·E 遗留参数（style、response_format）。
 
 ## [4.0.0] - 2026-11-05
 

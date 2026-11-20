@@ -6,30 +6,23 @@
 
 </div>
 
-> **升级提示**：v2.0.0 重构了生图供应商配置，不再复用 AstrBot 本体供应商，也不再读取旧 `api_settings`。升级后请在 `供应商配置` 中重新添加供应商模板。
-
 ## 功能概览
 
-- **多模式图像生成**：纯文本生图、参考图改图、风格转换、手办化、表情包生成。
-- **快速预设**：头像、海报、壁纸、卡片、手机壁纸、手办化、表情包一键生成。
-- **智能参考图**：自动读取消息图片、引用图片、合并转发、群文件，以及用户头像和 @ 对象头像。
-- **生成记录引用**：生成结果带 `gen:` 引用号，可以直接要求 AI 拿某张已生成的图继续改图；默认只允许引用本会话的记录，跨会话引用需打开「允许跨会话引用生成图」。
-- **多供应商支持**：Google Gemini、Gemini Interactions（Nano Banana 系列）、Vertex AI（服务账号 JSON / Express API Key 双认证）、OpenAI 兼容、OpenAI Images、OpenAI Responses（可自定义顶层模型与生图模型）、Agnes AI、xAI Images、MiniMax、豆包、SenseNova、SenseAudio（同步 / 异步图片生成）、DashScope（通义万相/千问图像/z-image）。
-- **供应商与模型路由**：支持供应商、原始模型或别名选择；未指定时按配置轮询，显式指定时只在匹配候选内重试。
-- **LLM 工具集成**：`gemini_image_generation` 单图生图改图、`gemini_image_batch` 批量提交、`gemini_image_lookup` 查询模型／模板／参考图库／可引用的生成记录／后台任务、`gemini_image_share` 由本人共享或取消共享生成记录；任务完成后自动通知，前台等待超时直接返回图片地址继续发送。详见 [LLM 工具集成](docs/usage.md#llm-工具集成)。
-- **插件接入接口**：其他 AstrBot 插件可获取公开服务实例、查询就绪状态并提交后台生图任务，支持查询、等待及完成回调；会话与使用者信息可选。详见 [其他插件接入指南](docs/plugin-api.md)。
-- **表情包切分**：内置 SmartMemeSplitter v4，默认优先走自适应黑描边贴纸切分，并保留手动网格、视觉识别等兜底路径。
-- **限流与缓存**：支持群白名单/黑名单、全插件共享额度与 UMO 会话限流叠加、KV 持久化；Studio 统一管理群限制模式、群号名单与限流规则，可搜索本体已有会话并即时保存。生成图保留在插件数据目录并按容量自动清理，临时文件统一写入 AstrBot 临时目录。
-- **内置 WebUI 创作台**：Dashboard 插件视图「studio」（需 AstrBot ≥4.29，界面语言跟随 Dashboard）——在线工作台（模型扁平直选、临时生成参数弹窗确认、单图多张与批量生成、参考图上传/画廊拾取）、全来源生成任务实时进度（SSE）、历史画廊（筛选/灯箱/下载/删除/再次生成/用作参考图）、参考图库（永久保存参考图，上传或从画廊存入，供工作台与 LLM 工具引用）；生成历史持久化归档，存量图片自动迁入，运行任务使用的上传参考图受租约保护。详见 [使用指南](docs/usage.md#webui-创作台)。
-- **提示词模板库**：快速模式的提示词全部改为可编辑模板，支持内置模板、自建模板和 JSON 包导入导出；每个模板可单独开关「对 AI 可用」并设置默认分辨率与比例，生成历史会记录用了哪个模板。详见 [提示词模板库](docs/templates.md)。
-- **提示词广场与在线模板**：Studio「提示词广场」页签按名称、说明或标签搜索模板，支持新建／编辑／复制／删除、恢复内置默认和填入工作台；在线模板库可检索查看别人分享的模板、导入为本地副本、立即同步、上传自己的模板与举报，密钥支持申请、校验、回填和吊销，联网方式由配置项「在线模板使用方式」选择仅本地缓存、实时检索或完全不联网。详见 [提示词广场](docs/usage.md#提示词广场)。
-- **供应商配置页**：配置表、轮询排序、公共设置以二级 Tab 切换；外层直接启停、拖动排序，密钥紧凑展示、逐项管理与批量导入，支持模型拉取选择及本体现有视觉提供商下拉。空闲时统一热保存，不打断生成、不重置 Key 用量。
+- **生图命令**：文字生图、图片改图、换风格，头像／海报／壁纸／手办化等一键预设，表情包生成与切分。详见 [命令列表](docs/usage.md#命令列表) 与 [快速模式](docs/usage.md#快速模式)。
+- **关键词触发**：说出特定关键词自动带上参考图和提示词片段，支持命令与自动匹配两种模式。详见 [关键词触发](docs/usage.md#关键词触发)。
+- **智能参考图**：自动读取消息图片、引用、转发、群文件和头像；生成图与参考图库图片可按编号引用继续改图。详见 [内部引用](docs/references.md)。
+- **多供应商支持**：Google、OpenAI、豆包、MiniMax 等 15 家供应商，可指定模型或按配置顺序自动切换，能力矩阵见 [供应商说明](#供应商说明)。
+- **LLM 工具集成**：AI 在对话中自动调用生图，支持单图、批量、查询记录与共享图片，任务完成自动通知。详见 [LLM 工具集成](docs/usage.md#llm-工具集成)。
+- **插件接入接口**：其他 AstrBot 插件可调用本插件的生图服务，支持查询、等待与完成回调。详见 [接入指南](docs/plugin-api.md)。
+- **限流与额度**：群白名单／黑名单、生成额度与限流，生成图按容量自动清理。详见 [限流控制](docs/usage.md#限流控制)。
+- **内置 WebUI 创作台**：Dashboard 里的可视化创作台（需 AstrBot ≥4.29），生图、参考图库、历史画廊与供应商配置。详见 [WebUI 创作台](docs/usage.md#webui-创作台)。
+- **提示词模板与广场**：快速模式提示词是可编辑模板，支持模板包导入导出；广场可管理模板并检索、导入、分享在线模板。详见 [模板库](docs/templates.md) 与 [提示词广场](docs/usage.md#提示词广场)。
 
 ## 快速安装
 
 ### 前置要求
 
-- AstrBot 4.10+
+- AstrBot 4.10.4+
 - Python 3.12+
 - NapCat（目前主要适配 NapCat 平台）
 - QQ 官方机器人 WebSocket（`qq_official`，头像参考已通过真实实例验证）
@@ -93,11 +86,25 @@ https://github.com/piexian/astrbot_plugin_gemini_image_generation
 
 ## 供应商说明
 
-各供应商的端点、参数、尺寸适配规则等完整说明见 [完整配置参考](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/config.md)：
+全部供应商支持文生图，后台任务与批量生成由插件统一调度；图生图支持范围因供应商和模型而异，改图时不支持参考图的候选会自动跳过。各供应商端点、参数与尺寸适配规则见 [完整配置参考](https://github.com/piexian/astrbot_plugin_gemini_image_generation/blob/master/docs/config.md)。
 
-```text
-google / gemini_interactions / vertex / openai / agnes_ai / xai / minimax / openai_images / openai_responses / doubao / sensenova / senseaudio / dashscope / modelscope / siliconflow
-```
+| 供应商 | 文生图 | 图生图 | 后台任务 | 备注 |
+|--------|--------|--------|----------|------|
+| Google Gemini（`google`） | ✓ | ✓ | ✓ | 可配搜索接地 |
+| Gemini Interactions（`gemini_interactions`） | ✓ | ✓ | ✓ | Nano Banana 系列 |
+| Vertex AI（`vertex`） | ✓ | ✓ | ✓ | 服务账号 / Express 双认证 |
+| OpenAI 兼容（`openai`） | ✓ | ✓ | ✓ | 图生图取决于上游模型 |
+| OpenAI Images（`openai_images`） | ✓ | ✓ | ✓ | 支持 GIF/SVG 输出 |
+| OpenAI Responses（`openai_responses`） | ✓ | ✓ | ✓ | 支持连续多轮编辑 |
+| Agnes AI（`agnes_ai`） | ✓ | ✓ | ✓ | |
+| xAI Images（`xai`） | ✓ | ✓ | ✓ | 后台默认 deferred 异步 |
+| MiniMax（`minimax`） | ✓ | ✓ | ✓ | H3 原生 4K |
+| 豆包（`doubao`） | ✓ | ✓ | ✓ | Seedream 系列 |
+| SenseNova（`sensenova`） | ✓ | 部分模型 | ✓ | 仅 u1.5 系列支持图生图 |
+| SenseAudio（`senseaudio`） | ✓ | ✓ | ✓ | 同步 / 异步可选 |
+| DashScope（`dashscope`） | ✓ | 部分模型 | ✓ | z-image 仅文生图 |
+| ModelScope（`modelscope`） | ✓ | 部分模型 | ✓ | 原生异步任务；仅 edit 模型支持图生图 |
+| SiliconFlow（`siliconflow`） | ✓ | 部分模型 | ✓ | 仅 Qwen-Image-Edit / Kolors 支持图生图 |
 
 ## 项目结构
 
@@ -130,6 +137,7 @@ astrbot_plugin_gemini_image_generation/
 - [@xunxiing](https://github.com/xunxiing) - OpenAI Images 端点支持、配置提示修复
 - [@Clhikari](https://github.com/Clhikari) - 快速生图修复
 - [@YukiRa1n](https://github.com/YukiRa1n) - GIF 支持、多项修复
+- [@Dashu-Li](https://github.com/Dashu-Li) - 工具参数 null 值覆盖默认值修复、批量并发测试修复
 
 ## 许可证
 
