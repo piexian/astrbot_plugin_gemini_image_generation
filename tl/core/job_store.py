@@ -136,8 +136,10 @@ def _legacy_url(value: str) -> str:
     )
 
 
-# legacy 记录里的 artifact 引用字段；source_urls 仍按源链接契约全量剥离。
-_LEGACY_ARTIFACT_FIELDS = frozenset({"image_urls", "image_paths", "images"})
+# legacy 记录里的 artifact 与 source locator 使用同一套安全 query 策略。
+_LEGACY_ARTIFACT_FIELDS = frozenset(
+    {"image_urls", "image_paths", "images", "source_urls"}
+)
 
 
 def _legacy_artifact_url(value: str) -> str:
@@ -938,7 +940,7 @@ class SQLiteJobStore:
             try:
                 clean_item = redact_sensitive(_legacy_safe_value(item))
 
-                # Artifact fields keep non-auth query; source_urls fully strips.
+                # Artifact and source fields keep non-auth query parameters.
                 for field in _LEGACY_ARTIFACT_FIELDS:
                     if field in item:
                         clean_item[field] = _legacy_refs(item, field)

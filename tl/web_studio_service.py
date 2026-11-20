@@ -61,6 +61,11 @@ from .v2_bridge import build_request as v2_build_request
 
 _SAFE_FILE_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 _REMOTE_IMAGE_MAX_BYTES = 20 * 1024 * 1024
+_REMOTE_IMAGE_MAX_ATTEMPTS = 3
+_REMOTE_IMAGE_ATTEMPT_TIMEOUT_SECONDS = 30.0
+_REMOTE_IMAGE_TOTAL_TIMEOUT_SECONDS = 45.0
+_REMOTE_IMAGE_RETRY_BACKOFF_SECONDS = (0.25, 0.5)
+_REMOTE_IMAGE_RETRY_STATUSES = frozenset({404, 408, 425, 429, 500, 502, 503, 504})
 _UPLOAD_QUOTA_BYTES = 200 * 1024 * 1024
 _UPLOAD_EXPIRE_HOURS = 24
 _CHUNK_SIZE = 1024 * 1024
@@ -98,6 +103,12 @@ class StudioServiceError(Exception):
         self.message = message
         self.status_code = status_code
         self.data = data
+
+
+class _RetryableRemoteImageStatus(Exception):
+    def __init__(self, status: int) -> None:
+        super().__init__(status)
+        self.status = status
 
 
 def _positive_int(value: Any, default: int = 1) -> int:
@@ -1166,9 +1177,6 @@ class WebStudioService:
     async def _download_remote_image(
         self, url: str, *, candidate_id: str | None = None
     ) -> bytes:
-        # 归档下载与发送侧网络条件一致，慢 CDN 下 10s 会先于发送超时。
-        timeout = aiohttp.ClientTimeout(total=30)
-        data = bytearray()
         candidate = next(
             (
                 candidate
@@ -1194,45 +1202,117 @@ class WebStudioService:
             http_proxy = None
         elif not proxy:
             connector = aiohttp.TCPConnector()
-        current = url
-        try:
-            async with aiohttp.ClientSession(
-                timeout=timeout, connector=connector
-            ) as session:
-                for hop in range(4):
-                    current = check_remote_url(current)
-                    async with session.get(
-                        current, proxy=http_proxy, allow_redirects=False
-                    ) as response:
-                        if response.status in {301, 302, 303, 307, 308}:
-                            if hop >= 3:
-                                raise StudioServiceError("远程图片重定向超过 3 次")
-                            location = response.headers.get("Location", "")
-                            if not location:
-                                raise StudioServiceError("远程图片重定向缺少目标地址")
-                            current = urljoin(current, location)
-                            continue
-                        response.raise_for_status()
-                        content_length = response.content_length
-                        if content_length and content_length > _REMOTE_IMAGE_MAX_BYTES:
-                            raise StudioServiceError("远程图片超过 20MB")
-                        probed = False
-                        async for chunk in response.content.iter_chunked(_CHUNK_SIZE):
-                            data.extend(chunk)
-                            if len(data) > _REMOTE_IMAGE_MAX_BYTES:
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _REMOTE_IMAGE_TOTAL_TIMEOUT_SECONDS
+        last_url = url
+        last_status: int | None = None
+        last_error_type = "unknown"
+        attempts_made = 0
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=_REMOTE_IMAGE_ATTEMPT_TIMEOUT_SECONDS),
+            connector=connector,
+        ) as session:
+            for attempt in range(1, _REMOTE_IMAGE_MAX_ATTEMPTS + 1):
+                attempts_made = attempt
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
+                data = bytearray()
+                current = url
+                request_timeout = aiohttp.ClientTimeout(
+                    total=min(_REMOTE_IMAGE_ATTEMPT_TIMEOUT_SECONDS, remaining)
+                )
+                try:
+                    for hop in range(4):
+                        current = check_remote_url(current)
+                        last_url = current
+                        async with session.get(
+                            current,
+                            proxy=http_proxy,
+                            timeout=request_timeout,
+                            allow_redirects=False,
+                        ) as response:
+                            if response.status in {301, 302, 303, 307, 308}:
+                                if hop >= 3:
+                                    raise StudioServiceError("远程图片重定向超过 3 次")
+                                location = response.headers.get("Location", "")
+                                if not location:
+                                    raise StudioServiceError(
+                                        "远程图片重定向缺少目标地址"
+                                    )
+                                current = urljoin(current, location)
+                                continue
+                            if response.status in _REMOTE_IMAGE_RETRY_STATUSES:
+                                raise _RetryableRemoteImageStatus(response.status)
+                            if response.status >= 400:
+                                raise StudioServiceError(
+                                    f"远程图片下载失败: HTTP {response.status} "
+                                    f"{redact_url(current)}"
+                                )
+                            content_length = response.content_length
+                            if (
+                                content_length
+                                and content_length > _REMOTE_IMAGE_MAX_BYTES
+                            ):
                                 raise StudioServiceError("远程图片超过 20MB")
-                            if not probed and len(data) >= PROBE_BYTES:
-                                # 格式在文件头：先用已收字节判定，不合格就不再读下去。
+                            probed = False
+                            async for chunk in response.content.iter_chunked(
+                                _CHUNK_SIZE
+                            ):
+                                data.extend(chunk)
+                                if len(data) > _REMOTE_IMAGE_MAX_BYTES:
+                                    raise StudioServiceError("远程图片超过 20MB")
+                                if not probed and len(data) >= PROBE_BYTES:
+                                    # 格式在文件头：先用已收字节判定，不合格就不再读下去。
+                                    self._probe_bytes(bytes(data[:PROBE_BYTES]))
+                                    probed = True
+                            if not probed and data:
                                 self._probe_bytes(bytes(data[:PROBE_BYTES]))
-                                probed = True
-                        if not probed and data:
-                            self._probe_bytes(bytes(data[:PROBE_BYTES]))
-                        return bytes(data)
-        except (aiohttp.ClientError, OSError):
+                            return bytes(data)
+                except asyncio.CancelledError:
+                    raise
+                except _RetryableRemoteImageStatus as exc:
+                    last_status = exc.status
+                    last_error_type = f"HTTP {exc.status}"
+                except (
+                    asyncio.TimeoutError,
+                    aiohttp.ClientConnectionError,
+                    aiohttp.ClientPayloadError,
+                    OSError,
+                ) as exc:
+                    last_status = None
+                    last_error_type = type(exc).__name__
+
+                if attempt >= _REMOTE_IMAGE_MAX_ATTEMPTS:
+                    break
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
+                delay = _REMOTE_IMAGE_RETRY_BACKOFF_SECONDS[
+                    min(attempt - 1, len(_REMOTE_IMAGE_RETRY_BACKOFF_SECONDS) - 1)
+                ]
+                delay = min(delay, remaining)
+                logger.warning(
+                    "[WebUI] gallery 远程图片下载重试: attempt=%d/%d, "
+                    "status=%s, url=%s, error=%s",
+                    attempt,
+                    _REMOTE_IMAGE_MAX_ATTEMPTS,
+                    last_status or "-",
+                    redact_url(last_url),
+                    last_error_type,
+                )
+                await asyncio.sleep(delay)
+
+        if last_status is not None:
             raise StudioServiceError(
-                f"远程图片下载失败: {redact_url(current)}"
-            ) from None
-        raise StudioServiceError("远程图片下载失败")
+                f"远程图片下载失败: HTTP {last_status} {redact_url(last_url)} "
+                f"（尝试 {attempts_made}/{_REMOTE_IMAGE_MAX_ATTEMPTS}）"
+            )
+        raise StudioServiceError(
+            f"远程图片下载失败: {redact_url(last_url)} "
+            f"（尝试 {attempts_made}/{_REMOTE_IMAGE_MAX_ATTEMPTS}，原因={last_error_type}）"
+        )
 
     # 受支持格式的魔数都在文件头，截断前缀也能判定；像素校验需完整内容。
     _IMAGE_MAGIC_PREFIXES = (
