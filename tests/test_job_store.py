@@ -565,7 +565,7 @@ async def test_storage_keeps_only_non_auth_artifact_query(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_history_import_keeps_artifact_query_but_strips_source_urls(
+async def test_history_import_preserves_source_artifact_query(
     tmp_path,
 ) -> None:
     _write_history(
@@ -587,7 +587,7 @@ async def test_history_import_keeps_artifact_query_but_strips_source_urls(
         assert job is not None and job.result is not None
         assert job.result.artifacts == (
             "https://images.example/a.png?id=7",
-            "https://images.example/s.png",
+            "https://images.example/s.png?id=9",
         )
         assert job.metadata["source_urls"] == ["https://images.example/s.png"]
     finally:
@@ -595,7 +595,7 @@ async def test_history_import_keeps_artifact_query_but_strips_source_urls(
 
 
 @pytest.mark.asyncio
-async def test_background_item_import_keeps_artifact_query_strips_source_urls(
+async def test_background_item_import_preserves_source_artifact_query(
     tmp_path,
 ) -> None:
     _write_background_tasks(
@@ -627,19 +627,18 @@ async def test_background_item_import_keeps_artifact_query_strips_source_urls(
         artifacts = set(job.result.artifacts)
         assert "https://images.example/b1.png?id=11" in artifacts
         assert "https://images.example/b2.png?id=12" in artifacts
-        assert "https://images.example/s1.png" in artifacts
-        assert not any(
-            url.startswith("https://images.example/s1.png?")
-            for url in job.result.artifacts
-        )
+        assert "https://images.example/s1.png?id=13" in artifacts
         assert any(url.startswith("artifact:") for url in job.result.artifacts)
+        assert job.metadata["items"][0]["source_urls"] == [
+            "https://images.example/s1.png"
+        ]
         with sqlite3.connect(tmp_path / "jobs.sqlite3") as connection:
             metadata_raw = str(
                 connection.execute(
                     "SELECT metadata_json FROM jobs WHERE job_id = 'batch-query'"
                 ).fetchone()[0]
             )
-        assert "?id=" not in metadata_raw
+        assert "id=13" not in metadata_raw
         assert "token=" not in metadata_raw
     finally:
         await store.close()

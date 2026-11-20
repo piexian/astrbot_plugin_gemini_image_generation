@@ -867,6 +867,119 @@ def test_detect_extension_recognizes_supported_magic(prefix, extension) -> None:
 
 
 @pytest.mark.asyncio
+async def test_download_retries_transient_http_status(tmp_path, monkeypatch):
+    import tl.web_studio_service as module
+
+    payload = _png(tmp_path / "remote.png", 4).read_bytes()
+    statuses = [404, 503, 206]
+    requested: list[str] = []
+
+    class Content:
+        async def iter_chunked(self, _size):
+            yield payload
+
+    class Response:
+        def __init__(self, status: int) -> None:
+            self.status = status
+            self.content_length = len(payload) if status == 206 else None
+            self.content = Content()
+            self.headers = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+    class Session:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        def get(self, url, **kwargs):
+            requested.append(url)
+            return Response(statuses.pop(0))
+
+    monkeypatch.setattr(module.aiohttp, "ClientSession", Session)
+    monkeypatch.setattr(module, "_REMOTE_IMAGE_RETRY_BACKOFF_SECONDS", (0.0, 0.0))
+    service = WebStudioService(
+        None, GenerationTracker(tmp_path, 20), _config(), tmp_path
+    )
+
+    assert (
+        await service._download_remote_image(
+            "https://image-2.elycyrene.net/v1/files/image?id=image-1"
+        )
+        == payload
+    )
+    assert requested == ["https://image-2.elycyrene.net/v1/files/image?id=image-1"] * 3
+
+
+@pytest.mark.asyncio
+async def test_download_total_deadline_covers_redirects(tmp_path, monkeypatch):
+    import tl.web_studio_service as module
+
+    payload = _png(tmp_path / "remote.png", 5).read_bytes()
+    statuses = [503, 302, 302, 302, 206]
+    requested: list[str] = []
+
+    class Content:
+        async def iter_chunked(self, _size):
+            yield payload
+
+    class Response:
+        def __init__(self, status: int) -> None:
+            self.status = status
+            self.content_length = len(payload) if status == 206 else None
+            self.content = Content()
+            self.headers = (
+                {"Location": "https://image-2.elycyrene.net/v1/files/next?id=image-1"}
+                if status == 302
+                else {}
+            )
+
+        async def __aenter__(self):
+            await asyncio.sleep(0.02)
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+    class Session:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        def get(self, url, **kwargs):
+            requested.append(url)
+            return Response(statuses.pop(0))
+
+    monkeypatch.setattr(module.aiohttp, "ClientSession", Session)
+    monkeypatch.setattr(module, "_REMOTE_IMAGE_TOTAL_TIMEOUT_SECONDS", 0.03)
+    monkeypatch.setattr(module, "_REMOTE_IMAGE_MAX_ATTEMPTS", 2)
+    monkeypatch.setattr(module, "_REMOTE_IMAGE_RETRY_BACKOFF_SECONDS", (0.0, 0.0))
+    service = WebStudioService(
+        None, GenerationTracker(tmp_path, 20), _config(), tmp_path
+    )
+
+    with pytest.raises(StudioServiceError, match="总超时"):
+        await service._download_remote_image(
+            "https://image-2.elycyrene.net/v1/files/image?id=image-1"
+        )
+    assert len(requested) < 5
+
+
+@pytest.mark.asyncio
 async def test_download_stops_early_on_unsupported_format(tmp_path, monkeypatch):
     """下载循环在首个分块后就拒绝，不再读满整个响应体。"""
 

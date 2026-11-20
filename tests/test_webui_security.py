@@ -171,7 +171,7 @@ async def test_image_filename_traversal_is_still_rejected(tmp_path, monkeypatch)
 @pytest.mark.asyncio
 async def test_source_urls_are_redacted_on_write_and_api_reads(tmp_path, monkeypatch):
     tracker = GenerationTracker(tmp_path, 20)
-    raw = "https://user:pass@example.com/image.png?token=secret#fragment"
+    raw = "https://user:pass@example.com/image.png?id=image-42&token=secret&signature=signed#fragment"
     record = await tracker.begin(source="webui", prompt="draw", params={}, requester={})
     await tracker.complete(
         record["job_id"],
@@ -181,7 +181,7 @@ async def test_source_urls_are_redacted_on_write_and_api_reads(tmp_path, monkeyp
         status="partial_success",
         source_urls=[raw],
     )
-    safe = "https://example.com/image.png"
+    safe = "https://example.com/image.png?id=image-42"
     assert tracker.get(record["job_id"])["source_urls"] == [safe]
 
     # 模拟旧版本磁盘记录：读取响应脱敏，但不回写原记录。
@@ -207,3 +207,26 @@ async def test_source_urls_are_redacted_on_write_and_api_reads(tmp_path, monkeyp
     finally:
         await tracker.close()
         await old_api_tracker.close()
+
+
+@pytest.mark.asyncio
+async def test_source_url_with_many_query_fields_falls_back_to_path(tmp_path):
+    tracker = GenerationTracker(tmp_path, 20)
+    try:
+        record = await tracker.begin(
+            source="webui", prompt="draw", params={}, requester={}
+        )
+        query = "&".join(f"field{index}=value" for index in range(129))
+        await tracker.complete(
+            record["job_id"],
+            image_files=[],
+            text_content="text",
+            stats={},
+            status="partial_success",
+            source_urls=[f"https://example.com/image.png?{query}"],
+        )
+        assert tracker.get(record["job_id"])["source_urls"] == [
+            "https://example.com/image.png"
+        ]
+    finally:
+        await tracker.close()

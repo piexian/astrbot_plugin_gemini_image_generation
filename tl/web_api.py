@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 
 from astrbot.api import logger
 
-from .core.errors import redact_url
+from .core.errors import redact_artifact_reference, redact_url
 from .generation_tracker import GenerationTracker, without_session_origin
 from .prompt_templates import TemplateValidationError
 from .reference_library import ReferenceLibraryError
@@ -135,12 +135,21 @@ def _valid_json_value(value: Any, depth: int = 0) -> bool:
     return True
 
 
+def _redact_source_url(value: Any) -> str:
+    """保留非认证 query；异常 URL 回退为完全移除 query。"""
+    text = str(value)
+    try:
+        return redact_artifact_reference(text)
+    except ValueError:
+        return redact_url(text)
+
+
 def _redact_source_urls(value: Any) -> Any:
     value = without_session_origin(value)
     if isinstance(value, dict):
         return {
             key: (
-                [redact_url(str(item)) for item in item_value]
+                [_redact_source_url(item) for item in item_value]
                 if key == "source_urls" and isinstance(item_value, list)
                 else _redact_source_urls(item_value)
             )

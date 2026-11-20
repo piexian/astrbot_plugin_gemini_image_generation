@@ -41,6 +41,7 @@ AUTH_QUERY_KEYS = frozenset(
     {
         "key",
         "token",
+        "access_token",
         "sig",
         "signature",
         "expires",

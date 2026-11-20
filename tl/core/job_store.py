@@ -136,7 +136,7 @@ def _legacy_url(value: str) -> str:
     )
 
 
-# legacy 记录里的 artifact 引用字段；source_urls 仍按源链接契约全量剥离。
+# legacy 记录里的 artifact 引用字段；source_urls 由源链接契约单独脱敏。
 _LEGACY_ARTIFACT_FIELDS = frozenset({"image_urls", "image_paths", "images"})
 
 
@@ -163,7 +163,12 @@ def _legacy_safe_value(value: Any, depth: int = 0) -> Any:
     return value
 
 
-def _legacy_refs(record: Mapping[str, Any], field: str) -> list[str]:
+def _legacy_refs(
+    record: Mapping[str, Any],
+    field: str,
+    *,
+    preserve_query: bool = False,
+) -> list[str]:
     values = record.get(field) or []
     if isinstance(values, str):
         values = [values]
@@ -171,7 +176,11 @@ def _legacy_refs(record: Mapping[str, Any], field: str) -> list[str]:
         raise ValueError("legacy 图片列表无效或超过数量限制")
     if any(not isinstance(value, str) for value in values):
         raise ValueError("legacy 图片引用必须是字符串")
-    clean = _legacy_artifact_url if field in _LEGACY_ARTIFACT_FIELDS else _legacy_url
+    clean = (
+        _legacy_artifact_url
+        if preserve_query or field in _LEGACY_ARTIFACT_FIELDS
+        else _legacy_url
+    )
     return [clean(value.strip()) for value in values if value.strip()]
 
 
@@ -182,7 +191,9 @@ def _legacy_result(
     texts: list[str] = []
     for source in [record, *items]:
         for field in ("image_urls", "image_paths", "images", "source_urls"):
-            references.update(dict.fromkeys(_legacy_refs(source, field)))
+            references.update(
+                dict.fromkeys(_legacy_refs(source, field, preserve_query=True))
+            )
             if len(references) > _MAX_LEGACY_ARTIFACTS:
                 raise ValueError("legacy 图片总数超过限制")
         text = source.get("text_content")
@@ -931,24 +942,26 @@ class SQLiteJobStore:
         raw_items = record.get("items") or []
         if not isinstance(raw_items, list) or len(raw_items) > _MAX_LEGACY_ITEMS:
             raise ValueError("legacy items 无效或数量超限")
-        items = []
+        items: list[dict[str, Any]] = []
+        result_items: list[dict[str, Any]] = []
         for item in raw_items:
             if not isinstance(item, dict):
                 continue
             try:
                 clean_item = redact_sensitive(_legacy_safe_value(item))
 
-                # Artifact fields keep non-auth query; source_urls fully strips.
+                # Artifact fields keep non-auth query; source URLs stay redacted in metadata.
                 for field in _LEGACY_ARTIFACT_FIELDS:
                     if field in item:
                         clean_item[field] = _legacy_refs(item, field)
                 # A bad batch item must not hide output from its valid siblings.
-                _legacy_result(clean_item, JobState.SUCCEEDED, [])
+                _legacy_result(item, JobState.SUCCEEDED, [])
             except (ValueError, TypeError, RecursionError):
                 continue
             items.append(clean_item)
+            result_items.append(item)
         state = _legacy_state(record.get("status"))
-        result = _legacy_result(record, state, items)
+        result = _legacy_result(record, state, result_items)
         request = GenerationRequest.from_values(
             prompt=_safe_text(record.get("message"), "(legacy background task)"),
             source="llm_tool",
