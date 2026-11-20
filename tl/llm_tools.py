@@ -35,6 +35,7 @@ from .core.states import JobState
 from .generation_errors import api_failure_message
 from .generation_tracker import requester_from_event
 from .image_generator import DEFAULT_MAX_REFERENCE_IMAGES
+from .keyword_media import media_job_id
 from .internal_references import (
     InternalReferenceError,
     ReferenceResolver,
@@ -1478,6 +1479,13 @@ def _expand_tool_keywords(
         notice_parts.append(f"{dropped} 张超出参考图上限已丢弃")
     if missing:
         notice_parts.append(f"{missing} 条参考图条目缺失已跳过")
+    handles = [
+        f"gen:{media_job_id(item['id'])}"
+        for item in expansion.refs
+        if item.get("kind") in ("file", "address") and not item.get("missing")
+    ]
+    if handles:
+        notice_parts.append("素材句柄 " + "、".join(handles))
     fragments_dropped = len(getattr(expansion, "dropped_fragments", []) or [])
     if fragments_dropped:
         notice_parts.append(f"{fragments_dropped} 条提示词片段超总量上限未拼接")

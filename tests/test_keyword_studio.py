@@ -378,3 +378,83 @@ async def test_prepare_v2_request_matches_raw_text_not_rendered():
     )
     assert list(request.reference_images) == [_PATH]
     assert request.prompt.startswith("图像生成任务：一只可爱的猫")
+
+
+# ---------- 上传文件与地址 ----------
+
+
+@pytest.mark.asyncio
+async def test_save_persists_files_and_addresses_and_returns_state(tmp_path):
+    raw = _RawConfig({"bindings": []})
+    service, _ = _service(raw)
+    service.data_dir = tmp_path
+    rel = "files/keyword_trigger/bindings/templates/binding/ref_files/a.png"
+    addresses = ["https://example.com/a.png", str(tmp_path / "x.png")]
+    result = await service.save_keywords(
+        {
+            "revision": service._revision(),
+            "settings": {"mode": "command"},
+            "bindings": [
+                {**_binding(), "ref_files": [rel], "ref_addresses": addresses}
+            ],
+        }
+    )
+    saved = raw["keyword_trigger"]["bindings"][0]
+    assert saved["ref_files"] == [rel]
+    assert saved["ref_addresses"] == addresses
+    binding = result["bindings"][0]
+    assert binding["files"][0]["path"] == rel
+    assert binding["files"][0]["missing"] is True
+    assert binding["files"][0]["gen"].startswith("gen:kw-")
+    assert {item["kind"] for item in binding["addresses"]} == {"url", "path"}
+    assert all(item["gen"].startswith("gen:kw-") for item in binding["addresses"])
+
+
+@pytest.mark.asyncio
+async def test_save_rejects_invalid_file_and_address():
+    raw = _RawConfig({"bindings": []})
+    service, _ = _service(raw)
+    base = {"revision": service._revision(), "settings": {"mode": "command"}}
+    with pytest.raises(StudioServiceError):
+        await service.save_keywords(
+            {**base, "bindings": [{**_binding(), "ref_files": ["files/../escape.png"]}]}
+        )
+    with pytest.raises(StudioServiceError):
+        await service.save_keywords(
+            {
+                **base,
+                "bindings": [{**_binding(), "ref_addresses": ["relative/path.png"]}],
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_file_upload_list_and_delete_guard(tmp_path):
+    raw = _RawConfig({"bindings": []})
+    service, _ = _service(raw)
+    service.data_dir = tmp_path
+    result = await service.save_file("../../evil.png", b"data")
+    assert result["path"].endswith("/evil.png")
+    with pytest.raises(StudioServiceError):
+        await service.save_file("evil.exe", b"data")
+    rel = result["path"]
+    assert rel in service.list_files()["files"]
+    await service.save_keywords(
+        {
+            "revision": service._revision(),
+            "settings": {"mode": "command"},
+            "bindings": [{**_binding(), "ref_files": [rel]}],
+        }
+    )
+    with pytest.raises(StudioServiceError) as exc:
+        await service.delete_file(rel)
+    assert exc.value.status_code == 409
+    await service.save_keywords(
+        {
+            "revision": service._revision(),
+            "settings": {"mode": "command"},
+            "bindings": [],
+        }
+    )
+    await service.delete_file(rel)
+    assert rel not in service.list_files()["files"]

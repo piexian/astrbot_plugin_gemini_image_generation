@@ -8,10 +8,28 @@ interface RefState {
   missing: boolean;
 }
 
+interface FileState {
+  path: string;
+  label: string;
+  missing: boolean;
+  gen: string;
+}
+
+interface AddressState {
+  address: string;
+  kind: string;
+  missing: boolean;
+  gen: string;
+}
 interface Binding {
   name: string;
   wordsText: string;
   ref_ids: string[];
+  ref_files: string[];
+  ref_addresses: string[];
+  files: FileState[];
+  addresses: AddressState[];
+  addressInput: string;
   prompt_append: string;
   enabled: boolean;
 }
@@ -26,6 +44,7 @@ interface PreviewRef {
   id: string;
   label: string;
   missing: boolean;
+  kind?: string;
 }
 
 interface PreviewResult {
@@ -41,6 +60,7 @@ interface Props {
   bridge: {
     get: (path: string, params?: Record<string, string>) => Promise<unknown>;
     post: (path: string, body?: unknown) => Promise<unknown>;
+    upload: (path: string, file: File) => Promise<unknown>;
     isAvailable?: () => boolean;
   };
   t: (key: string, params?: Record<string, unknown>) => string;
@@ -85,6 +105,15 @@ function toForm(entry: Record<string, unknown>): Binding {
     name: String(entry.name || ""),
     wordsText: words.join("，"),
     ref_ids: Array.isArray(entry.ref_ids) ? (entry.ref_ids as string[]) : [],
+    ref_files: Array.isArray(entry.ref_files) ? (entry.ref_files as string[]) : [],
+    ref_addresses: Array.isArray(entry.ref_addresses)
+      ? (entry.ref_addresses as string[])
+      : [],
+    files: Array.isArray(entry.files) ? (entry.files as FileState[]) : [],
+    addresses: Array.isArray(entry.addresses)
+      ? (entry.addresses as AddressState[])
+      : [],
+    addressInput: "",
     prompt_append: String(entry.prompt_append || ""),
     enabled: entry.enabled !== false,
   };
@@ -120,6 +149,11 @@ function addBinding() {
     name: "",
     wordsText: "",
     ref_ids: [],
+    ref_files: [],
+    ref_addresses: [],
+    files: [],
+    addresses: [],
+    addressInput: "",
     prompt_append: "",
     enabled: true,
   });
@@ -192,6 +226,75 @@ function refLabel(binding: Binding): string {
   return binding.ref_ids.length ? binding.ref_ids.map((id) => id).join("、") : props.t("未选择");
 }
 
+async function uploadFile(binding: Binding, event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file) return;
+  try {
+    const result = (await props.bridge.upload("webui/keywords/files", file)) as {
+      path?: string;
+    } | null;
+    const path = String(result?.path || "");
+    if (!path) return;
+    if (!binding.ref_files.includes(path)) {
+      binding.ref_files.push(path);
+      binding.files.push({
+        path,
+        label: path.split("/").pop() || path,
+        missing: false,
+        gen: "",
+      });
+    }
+    props.toast.success(props.t("上传成功，保存后生效"));
+  } catch (err) {
+    console.error("[KeywordsView] 上传绑定图片失败:", err);
+    props.errorFeedback.show(err, props.t("上传绑定图片失败"));
+  }
+}
+
+function removeFile(binding: Binding, path: string) {
+  binding.ref_files = binding.ref_files.filter((item) => item !== path);
+  binding.files = binding.files.filter((item) => item.path !== path);
+}
+
+function addAddress(binding: Binding) {
+  const address = binding.addressInput.trim();
+  if (!address) return;
+  const isUrl = /^https?:\/\//i.test(address);
+  const isPath =
+    address.startsWith("/") ||
+    /^[A-Za-z]:[\\/]/.test(address) ||
+    address.toLowerCase().startsWith("file:");
+  if (!isUrl && !isPath) {
+    props.toast.warning(props.t("地址必须是 http(s) URL 或本地绝对路径"));
+    return;
+  }
+  binding.addressInput = "";
+  if (binding.ref_addresses.includes(address)) return;
+  binding.ref_addresses.push(address);
+  binding.addresses.push({
+    address,
+    kind: isUrl ? "url" : "path",
+    missing: !isUrl,
+    gen: "",
+  });
+}
+
+function removeAddress(binding: Binding, address: string) {
+  binding.ref_addresses = binding.ref_addresses.filter((item) => item !== address);
+  binding.addresses = binding.addresses.filter((item) => item.address !== address);
+}
+
+async function copyGen(gen: string) {
+  try {
+    await navigator.clipboard.writeText(gen);
+    props.toast.success(props.t("已复制 {v0}", { v0: gen }));
+  } catch {
+    props.toast.info(gen);
+  }
+}
+
 async function save() {
   const cleaned = bindings.value.map((binding, index) => ({
     name: binding.name.trim() || props.t("绑定 {v0}", { v0: String(index + 1) }),
@@ -200,6 +303,8 @@ async function save() {
       .map((word) => word.trim())
       .filter(Boolean),
     ref_ids: binding.ref_ids,
+    ref_files: binding.ref_files,
+    ref_addresses: binding.ref_addresses,
     prompt_append: binding.prompt_append.trim(),
     enabled: binding.enabled,
   }));
@@ -278,7 +383,7 @@ defineExpose({ reload });
         <p class="muted">{{ t("命中关键词时自动注入参考图库条目与提示词片段。") }}</p>
       </div>
       <div class="keywords-actions">
-        <button type="button" class="btn" :disabled="loading || unavailable()" @click="reload">
+        <button type="button" class="comic-btn" :disabled="loading || unavailable()" @click="reload">
           {{ t("刷新") }}
         </button>
       </div>
@@ -319,7 +424,7 @@ defineExpose({ reload });
     <div class="comic-card keywords-bindings">
       <div class="keywords-bindings-head">
         <h3>{{ t("关键词绑定") }}</h3>
-        <button type="button" class="btn btn-primary" @click="addBinding">
+        <button type="button" class="comic-btn comic-btn--cta" @click="addBinding">
           {{ t("添加绑定") }}
         </button>
       </div>
@@ -345,7 +450,7 @@ defineExpose({ reload });
           </label>
         </div>
         <div class="keywords-binding-row">
-          <button type="button" class="btn" @click="pickReferences(binding)">
+          <button type="button" class="comic-btn" @click="pickReferences(binding)">
             {{ t("选择参考图") }}
           </button>
           <span class="muted keywords-refids" :title="refLabel(binding)">
@@ -357,14 +462,82 @@ defineExpose({ reload });
             maxlength="500"
             :placeholder="t('追加提示词片段（可选）')"
           />
-          <button type="button" class="btn btn-danger" @click="removeBinding(index)">
+          <button type="button" class="comic-btn comic-btn--danger" @click="removeBinding(index)">
             {{ t("删除") }}
           </button>
+        </div>
+        <div class="keywords-binding-row">
+          <label class="comic-btn keywords-upload">
+            {{ t("上传图片") }}
+            <input
+              type="file"
+              accept=".png,.jpg,.jpeg,.webp,.gif,.bmp"
+              hidden
+              @change="uploadFile(binding, $event)"
+            />
+          </label>
+          <input
+            v-model="binding.addressInput"
+            class="form-input keywords-address"
+            :placeholder="t('图片 URL 或本地绝对路径')"
+            @keyup.enter="addAddress(binding)"
+          />
+          <button type="button" class="comic-btn" @click="addAddress(binding)">
+            {{ t("添加地址") }}
+          </button>
+        </div>
+        <div
+          v-if="binding.files.length || binding.addresses.length"
+          class="keywords-media-list"
+        >
+          <span v-for="file in binding.files" :key="file.path" class="keywords-media-chip">
+            <span class="keywords-media-label" :title="file.path">{{ file.label }}</span>
+            <span v-if="file.missing" class="keywords-missing">{{ t("缺失") }}</span>
+            <code
+              v-if="file.gen"
+              class="keywords-gen"
+              :title="t('点击复制 gen 引用句柄')"
+              @click="copyGen(file.gen)"
+              >{{ file.gen }}</code
+            >
+            <button
+              type="button"
+              class="keywords-chip-x"
+              :aria-label="t('移除')"
+              @click="removeFile(binding, file.path)"
+            >
+              ×
+            </button>
+          </span>
+          <span
+            v-for="addr in binding.addresses"
+            :key="addr.address"
+            class="keywords-media-chip"
+          >
+            <span class="keywords-media-label" :title="addr.address">{{ addr.address }}</span>
+            <span class="keywords-kind">{{ addr.kind === "url" ? t("URL") : t("本地") }}</span>
+            <span v-if="addr.missing" class="keywords-missing">{{ t("缺失") }}</span>
+            <code
+              v-if="addr.gen"
+              class="keywords-gen"
+              :title="t('点击复制 gen 引用句柄')"
+              @click="copyGen(addr.gen)"
+              >{{ addr.gen }}</code
+            >
+            <button
+              type="button"
+              class="keywords-chip-x"
+              :aria-label="t('移除')"
+              @click="removeAddress(binding, addr.address)"
+            >
+              ×
+            </button>
+          </span>
         </div>
       </div>
       <button
         type="button"
-        class="btn btn-primary keywords-save"
+        class="comic-btn comic-btn--cta keywords-save"
         :disabled="saving || unavailable()"
         @click="save"
       >
@@ -387,7 +560,7 @@ defineExpose({ reload });
         </label>
         <button
           type="button"
-          class="btn btn-primary"
+          class="comic-btn comic-btn--cta"
           :disabled="previewing || unavailable()"
           @click="runPreview"
         >
@@ -422,6 +595,9 @@ defineExpose({ reload });
           <ul class="keywords-refs">
             <li v-for="ref of previewResult.refs" :key="ref.id">
               {{ ref.label }}
+              <span class="keywords-kind">{{
+                ref.kind === "file" ? t("上传") : ref.kind === "address" ? t("地址") : t("图库")
+              }}</span>
               <span v-if="ref.missing" class="keywords-missing">
                 {{ t("缺失") }}
               </span>
@@ -544,5 +720,61 @@ defineExpose({ reload });
 
 .keywords-append-preview {
   white-space: pre-wrap;
+}
+.keywords-upload {
+  cursor: pointer;
+}
+
+.keywords-address {
+  flex: 2 1 260px;
+}
+
+.keywords-media-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 6px;
+}
+
+.keywords-media-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 8px;
+  border: 1px solid var(--line, rgba(0, 0, 0, 0.15));
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.keywords-media-label {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.keywords-kind {
+  color: var(--muted, #888);
+}
+
+.keywords-gen {
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--pop, #b8a85f);
+}
+
+.keywords-chip-x {
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--muted, #888);
+  padding: 0 2px;
+}
+
+.keywords-chip-x:hover {
+  color: var(--danger, #c0392b);
 }
 </style>

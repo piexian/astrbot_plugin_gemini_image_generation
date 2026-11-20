@@ -5,7 +5,7 @@
 - auto 模式可配置包裹符（左右同空或同有值），有包裹时仅匹配 左符+词+右符
 - command 模式（/快速 关键词 子指令）忽略包裹符
 - 匹配对象是用户原始文本，不是模板渲染产物
-- 单绑定多词命中只注入一次；多绑定按配置顺序稳定排列；ref_id 跨绑定去重
+- 单绑定多词命中只注入一次；多绑定按配置顺序稳定排列；参考值跨绑定去重
 - max_refs 是单次请求自动注入的总上限，超限丢弃并如实上报
 
 绑定与设置存放在插件配置 keyword_trigger 下（template_list + object），
@@ -18,6 +18,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 
 from astrbot.api import logger
 
@@ -32,6 +33,9 @@ MAX_BINDINGS = 32
 MAX_PROMPT_APPEND_TOTAL = 2000
 _FALSE_TEXT = frozenset({"false", "0", "no", "off"})
 _MODES = frozenset({"command", "auto"})
+_FILE_PREFIX = "files/"
+_IMAGE_EXTS = frozenset({"png", "jpg", "jpeg", "webp", "gif", "bmp"})
+_MAX_ADDRESS = 512
 
 
 @dataclass
@@ -50,6 +54,8 @@ class KeywordBinding:
     ref_ids: list[str]
     prompt_append: str
     enabled: bool
+    ref_files: list[str] = field(default_factory=list)
+    ref_addresses: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -83,6 +89,42 @@ def _string_list(value: Any, *, item_limit: int, count_limit: int) -> list[str]:
             cleaned.append(text)
         if len(cleaned) >= count_limit:
             break
+    return cleaned
+
+
+def valid_ref_file(rel: str) -> bool:
+    """上传文件相对路径是否合法：files/ 前缀、无穿越、图片扩展名。"""
+    parts = rel.split("/")
+    if not rel.startswith(_FILE_PREFIX) or ".." in parts or "." in parts:
+        return False
+    ext = rel.rsplit(".", 1)[-1].lower() if "." in rel else ""
+    return ext in _IMAGE_EXTS
+
+
+def _ref_file_list(value: Any) -> list[str]:
+    cleaned: list[str] = []
+    for item in _string_list(value, item_limit=_MAX_ADDRESS, count_limit=_MAX_WORDS):
+        rel = item.replace("\\", "/")
+        if valid_ref_file(rel) and rel not in cleaned:
+            cleaned.append(rel)
+    return cleaned
+
+
+def valid_address(item: str) -> bool:
+    """参考图地址是否合法：http(s) URL、file:// 或绝对路径。"""
+    lower = item.lower()
+    if lower.startswith(("http://", "https://")):
+        return bool(urlsplit(item).hostname)
+    if lower.startswith("file:"):
+        return True
+    return item.startswith("/") or bool(re.match(r"^[A-Za-z]:[\\/]", item))
+
+
+def _address_list(value: Any) -> list[str]:
+    cleaned: list[str] = []
+    for item in _string_list(value, item_limit=_MAX_ADDRESS, count_limit=_MAX_WORDS):
+        if valid_address(item) and item not in cleaned:
+            cleaned.append(item)
     return cleaned
 
 
@@ -125,11 +167,15 @@ def normalize_binding(raw: Any, order: int) -> KeywordBinding | None:
         )
         if REF_ID.fullmatch(item)
     ]
+    ref_files = _ref_file_list(raw.get("ref_files"))
+    ref_addresses = _address_list(raw.get("ref_addresses"))
     return KeywordBinding(
         order=order,
         name=_text(raw.get("name"), _MAX_NAME) or f"绑定{order + 1}",
         words=words,
         ref_ids=ref_ids,
+        ref_files=ref_files,
+        ref_addresses=ref_addresses,
         prompt_append=_text(raw.get("prompt_append"), _MAX_PROMPT_APPEND),
         enabled=_bool(raw.get("enabled", True)),
     )
@@ -201,11 +247,53 @@ def plan_expansion(
     bindings: list[KeywordBinding],
     slots: int,
     resolve_ref: Callable[[str], dict[str, Any] | None],
+    *,
+    resolve_file: Callable[[str], dict[str, Any] | None] | None = None,
+    resolve_address: Callable[[str], dict[str, Any] | None] | None = None,
 ) -> Expansion:
     """把命中绑定展开为注入计划：去重、稳定顺序、槽位上限与丢弃记录。"""
     by_order = {binding.order: binding for binding in bindings}
     expansion = Expansion()
     seen_refs: set[str] = set()
+
+    def inject(
+        binding_name: str,
+        item_id: str,
+        label: str,
+        path: Any,
+        kind: str,
+        *,
+        missing: bool = False,
+    ) -> None:
+        nonlocal slots
+        if item_id in seen_refs:
+            return
+        seen_refs.add(item_id)
+        if missing:
+            expansion.refs.append(
+                {
+                    "id": item_id,
+                    "label": label,
+                    "missing": True,
+                    "path": None,
+                    "kind": kind,
+                }
+            )
+            return
+        if slots <= 0:
+            expansion.dropped.append({"binding": binding_name, "id": item_id})
+            return
+        slots -= 1
+        expansion.refs.append(
+            {
+                "id": item_id,
+                "label": label,
+                "missing": False,
+                "path": path,
+                "kind": kind,
+            }
+        )
+
     for order, matched_words in hits:
         binding = by_order.get(order)
         if binding is None:
@@ -218,26 +306,24 @@ def plan_expansion(
             }
         )
         for ref_id in binding.ref_ids:
-            if ref_id in seen_refs:
-                continue
-            seen_refs.add(ref_id)
             resolved = resolve_ref(ref_id)
-            if resolved is None:
-                expansion.refs.append(
-                    {"id": ref_id, "label": "", "missing": True, "path": None}
-                )
-                continue
-            if slots <= 0:
-                expansion.dropped.append({"binding": binding.name, "id": ref_id})
-                continue
-            slots -= 1
-            expansion.refs.append(
-                {
-                    "id": ref_id,
-                    "label": resolved.get("label") or ref_id,
-                    "missing": False,
-                    "path": resolved.get("path"),
-                }
+            label = (resolved.get("label") or ref_id) if resolved else ""
+            path = resolved.get("path") if resolved else None
+            inject(
+                binding.name, ref_id, label, path, "library", missing=resolved is None
+            )
+        for rel in binding.ref_files:
+            resolved = resolve_file(rel) if resolve_file else None
+            filename = rel.rsplit("/", 1)[-1]
+            label = (resolved.get("label") or filename) if resolved else filename
+            path = resolved.get("path") if resolved else None
+            inject(binding.name, rel, label, path, "file", missing=resolved is None)
+        for address in binding.ref_addresses:
+            resolved = resolve_address(address) if resolve_address else None
+            label = (resolved.get("label") or address) if resolved else address
+            path = resolved.get("path") if resolved else None
+            inject(
+                binding.name, address, label, path, "address", missing=resolved is None
             )
     fragments: list[str] = []
     used = 0
@@ -259,8 +345,15 @@ def plan_expansion(
 class KeywordTriggerService:
     """运行时触发器：持有归一化后的配置，供命令、工具与预演共用。"""
 
-    def __init__(self, resolve_ref: Callable[[str], dict[str, Any] | None]) -> None:
+    def __init__(
+        self,
+        resolve_ref: Callable[[str], dict[str, Any] | None],
+        resolve_file: Callable[[str], dict[str, Any] | None] | None = None,
+        resolve_address: Callable[[str], dict[str, Any] | None] | None = None,
+    ) -> None:
         self._resolve_ref = resolve_ref
+        self._resolve_file = resolve_file
+        self._resolve_address = resolve_address
         self._settings = TriggerSettings()
         self._bindings: list[KeywordBinding] = []
 
@@ -279,7 +372,14 @@ class KeywordTriggerService:
 
     def _expand(self, hits: list[int], slots: int) -> Expansion:
         budget = max(min(slots, self._settings.max_refs), 0)
-        return plan_expansion(hits, self._bindings, budget, self._resolve_ref)
+        return plan_expansion(
+            hits,
+            self._bindings,
+            budget,
+            self._resolve_ref,
+            resolve_file=self._resolve_file,
+            resolve_address=self._resolve_address,
+        )
 
     def expand_auto(self, prompt_text: str, slots: int) -> Expansion | None:
         """auto 模式：未启用或无命中返回 None。"""
@@ -298,7 +398,7 @@ class KeywordTriggerService:
         return self._expand(hits, slots)
 
     def expansion_paths(self, expansion: Expansion) -> list[str]:
-        """注入用的本地路径列表；缺失条目不产生路径。"""
+        """注入用的参考值列表（本地路径或地址）；缺失条目不产生值。"""
         return [
             str(item["path"])
             for item in expansion.refs

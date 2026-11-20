@@ -561,3 +561,24 @@ async def test_begin_rejects_duplicate_explicit_job_id(tmp_path):
         assert record["job_id"] != "job-dup"
     finally:
         await tracker.close()
+
+
+@pytest.mark.asyncio
+async def test_extra_protected_names_skip_prune(tmp_path):
+    tracker = GenerationTracker(tmp_path, max_records=1)
+    try:
+        first = await tracker.begin(
+            source="keyword", prompt="素材", params={}, requester={}
+        )
+        await tracker.complete(
+            first["job_id"],
+            image_files=["lib-protected.png"],
+            text_content=None,
+            stats={},
+        )
+        assert tracker.get(first["job_id"])["source"] == "keyword"
+        tracker.set_extra_protected_fn(lambda: {"lib-protected.png"})
+        await tracker.begin(source="command", prompt="new", params={}, requester={})
+        assert tracker.get(first["job_id"]) is not None
+    finally:
+        await tracker.close()

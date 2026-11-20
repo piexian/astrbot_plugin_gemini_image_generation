@@ -55,6 +55,9 @@ const bridge = {
     if (route === "webui/keywords/preview") return previewPayload;
     return {};
   }),
+  upload: vi.fn(async (_route: string, _file: File) => ({
+    path: "files/keyword_trigger/bindings/templates/binding/ref_files/test.png",
+  })),
 };
 
 function mountView() {
@@ -107,6 +110,8 @@ describe("KeywordsView", () => {
           name: "画风",
           words: ["水彩"],
           ref_ids: ["ref-aaaaaaaaaaaa"],
+          ref_files: [],
+          ref_addresses: [],
           prompt_append: "转为水彩",
           enabled: true,
         },
@@ -154,7 +159,7 @@ describe("KeywordsView", () => {
 
     const textInput = wrapper.find(".keywords-preview-form .form-input");
     await textInput.setValue("把图改成水彩");
-    await wrapper.find(".keywords-preview-form .btn-primary").trigger("click");
+    await wrapper.find(".keywords-preview-form .comic-btn--cta").trigger("click");
     await flushPromises();
 
     expect(bridge.post).toHaveBeenCalledWith("webui/keywords/preview", {

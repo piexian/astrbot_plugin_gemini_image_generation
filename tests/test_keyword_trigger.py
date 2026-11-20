@@ -318,3 +318,95 @@ def test_prompt_append_budget_counts_separators_not_first_line():
     plan = plan_expansion(hits, bindings, slots=10, resolve_ref=_resolve(set()))
     assert len(plan.prompt_append) == MAX_PROMPT_APPEND_TOTAL
     assert plan.dropped_fragments == []
+
+
+# ---------- 上传文件与地址 ----------
+
+
+def test_normalize_binding_filters_files_and_addresses():
+    binding = normalize_binding(
+        {
+            "words": ["水彩"],
+            "ref_files": [
+                "files/keyword_trigger/bindings/templates/binding/ref_files/a.png",
+                "files/../escape.png",
+                "files/keyword_trigger/x.exe",
+                "other/a.png",
+                "files/keyword_trigger/bindings/templates/binding/ref_files/a.png",
+            ],
+            "ref_addresses": [
+                "https://example.com/a.png",
+                "http://example.com/b.jpg",
+                "/data/local/c.png",
+                "file:///data/local/d.png",
+                "relative/path.png",
+                "not a url",
+                "https://example.com/a.png",
+            ],
+        },
+        0,
+    )
+    assert binding is not None
+    assert binding.ref_files == [
+        "files/keyword_trigger/bindings/templates/binding/ref_files/a.png"
+    ]
+    assert binding.ref_addresses == [
+        "https://example.com/a.png",
+        "http://example.com/b.jpg",
+        "/data/local/c.png",
+        "file:///data/local/d.png",
+    ]
+
+
+def test_plan_expansion_injects_files_and_addresses_with_shared_slots():
+    rel = "files/keyword_trigger/bindings/templates/binding/ref_files/a.png"
+    url = "https://example.com/a.png"
+    binding = _binding(0, words=("水彩",), ref_ids=("ref-aaaaaaaaaaaa",))
+    binding.ref_files = [rel]
+    binding.ref_addresses = [url]
+    plan = plan_expansion(
+        [(0, ["水彩"])],
+        [binding],
+        slots=2,
+        resolve_ref=_resolve({"ref-aaaaaaaaaaaa"}),
+        resolve_file=lambda r: {"path": f"/data/{r}", "label": "a.png"},
+        resolve_address=lambda a: {"path": a, "label": "a.png"},
+    )
+    assert [(item["kind"], item["id"]) for item in plan.refs] == [
+        ("library", "ref-aaaaaaaaaaaa"),
+        ("file", rel),
+    ]
+    assert plan.dropped == [{"binding": "绑定1", "id": url}]
+
+
+def test_plan_expansion_missing_file_and_address_do_not_consume_slots():
+    rel = "files/keyword_trigger/bindings/templates/binding/ref_files/gone.png"
+    binding = _binding(0, words=("水彩",), ref_ids=())
+    binding.ref_files = [rel]
+    binding.ref_addresses = ["/data/gone.png"]
+    plan = plan_expansion(
+        [(0, ["水彩"])],
+        [binding],
+        slots=1,
+        resolve_ref=_resolve(set()),
+        resolve_file=lambda r: None,
+        resolve_address=lambda a: None,
+    )
+    assert [item["missing"] for item in plan.refs] == [True, True]
+    assert plan.dropped == []
+
+
+def test_plan_expansion_dedups_addresses_across_bindings():
+    url = "https://example.com/a.png"
+    first = _binding(0, words=("水彩",), ref_ids=())
+    second = _binding(1, words=("彩铅",), ref_ids=())
+    first.ref_addresses = [url]
+    second.ref_addresses = [url]
+    plan = plan_expansion(
+        [(0, ["水彩"]), (1, ["彩铅"])],
+        [first, second],
+        slots=5,
+        resolve_ref=_resolve(set()),
+        resolve_address=lambda a: {"path": a, "label": "a.png"},
+    )
+    assert [item["id"] for item in plan.refs] == [url]
