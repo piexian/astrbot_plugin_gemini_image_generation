@@ -137,6 +137,7 @@ class LegacyClientAdapter:
                 image_count=request.image_count,
                 suppress_resolution=bool(metadata.get("suppress_resolution", False)),
                 enable_smart_retry=bool(metadata.get("enable_smart_retry", True)),
+                request_source=request.source,
             )
 
         return "", {}, body_factory

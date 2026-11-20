@@ -388,7 +388,8 @@ class LegacyProviderError(CoreError):
     """legacy client 返回 error 的适配层错误。
 
     legacy client 内部已自重试，因此标记不可重试：Router 不再重复重试，
-    该错误直接触发 fallback 到下一候选。
+    该错误直接触发 fallback 到下一候选；终态错误类型（cancelled/timeout/
+    outcome_unknown）除外，Router 中止全部候选以防重复生成。
     """
 
     code = "legacy_provider_failed"

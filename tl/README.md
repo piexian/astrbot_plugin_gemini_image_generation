@@ -262,10 +262,11 @@ xAI Images 官方 provider。
 | 接口 | 说明 |
 |------|------|
 | `XAIProvider.build_request()` | 构造 `/v1/images/generations` 或 `/v1/images/edits` 请求 |
-| `XAIProvider.parse_response()` | 解析 `url` / `b64_json` 图片响应 |
+| `XAIProvider.parse_response()` | 解析 `url` / `b64_json` 图片响应；deferred 回执轮询到终态 |
+| `_poll_deferred()` | 轮询 `GET /v1/images/{request_id}` 直到 done/failed |
 | `_prepare_generations_payload()` | 文生图请求体 |
 | `_prepare_edits_payload()` | 改图请求体，参考图转 `data URI` |
-| `_to_image_url()` | 统一把本地/URL/base64 输入转换为 xAI 可用图片引用 |
+| `_to_image_url()` | 走共享管道转 data URI，按 JPEG/PNG/WebP 白名单转码 |
 
 ### `api/minimax.py`
 

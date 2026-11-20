@@ -715,7 +715,7 @@
               "model": {
                 "description": "模型名称",
                 "type": "string",
-                "hint": "推荐grok-imagine-image-2.0",
+                "hint": "推荐 grok-imagine-image-2.0",
                 "default": "grok-imagine-image-2.0"
               },
               "api_base": {
@@ -737,13 +737,14 @@
                 "default": "1K",
                 "options": [
                   "1K",
+                  "1.5K",
                   "2K"
                 ]
               },
               "aspect_ratio": {
                 "description": "长宽比",
                 "type": "string",
-                "hint": " auto 模型自动选择不支持时，传入自动忽略",
+                "hint": "输出长宽比；auto 由模型自选，不支持的取值自动忽略并记录日志。",
                 "default": "1:1",
                 "options": [
                   "1:1",
@@ -768,7 +769,7 @@
                 "description": "最大参考图片数量",
                 "type": "int",
                 "hint": "单次请求最多使用的参考图片数量；超过后按顺序截取。",
-                "default": 6
+                "default": 5
               },
               "response_format": {
                 "description": "响应格式",
@@ -783,7 +784,7 @@
               "quality": {
                 "description": "图像质量",
                 "type": "string",
-                "hint": "仅 grok-imagine-image-2.0 支持，官方仅 low/medium；留空不传",
+                "hint": "仅 grok-imagine-image-2.0 支持；low/medium/auto，留空不传（服务端默认 auto）。",
                 "default": "",
                 "options": [
                   "",
@@ -797,6 +798,30 @@
                 "type": "int",
                 "hint": "单次请求生成的图片数量，xAI 当前单次最多 10 张",
                 "default": 1
+              },
+              "user": {
+                "description": "用户标识",
+                "type": "string",
+                "hint": "随请求体发送的终端用户标识（官方 user 参数），供 xAI 滥用监控；默认 AstrBot，可自定义，留空不发送。",
+                "default": "AstrBot"
+              },
+              "deferred": {
+                "description": "后台异步生成",
+                "type": "bool",
+                "hint": "LLM 工具与批量后台任务优先用官方 deferred 异步提交并轮询结果；仅 response_format=url 时生效，指令与工作台不受影响。",
+                "default": true
+              },
+              "poll_interval": {
+                "description": "轮询间隔（秒）",
+                "type": "int",
+                "hint": "deferred 任务轮询间隔，默认 5 秒。",
+                "default": 5
+              },
+              "poll_timeout": {
+                "description": "轮询超时（秒）",
+                "type": "int",
+                "hint": "deferred 任务轮询总超时，默认 100 秒，且不超过请求总时限。",
+                "default": 100
               }
             }
           },

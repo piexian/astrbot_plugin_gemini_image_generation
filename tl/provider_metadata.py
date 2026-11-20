@@ -78,6 +78,10 @@ _PROVIDER_SPECS: Final[tuple[ProviderSpec, ...]] = (
         settings_attr="xai_settings",
         capability_profile_path="tl.provider_capabilities.xai_capability",
         model_catalog_kind="xai",
+        # 付费非幂等端点：POST 传输中断按 outcome_unknown 处理，防重复计费
+        retry_ambiguous_transport_errors=False,
+        # 轮询须与提交用同一把 Key：轮换后需重建以同步 config.api_key
+        rebuild_on_retry=True,
     ),
     ProviderSpec(
         "minimax",

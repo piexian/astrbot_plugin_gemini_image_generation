@@ -214,7 +214,7 @@ def agnes_ai_capability(candidate: Any) -> dict[str, Any]:
 
 
 def xai_capability(candidate: Any) -> dict[str, Any]:
-    # 官方白名单与全局并集不同（含 auto，无 4:5/5:4/21:9），按渠道精确声明
+    # 官方白名单与全局并集不同（含 auto 与 21:9/5:2，无 4:5/5:4），按渠道精确声明
     from .api.xai import SUPPORTED_ASPECT_RATIOS
 
     return _profile(
@@ -223,7 +223,7 @@ def xai_capability(candidate: Any) -> dict[str, Any]:
         parameters={
             "resolution": {
                 "type": "string",
-                "enum": ["1K", "2K"],
+                "enum": ["1K", "1.5K", "2K"],
                 "default_source": "provider_config",
             },
             "quality": {
