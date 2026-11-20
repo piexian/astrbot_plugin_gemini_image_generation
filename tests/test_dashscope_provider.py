@@ -320,3 +320,25 @@ def test_size_utils_clamp_and_budget() -> None:
     assert clamp_side(100, min_side=512, max_side=4096, align=16) == 512
     w, h = size_from_budget(2048 * 2048, 1, 1)
     assert (w, h) == (2048, 2048)
+
+
+def test_dashscope_color_palette_rejects_invalid_ratios() -> None:
+    # 负占比相互抵消使总和仍为 100，须按项拒绝
+    negative = json.dumps(
+        [
+            {"hex": "#FFFFFF", "ratio": "50%"},
+            {"hex": "#000000", "ratio": "60%"},
+            {"hex": "#123456", "ratio": "-10%"},
+        ]
+    )
+    assert _parse_color_palette(negative) is None
+    # NaN、无穷、超过 100 的单项占比均拒绝
+    for bad in ("nan%", "inf%", "150%"):
+        payload = json.dumps(
+            [
+                {"hex": "#FFFFFF", "ratio": bad},
+                {"hex": "#000000", "ratio": "30%"},
+                {"hex": "#123456", "ratio": "20%"},
+            ]
+        )
+        assert _parse_color_palette(payload) is None

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from typing import Any
 
@@ -293,6 +294,11 @@ def _parse_color_palette(value: Any) -> list[dict[str, str]] | None:
             pct = float(ratio.rstrip("%"))
         except ValueError:
             logger.warning("[dashscope] color_palette 占比 %s 非法，已忽略", ratio)
+            return None
+        if not math.isfinite(pct) or not 0 < pct <= 100:
+            logger.warning(
+                "[dashscope] color_palette 占比 %s 须为 0-100 的有限正数，已忽略", ratio
+            )
             return None
         total += pct
         palette.append({"hex": hex_val.upper(), "ratio": f"{pct:g}%"})
