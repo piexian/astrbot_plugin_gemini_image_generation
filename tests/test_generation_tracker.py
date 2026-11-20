@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -582,3 +584,43 @@ async def test_extra_protected_names_skip_prune(tmp_path):
         assert tracker.get(first["job_id"]) is not None
     finally:
         await tracker.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_save_waits_for_write_thread_before_close(
+    tmp_path, monkeypatch
+):
+    tracker = GenerationTracker(tmp_path, max_records=20)
+    entered = threading.Event()
+    release = threading.Event()
+    active = []
+    overlaps = []
+    original = tracker._save_sync
+
+    def gated_save():
+        if active:
+            overlaps.append(True)
+        active.append(1)
+        entered.set()
+        release.wait(5)
+        try:
+            original()
+        finally:
+            active.pop()
+
+    monkeypatch.setattr(tracker, "_save_sync", gated_save)
+    begin = asyncio.create_task(
+        tracker.begin(source="keyword", prompt="素材", params={}, requester={})
+    )
+    assert await asyncio.to_thread(entered.wait, 5)
+    begin.cancel()
+    close = asyncio.create_task(tracker.close())
+    await asyncio.sleep(0.05)
+    assert not close.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await begin
+    await close
+    assert overlaps == []
+    payload = json.loads(tracker.path.read_text(encoding="utf-8"))
+    assert payload["jobs"]

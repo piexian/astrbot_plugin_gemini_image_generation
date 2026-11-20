@@ -404,7 +404,16 @@ class GenerationTracker:
     async def _save(self) -> None:
         if not self.enabled:
             return
-        await asyncio.to_thread(self._save_sync)
+        write = asyncio.ensure_future(asyncio.to_thread(self._save_sync))
+        try:
+            await asyncio.shield(write)
+        except asyncio.CancelledError:
+            # 写盘线程已提交：等它结束再退出，避免锁释放后与 close 的保存并发。
+            try:
+                await write
+            except asyncio.CancelledError:
+                pass
+            raise
 
     def import_legacy(self, records: list[dict[str, Any]]) -> int:
         """启动时批量补录历史图片记录（同步、仅在初始化期调用）。
