@@ -5,6 +5,7 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+  workflow_call:
   workflow_dispatch:
 
 permissions:
@@ -55,7 +56,8 @@ jobs:
           code=false
           frontend=false
           metadata=false
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] \
+            || [ "${{ github.event_name }}" = "workflow_call" ]; then
             code=true
             frontend=true
             metadata=true

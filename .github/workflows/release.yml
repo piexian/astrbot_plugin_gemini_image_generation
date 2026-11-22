@@ -1,74 +1,140 @@
 name: Release
 
-# 推送 v* 标签自动发版：读取 CHANGELOG 对应版本节，按 v4.0.0 的清单打包，
-# 正文末尾附 GitHub 自动生成的 PR 与贡献者列表。
+# master 检测到 metadata.yaml 新版本时，先校验版本与更新日志，再运行完整 CI 检查，
+# 全部通过后才创建标签并发布 GitHub Release；任意前置步骤失败即中止发布。
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - master
+    paths:
+      - "metadata.yaml"
+  workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  release:
-    name: Build and publish
+  prepare:
+    name: 校验版本与更新日志
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.ver.outputs.tag }}
+      version: ${{ steps.ver.outputs.version }}
+      should_release: ${{ steps.ver.outputs.should_release }}
     steps:
-      - name: Checkout
+      - name: 检出仓库
         uses: actions/checkout@v7
 
-      - name: Verify tag and metadata version
+      - name: 读取版本并检查是否已发布
         id: ver
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${GITHUB_REF_NAME}"
-          grep -q "^version: ${TAG}$" metadata.yaml \
-            || { echo "::error::metadata.yaml version 与 tag ${TAG} 不一致"; exit 1; }
+          TAG=$(awk -F': *' '$1 == "version" { gsub(/["'\''[:space:]]/, "", $2); print $2; exit }' metadata.yaml)
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::metadata.yaml 中的 version 格式无效：${TAG:-<空>}"
+            exit 1
+          fi
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "Release ${TAG} 已存在，跳过自动发布。"
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Extract changelog section
+      - name: 校验对应版本更新日志存在且非空
+        if: steps.ver.outputs.should_release == 'true'
         run: |
-          awk -v head="## [${{ steps.ver.outputs.version }}]" '
+          VERSION="${{ steps.ver.outputs.version }}"
+          awk -v head="## [${VERSION}]" '
             index($0, head) == 1 { found = 1 }
-            found && /^## \[/ && index($0, head) != 1 { exit }
+            found && /^## / && index($0, head) != 1 { exit }
             found { print }
           ' CHANGELOG.md > section.md
-          test -s section.md \
-            || { echo "::error::CHANGELOG.md 缺少 ${{ steps.ver.outputs.version }} 一节"; exit 1; }
+          awk -v head="## [${VERSION}]" '
+            index($0, head) == 1 { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > section-body.md
+          if ! test -s section.md || ! grep -q '[^[:space:]]' section-body.md; then
+            echo "::error::CHANGELOG.md 缺少 ${VERSION} 一节或内容为空"
+            exit 1
+          fi
 
-      - name: Build plugin zip
+  ci:
+    name: 运行前置检查与测试
+    needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
+    uses: ./.github/workflows/code-quality.yml
+
+  release:
+    name: 打标签并发布
+    needs:
+      - prepare
+      - ci
+    if: needs.prepare.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v7
+
+      - name: 提取对应版本更新日志
         run: |
-          STAGE=astrbot_plugin_gemini_image_generation
-          mkdir "$STAGE"
-          cp -r .astrbot-plugin docs templates tl views "$STAGE"/
-          cp CHANGELOG.md LICENSE README.md _conf_schema.json logo.png \
-             main.py metadata.yaml requirements.txt "$STAGE"/
-          zip -qr "${STAGE}-${{ steps.ver.outputs.tag }}.zip" "$STAGE"
+          VERSION="${{ needs.prepare.outputs.version }}"
+          awk -v head="## [${VERSION}]" '
+            index($0, head) == 1 { found = 1 }
+            found && /^## / && index($0, head) != 1 { exit }
+            found { print }
+          ' CHANGELOG.md > section.md
+          test -s section.md
 
-      - name: Generate PR and contributor notes
+      - name: 创建并推送版本标签
+        run: |
+          TAG="${{ needs.prepare.outputs.tag }}"
+          TARGET_SHA="${GITHUB_SHA}"
+          REMOTE_SHA=$(git ls-remote origin "refs/tags/${TAG}^{}" "refs/tags/${TAG}" | awk 'NR==1 { first=$1 } /\^\{\}$/ { peeled=$1 } END { print (peeled != "" ? peeled : first) }')
+          if [ -z "$REMOTE_SHA" ]; then
+            git tag "${TAG}" "${TARGET_SHA}"
+            git push origin "refs/tags/${TAG}"
+          elif [ "$REMOTE_SHA" != "$TARGET_SHA" ]; then
+            echo "::error::远程标签 ${TAG} 已存在且指向 ${REMOTE_SHA}，与当前提交 ${TARGET_SHA} 不一致"
+            exit 1
+          else
+            echo "标签 ${TAG} 已指向当前提交 ${TARGET_SHA}，继续发布。"
+          fi
+
+      - name: 生成 PR 与贡献者说明
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh api "repos/${{ github.repository }}/releases/generate-notes" \
-            -f tag_name="${{ steps.ver.outputs.tag }}" --jq '.body' > whats-new.md
+            -f tag_name="${{ needs.prepare.outputs.tag }}" \
+            --jq '.body' > whats-new.md
 
-      - name: Assemble release body
+      - name: 组装 Release 正文
         run: |
           {
             cat section.md
-            printf '\n## 预构建包\n\n'
-            printf '`astrbot_plugin_gemini_image_generation-%s.zip` 含 AstrBot 运行需要的全部文件，已带 Studio 前端构建产物，解压即用，不需要 Node 环境；`docs/` 与 `CHANGELOG.md` 一并保留。不含测试、前端工程（`frontend/`）与 CI 配置。\n\n' "${{ steps.ver.outputs.tag }}"
-            printf '完整记录见 [CHANGELOG](https://github.com/%s/blob/%s/CHANGELOG.md).\n\n' "${{ github.repository }}" "${{ steps.ver.outputs.tag }}"
-            cat whats-new.md
+            printf '完整记录见 [CHANGELOG](https://github.com/%s/blob/%s/CHANGELOG.md).\n\n' "${{ github.repository }}" "${{ needs.prepare.outputs.tag }}"
+            if grep -q '[^[:space:]]' whats-new.md; then
+              printf '\n'
+              cat whats-new.md
+            fi
           } > body.md
 
-      - name: Publish release
+      - name: 发布 GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ steps.ver.outputs.tag }}" \
-            "astrbot_plugin_gemini_image_generation-${{ steps.ver.outputs.tag }}.zip" \
-            --title "${{ steps.ver.outputs.tag }}" \
+          gh release create "${{ needs.prepare.outputs.tag }}" \
+            --title "${{ needs.prepare.outputs.tag }}" \
             --notes-file body.md \
             --verify-tag
