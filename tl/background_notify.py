@@ -13,16 +13,16 @@ from .llm_output import sanitize_task_result
 from .plugin_config import get_session_tool_timeout
 
 try:
-    from astrbot.core.agent_wakeup import wake_main_agent
+    from astrbot.core.agent.input import PlainInput
 except ImportError:
-    wake_main_agent = None
+    PlainInput = None
 
 ToolSet = MainAgentBuildConfig = _get_session_conv = build_main_agent = None
 BACKGROUND_TASK_RESULT_WOKE_SYSTEM_PROMPT = CronMessageEvent = None
 MessageSession = ProviderRequest = SendMessageToUserTool = None
 persist_agent_history = None
 
-if wake_main_agent is not None:
+if PlainInput is not None:
     _OFFICIAL_API_READY = True
 else:
     try:  # AstrBot 4.29 官方内部 API（_get_session_conv 为私有函数）
@@ -95,6 +95,29 @@ def _configured_agent_max_steps(cfg: dict[str, Any]) -> int:
         return 30
 
 
+async def _has_successful_send_tool(run: Any, umo: str) -> bool:
+    """仅接受当前会话的 send_message_to_user 成功返回作为图片送达回执。"""
+    tool_names: dict[str, str] = {}
+    delivered = False
+    async for runtime_event in run.events():
+        payload = runtime_event.payload
+        if runtime_event.type == "tool.started":
+            tool_names[payload.execution_id] = payload.name
+            continue
+        if runtime_event.type != "tool.finished":
+            continue
+        if tool_names.get(payload.execution_id) != "send_message_to_user":
+            continue
+        status = getattr(payload, "status", None)
+        if getattr(status, "value", status) != "completed":
+            continue
+        content = getattr(payload, "content", ()) or ()
+        result_text = "".join(getattr(part, "text", "") or "" for part in content)
+        if result_text.strip() == f"Message sent to session {umo}":
+            delivered = True
+    return delivered
+
+
 async def notify_llm_background_failure(
     plugin: Any,
     event: Any,
@@ -109,6 +132,7 @@ async def notify_llm_background_failure(
         {"task_id": task_id or "", "result": failure_summary},
         notice=_build_notice_prompt(task_id, failure_summary),
         scene=scene,
+        require_send_tool=False,
     )
 
 
@@ -119,8 +143,9 @@ async def notify_llm_background_result(
     *,
     notice: str,
     scene: str,
+    require_send_tool: bool = True,
 ) -> bool:
-    """按官方后台结果回灌路径唤醒主 Agent；返回是否成功交给主 Agent 处理。"""
+    """按官方后台结果回灌路径唤醒主 Agent；返回是否确认送达。"""
     task_id = str((task_result or {}).get("task_id") or "") or None
     umo = getattr(event, "unified_msg_origin", None)
     started_at = time.perf_counter()
@@ -135,7 +160,10 @@ async def notify_llm_background_result(
 
         extras = {"background_task_result": sanitize_task_result(task_result)}
 
-        if wake_main_agent is not None:
+        if PlainInput is not None:
+            agent_service = getattr(context, "agent", None)
+            if agent_service is None:
+                raise RuntimeError("AstrBot 4.30 AgentService 不可用")
             background_result = json.dumps(
                 extras["background_task_result"], ensure_ascii=False
             )
@@ -145,20 +173,29 @@ async def notify_llm_background_result(
                 f"{background_result}\n\n"
                 f"{_BACKGROUND_DELIVERY_PROMPT}"
             )
-            await wake_main_agent(
-                context,
+            agent_session = getattr(event, "agent_session", None)
+            run = await agent_service.run_turn(
                 umo=umo,
-                source="background_task",
-                source_id=task_id,
-                user_prompt=user_prompt,
-                role=getattr(event, "role", None) or "member",
-                agent_session=getattr(event, "agent_session", None),
+                input_message=[PlainInput(text=user_prompt)],
+                send_to_user=True,
                 source_event=event,
+                session_id=getattr(agent_session, "session_id", None),
             )
+            await run.result()
+            if require_send_tool:
+                delivered = await _has_successful_send_tool(run, umo)
+            else:
+                run_event = getattr(run, "_event", None)
+                delivered = bool(getattr(run_event, "_has_send_oper", False))
+            if not delivered:
+                logger.warning(
+                    f"[{scene}] 后台回灌未确认发送: task_id={task_id}, umo={umo}"
+                )
+                return False
             await _bump_delivery_count(plugin, task_result, scene=scene)
             logger.info(
-                f"[{scene}] 后台结果回灌已提交: task_id={task_id}, umo={umo}, "
-                f"elapsed={time.perf_counter() - started_at:.2f}s, queued=True"
+                f"[{scene}] 后台结果回灌完成: task_id={task_id}, umo={umo}, "
+                f"elapsed={time.perf_counter() - started_at:.2f}s, sent=True"
             )
             return True
         session = MessageSession.from_str(umo)
@@ -239,7 +276,7 @@ async def _bump_delivery_count(
     *,
     scene: str,
 ) -> None:
-    """回灌已发送或已进入新运行时队列后累加交付计数；失败不影响发送结果。"""
+    """回灌 agent 确认发送后累加交付计数；失败不影响发送结果。"""
     manager = getattr(plugin, "background_task_manager", None)
     if manager is None or not hasattr(manager, "record_delivery"):
         return

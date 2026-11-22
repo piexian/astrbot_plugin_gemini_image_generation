@@ -5,25 +5,57 @@ import pytest
 
 from tl import background_notify
 
+_UMO = "test:FriendMessage:user"
 
-@pytest.mark.asyncio
-async def test_notify_uses_astrbot_430_wakeup(monkeypatch, tmp_path):
-    image_path = tmp_path / "result.png"
-    image_path.write_bytes(b"image")
-    wake = AsyncMock()
+
+class _ModernRun:
+    def __init__(self, *, tool_text=None, has_send_oper=False):
+        self._event = SimpleNamespace(_has_send_oper=has_send_oper)
+        self.result = AsyncMock(return_value=SimpleNamespace(status="completed"))
+        self.tool_text = tool_text
+
+    async def events(self):
+        if self.tool_text is None:
+            return
+        yield SimpleNamespace(
+            type="tool.started",
+            payload=SimpleNamespace(execution_id="exec-1", name="send_message_to_user"),
+        )
+        yield SimpleNamespace(
+            type="tool.finished",
+            payload=SimpleNamespace(
+                execution_id="exec-1",
+                status="completed",
+                content=[SimpleNamespace(text=self.tool_text)],
+            ),
+        )
+
+
+def _modern_harness(monkeypatch, run):
+    class ModernInput:
+        def __init__(self, text):
+            self.text = text
+
+    service = SimpleNamespace(run_turn=AsyncMock(return_value=run))
+    plugin = SimpleNamespace(context=SimpleNamespace(agent=service))
+    event = SimpleNamespace(
+        unified_msg_origin=_UMO,
+        role="admin",
+        agent_session=SimpleNamespace(session_id="conversation-1"),
+    )
     bump = AsyncMock()
-    monkeypatch.setattr(background_notify, "wake_main_agent", wake)
+    monkeypatch.setattr(background_notify, "PlainInput", ModernInput)
     monkeypatch.setattr(background_notify, "_OFFICIAL_API_READY", True)
     monkeypatch.setattr(background_notify, "_bump_delivery_count", bump)
+    return plugin, event, service, bump
 
-    context = object()
-    agent_session = object()
-    event = SimpleNamespace(
-        unified_msg_origin="test:FriendMessage:user",
-        role="admin",
-        agent_session=agent_session,
-    )
-    plugin = SimpleNamespace(context=context)
+
+@pytest.mark.asyncio
+async def test_notify_uses_astrbot_430_agent_service(monkeypatch, tmp_path):
+    run = _ModernRun(tool_text=f"Message sent to session {_UMO}")
+    plugin, event, service, bump = _modern_harness(monkeypatch, run)
+    image_path = tmp_path / "result.png"
+    image_path.write_bytes(b"image")
     task_result = {
         "task_id": "task-430",
         "image_paths": [str(image_path)],
@@ -40,19 +72,85 @@ async def test_notify_uses_astrbot_430_wakeup(monkeypatch, tmp_path):
     )
 
     assert delivered is True
-    wake.assert_awaited_once()
-    assert wake.await_args.args == (context,)
-    kwargs = wake.await_args.kwargs
-    assert kwargs["umo"] == event.unified_msg_origin
-    assert kwargs["source"] == "background_task"
-    assert kwargs["source_id"] == "task-430"
-    assert kwargs["role"] == "admin"
-    assert kwargs["agent_session"] is agent_session
+    service.run_turn.assert_awaited_once()
+    kwargs = service.run_turn.await_args.kwargs
+    assert kwargs["umo"] == _UMO
+    assert kwargs["send_to_user"] is True
     assert kwargs["source_event"] is event
-    assert str(image_path) in kwargs["user_prompt"]
-    assert "send_message_to_user" in kwargs["user_prompt"]
-    assert "data:image" not in kwargs["user_prompt"]
+    assert kwargs["session_id"] == "conversation-1"
+    prompt = kwargs["input_message"][0].text
+    assert str(image_path) in prompt
+    assert "send_message_to_user" in prompt
+    assert "data:image" not in prompt
+    run.result.assert_awaited_once()
     bump.assert_awaited_once_with(plugin, task_result, scene="test-430")
+
+
+@pytest.mark.asyncio
+async def test_notify_430_ignores_automatic_reply_without_image_delivery(monkeypatch):
+    run = _ModernRun(has_send_oper=True)
+    plugin, event, _, bump = _modern_harness(monkeypatch, run)
+    task_result = {"task_id": "task-430", "image_paths": ["/tmp/result.png"]}
+
+    delivered = await background_notify.notify_llm_background_result(
+        plugin,
+        event,
+        task_result,
+        notice="后台图片生成任务已完成",
+        scene="test-430",
+    )
+
+    assert delivered is False
+    run.result.assert_awaited_once()
+    bump.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_notify_430_failure_falls_back_to_direct_send(monkeypatch):
+    run = _ModernRun(has_send_oper=False)
+    plugin, event, _, bump = _modern_harness(monkeypatch, run)
+    plugin.cfg = SimpleNamespace(background_failure_notify_llm=True)
+    event.plain_result = lambda text: text
+    event.send = AsyncMock()
+
+    delivered = await background_notify.report_background_failure(
+        plugin,
+        event,
+        "上游详细错误",
+        scene="test-430",
+        task_id="task-failure",
+    )
+
+    assert delivered is True
+    event.send.assert_awaited_once_with(
+        "后台图片生成任务（任务号 task-failure）失败，请稍后重试。"
+    )
+    bump.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_notify_430_failure_accepts_confirmed_send(monkeypatch):
+    run = _ModernRun(has_send_oper=True)
+    plugin, event, _, bump = _modern_harness(monkeypatch, run)
+    plugin.cfg = SimpleNamespace(background_failure_notify_llm=True)
+    event.plain_result = lambda text: text
+    event.send = AsyncMock()
+
+    delivered = await background_notify.report_background_failure(
+        plugin,
+        event,
+        "上游详细错误",
+        scene="test-430",
+        task_id="task-failure",
+    )
+
+    assert delivered is True
+    event.send.assert_not_awaited()
+    bump.assert_awaited_once_with(
+        plugin,
+        {"task_id": "task-failure", "result": "上游详细错误"},
+        scene="test-430",
+    )
 
 
 @pytest.mark.asyncio
@@ -113,7 +211,7 @@ async def test_notify_keeps_astrbot_429_fallback(monkeypatch):
     plugin = SimpleNamespace(context=context)
     task_result = {"task_id": "task-429", "result": "完成"}
 
-    monkeypatch.setattr(background_notify, "wake_main_agent", None)
+    monkeypatch.setattr(background_notify, "PlainInput", None)
     monkeypatch.setattr(background_notify, "_OFFICIAL_API_READY", True)
     monkeypatch.setattr(background_notify, "ToolSet", LegacyToolSet)
     monkeypatch.setattr(
