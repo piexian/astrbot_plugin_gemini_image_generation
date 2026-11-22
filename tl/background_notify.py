@@ -12,33 +12,57 @@ from .core.errors import redact_text
 from .llm_output import sanitize_task_result
 from .plugin_config import get_session_tool_timeout
 
-try:  # 官方内部 API（_get_session_conv 为私有函数），版本漂移风险防御
-    from astrbot.core.agent.tool import ToolSet
-    from astrbot.core.astr_main_agent import (
-        MainAgentBuildConfig,
-        _get_session_conv,
-        build_main_agent,
-    )
-    from astrbot.core.astr_main_agent_resources import (
-        BACKGROUND_TASK_RESULT_WOKE_SYSTEM_PROMPT,
-    )
-    from astrbot.core.cron.events import CronMessageEvent
-    from astrbot.core.platform.message_session import MessageSession
-    from astrbot.core.provider.entites import ProviderRequest
-    from astrbot.core.tools.message_tools import SendMessageToUserTool
-    from astrbot.core.utils.history_saver import persist_agent_history
+try:
+    from astrbot.core.agent_wakeup import wake_main_agent
+except ImportError:
+    wake_main_agent = None
 
+ToolSet = MainAgentBuildConfig = _get_session_conv = build_main_agent = None
+BACKGROUND_TASK_RESULT_WOKE_SYSTEM_PROMPT = CronMessageEvent = None
+MessageSession = ProviderRequest = SendMessageToUserTool = None
+persist_agent_history = None
+
+if wake_main_agent is not None:
     _OFFICIAL_API_READY = True
-except ImportError as e:  # pragma: no cover - 仅低版本框架触发
-    logger.warning(
-        f"[后台结果回灌] AstrBot 官方回灌 API 导入失败，无法激活主 Agent: {e}"
-    )
-    _OFFICIAL_API_READY = False
-    # except 分支显式绑 None：保证模块符号恒存在，便于调用方/测试安全引用
-    ToolSet = MainAgentBuildConfig = _get_session_conv = build_main_agent = None
-    BACKGROUND_TASK_RESULT_WOKE_SYSTEM_PROMPT = CronMessageEvent = None
-    MessageSession = ProviderRequest = SendMessageToUserTool = None
-    persist_agent_history = None
+else:
+    try:  # AstrBot 4.29 官方内部 API（_get_session_conv 为私有函数）
+        from astrbot.core.agent.tool import ToolSet
+        from astrbot.core.astr_main_agent import (
+            MainAgentBuildConfig,
+            _get_session_conv,
+            build_main_agent,
+        )
+        from astrbot.core.astr_main_agent_resources import (
+            BACKGROUND_TASK_RESULT_WOKE_SYSTEM_PROMPT,
+        )
+        from astrbot.core.cron.events import CronMessageEvent
+        from astrbot.core.platform.message_session import MessageSession
+        from astrbot.core.provider.entites import ProviderRequest
+        from astrbot.core.tools.message_tools import SendMessageToUserTool
+        from astrbot.core.utils.history_saver import persist_agent_history
+    except ImportError as e:  # pragma: no cover - 仅不支持的框架版本触发
+        logger.warning(
+            f"[后台结果回灌] AstrBot 4.30/4.29 回灌 API 均不可用，无法激活主 Agent: {e}"
+        )
+        _OFFICIAL_API_READY = False
+    else:
+        _OFFICIAL_API_READY = True
+
+
+_BACKGROUND_DELIVERY_PROMPT = (
+    "Proceed according to your system instructions. "
+    "Output using same language as previous conversation. "
+    "If you need to deliver the result to the user immediately, "
+    "you MUST use `send_message_to_user` tool to send the message directly to the user, "
+    "otherwise the user will not see the result. "
+    "For generated images in image_urls/image_paths (including batch items), "
+    "you MUST call send_message_to_user with messages containing "
+    "{type: 'image', url: '<image URL>'} or {type: 'image', path: '<local path>'}. "
+    "Send the generated images to the current session, leaving session empty. "
+    "Do not merely describe completion or output Markdown image links. "
+    "Use the supplied locations exactly; do not regenerate completed images. "
+    "After completing your task, summarize and output your actions and results. "
+)
 
 
 def _build_notice_prompt(task_id: str | None, failure_summary: str) -> str:
@@ -96,7 +120,7 @@ async def notify_llm_background_result(
     notice: str,
     scene: str,
 ) -> bool:
-    """按官方后台结果回灌路径唤醒主 Agent；返回是否实际送达。"""
+    """按官方后台结果回灌路径唤醒主 Agent；返回是否成功交给主 Agent 处理。"""
     task_id = str((task_result or {}).get("task_id") or "") or None
     umo = getattr(event, "unified_msg_origin", None)
     started_at = time.perf_counter()
@@ -111,6 +135,32 @@ async def notify_llm_background_result(
 
         extras = {"background_task_result": sanitize_task_result(task_result)}
 
+        if wake_main_agent is not None:
+            background_result = json.dumps(
+                extras["background_task_result"], ensure_ascii=False
+            )
+            user_prompt = (
+                f"{notice}\n\n"
+                "# BACKGROUND TASK CONTEXT\n"
+                f"{background_result}\n\n"
+                f"{_BACKGROUND_DELIVERY_PROMPT}"
+            )
+            await wake_main_agent(
+                context,
+                umo=umo,
+                source="background_task",
+                source_id=task_id,
+                user_prompt=user_prompt,
+                role=getattr(event, "role", None) or "member",
+                agent_session=getattr(event, "agent_session", None),
+                source_event=event,
+            )
+            await _bump_delivery_count(plugin, task_result, scene=scene)
+            logger.info(
+                f"[{scene}] 后台结果回灌已提交: task_id={task_id}, umo={umo}, "
+                f"elapsed={time.perf_counter() - started_at:.2f}s, queued=True"
+            )
+            return True
         session = MessageSession.from_str(umo)
         cron_event = CronMessageEvent(
             context=context,
@@ -138,20 +188,7 @@ async def notify_llm_background_result(
                 extras["background_task_result"], ensure_ascii=False
             )
         )
-        req.prompt = (
-            "Proceed according to your system instructions. "
-            "Output using same language as previous conversation. "
-            "If you need to deliver the result to the user immediately, "
-            "you MUST use `send_message_to_user` tool to send the message directly to the user, "
-            "otherwise the user will not see the result. "
-            "For generated images in image_urls/image_paths (including batch items), "
-            "you MUST call send_message_to_user with messages containing "
-            "{type: 'image', url: '<image URL>'} or {type: 'image', path: '<local path>'}. "
-            "Send the generated images to the current session, leaving session empty. "
-            "Do not merely describe completion or output Markdown image links. "
-            "Use the supplied locations exactly; do not regenerate completed images. "
-            "After completing your task, summarize and output your actions and results. "
-        )
+        req.prompt = _BACKGROUND_DELIVERY_PROMPT
         if not req.func_tool:
             req.func_tool = ToolSet()
         req.func_tool.add_tool(
@@ -202,7 +239,7 @@ async def _bump_delivery_count(
     *,
     scene: str,
 ) -> None:
-    """回灌 agent 确认调用发送工具后累加交付计数；失败不影响发送结果。"""
+    """回灌已发送或已进入新运行时队列后累加交付计数；失败不影响发送结果。"""
     manager = getattr(plugin, "background_task_manager", None)
     if manager is None or not hasattr(manager, "record_delivery"):
         return
