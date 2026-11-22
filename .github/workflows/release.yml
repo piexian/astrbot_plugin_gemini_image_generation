@@ -1,7 +1,7 @@
 name: Release
 
 # master 检测到 metadata.yaml 新版本时，先校验版本与更新日志，再运行完整 CI 检查，
-# 全部通过后才创建标签并发布 GitHub Release；任意前置步骤失败即中止发布。
+# 全部通过后才打包插件 ZIP、创建标签并发布 GitHub Release；任意前置步骤失败即中止发布。
 on:
   push:
     branches:
@@ -75,7 +75,7 @@ jobs:
     uses: ./.github/workflows/code-quality.yml
 
   release:
-    name: 打标签并发布
+    name: 打包、打标签并发布
     needs:
       - prepare
       - ci
@@ -95,6 +95,19 @@ jobs:
             found { print }
           ' CHANGELOG.md > section.md
           test -s section.md
+
+      - name: 打包插件 ZIP
+        run: |
+          STAGE=astrbot_plugin_gemini_image_generation
+          rm -rf "$STAGE" "${STAGE}-${{ needs.prepare.outputs.tag }}.zip"
+          mkdir -p "$STAGE"
+          cp -r .astrbot-plugin docs templates tl views "$STAGE"/
+          find "$STAGE" -type d -name '__pycache__' -exec rm -rf {} +
+          find "$STAGE" -type f -name '*.pyc' -delete
+          cp CHANGELOG.md LICENSE README.md _conf_schema.json logo.png \
+            main.py metadata.yaml requirements.txt "$STAGE"/
+          zip -qr "${STAGE}-${{ needs.prepare.outputs.tag }}.zip" "$STAGE"
+          test -s "${STAGE}-${{ needs.prepare.outputs.tag }}.zip"
 
       - name: 创建并推送版本标签
         run: |
@@ -135,6 +148,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "${{ needs.prepare.outputs.tag }}" \
+            "astrbot_plugin_gemini_image_generation-${{ needs.prepare.outputs.tag }}.zip" \
             --title "${{ needs.prepare.outputs.tag }}" \
             --notes-file body.md \
             --verify-tag
