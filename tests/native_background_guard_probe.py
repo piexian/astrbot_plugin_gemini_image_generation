@@ -21,7 +21,10 @@ from astrbot.core.platform.message_session import MessageSession
 from astrbot.core.star.context import Context
 from astrbot.core.tools.message_tools import SendMessageToUserTool
 
+from astrbot.core.utils.active_event_registry import active_event_registry
 from tl import background_notify
+
+from tl.core.states import JobState
 
 
 @pytest.mark.asyncio
@@ -118,3 +121,39 @@ async def test_native_tool_rechecks_pause_after_media_wait(
     persist.assert_not_awaited()
     assert captured["wrapped"].context.context is core
     assert shared_tool.call == original_call
+
+
+@pytest.mark.asyncio
+async def test_native_agent_stop_cancels_registered_generation(monkeypatch):
+    core = object.__new__(Context)
+    source = CronMessageEvent(
+        context=core,
+        session=MessageSession.from_str("synthetic:FriendMessage:native-stop"),
+        message="synthetic request",
+    )
+    started = asyncio.Event()
+
+    async def wait(_job_id):
+        started.set()
+        await asyncio.Event().wait()
+
+    service = SimpleNamespace(
+        wait=wait,
+        get_status=AsyncMock(return_value=SimpleNamespace(state=JobState.RUNNING)),
+        cancel=AsyncMock(),
+    )
+    monkeypatch.setattr(
+        background_notify, "active_event_registry", active_event_registry
+    )
+    task = await background_notify.register_background_job_stop(
+        source, service, "native-stop-job"
+    )
+    await asyncio.wait_for(started.wait(), timeout=5)
+
+    assert active_event_registry.request_agent_stop_all(source.unified_msg_origin) == 1
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    service.cancel.assert_awaited_once_with("native-stop-job")
+    assert background_notify._event_stopped(source)
+    assert not source.is_stopped()

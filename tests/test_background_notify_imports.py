@@ -40,8 +40,20 @@ def _load_background_notify(monkeypatch, *, modern):
         _module(f"{package}.core.errors", redact_text=lambda value: str(value)),
     )
     add(
+        f"{package}.core.states",
+        _module(
+            f"{package}.core.states",
+            JobState=SimpleNamespace(DELIVERY_PENDING="delivery_pending"),
+            TERMINAL_STATES=frozenset(),
+        ),
+    )
+    add(
         f"{package}.astrbot_compat",
-        _module(f"{package}.astrbot_compat", ASTRBOT_VERSION=None),
+        _module(
+            f"{package}.astrbot_compat",
+            ASTRBOT_VERSION=None,
+            has_background_stop_registry=lambda: False,
+        ),
     )
     add(
         f"{package}.llm_output",

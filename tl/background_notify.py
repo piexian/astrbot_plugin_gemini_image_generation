@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 import time
@@ -11,6 +12,7 @@ from astrbot.api import logger
 
 from . import astrbot_compat
 from .core.errors import redact_text
+from .core.states import JobState, TERMINAL_STATES
 from .llm_output import sanitize_task_result
 from .plugin_config import get_session_tool_timeout
 
@@ -24,6 +26,10 @@ try:
 except ImportError:
     PlainInput = None
 
+
+active_event_registry = None
+if astrbot_compat.has_background_stop_registry():
+    from astrbot.core.utils.active_event_registry import active_event_registry
 ToolSet = MainAgentBuildConfig = _get_session_conv = build_main_agent = None
 BACKGROUND_TASK_RESULT_WOKE_SYSTEM_PROMPT = CronMessageEvent = None
 MessageSession = ProviderRequest = SendMessageToUserTool = None
@@ -88,6 +94,16 @@ def notify_llm_enabled(plugin: Any) -> bool:
 
 
 def _event_stopped(event: Any) -> bool:
+    get_extra = getattr(event, "get_extra", None)
+    if callable(get_extra):
+        try:
+            if get_extra("agent_stop_requested") is True:
+                return True
+            signal = get_extra("_background_stop_signal")
+            if signal is not None and signal.is_set():
+                return True
+        except Exception:
+            return True
     checker = getattr(event, "is_stopped", None)
     if checker is None:
         return False
@@ -96,6 +112,55 @@ def _event_stopped(event: Any) -> bool:
         return value is not False
     except Exception:
         return True
+
+
+async def register_background_job_stop(
+    event: Any, service: Any, job_id: str
+) -> asyncio.Task[None] | None:
+    """把 LLM 后台 Job 的生成与投递阶段登记到 AstrBot 停止生命周期。"""
+    if active_event_registry is None:
+        return None
+
+    cleanup_started = False
+
+    async def cancel_generation() -> None:
+        nonlocal cleanup_started
+        if cleanup_started:
+            return
+        cleanup_started = True
+        try:
+            snapshot = await service.get_status(job_id)
+            state = getattr(snapshot, "state", None)
+            if (
+                snapshot is None
+                or state in TERMINAL_STATES
+                or state == JobState.DELIVERY_PENDING
+            ):
+                return
+            await asyncio.shield(service.cancel(job_id))
+        except Exception as exc:
+            logger.warning(
+                f"[后台任务] 停止生成失败: job_id={job_id}, error={redact_text(exc)[:240]}"
+            )
+
+    if _event_stopped(event):
+        await cancel_generation()
+        return None
+
+    async def supervise() -> None:
+        try:
+            await service.wait(job_id)
+        except asyncio.CancelledError:
+            await cancel_generation()
+            raise
+
+    task = asyncio.create_task(supervise(), name=f"llm-background-job:{job_id}")
+    active_event_registry.register_background_task(event, task)
+    # 登记时已经停止的 Task 可能在协程首次运行前被取消，需要补上生成取消。
+    await asyncio.sleep(0)
+    if task.cancelled():
+        await cancel_generation()
+    return task
 
 
 async def _background_delivery_allowed(

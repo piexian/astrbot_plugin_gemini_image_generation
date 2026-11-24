@@ -24,6 +24,7 @@ from pydantic import Field
 from pydantic.dataclasses import dataclass
 
 from .background_dispatch import generation_reference_note
+from .background_notify import register_background_job_stop
 from .core.errors import (
     CoreError,
     QueueFullError,
@@ -1130,6 +1131,7 @@ async def _run_single_v2(
     try:
         if foreground_wait_seconds <= 0:
             if service.attach_delivery(job_id, delivery):
+                await register_background_job_stop(event, service, job_id)
                 background_notice = _build_background_start_notice(
                     ref_count=ref_count,
                     avatar_count=avatar_count,
@@ -1153,6 +1155,7 @@ async def _run_single_v2(
                     f"umo={getattr(event, 'unified_msg_origin', None)}, waited_seconds={foreground_wait_seconds}"
                 )
                 if service.attach_delivery(job_id, delivery):
+                    await register_background_job_stop(event, service, job_id)
                     background_notice = _build_background_fallback_notice(
                         ref_count=ref_count,
                         avatar_count=avatar_count,
@@ -1278,6 +1281,7 @@ async def _run_batch_v2(
             admission={"event": event},
             delivery=delivery,
         )
+        await register_background_job_stop(event, service, handle.job_id)
     except asyncio.CancelledError:
         raise
     except QuotaExceededError as error:
