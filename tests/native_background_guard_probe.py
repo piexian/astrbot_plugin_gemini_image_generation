@@ -20,10 +20,9 @@ from astrbot.core.cron.events import CronMessageEvent
 from astrbot.core.platform.message_session import MessageSession
 from astrbot.core.star.context import Context
 from astrbot.core.tools.message_tools import SendMessageToUserTool
-
 from astrbot.core.utils.active_event_registry import active_event_registry
-from tl import background_notify
 
+from tl import background_notify
 from tl.core.states import JobState
 
 

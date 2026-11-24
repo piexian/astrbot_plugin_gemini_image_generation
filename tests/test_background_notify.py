@@ -1,8 +1,8 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from packaging.version import Version
 import pytest
+from packaging.version import Version
 
 from tl import astrbot_compat, background_notify
 
@@ -210,15 +210,20 @@ async def test_notify_keeps_astrbot_429_fallback(monkeypatch, pause_after_send):
 
     class LegacyRunner:
         max_steps = None
+        steps = 0
 
         async def step_until_done(self, max_steps):
             self.max_steps = max_steps
+            self.steps += 1
             yield None
             cron_event = build.await_args.kwargs["event"]
             cron_event._has_send_oper = True
             if pause_after_send:
                 manager = background_notify.SessionServiceManager
                 manager.is_session_enabled.return_value = False
+            self.steps += 1
+            yield None
+            self.steps += 1
             yield None
 
     runner = LegacyRunner()
@@ -298,6 +303,7 @@ async def test_notify_keeps_astrbot_429_fallback(monkeypatch, pause_after_send):
     assert req.func_tool.tools[0] is not builtin_send
     assert req.func_tool.tools[0].call is not builtin_send.call
     assert runner.max_steps == 7
+    assert runner.steps == (2 if pause_after_send else 3)
     persist.assert_awaited_once_with(
         context.conversation_manager,
         event=cron_event,

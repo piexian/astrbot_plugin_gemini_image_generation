@@ -14,7 +14,9 @@ def _module(name, *, package=False, **attrs):
     return module
 
 
-def _load_background_notify(monkeypatch, *, modern):
+def _load_background_notify(
+    monkeypatch, *, modern, stop_registry=False, missing_stop_registry=False
+):
     package = "_background_notify_import_test"
     plugin_tl = Path(__file__).resolve().parents[1] / "tl"
     modules = {}
@@ -43,7 +45,10 @@ def _load_background_notify(monkeypatch, *, modern):
         f"{package}.core.states",
         _module(
             f"{package}.core.states",
-            JobState=SimpleNamespace(DELIVERY_PENDING="delivery_pending"),
+            JobState=SimpleNamespace(
+                RESULT_READY="result_ready",
+                DELIVERY_PENDING="delivery_pending",
+            ),
             TERMINAL_STATES=frozenset(),
         ),
     )
@@ -52,7 +57,7 @@ def _load_background_notify(monkeypatch, *, modern):
         _module(
             f"{package}.astrbot_compat",
             ASTRBOT_VERSION=None,
-            has_background_stop_registry=lambda: False,
+            has_background_stop_registry=lambda: stop_registry,
         ),
     )
     add(
@@ -119,6 +124,9 @@ def _load_background_notify(monkeypatch, *, modern):
             _module("astrbot.core.utils.history_saver", persist_agent_history=object()),
         )
 
+    if stop_registry and missing_stop_registry:
+        modules["astrbot.core.utils.active_event_registry"] = None
+
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)
 
@@ -147,3 +155,12 @@ def test_import_falls_back_to_astrbot_429_api(monkeypatch):
     assert module._OFFICIAL_API_READY is True
     assert module.PlainInput is None
     assert module.build_main_agent is not None
+
+
+def test_import_tolerates_missing_active_event_registry(monkeypatch):
+    module = _load_background_notify(
+        monkeypatch, modern=True, stop_registry=True, missing_stop_registry=True
+    )
+
+    assert module._OFFICIAL_API_READY is True
+    assert module.active_event_registry is None

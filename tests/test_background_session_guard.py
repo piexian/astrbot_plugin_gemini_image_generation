@@ -4,8 +4,8 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from packaging.version import Version
 import pytest
+from packaging.version import Version
 
 from tl import astrbot_compat, background_notify
 from tl.core.states import JobState
@@ -242,6 +242,7 @@ async def test_background_job_registration_is_disabled_without_registry(monkeypa
     ("state", "should_cancel"),
     [
         (JobState.RUNNING, True),
+        (JobState.RESULT_READY, False),
         (JobState.DELIVERY_PENDING, False),
         (JobState.SUCCEEDED, False),
     ],
@@ -300,3 +301,49 @@ async def test_registration_cancelled_before_start_still_cancels_generation(
     assert task is not None and task.cancelled()
     service.wait.assert_not_awaited()
     service.cancel.assert_awaited_once_with("job-early-stop")
+
+
+@pytest.mark.asyncio
+async def test_supervisor_task_handles_wait_exception_without_leaking(monkeypatch):
+    registry = SimpleNamespace(register_background_task=lambda _event, _task: None)
+    monkeypatch.setattr(background_notify, "active_event_registry", registry)
+    service = SimpleNamespace(
+        wait=AsyncMock(side_effect=RuntimeError("store closed")),
+        get_status=AsyncMock(),
+        cancel=AsyncMock(),
+    )
+
+    task = await background_notify.register_background_job_stop(
+        event(), service, "job-wait-error"
+    )
+
+    assert task is not None
+    assert await task is None
+    service.cancel.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_modern_config_handles_none_sections_and_none_group_id(monkeypatch):
+    monkeypatch.setattr(astrbot_compat, "ASTRBOT_VERSION", Version("4.30.0b1"))
+    context = SimpleNamespace(
+        get_config=lambda umo: {
+            "platform_settings": {"id_blacklist": ["None", None, ""]},
+            "provider_settings": None,
+        }
+    )
+    source = SimpleNamespace(
+        unified_msg_origin=_UMO,
+        is_stopped=lambda: False,
+        get_group_id=lambda: None,
+    )
+
+    assert await background_notify._background_delivery_allowed(
+        source, context=context, require_llm=True
+    )
+
+    context_null_platform = SimpleNamespace(
+        get_config=lambda umo: {"platform_settings": None, "provider_settings": None}
+    )
+    assert await background_notify._background_delivery_allowed(
+        source, context=context_null_platform, require_llm=True
+    )

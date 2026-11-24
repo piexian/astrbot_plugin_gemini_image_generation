@@ -12,7 +12,7 @@ from astrbot.api import logger
 
 from . import astrbot_compat
 from .core.errors import redact_text
-from .core.states import JobState, TERMINAL_STATES
+from .core.states import TERMINAL_STATES, JobState
 from .llm_output import sanitize_task_result
 from .plugin_config import get_session_tool_timeout
 
@@ -29,7 +29,12 @@ except ImportError:
 
 active_event_registry = None
 if astrbot_compat.has_background_stop_registry():
-    from astrbot.core.utils.active_event_registry import active_event_registry
+    try:
+        from astrbot.core.utils.active_event_registry import active_event_registry
+    except ImportError as e:
+        logger.warning(
+            f"[后台任务] active_event_registry 不可用，跳过停止生命周期注册: {e}"
+        )
 ToolSet = MainAgentBuildConfig = _get_session_conv = build_main_agent = None
 BACKGROUND_TASK_RESULT_WOKE_SYSTEM_PROMPT = CronMessageEvent = None
 MessageSession = ProviderRequest = SendMessageToUserTool = None
@@ -134,7 +139,7 @@ async def register_background_job_stop(
             if (
                 snapshot is None
                 or state in TERMINAL_STATES
-                or state == JobState.DELIVERY_PENDING
+                or state in {JobState.RESULT_READY, JobState.DELIVERY_PENDING}
             ):
                 return
             await asyncio.shield(service.cancel(job_id))
@@ -153,6 +158,10 @@ async def register_background_job_stop(
         except asyncio.CancelledError:
             await cancel_generation()
             raise
+        except Exception as exc:
+            logger.debug(
+                f"[后台任务] 停止监管任务结束异常: job_id={job_id}, error={redact_text(exc)[:240]}"
+            )
 
     task = asyncio.create_task(supervise(), name=f"llm-background-job:{job_id}")
     active_event_registry.register_background_task(event, task)
@@ -182,17 +191,24 @@ async def _background_delivery_allowed(
             if context is None:
                 return False
             cfg = context.get_config(umo=umo) or {}
+            platform_settings = cfg.get("platform_settings") or {}
             blacklist = {
                 str(item).strip()
-                for item in cfg.get("platform_settings", {}).get("id_blacklist", [])
+                for item in (platform_settings.get("id_blacklist") or [])
+                if item is not None
             }
+            blacklist.discard("")
             get_group_id = (
                 getattr(event, "get_group_id", None) if target_umo is None else None
             )
             group_id = get_group_id() if callable(get_group_id) else None
-            if umo in blacklist or str(group_id).strip() in blacklist - {""}:
+            normalized_group_id = str(group_id).strip() if group_id is not None else ""
+            if umo in blacklist or (
+                normalized_group_id and normalized_group_id in blacklist
+            ):
                 return False
-            if require_llm and not cfg.get("provider_settings", {}).get("enable", True):
+            provider_settings = cfg.get("provider_settings") or {}
+            if require_llm and not provider_settings.get("enable", True):
                 return False
         else:
             if SessionServiceManager is None:
@@ -448,11 +464,11 @@ async def notify_llm_background_result(
         async for _ in result.agent_runner.step_until_done(
             _configured_agent_max_steps(cfg)
         ):
-            if not getattr(
-                cron_event, "_has_send_oper", False
-            ) and not await _background_delivery_allowed(
+            if not await _background_delivery_allowed(
                 event, context=context, require_llm=True
             ):
+                if getattr(cron_event, "_has_send_oper", False):
+                    break
                 return False
 
         await persist_agent_history(

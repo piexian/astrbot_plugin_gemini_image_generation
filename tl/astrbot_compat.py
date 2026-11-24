@@ -1,6 +1,7 @@
 """AstrBot 版本探测与后台通知能力边界。"""
 
-from importlib.metadata import PackageNotFoundError, version as distribution_version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as distribution_version
 
 from packaging.version import InvalidVersion, Version
 

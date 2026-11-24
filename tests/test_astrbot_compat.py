@@ -2,8 +2,8 @@ import sys
 import types
 from importlib.metadata import PackageNotFoundError
 
-from packaging.version import Version
 import pytest
+from packaging.version import Version
 
 from tl import astrbot_compat
 
