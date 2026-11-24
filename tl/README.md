@@ -370,6 +370,16 @@ DashScope（阿里云百炼）provider，接入原生 multimodal-generation 同�
 - 批量任务以命名条目为并发单位；条目内部遵循供应商原生单次上限并在返回不足时继续补齐。
 - 最终发送保持输入顺序，任务状态区分 `succeeded`、`partial_success`、`failed` 和 `interrupted`。
 
+### `background_notify.py` / `astrbot_compat.py`
+
+| 模块 / 接口 | 说明 |
+|-------------|------|
+| `astrbot_compat.ASTRBOT_VERSION` | 优先通过 `importlib.metadata` 读取 `astrbot` 包版本，源码运行回退 `astrbot.cli.__version__`，使用 `packaging.version.Version` 解析 |
+| `has_modern_session_config()` / `has_async_session_manager()` / `has_background_stop_registry()` | 按 AstrBot 版本声明能力边界：`≥4.30.0a1` 走会话配置检查，`4.11.0`–`4.30.0a1` 走异步 `SessionServiceManager`（更早版本同步调用），`≥4.29.0b2` 启用 `active_event_registry` |
+| `register_background_job_stop(event, service, job_id)` | 由 `llm_tools.py` 在单图转后台与批量提交后调用，将监管 task 注册到 `active_event_registry`；收到停止信号时取消仍在生成阶段（未进入 `RESULT_READY` / `DELIVERY_PENDING` 及终态）的 Job |
+| `notify_llm_background_result()` / `notify_llm_background_failure()` | 后台结果与失败回灌主 Agent：4.30 走 `AgentService.run_turn` 并校验 `send_message_to_user` 回执；4.29 走 `CronMessageEvent` + `build_main_agent`，复制并守卫 `send_message_to_user` 工具与发送上下文，已发送结果在后续暂停时立即停止后续步骤并保留历史持久化与交付计数 |
+| `report_background_failure()` | 后台失败统一出口：按 `background_failure_notify_llm` 回灌主 Agent，失败或关闭时经会话开关复核后直发兜底文本 |
+
 ### WebUI 创作台（`generation_tracker.py` / `web_studio_service.py` / `web_api.py`）
 
 - `ReferenceLibrary`（`reference_library.py`）：永久参考图库，`references/` 目录按内容 SHA256 寻址共享文件 + `references.json` 元数据原子写；无过期无容量淘汰，仅用户显式删除；`WebStudioService.save_reference_from_payload` 把画廊/上传暂存图复制入库，工具 token 经 `internal_references.py` 的 `ref:` 解析为受信本地文件；关键词仅用于检索展示，不参与任何自动触发。

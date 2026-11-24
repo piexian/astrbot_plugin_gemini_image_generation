@@ -2,10 +2,24 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from packaging.version import Version
 
-from tl import background_notify
+from tl import astrbot_compat, background_notify
 
 _UMO = "test:FriendMessage:user"
+
+
+@pytest.fixture(autouse=True)
+def enabled_session_services(monkeypatch):
+    monkeypatch.setattr(astrbot_compat, "ASTRBOT_VERSION", Version("4.29.4"))
+    monkeypatch.setattr(
+        background_notify,
+        "SessionServiceManager",
+        SimpleNamespace(
+            is_session_enabled=AsyncMock(return_value=True),
+            is_llm_enabled_for_session=AsyncMock(return_value=True),
+        ),
+    )
 
 
 class _ModernRun:
@@ -37,15 +51,24 @@ def _modern_harness(monkeypatch, run):
             self.text = text
 
     service = SimpleNamespace(run_turn=AsyncMock(return_value=run))
-    plugin = SimpleNamespace(context=SimpleNamespace(agent=service))
+    config = {
+        "platform_settings": {"id_blacklist": []},
+        "provider_settings": {"enable": True},
+    }
+    plugin = SimpleNamespace(
+        context=SimpleNamespace(agent=service, get_config=lambda umo: config)
+    )
     event = SimpleNamespace(
         unified_msg_origin=_UMO,
         role="admin",
         agent_session=SimpleNamespace(session_id="conversation-1"),
+        get_group_id=lambda: None,
     )
     bump = AsyncMock()
     monkeypatch.setattr(background_notify, "PlainInput", ModernInput)
     monkeypatch.setattr(background_notify, "_OFFICIAL_API_READY", True)
+    monkeypatch.setattr(background_notify, "SessionServiceManager", None)
+    monkeypatch.setattr(astrbot_compat, "ASTRBOT_VERSION", Version("4.30.0b1"))
     monkeypatch.setattr(background_notify, "_bump_delivery_count", bump)
     return plugin, event, service, bump
 
@@ -154,7 +177,8 @@ async def test_notify_430_failure_accepts_confirmed_send(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_notify_keeps_astrbot_429_fallback(monkeypatch):
+@pytest.mark.parametrize("pause_after_send", [False, True])
+async def test_notify_keeps_astrbot_429_fallback(monkeypatch, pause_after_send):
     class LegacySession:
         @classmethod
         def from_str(cls, umo):
@@ -163,7 +187,7 @@ async def test_notify_keeps_astrbot_429_fallback(monkeypatch):
     class LegacyCronEvent:
         def __init__(self, **kwargs):
             self.__dict__.update(kwargs)
-            self._has_send_oper = True
+            self._has_send_oper = False
 
     class LegacyRequest:
         def __init__(self):
@@ -178,13 +202,28 @@ async def test_notify_keeps_astrbot_429_fallback(monkeypatch):
             self.tools = []
 
         def add_tool(self, tool):
+            self.tools = [t for t in self.tools if t.name != tool.name]
             self.tools.append(tool)
+
+        def get_tool(self, name):
+            return next((t for t in self.tools if t.name == name), None)
 
     class LegacyRunner:
         max_steps = None
+        steps = 0
 
         async def step_until_done(self, max_steps):
             self.max_steps = max_steps
+            self.steps += 1
+            yield None
+            cron_event = build.await_args.kwargs["event"]
+            cron_event._has_send_oper = True
+            if pause_after_send:
+                manager = background_notify.SessionServiceManager
+                manager.is_session_enabled.return_value = False
+            self.steps += 1
+            yield None
+            self.steps += 1
             yield None
 
     runner = LegacyRunner()
@@ -197,6 +236,9 @@ async def test_notify_keeps_astrbot_429_fallback(monkeypatch):
     persist = AsyncMock()
     bump = AsyncMock()
     provider_settings = {"stream": True}
+    builtin_send = SimpleNamespace(
+        name="send_message_to_user", handler=None, call=AsyncMock()
+    )
     context = SimpleNamespace(
         conversation_manager=object(),
         get_config=lambda umo: {
@@ -204,7 +246,7 @@ async def test_notify_keeps_astrbot_429_fallback(monkeypatch):
             "agent_runner": {"config": {"misc": {"max_steps": 7}}},
         },
         get_llm_tool_manager=lambda: SimpleNamespace(
-            get_builtin_tool=lambda tool_type: "send-tool"
+            get_builtin_tool=lambda tool_type: builtin_send
         ),
     )
     event = SimpleNamespace(unified_msg_origin="test:FriendMessage:user", role="member")
@@ -256,8 +298,12 @@ async def test_notify_keeps_astrbot_429_fallback(monkeypatch):
     assert req.contexts == [{"role": "user", "content": "previous"}]
     assert "task-429" in req.system_prompt
     assert req.prompt == background_notify._BACKGROUND_DELIVERY_PROMPT
-    assert req.func_tool.tools == ["send-tool"]
+    assert len(req.func_tool.tools) == 1
+    assert req.func_tool.tools[0].name == "send_message_to_user"
+    assert req.func_tool.tools[0] is not builtin_send
+    assert req.func_tool.tools[0].call is not builtin_send.call
     assert runner.max_steps == 7
+    assert runner.steps == (2 if pause_after_send else 3)
     persist.assert_awaited_once_with(
         context.conversation_manager,
         event=cron_event,
