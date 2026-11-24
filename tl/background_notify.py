@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import time
 from typing import Any
@@ -11,6 +12,11 @@ from astrbot.api import logger
 from .core.errors import redact_text
 from .llm_output import sanitize_task_result
 from .plugin_config import get_session_tool_timeout
+
+try:
+    from astrbot.core.star.session_llm_manager import SessionServiceManager
+except ImportError:
+    SessionServiceManager = None
 
 try:
     from astrbot.core.agent.input import PlainInput
@@ -78,6 +84,83 @@ def _build_safe_fallback_notice(task_id: str | None) -> str:
 def notify_llm_enabled(plugin: Any) -> bool:
     cfg = getattr(plugin, "cfg", None)
     return bool(getattr(cfg, "background_failure_notify_llm", True))
+
+
+def _event_stopped(event: Any) -> bool:
+    checker = getattr(event, "is_stopped", None)
+    if checker is None:
+        return False
+    try:
+        value = checker() if callable(checker) else checker
+        return value is not False
+    except Exception:
+        return True
+
+
+async def _background_delivery_allowed(
+    event: Any, *, require_llm: bool, target_umo: str | None = None
+) -> bool:
+    """Direct background callbacks do not pass through the session pipeline."""
+    umo = target_umo or getattr(event, "unified_msg_origin", None)
+    if not isinstance(umo, str) or not umo or _event_stopped(event):
+        return False
+    if SessionServiceManager is None:
+        return False
+    try:
+        if await SessionServiceManager.is_session_enabled(umo) is not True:
+            return False
+        if require_llm:
+            if await SessionServiceManager.is_llm_enabled_for_session(umo) is not True:
+                return False
+    except Exception as exc:
+        logger.warning(
+            f"[后台结果回灌] 无法确认会话服务状态，跳过通知: {redact_text(exc)[:240]}"
+        )
+        return False
+    return not _event_stopped(event)
+
+
+class _BackgroundSendContext:
+    """Delegate only this notification tool's final send to a checked boundary."""
+
+    def __init__(self, context: Any, event: Any):
+        self._context = context
+        self._event = event
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._context, name)
+
+    async def send_message(self, session: Any, message: Any, *args, **kwargs):
+        if not await _background_delivery_allowed(self._event, require_llm=True):
+            return False
+        target = str(session)
+        if target != self._event.unified_msg_origin:
+            if not await _background_delivery_allowed(
+                self._event, require_llm=True, target_umo=target
+            ):
+                return False
+        return await self._context.send_message(session, message, *args, **kwargs)
+
+
+def _guard_background_send_tool(tool: Any, event: Any) -> Any:
+    """Keep the shared builtin unchanged; the copied tool gets a local context."""
+    if getattr(tool, "handler", None) is not None:
+        raise RuntimeError("后台发送工具 handler 接口不受支持")
+    original_call = getattr(tool, "call", None)
+    if not callable(original_call):
+        raise RuntimeError("后台发送工具 call 接口不可用")
+    guarded = copy.copy(tool)
+
+    async def call(context: Any, **kwargs):
+        if not await _background_delivery_allowed(event, require_llm=True):
+            return "error: background session is paused or unavailable"
+        wrapped = copy.copy(context)
+        wrapped.context = copy.copy(context.context)
+        wrapped.context.context = _BackgroundSendContext(context.context.context, event)
+        return await original_call(wrapped, **kwargs)
+
+    guarded.call = call
+    return guarded
 
 
 def _configured_agent_max_steps(cfg: dict[str, Any]) -> int:
@@ -158,6 +241,8 @@ async def notify_llm_background_result(
         if context is None or not umo:
             raise RuntimeError("缺少插件 context 或会话标识")
 
+        if not await _background_delivery_allowed(event, require_llm=True):
+            return False
         extras = {"background_task_result": sanitize_task_result(task_result)}
 
         if PlainInput is not None:
@@ -232,6 +317,8 @@ async def notify_llm_background_result(
             context.get_llm_tool_manager().get_builtin_tool(SendMessageToUserTool)
         )
 
+        if not await _background_delivery_allowed(event, require_llm=True):
+            return False
         result = await build_main_agent(
             event=cron_event,
             plugin_context=context,
@@ -240,10 +327,16 @@ async def notify_llm_background_result(
         )
         if not result:
             raise RuntimeError("主 Agent 构建失败")
+        # Core may re-add the builtin while building; wrap the final request tool.
+        send_tool = req.func_tool.get_tool("send_message_to_user")
+        req.func_tool.add_tool(_guard_background_send_tool(send_tool, event))
+        if not await _background_delivery_allowed(event, require_llm=True):
+            return False
         async for _ in result.agent_runner.step_until_done(
             _configured_agent_max_steps(cfg)
         ):
-            pass
+            if not await _background_delivery_allowed(event, require_llm=True):
+                return False
 
         await persist_agent_history(
             context.conversation_manager,
@@ -308,6 +401,8 @@ async def report_background_failure(
     else:
         direct_notice = failure_summary
     try:
+        if not await _background_delivery_allowed(event, require_llm=False):
+            return False
         await event.send(event.plain_result(direct_notice))
     except Exception as e:
         logger.warning(

@@ -8,6 +8,18 @@ from tl import background_notify
 _UMO = "test:FriendMessage:user"
 
 
+@pytest.fixture(autouse=True)
+def enabled_session_services(monkeypatch):
+    monkeypatch.setattr(
+        background_notify,
+        "SessionServiceManager",
+        SimpleNamespace(
+            is_session_enabled=AsyncMock(return_value=True),
+            is_llm_enabled_for_session=AsyncMock(return_value=True),
+        ),
+    )
+
+
 class _ModernRun:
     def __init__(self, *, tool_text=None, has_send_oper=False):
         self._event = SimpleNamespace(_has_send_oper=has_send_oper)
@@ -178,7 +190,11 @@ async def test_notify_keeps_astrbot_429_fallback(monkeypatch):
             self.tools = []
 
         def add_tool(self, tool):
+            self.tools = [t for t in self.tools if t.name != tool.name]
             self.tools.append(tool)
+
+        def get_tool(self, name):
+            return next((t for t in self.tools if t.name == name), None)
 
     class LegacyRunner:
         max_steps = None
@@ -197,6 +213,9 @@ async def test_notify_keeps_astrbot_429_fallback(monkeypatch):
     persist = AsyncMock()
     bump = AsyncMock()
     provider_settings = {"stream": True}
+    builtin_send = SimpleNamespace(
+        name="send_message_to_user", handler=None, call=AsyncMock()
+    )
     context = SimpleNamespace(
         conversation_manager=object(),
         get_config=lambda umo: {
@@ -204,7 +223,7 @@ async def test_notify_keeps_astrbot_429_fallback(monkeypatch):
             "agent_runner": {"config": {"misc": {"max_steps": 7}}},
         },
         get_llm_tool_manager=lambda: SimpleNamespace(
-            get_builtin_tool=lambda tool_type: "send-tool"
+            get_builtin_tool=lambda tool_type: builtin_send
         ),
     )
     event = SimpleNamespace(unified_msg_origin="test:FriendMessage:user", role="member")
@@ -256,7 +275,10 @@ async def test_notify_keeps_astrbot_429_fallback(monkeypatch):
     assert req.contexts == [{"role": "user", "content": "previous"}]
     assert "task-429" in req.system_prompt
     assert req.prompt == background_notify._BACKGROUND_DELIVERY_PROMPT
-    assert req.func_tool.tools == ["send-tool"]
+    assert len(req.func_tool.tools) == 1
+    assert req.func_tool.tools[0].name == "send_message_to_user"
+    assert req.func_tool.tools[0] is not builtin_send
+    assert req.func_tool.tools[0].call is not builtin_send.call
     assert runner.max_steps == 7
     persist.assert_awaited_once_with(
         context.conversation_manager,
