@@ -40,6 +40,10 @@ def _load_background_notify(monkeypatch, *, modern):
         _module(f"{package}.core.errors", redact_text=lambda value: str(value)),
     )
     add(
+        f"{package}.astrbot_compat",
+        _module(f"{package}.astrbot_compat", ASTRBOT_VERSION=None),
+    )
+    add(
         f"{package}.llm_output",
         _module(f"{package}.llm_output", sanitize_task_result=lambda value: value),
     )

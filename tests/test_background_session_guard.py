@@ -4,14 +4,16 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from packaging.version import Version
 import pytest
 
-from tl import background_notify
+from tl import astrbot_compat, background_notify
 
 _UMO = "synthetic:FriendMessage:requester"
 
 
 def services(monkeypatch, *, session=True, llm=True):
+    monkeypatch.setattr(astrbot_compat, "ASTRBOT_VERSION", Version("4.29.4"))
     manager = SimpleNamespace(
         is_session_enabled=AsyncMock(return_value=session),
         is_llm_enabled_for_session=AsyncMock(return_value=llm),
@@ -128,7 +130,10 @@ async def test_pause_while_tool_waits_blocks_final_send_without_mutating_shared_
 
 @pytest.mark.asyncio
 async def test_enabled_source_and_target_send_through_original_boundary(monkeypatch):
-    services(monkeypatch)
+    manager = services(monkeypatch)
+    monkeypatch.setattr(astrbot_compat, "ASTRBOT_VERSION", Version("4.10.4"))
+    manager.is_session_enabled = lambda umo: True
+    manager.is_llm_enabled_for_session = lambda umo: True
     source = event()
     core = SimpleNamespace(send_message=AsyncMock(return_value=True))
     boundary = background_notify._BackgroundSendContext(core, source)
@@ -183,7 +188,10 @@ async def test_pause_between_failed_agent_and_direct_fallback_is_rechecked(monke
 
 @pytest.mark.asyncio
 async def test_llm_disabled_failure_can_use_checked_non_llm_notice(monkeypatch):
-    services(monkeypatch, llm=False)
+    manager = services(monkeypatch, llm=False)
+    monkeypatch.setattr(astrbot_compat, "ASTRBOT_VERSION", Version("4.10.4"))
+    manager.is_session_enabled = lambda umo: True
+    manager.is_llm_enabled_for_session = lambda umo: False
     source = event()
     plugin = SimpleNamespace(cfg=SimpleNamespace(background_failure_notify_llm=True))
     assert await background_notify.report_background_failure(

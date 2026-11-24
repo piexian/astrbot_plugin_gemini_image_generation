@@ -5,3 +5,4 @@ aiohttp-socks
 scipy
 scikit-image
 cryptography
+packaging>=24.2

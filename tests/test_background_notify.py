@@ -1,15 +1,17 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from packaging.version import Version
 import pytest
 
-from tl import background_notify
+from tl import astrbot_compat, background_notify
 
 _UMO = "test:FriendMessage:user"
 
 
 @pytest.fixture(autouse=True)
 def enabled_session_services(monkeypatch):
+    monkeypatch.setattr(astrbot_compat, "ASTRBOT_VERSION", Version("4.29.4"))
     monkeypatch.setattr(
         background_notify,
         "SessionServiceManager",
@@ -49,15 +51,24 @@ def _modern_harness(monkeypatch, run):
             self.text = text
 
     service = SimpleNamespace(run_turn=AsyncMock(return_value=run))
-    plugin = SimpleNamespace(context=SimpleNamespace(agent=service))
+    config = {
+        "platform_settings": {"id_blacklist": []},
+        "provider_settings": {"enable": True},
+    }
+    plugin = SimpleNamespace(
+        context=SimpleNamespace(agent=service, get_config=lambda umo: config)
+    )
     event = SimpleNamespace(
         unified_msg_origin=_UMO,
         role="admin",
         agent_session=SimpleNamespace(session_id="conversation-1"),
+        get_group_id=lambda: None,
     )
     bump = AsyncMock()
     monkeypatch.setattr(background_notify, "PlainInput", ModernInput)
     monkeypatch.setattr(background_notify, "_OFFICIAL_API_READY", True)
+    monkeypatch.setattr(background_notify, "SessionServiceManager", None)
+    monkeypatch.setattr(astrbot_compat, "ASTRBOT_VERSION", Version("4.30.0b1"))
     monkeypatch.setattr(background_notify, "_bump_delivery_count", bump)
     return plugin, event, service, bump
 

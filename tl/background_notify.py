@@ -9,6 +9,7 @@ from typing import Any
 
 from astrbot.api import logger
 
+from . import astrbot_compat
 from .core.errors import redact_text
 from .llm_output import sanitize_task_result
 from .plugin_config import get_session_tool_timeout
@@ -98,20 +99,54 @@ def _event_stopped(event: Any) -> bool:
 
 
 async def _background_delivery_allowed(
-    event: Any, *, require_llm: bool, target_umo: str | None = None
+    event: Any,
+    *,
+    require_llm: bool,
+    context: Any = None,
+    target_umo: str | None = None,
 ) -> bool:
     """Direct background callbacks do not pass through the session pipeline."""
     umo = target_umo or getattr(event, "unified_msg_origin", None)
     if not isinstance(umo, str) or not umo or _event_stopped(event):
         return False
-    if SessionServiceManager is None:
+    if astrbot_compat.ASTRBOT_VERSION is None:
+        logger.warning("[后台结果回灌] 无法识别 AstrBot 版本，跳过通知")
         return False
     try:
-        if await SessionServiceManager.is_session_enabled(umo) is not True:
-            return False
-        if require_llm:
-            if await SessionServiceManager.is_llm_enabled_for_session(umo) is not True:
+        if astrbot_compat.has_modern_session_config():
+            if context is None:
                 return False
+            cfg = context.get_config(umo=umo) or {}
+            blacklist = {
+                str(item).strip()
+                for item in cfg.get("platform_settings", {}).get("id_blacklist", [])
+            }
+            get_group_id = (
+                getattr(event, "get_group_id", None) if target_umo is None else None
+            )
+            group_id = get_group_id() if callable(get_group_id) else None
+            if umo in blacklist or str(group_id).strip() in blacklist - {""}:
+                return False
+            if require_llm and not cfg.get("provider_settings", {}).get("enable", True):
+                return False
+        else:
+            if SessionServiceManager is None:
+                return False
+            if astrbot_compat.has_async_session_manager():
+                session_enabled = await SessionServiceManager.is_session_enabled(umo)
+            else:
+                session_enabled = SessionServiceManager.is_session_enabled(umo)
+            if session_enabled is not True:
+                return False
+            if require_llm:
+                if astrbot_compat.has_async_session_manager():
+                    llm_enabled = (
+                        await SessionServiceManager.is_llm_enabled_for_session(umo)
+                    )
+                else:
+                    llm_enabled = SessionServiceManager.is_llm_enabled_for_session(umo)
+                if llm_enabled is not True:
+                    return False
     except Exception as exc:
         logger.warning(
             f"[后台结果回灌] 无法确认会话服务状态，跳过通知: {redact_text(exc)[:240]}"
@@ -131,12 +166,17 @@ class _BackgroundSendContext:
         return getattr(self._context, name)
 
     async def send_message(self, session: Any, message: Any, *args, **kwargs):
-        if not await _background_delivery_allowed(self._event, require_llm=True):
+        if not await _background_delivery_allowed(
+            self._event, context=self._context, require_llm=True
+        ):
             return False
         target = str(session)
         if target != self._event.unified_msg_origin:
             if not await _background_delivery_allowed(
-                self._event, require_llm=True, target_umo=target
+                self._event,
+                context=self._context,
+                require_llm=True,
+                target_umo=target,
             ):
                 return False
         return await self._context.send_message(session, message, *args, **kwargs)
@@ -152,7 +192,9 @@ def _guard_background_send_tool(tool: Any, event: Any) -> Any:
     guarded = copy.copy(tool)
 
     async def call(context: Any, **kwargs):
-        if not await _background_delivery_allowed(event, require_llm=True):
+        if not await _background_delivery_allowed(
+            event, context=context.context.context, require_llm=True
+        ):
             return "error: background session is paused or unavailable"
         wrapped = copy.copy(context)
         wrapped.context = copy.copy(context.context)
@@ -241,7 +283,9 @@ async def notify_llm_background_result(
         if context is None or not umo:
             raise RuntimeError("缺少插件 context 或会话标识")
 
-        if not await _background_delivery_allowed(event, require_llm=True):
+        if not await _background_delivery_allowed(
+            event, context=context, require_llm=True
+        ):
             return False
         extras = {"background_task_result": sanitize_task_result(task_result)}
 
@@ -317,7 +361,9 @@ async def notify_llm_background_result(
             context.get_llm_tool_manager().get_builtin_tool(SendMessageToUserTool)
         )
 
-        if not await _background_delivery_allowed(event, require_llm=True):
+        if not await _background_delivery_allowed(
+            event, context=context, require_llm=True
+        ):
             return False
         result = await build_main_agent(
             event=cron_event,
@@ -330,12 +376,16 @@ async def notify_llm_background_result(
         # Core may re-add the builtin while building; wrap the final request tool.
         send_tool = req.func_tool.get_tool("send_message_to_user")
         req.func_tool.add_tool(_guard_background_send_tool(send_tool, event))
-        if not await _background_delivery_allowed(event, require_llm=True):
+        if not await _background_delivery_allowed(
+            event, context=context, require_llm=True
+        ):
             return False
         async for _ in result.agent_runner.step_until_done(
             _configured_agent_max_steps(cfg)
         ):
-            if not await _background_delivery_allowed(event, require_llm=True):
+            if not await _background_delivery_allowed(
+                event, context=context, require_llm=True
+            ):
                 return False
 
         await persist_agent_history(
@@ -401,7 +451,9 @@ async def report_background_failure(
     else:
         direct_notice = failure_summary
     try:
-        if not await _background_delivery_allowed(event, require_llm=False):
+        if not await _background_delivery_allowed(
+            event, context=getattr(plugin, "context", None), require_llm=False
+        ):
             return False
         await event.send(event.plain_result(direct_notice))
     except Exception as e:
