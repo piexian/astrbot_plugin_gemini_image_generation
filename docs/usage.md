@@ -109,6 +109,9 @@ LLM 工具会根据当前 `tool_call_timeout` 和 `llm_tool_timeout_reserve_perc
 - 超过等待窗口时，自动切到后台继续生成；完成后反向激活主 Agent，提供图片 URL/路径，要求调用 `send_message_to_user` 的 `image` 组件发送图片。批量任务同样聚合结果后反向激活。
 - 聊天来源（指令/LLM 工具）的生成图保存到会话工作区下的 `astrbot_plugin_gemini_image_generation/` 子目录（位于框架本地文件发送白名单内，非管理员会话也能由 AI 直接发送）；全部会话工作区共享 `image_cache_max_size_mb` 容量上限，超限时跨会话按最旧文件优先清理；工作区解析失败时本次生成直接报错。工作台与插件 API 来源仍保存在插件数据目录。
 - 后台图片不再由插件直接发送；反向激活不可用或 Agent 未调用发送工具时，任务会记录发送未成功，图片 URL/路径可通过任务查询获取。
+- 后台结果回灌与失败通知遵循会话开关与事件停止状态（默认拒绝）：会话已暂停、加入黑名单、原事件已停止，或无法识别 AstrBot 版本／会话服务状态时，跳过唤醒主 Agent 与失败直发，不发送消息也不增加交付计数；仅关闭会话 LLM 时跳过唤醒主 Agent，失败通知仍可走直发文本兜底。AstrBot 4.29 路径会复制并隔离保护本次通知使用的 `send_message_to_user` 工具，在最终发送前复核源／目标会话状态；如果图片已经确认送达后会话才暂停，仍保留该次交付记录与历史收尾。
+- 后台停止联动（需 AstrBot ≥4.29.0b2）：单图转后台与批量后台任务会登记到 AstrBot 的 `active_event_registry`；当会话触发停止请求时，仍在生成阶段的后台任务会被自动取消，已进入投递或已终态的任务不再取消。
+- 后台回灌按 AstrBot 版本适配：≥4.30（`4.30.0a1+`）通过 `AgentService.run_turn` 回灌并依据会话配置中的 `platform_settings.id_blacklist` 与 `provider_settings.enable` 判定开关，以 `send_message_to_user` 成功回执确认图片送达；4.11–4.29 通过异步 `SessionServiceManager` 检查开关（4.29 走 `CronMessageEvent` 回灌）；4.10.4–4.10.6 兼容同步 `SessionServiceManager` 用于失败直发校验。
 - 转入后台时返回 JSON，其中包含 `task_id`、`status`、`routing_mode` 和当前轮询/重试说明。
 
 代理模式下，前台和后台都会通过代理下载远程图片，保证链路一致。

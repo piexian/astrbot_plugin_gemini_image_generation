@@ -22,7 +22,7 @@
 
 ### 前置要求
 
-- AstrBot 4.10.4+
+- AstrBot 4.10.4+（WebUI 创作台需 ≥4.29，后台生图停止联动需 ≥4.29.0b2，后台结果回灌兼容 4.29 与 4.30）
 - Python 3.12+
 - NapCat（目前主要适配 NapCat 平台）
 - QQ 官方机器人 WebSocket（`qq_official`，头像参考已通过真实实例验证）
@@ -137,7 +137,7 @@ astrbot_plugin_gemini_image_generation/
 - [@xunxiing](https://github.com/xunxiing) - OpenAI Images 端点支持、配置提示修复
 - [@Clhikari](https://github.com/Clhikari) - 快速生图修复
 - [@YukiRa1n](https://github.com/YukiRa1n) - GIF 支持、多项修复
-- [@Dashu-Li](https://github.com/Dashu-Li) - 工具参数 null 值覆盖默认值修复、批量并发测试修复
+- [@Dashu-Li](https://github.com/Dashu-Li) - 工具参数 null 值覆盖默认值修复、批量并发测试修复、后台通知会话守卫
 
 ## 许可证
 

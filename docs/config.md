@@ -99,7 +99,7 @@ google / gemini_interactions / vertex / openai / agnes_ai / xai / minimax / open
 | `generation_max_concurrency` | `3` | 指令、LLM、Studio 与外部插件共用的生成执行槽上限；重载生效 |
 | `generation_max_queue_size` | `100` | 全入口等待队列容量，不含执行请求；排队不占供应商请求超时，满时拒绝提交；重载生效 |
 | `background_task_retention_hours` | `24` | 后台任务状态记录保留时间；插件重启会把未完成任务标记为 `interrupted` |
-| `background_failure_notify_llm` | `true` | 无图片产出的后台生图失败时，由 AI 重新组织语言告知用户；回灌不可用时发送简短失败提示，关闭时直发错误文本。有图片产出的后台结果始终反向激活 AI，要求调用 `send_message_to_user` 发送图片 |
+| `background_failure_notify_llm` | `true` | 无图片产出的后台生图失败时，由 AI 重新组织语言告知用户；回灌不可用或会话关闭 LLM 时发送简短失败提示，关闭本项时直发错误文本。有图片产出的后台结果始终反向激活 AI，要求调用 `send_message_to_user` 发送图片。会话已暂停、在黑名单中、原事件已停止或无法确认会话状态时，均跳过回灌与直发通知 |
 
 分辨率、长宽比、最大参考图数量、Google 文本响应、Google 搜索接地、OpenAI/OpenAI 兼容参数名等均在 `provider_settings.provider_overrides` 的各供应商条目内配置。
 
