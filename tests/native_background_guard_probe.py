@@ -28,8 +28,8 @@ from tl.core.states import JobState
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("pause_during", ["session", "llm", "event"])
-async def test_native_tool_rechecks_pause_after_media_wait(
+@pytest.mark.parametrize("pause_during", ["session", "llm", "event", "after_send"])
+async def test_native_tool_pause_before_and_after_send(
     monkeypatch, tmp_path, pause_during
 ):
     # Construct native contexts with synthetic services; no Core lifecycle runs.
@@ -89,6 +89,8 @@ async def test_native_tool_rechecks_pause_after_media_wait(
                     messages=[{"type": "image", "path": str(source_file)}],
                 )
                 captured["wrapped"] = wrapped
+                if pause_during == "after_send":
+                    services.is_session_enabled.return_value = False
                 yield None
 
         return SimpleNamespace(agent_runner=SyntheticRunner())
@@ -110,15 +112,23 @@ async def test_native_tool_rechecks_pause_after_media_wait(
         services.is_session_enabled.return_value = False
     elif pause_during == "llm":
         services.is_llm_enabled_for_session.return_value = False
-    else:
+    elif pause_during == "event":
         source.stop_event()
     media_release.set()
-    assert await callback is False
-    assert captured["tool_result"].startswith("error:")
-    assert captured["event"]._has_send_oper is False
-    core.send_message.assert_not_awaited()
-    manager.record_delivery.assert_not_awaited()
-    persist.assert_not_awaited()
+    if pause_during == "after_send":
+        assert await callback is True
+        assert captured["tool_result"].startswith("Message sent")
+        assert captured["event"]._has_send_oper is True
+        core.send_message.assert_awaited_once()
+        manager.record_delivery.assert_awaited_once_with("synthetic-job")
+        persist.assert_awaited_once()
+    else:
+        assert await callback is False
+        assert captured["tool_result"].startswith("error:")
+        assert captured["event"]._has_send_oper is False
+        core.send_message.assert_not_awaited()
+        manager.record_delivery.assert_not_awaited()
+        persist.assert_not_awaited()
     assert captured["wrapped"].context.context is core
     assert shared_tool.call == original_call
 

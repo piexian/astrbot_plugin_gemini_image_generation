@@ -448,7 +448,9 @@ async def notify_llm_background_result(
         async for _ in result.agent_runner.step_until_done(
             _configured_agent_max_steps(cfg)
         ):
-            if not await _background_delivery_allowed(
+            if not getattr(
+                cron_event, "_has_send_oper", False
+            ) and not await _background_delivery_allowed(
                 event, context=context, require_llm=True
             ):
                 return False

@@ -177,7 +177,8 @@ async def test_notify_430_failure_accepts_confirmed_send(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_notify_keeps_astrbot_429_fallback(monkeypatch):
+@pytest.mark.parametrize("pause_after_send", [False, True])
+async def test_notify_keeps_astrbot_429_fallback(monkeypatch, pause_after_send):
     class LegacySession:
         @classmethod
         def from_str(cls, umo):
@@ -186,7 +187,7 @@ async def test_notify_keeps_astrbot_429_fallback(monkeypatch):
     class LegacyCronEvent:
         def __init__(self, **kwargs):
             self.__dict__.update(kwargs)
-            self._has_send_oper = True
+            self._has_send_oper = False
 
     class LegacyRequest:
         def __init__(self):
@@ -212,6 +213,12 @@ async def test_notify_keeps_astrbot_429_fallback(monkeypatch):
 
         async def step_until_done(self, max_steps):
             self.max_steps = max_steps
+            yield None
+            cron_event = build.await_args.kwargs["event"]
+            cron_event._has_send_oper = True
+            if pause_after_send:
+                manager = background_notify.SessionServiceManager
+                manager.is_session_enabled.return_value = False
             yield None
 
     runner = LegacyRunner()
