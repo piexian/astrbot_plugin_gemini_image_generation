@@ -23,7 +23,6 @@ from astrbot.core.tools.message_tools import SendMessageToUserTool
 from astrbot.core.utils.active_event_registry import active_event_registry
 
 from tl import background_notify
-from tl.core.states import JobState
 
 
 @pytest.mark.asyncio
@@ -148,8 +147,7 @@ async def test_native_agent_stop_cancels_registered_generation(monkeypatch):
 
     service = SimpleNamespace(
         wait=wait,
-        get_status=AsyncMock(return_value=SimpleNamespace(state=JobState.RUNNING)),
-        cancel=AsyncMock(),
+        cancel_generation=AsyncMock(),
     )
     monkeypatch.setattr(
         background_notify, "active_event_registry", active_event_registry
@@ -163,6 +161,6 @@ async def test_native_agent_stop_cancels_registered_generation(monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    service.cancel.assert_awaited_once_with("native-stop-job")
+    service.cancel_generation.assert_awaited_once_with("native-stop-job")
     assert background_notify._event_stopped(source)
     assert not source.is_stopped()
