@@ -101,6 +101,10 @@ class GenerationService:
     async def cancel(self, job_id: str) -> JobSnapshot:
         return await self._scheduler.cancel(job_id)
 
+    async def cancel_generation(self, job_id: str) -> JobSnapshot:
+        """只取消生成阶段，保留已就绪结果的投递。"""
+        return await self._scheduler.cancel_generation(job_id)
+
     async def get_status(self, job_id: str) -> JobSnapshot | None:
         return await self._scheduler.get_status(job_id)
 

@@ -8,7 +8,6 @@ import pytest
 from packaging.version import Version
 
 from tl import astrbot_compat, background_notify
-from tl.core.states import JobState
 
 _UMO = "synthetic:FriendMessage:requester"
 
@@ -224,9 +223,7 @@ def test_event_stopped_reads_agent_and_shared_signal(kind):
 @pytest.mark.asyncio
 async def test_background_job_registration_is_disabled_without_registry(monkeypatch):
     monkeypatch.setattr(background_notify, "active_event_registry", None)
-    service = SimpleNamespace(
-        wait=AsyncMock(), get_status=AsyncMock(), cancel=AsyncMock()
-    )
+    service = SimpleNamespace(wait=AsyncMock(), cancel_generation=AsyncMock())
 
     assert (
         await background_notify.register_background_job_stop(
@@ -238,18 +235,7 @@ async def test_background_job_registration_is_disabled_without_registry(monkeypa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("state", "should_cancel"),
-    [
-        (JobState.RUNNING, True),
-        (JobState.RESULT_READY, False),
-        (JobState.DELIVERY_PENDING, False),
-        (JobState.SUCCEEDED, False),
-    ],
-)
-async def test_background_job_stop_only_cancels_generation(
-    monkeypatch, state, should_cancel
-):
+async def test_background_job_stop_uses_generation_guard(monkeypatch):
     registered = {}
     registry = SimpleNamespace(
         register_background_task=lambda _event, task: registered.setdefault(
@@ -265,8 +251,9 @@ async def test_background_job_stop_only_cancels_generation(
 
     service = SimpleNamespace(
         wait=wait,
-        get_status=AsyncMock(return_value=SimpleNamespace(state=state)),
+        get_status=AsyncMock(side_effect=AssertionError("stale status read")),
         cancel=AsyncMock(),
+        cancel_generation=AsyncMock(),
     )
     task = await background_notify.register_background_job_stop(
         event(), service, "job-stop"
@@ -277,7 +264,9 @@ async def test_background_job_stop_only_cancels_generation(
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    assert service.cancel.await_count == int(should_cancel)
+    service.cancel_generation.assert_awaited_once_with("job-stop")
+    service.get_status.assert_not_awaited()
+    service.cancel.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -290,8 +279,7 @@ async def test_registration_cancelled_before_start_still_cancels_generation(
     monkeypatch.setattr(background_notify, "active_event_registry", registry)
     service = SimpleNamespace(
         wait=AsyncMock(),
-        get_status=AsyncMock(return_value=SimpleNamespace(state=JobState.RUNNING)),
-        cancel=AsyncMock(),
+        cancel_generation=AsyncMock(),
     )
 
     task = await background_notify.register_background_job_stop(
@@ -300,7 +288,7 @@ async def test_registration_cancelled_before_start_still_cancels_generation(
 
     assert task is not None and task.cancelled()
     service.wait.assert_not_awaited()
-    service.cancel.assert_awaited_once_with("job-early-stop")
+    service.cancel_generation.assert_awaited_once_with("job-early-stop")
 
 
 @pytest.mark.asyncio
@@ -309,8 +297,7 @@ async def test_supervisor_task_handles_wait_exception_without_leaking(monkeypatc
     monkeypatch.setattr(background_notify, "active_event_registry", registry)
     service = SimpleNamespace(
         wait=AsyncMock(side_effect=RuntimeError("store closed")),
-        get_status=AsyncMock(),
-        cancel=AsyncMock(),
+        cancel_generation=AsyncMock(),
     )
 
     task = await background_notify.register_background_job_stop(
@@ -319,7 +306,7 @@ async def test_supervisor_task_handles_wait_exception_without_leaking(monkeypatc
 
     assert task is not None
     assert await task is None
-    service.cancel.assert_not_awaited()
+    service.cancel_generation.assert_not_awaited()
 
 
 @pytest.mark.asyncio

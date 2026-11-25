@@ -12,7 +12,6 @@ from astrbot.api import logger
 
 from . import astrbot_compat
 from .core.errors import redact_text
-from .core.states import TERMINAL_STATES, JobState
 from .llm_output import sanitize_task_result
 from .plugin_config import get_session_tool_timeout
 
@@ -134,15 +133,7 @@ async def register_background_job_stop(
             return
         cleanup_started = True
         try:
-            snapshot = await service.get_status(job_id)
-            state = getattr(snapshot, "state", None)
-            if (
-                snapshot is None
-                or state in TERMINAL_STATES
-                or state in {JobState.RESULT_READY, JobState.DELIVERY_PENDING}
-            ):
-                return
-            await asyncio.shield(service.cancel(job_id))
+            await asyncio.shield(service.cancel_generation(job_id))
         except Exception as exc:
             logger.warning(
                 f"[后台任务] 停止生成失败: job_id={job_id}, error={redact_text(exc)[:240]}"
