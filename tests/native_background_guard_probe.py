@@ -27,7 +27,18 @@ from tl.core.states import JobState
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("pause_during", ["session", "llm", "event", "after_send"])
+@pytest.mark.parametrize(
+    "pause_during",
+    [
+        "session",
+        "llm",
+        "event",
+        "after_send",
+        "after_text",
+        "after_other_image",
+        "after_failed_image",
+    ],
+)
 async def test_native_tool_pause_before_and_after_send(
     monkeypatch, tmp_path, pause_during
 ):
@@ -83,12 +94,30 @@ async def test_native_tool_pause_before_and_after_send(
                 native = AstrAgentContext(context=core, event=kwargs["event"])
                 wrapped = ContextWrapper(context=native)
                 tool = kwargs["req"].func_tool.get_tool("send_message_to_user")
+                if pause_during == "after_text":
+                    messages = [{"type": "plain", "text": "synthetic acknowledgement"}]
+                else:
+                    messages = [{"type": "image", "path": str(source_file)}]
+                if pause_during == "after_failed_image":
+                    core.send_message.return_value = False
+                if pause_during == "after_other_image":
+                    kwargs["event"].role = "admin"
                 captured["tool_result"] = await tool.call(
                     wrapped,
-                    messages=[{"type": "image", "path": str(source_file)}],
+                    messages=messages,
+                    **(
+                        {"session": "synthetic:FriendMessage:other"}
+                        if pause_during == "after_other_image"
+                        else {}
+                    ),
                 )
                 captured["wrapped"] = wrapped
-                if pause_during == "after_send":
+                if pause_during in {
+                    "after_send",
+                    "after_text",
+                    "after_other_image",
+                    "after_failed_image",
+                }:
                     services.is_session_enabled.return_value = False
                 yield None
 
@@ -106,7 +135,8 @@ async def test_native_tool_pause_before_and_after_send(
             scene="native-guard-probe",
         )
     )
-    await asyncio.wait_for(media_entered.wait(), timeout=5)
+    if pause_during != "after_text":
+        await asyncio.wait_for(media_entered.wait(), timeout=5)
     if pause_during == "session":
         services.is_session_enabled.return_value = False
     elif pause_during == "llm":
@@ -121,6 +151,11 @@ async def test_native_tool_pause_before_and_after_send(
         core.send_message.assert_awaited_once()
         manager.record_delivery.assert_awaited_once_with("synthetic-job")
         persist.assert_awaited_once()
+    elif pause_during in {"after_text", "after_other_image", "after_failed_image"}:
+        assert await callback is False
+        core.send_message.assert_awaited_once()
+        manager.record_delivery.assert_not_awaited()
+        persist.assert_not_awaited()
     else:
         assert await callback is False
         assert captured["tool_result"].startswith("error:")

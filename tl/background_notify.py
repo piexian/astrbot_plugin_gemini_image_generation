@@ -239,9 +239,12 @@ async def _background_delivery_allowed(
 class _BackgroundSendContext:
     """Delegate only this notification tool's final send to a checked boundary."""
 
-    def __init__(self, context: Any, event: Any):
+    def __init__(
+        self, context: Any, event: Any, receipt: dict[str, bool] | None = None
+    ):
         self._context = context
         self._event = event
+        self._receipt = receipt
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._context, name)
@@ -260,10 +263,22 @@ class _BackgroundSendContext:
                 target_umo=target,
             ):
                 return False
-        return await self._context.send_message(session, message, *args, **kwargs)
+        sent = await self._context.send_message(session, message, *args, **kwargs)
+        if (
+            sent
+            and target == self._event.unified_msg_origin
+            and self._receipt is not None
+        ):
+            self._receipt["image_sent"] |= any(
+                getattr(part, "type", None) == "Image"
+                for part in (getattr(message, "chain", None) or ())
+            )
+        return sent
 
 
-def _guard_background_send_tool(tool: Any, event: Any) -> Any:
+def _guard_background_send_tool(
+    tool: Any, event: Any, receipt: dict[str, bool] | None = None
+) -> Any:
     """Keep the shared builtin unchanged; the copied tool gets a local context."""
     if getattr(tool, "handler", None) is not None:
         raise RuntimeError("后台发送工具 handler 接口不受支持")
@@ -279,7 +294,9 @@ def _guard_background_send_tool(tool: Any, event: Any) -> Any:
             return "error: background session is paused or unavailable"
         wrapped = copy.copy(context)
         wrapped.context = copy.copy(context.context)
-        wrapped.context.context = _BackgroundSendContext(context.context.context, event)
+        wrapped.context.context = _BackgroundSendContext(
+            context.context.context, event, receipt
+        )
         return await original_call(wrapped, **kwargs)
 
     guarded.call = call
@@ -456,7 +473,14 @@ async def notify_llm_background_result(
             raise RuntimeError("主 Agent 构建失败")
         # Core may re-add the builtin while building; wrap the final request tool.
         send_tool = req.func_tool.get_tool("send_message_to_user")
-        req.func_tool.add_tool(_guard_background_send_tool(send_tool, event))
+        receipt = {"image_sent": False}
+        req.func_tool.add_tool(_guard_background_send_tool(send_tool, event, receipt))
+
+        def delivered() -> bool:
+            if require_send_tool:
+                return receipt["image_sent"]
+            return bool(getattr(cron_event, "_has_send_oper", False))
+
         if not await _background_delivery_allowed(
             event, context=context, require_llm=True
         ):
@@ -467,10 +491,13 @@ async def notify_llm_background_result(
             if not await _background_delivery_allowed(
                 event, context=context, require_llm=True
             ):
-                if getattr(cron_event, "_has_send_oper", False):
+                if delivered():
                     break
                 return False
 
+        if not delivered():
+            logger.warning(f"[{scene}] 后台通知 agent 未确认当前会话的结果发送")
+            return False
         await persist_agent_history(
             context.conversation_manager,
             event=cron_event,

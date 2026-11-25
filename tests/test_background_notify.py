@@ -284,6 +284,7 @@ async def test_notify_keeps_astrbot_429_fallback(monkeypatch, pause_after_send):
         task_result,
         notice="旧版通知",
         scene="test-429",
+        require_send_tool=False,
     )
 
     assert delivered is True
