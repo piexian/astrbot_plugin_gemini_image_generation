@@ -43,9 +43,13 @@ from tl.core.states import JobState
         "after_duplicate_image",
         "after_complete_with_duplicate",
         "after_url",
+        "after_url_fragment",
         "after_unrelated_url",
         "after_mixed_batch",
         "after_duplicate_expected",
+        "after_missing_result",
+        "after_stripped_auth_result",
+        "after_unrelated_query",
     ],
 )
 async def test_native_tool_pause_before_and_after_send(
@@ -102,10 +106,24 @@ async def test_native_tool_pause_before_and_after_send(
         }
     elif pause_during in {"after_url", "after_unrelated_url"}:
         task_result = {"task_id": "synthetic-job", "image_urls": [result_url]}
+    elif pause_during == "after_url_fragment":
+        task_result = {
+            "task_id": "synthetic-job",
+            "image_urls": [f"{result_url}#preview"],
+        }
     elif pause_during == "after_mixed_batch":
         task_result["items"] = [{"image_urls": [result_url]}]
     elif pause_during == "after_duplicate_expected":
         task_result["items"] = [{"image_paths": [str(source_file)]}]
+    elif pause_during == "after_missing_result":
+        task_result["image_paths"].append(str(tmp_path / "missing-result.png"))
+    elif pause_during == "after_stripped_auth_result":
+        task_result["image_urls"] = [f"{result_url}?token=synthetic-only"]
+    elif pause_during == "after_unrelated_query":
+        task_result = {
+            "task_id": "synthetic-job",
+            "image_urls": [f"{result_url}?variant=expected#preview"],
+        }
     shared_tool = SendMessageToUserTool()
 
     async def resolve(_context, path, **kwargs):
@@ -134,14 +152,23 @@ async def test_native_tool_pause_before_and_after_send(
                     messages = [{"type": "plain", "text": "synthetic acknowledgement"}]
                 elif pause_during == "after_unrelated_image":
                     messages = [{"type": "image", "path": str(unrelated_file)}]
-                elif pause_during in {"after_url", "after_unrelated_url"}:
+                elif pause_during in {
+                    "after_url",
+                    "after_url_fragment",
+                    "after_unrelated_url",
+                    "after_unrelated_query",
+                }:
                     messages = [
                         {
                             "type": "image",
                             "url": (
-                                unrelated_url
-                                if pause_during == "after_unrelated_url"
-                                else result_url
+                                f"{result_url}?variant=other"
+                                if pause_during == "after_unrelated_query"
+                                else (
+                                    unrelated_url
+                                    if pause_during == "after_unrelated_url"
+                                    else result_url
+                                )
                             ),
                         }
                     ]
@@ -196,7 +223,13 @@ async def test_native_tool_pause_before_and_after_send(
             scene="native-guard-probe",
         )
     )
-    if pause_during not in {"after_text", "after_url", "after_unrelated_url"}:
+    if pause_during not in {
+        "after_text",
+        "after_url",
+        "after_url_fragment",
+        "after_unrelated_url",
+        "after_unrelated_query",
+    }:
         await asyncio.wait_for(media_entered.wait(), timeout=5)
     if pause_during == "session":
         services.is_session_enabled.return_value = False
@@ -210,6 +243,7 @@ async def test_native_tool_pause_before_and_after_send(
         "after_complete_batch",
         "after_complete_with_duplicate",
         "after_url",
+        "after_url_fragment",
         "after_mixed_batch",
         "after_duplicate_expected",
     }:

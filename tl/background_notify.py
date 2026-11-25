@@ -243,8 +243,9 @@ def _image_location_key(value: Any) -> tuple[str, str] | None:
         return None
     value = value.strip()
     if value.startswith(("http://", "https://")):
-        # Compare the supplied URL exactly; never fetch it or infer an alias.
-        return "url", value
+        # Agent payload sanitization omits fragments; preserve all query bytes.
+        # Never fetch the URL or infer an alias.
+        return "url", value.split("#", 1)[0]
     path = file_uri_to_path(value)
     if path is None:
         if "://" in value or value.startswith("data:"):
