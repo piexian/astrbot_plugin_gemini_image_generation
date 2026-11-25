@@ -233,3 +233,148 @@ async def test_generation_cancel_does_not_retry_foreign_owner_fencing(tmp_path):
     finally:
         await owner.close()
         await scheduler.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("via_stop_registry", [False, True])
+async def test_generation_cancel_retries_local_worker_claim(
+    tmp_path, monkeypatch, via_stop_registry
+):
+    service, scheduler, store, provider = make_service(tmp_path)
+    original_save = store.save
+    claim_waiting = asyncio.Event()
+    allow_claim = asyncio.Event()
+    cancellation_revisions = []
+    supervisor = None
+
+    async def save(job, *, expected_revision=None):
+        if job.state is JobState.RUNNING:
+            claim_waiting.set()
+            await allow_claim.wait()
+        elif job.state is JobState.CANCELLED:
+            cancellation_revisions.append(expected_revision)
+            if len(cancellation_revisions) == 1:
+                # Commit the real worker's local ownership after stop read QUEUED.
+                allow_claim.set()
+                await asyncio.wait_for(provider.started.wait(), timeout=2)
+        return await original_save(job, expected_revision=expected_revision)
+
+    monkeypatch.setattr(store, "save", save)
+    try:
+        handle = await service.submit(
+            GenerationRequest(prompt="synthetic", source="test")
+        )
+        await asyncio.wait_for(claim_waiting.wait(), timeout=2)
+        queued = await store.get(handle.job_id)
+        assert queued.state is JobState.QUEUED
+        assert queued.owner_id is None
+        if via_stop_registry:
+            monkeypatch.setattr(
+                background_notify,
+                "active_event_registry",
+                SimpleNamespace(register_background_task=lambda event, task: None),
+            )
+            supervisor = await background_notify.register_background_job_stop(
+                SimpleNamespace(is_stopped=lambda: False), service, handle.job_id
+            )
+            supervisor.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await supervisor
+        else:
+            snapshot = await service.cancel_generation(handle.job_id)
+            assert snapshot.state is JobState.CANCELLED
+        saved = await store.get(handle.job_id)
+        assert saved.state is JobState.CANCELLED
+        assert saved.cancel_requested is True
+        assert saved.owner_id == store.owner_id
+        assert saved.fencing_token == store.fencing_token
+        assert cancellation_revisions == [queued.revision, queued.revision + 1]
+        assert saved.revision == queued.revision + 2
+        assert provider.cancelled
+        assert (await service.wait(handle.job_id)).state is JobState.CANCELLED
+    finally:
+        allow_claim.set()
+        provider.release.set()
+        if supervisor is not None and not supervisor.done():
+            supervisor.cancel()
+            await asyncio.gather(supervisor, return_exceptions=True)
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_generation_cancel_rejects_stale_without_revision_progress(
+    tmp_path, monkeypatch
+):
+    service, scheduler, store, _ = make_service(tmp_path)
+    job = Job(
+        job_id="no-progress",
+        request=GenerationRequest(prompt="synthetic", source="test"),
+        state=JobState.QUEUED,
+    )
+    attempts = 0
+
+    async def stale_save(job, *, expected_revision=None):
+        nonlocal attempts
+        attempts += 1
+        raise StaleJobError(
+            "synthetic stale without progress",
+            details={
+                "expected_revision": expected_revision,
+                "current_revision": expected_revision,
+            },
+        )
+
+    try:
+        await store.create(job)
+        monkeypatch.setattr(store, "save", stale_save)
+        with pytest.raises(StaleJobError):
+            await asyncio.wait_for(service.cancel_generation(job.job_id), timeout=2)
+        assert attempts == 1
+        saved = await store.get(job.job_id)
+        assert saved.state is JobState.QUEUED
+        assert saved.revision == 0
+        assert saved.cancel_requested is False
+    finally:
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_generation_cancel_rejects_new_foreign_worker_claim(
+    tmp_path, monkeypatch
+):
+    service, scheduler, store, _ = make_service(tmp_path)
+    owner = SQLiteJobStore(tmp_path, import_legacy=False)
+    job = Job(
+        job_id="foreign-claim",
+        request=GenerationRequest(prompt="synthetic", source="test"),
+        state=JobState.QUEUED,
+    )
+    original_save = store.save
+    attempts = 0
+
+    async def save(job, *, expected_revision=None):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            claimed = await owner.get(job.job_id)
+            claimed.owner_id = owner.owner_id
+            claimed.fencing_token = owner.fencing_token
+            claimed.transition(JobState.RUNNING)
+            await owner.save(claimed)
+        return await original_save(job, expected_revision=expected_revision)
+
+    try:
+        await store.create(job)
+        monkeypatch.setattr(store, "save", save)
+        with pytest.raises(StaleJobError):
+            await asyncio.wait_for(service.cancel_generation(job.job_id), timeout=2)
+        assert attempts == 1
+        saved = await store.get(job.job_id)
+        assert saved.state is JobState.RUNNING
+        assert saved.owner_id == owner.owner_id
+        assert saved.fencing_token == owner.fencing_token
+        assert saved.revision == 1
+        assert saved.cancel_requested is False
+    finally:
+        await owner.close()
+        await scheduler.close()

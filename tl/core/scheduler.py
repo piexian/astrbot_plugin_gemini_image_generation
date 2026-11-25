@@ -1606,26 +1606,34 @@ class JobScheduler:
     async def cancel_generation(self, job_id: str) -> JobSnapshot:
         """停止尚未产出结果的生成；结果落库后保留投递和收尾。"""
 
+        generating_states = {JobState.ACCEPTED, JobState.QUEUED, JobState.RUNNING}
         while True:
             job = await self.store.get(job_id)
             if job is None:
                 raise JobNotFoundError(f"Job 不存在: {job_id}")
-            if job.state not in {
-                JobState.ACCEPTED,
-                JobState.QUEUED,
-                JobState.RUNNING,
-            }:
+            if job.state not in generating_states:
                 return JobSnapshot.from_job(job)
             revision = job.revision
             job.request_cancel()
             job.transition(JobState.CANCELLED)
             try:
                 await self.store.save(job, expected_revision=revision)
-            except StaleJobError as error:
-                if error.details.get("expected_revision") != revision:
-                    # owner fencing 失败不是版本推进，重试不会获得取消权。
+            except StaleJobError:
+                # 本地 worker 在旧快照后首次认领也会先触发 owner 检查，先重读。
+                current = await self.store.get(job_id)
+                if current is None:
+                    raise JobNotFoundError(f"Job 不存在: {job_id}")
+                if current.state not in generating_states:
+                    return JobSnapshot.from_job(current)
+                if current.revision <= revision or (
+                    current.owner_id is not None
+                    and (
+                        current.owner_id != self.store.owner_id
+                        or current.fencing_token != self.store.fencing_token
+                    )
+                ):
+                    # 未推进或 owner/token 不属于当前 JobStore 时不能重试取消。
                     raise
-                # 结果或其他状态更新可能先落库，重读后再判断是否仍在生成。
                 continue
             task = self._tasks.get(job_id)
             if task is not None and not task.done():
