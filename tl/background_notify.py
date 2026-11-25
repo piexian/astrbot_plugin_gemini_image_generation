@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import copy
 import json
 import time
@@ -190,7 +191,9 @@ async def _background_delivery_allowed(
         if astrbot_compat.has_modern_session_config():
             if context is None:
                 return False
-            cfg = context.get_config(umo=umo) or {}
+            # Background tasks can inherit the original turn's config snapshot.
+            # Resolve the explicit session's current profile and overrides instead.
+            cfg = contextvars.Context().run(context.get_config, umo=umo) or {}
             platform_settings = cfg.get("platform_settings") or {}
             blacklist = {
                 str(item).strip()
