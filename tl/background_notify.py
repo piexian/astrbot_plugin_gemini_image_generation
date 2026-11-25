@@ -6,6 +6,7 @@ import asyncio
 import copy
 import json
 import time
+from pathlib import Path
 from typing import Any
 
 from astrbot.api import logger
@@ -13,6 +14,7 @@ from astrbot.api import logger
 from . import astrbot_compat
 from .core.errors import redact_text
 from .core.states import TERMINAL_STATES, JobState
+from .file_uri import file_uri_to_path
 from .llm_output import sanitize_task_result
 from .plugin_config import get_session_tool_timeout
 
@@ -236,11 +238,67 @@ async def _background_delivery_allowed(
     return not _event_stopped(event)
 
 
+def _image_location_key(value: Any) -> tuple[str, str] | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    value = value.strip()
+    if value.startswith(("http://", "https://")):
+        # Compare the supplied URL exactly; never fetch it or infer an alias.
+        return "url", value
+    path = file_uri_to_path(value)
+    if path is None:
+        if "://" in value or value.startswith("data:"):
+            return None
+        path = Path(value)
+    try:
+        # Native Image.fromFileSystem uses the same local path normalization.
+        return "path", str(path.resolve(strict=False))
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+class _ImageDeliveryReceipt:
+    """Match all distinct result locations, including nested batch items."""
+
+    def __init__(self, task_result: dict[str, Any]):
+        self.expected: set[tuple[str, str]] = set()
+        self.sent: set[tuple[str, str]] = set()
+        self._collect(task_result)
+
+    def _collect(self, result: Any) -> None:
+        if not isinstance(result, dict):
+            return
+        for field in ("image_paths", "image_urls"):
+            values = result.get(field)
+            if isinstance(values, (list, tuple)):
+                for value in values:
+                    if (key := _image_location_key(value)) is not None:
+                        self.expected.add(key)
+        items = result.get("items")
+        if isinstance(items, (list, tuple)):
+            for item in items:
+                self._collect(item)
+
+    def record(self, message: Any) -> None:
+        for part in getattr(message, "chain", None) or ():
+            if getattr(part, "type", None) != "Image":
+                continue
+            key = _image_location_key(
+                getattr(part, "url", None) or getattr(part, "file", None)
+            )
+            if key in self.expected:
+                self.sent.add(key)
+
+    @property
+    def complete(self) -> bool:
+        return bool(self.expected) and self.expected <= self.sent
+
+
 class _BackgroundSendContext:
     """Delegate only this notification tool's final send to a checked boundary."""
 
     def __init__(
-        self, context: Any, event: Any, receipt: dict[str, bool] | None = None
+        self, context: Any, event: Any, receipt: _ImageDeliveryReceipt | None = None
     ):
         self._context = context
         self._event = event
@@ -269,15 +327,12 @@ class _BackgroundSendContext:
             and target == self._event.unified_msg_origin
             and self._receipt is not None
         ):
-            self._receipt["image_sent"] |= any(
-                getattr(part, "type", None) == "Image"
-                for part in (getattr(message, "chain", None) or ())
-            )
+            self._receipt.record(message)
         return sent
 
 
 def _guard_background_send_tool(
-    tool: Any, event: Any, receipt: dict[str, bool] | None = None
+    tool: Any, event: Any, receipt: _ImageDeliveryReceipt | None = None
 ) -> Any:
     """Keep the shared builtin unchanged; the copied tool gets a local context."""
     if getattr(tool, "handler", None) is not None:
@@ -473,12 +528,12 @@ async def notify_llm_background_result(
             raise RuntimeError("主 Agent 构建失败")
         # Core may re-add the builtin while building; wrap the final request tool.
         send_tool = req.func_tool.get_tool("send_message_to_user")
-        receipt = {"image_sent": False}
+        receipt = _ImageDeliveryReceipt(task_result)
         req.func_tool.add_tool(_guard_background_send_tool(send_tool, event, receipt))
 
         def delivered() -> bool:
             if require_send_tool:
-                return receipt["image_sent"]
+                return receipt.complete
             return bool(getattr(cron_event, "_has_send_oper", False))
 
         if not await _background_delivery_allowed(

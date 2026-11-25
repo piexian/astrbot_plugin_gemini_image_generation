@@ -4,6 +4,8 @@ import types
 from pathlib import Path
 from types import SimpleNamespace
 
+from tl.file_uri import file_uri_to_path
+
 
 def _module(name, *, package=False, **attrs):
     module = types.ModuleType(name)
@@ -59,6 +61,10 @@ def _load_background_notify(
             ASTRBOT_VERSION=None,
             has_background_stop_registry=lambda: stop_registry,
         ),
+    )
+    add(
+        f"{package}.file_uri",
+        _module(f"{package}.file_uri", file_uri_to_path=file_uri_to_path),
     )
     add(
         f"{package}.llm_output",
