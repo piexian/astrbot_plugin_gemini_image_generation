@@ -491,21 +491,18 @@ async def notify_llm_background_result(
             if not await _background_delivery_allowed(
                 event, context=context, require_llm=True
             ):
-                if delivered():
+                if getattr(cron_event, "_has_send_oper", False):
                     break
                 return False
 
-        if not delivered():
-            logger.warning(f"[{scene}] 后台通知 agent 未确认当前会话的结果发送")
-            return False
         await persist_agent_history(
             context.conversation_manager,
             event=cron_event,
             req=req,
             summary_note=f"[BackgroundTask] {notice}",
         )
-        if not getattr(cron_event, "_has_send_oper", False):
-            logger.warning(f"[{scene}] 后台通知 agent 未成功调用发送工具")
+        if not delivered():
+            logger.warning(f"[{scene}] 后台通知 agent 未确认当前会话的结果发送")
             logger.warning(
                 f"[{scene}] 后台回灌未触发发送工具: task_id={task_id}, umo={umo}"
             )

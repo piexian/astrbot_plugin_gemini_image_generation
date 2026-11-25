@@ -155,7 +155,10 @@ async def test_native_tool_pause_before_and_after_send(
         assert await callback is False
         core.send_message.assert_awaited_once()
         manager.record_delivery.assert_not_awaited()
-        persist.assert_not_awaited()
+        if pause_during == "after_text":
+            persist.assert_awaited_once()
+        else:
+            persist.assert_not_awaited()
     else:
         assert await callback is False
         assert captured["tool_result"].startswith("error:")
