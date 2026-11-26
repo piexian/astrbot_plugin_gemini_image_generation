@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import copy
+import inspect
 import json
 import time
 from pathlib import Path
@@ -14,7 +15,7 @@ from urllib.parse import urlsplit, urlunsplit
 from astrbot.api import logger
 
 from . import astrbot_compat
-from .core.errors import redact_text
+from .core.errors import JobNotFoundError, redact_text
 from .core.states import TERMINAL_STATES, JobState
 from .file_uri import file_uri_to_path
 from .llm_output import sanitize_task_result
@@ -149,20 +150,36 @@ def _mark_event_stopped(event: Any) -> None:
 
 
 async def cancel_unsettled_job(service: Any, job_id: str) -> bool:
-    """取消尚未产出结果的前台 Job；结果已落地时保留收尾与历史记录。"""
+    """取消尚未产出结果的前台 Job；结果已落地或任务不存在时保留收尾与历史记录。"""
     get_status = getattr(service, "get_status", None)
     if callable(get_status):
         try:
             snapshot = await asyncio.shield(get_status(job_id))
         except Exception:
-            snapshot = None
+            return False
+        if snapshot is None:
+            return False
         state = getattr(snapshot, "state", None)
         if state in TERMINAL_STATES or state in {
             JobState.RESULT_READY,
             JobState.DELIVERY_PENDING,
         }:
             return False
-    await asyncio.shield(service.cancel(job_id))
+    cancel = getattr(service, "cancel", None)
+    if not callable(cancel):
+        return False
+    kwargs = (
+        {"preserve_settled": True}
+        if "preserve_settled" in inspect.signature(cancel).parameters
+        else {}
+    )
+    try:
+        result = await asyncio.shield(cancel(job_id, **kwargs))
+    except JobNotFoundError:
+        return False
+    result_state = getattr(result, "state", None)
+    if isinstance(result_state, JobState):
+        return result_state is JobState.CANCELLED
     return True
 
 

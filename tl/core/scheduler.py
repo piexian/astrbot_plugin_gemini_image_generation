@@ -1603,18 +1603,33 @@ class JobScheduler:
             job.error_message,
         )
 
-    async def cancel(self, job_id: str) -> JobSnapshot:
-        job = await self.store.get(job_id)
-        if job is None:
-            raise JobNotFoundError(f"Job 不存在: {job_id}")
-        task = self._tasks.get(job_id)
-        if job.state not in TERMINAL_STATES:
+    async def cancel(
+        self, job_id: str, *, preserve_settled: bool = False
+    ) -> JobSnapshot:
+        protected = (
+            TERMINAL_STATES
+            | frozenset({JobState.RESULT_READY, JobState.DELIVERY_PENDING})
+            if preserve_settled
+            else TERMINAL_STATES
+        )
+        while True:
+            job = await self.store.get(job_id)
+            if job is None:
+                raise JobNotFoundError(f"Job 不存在: {job_id}")
+            if job.state in protected:
+                return JobSnapshot.from_job(job)
+            task = self._tasks.get(job_id)
             job.request_cancel()
             try:
                 job.transition(JobState.CANCELLED)
                 job = await self.store.save(job)
             except StaleJobError:
-                job = await self.store.get(job_id)
+                if not preserve_settled:
+                    if task is not None and not task.done():
+                        task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
+                    break
+                continue
             if task is not None and not task.done():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
@@ -1623,6 +1638,7 @@ class JobScheduler:
                 job_id,
                 task is not None,
             )
+            break
         job = await self.store.get(job_id)
         if job is None:
             raise JobNotFoundError(f"Job 不存在: {job_id}")

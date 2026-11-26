@@ -1616,3 +1616,95 @@ async def test_keyword_batch_items_carry_injected_refs(make_env):
     (item,) = prepared
     assert item["reference_images"] == ["/data/references/ref-aaaaaaaaaaaa.png"]
     assert item["prompt"].endswith("转为水彩风格")
+
+
+@pytest.mark.asyncio
+async def test_cancel_preserve_settled_keeps_result_ready_observer_intact(make_env):
+    observer_entered = asyncio.Event()
+    observer_release = asyncio.Event()
+
+    class BlockingObserver:
+        async def job_result(self, job, result):
+            observer_entered.set()
+            await observer_release.wait()
+
+    env = await make_env(service_options={"observers": [BlockingObserver()]})
+    req = await env.plugin.image_generator.prepare_v2_request(
+        event=new_event(),
+        v2_service=env.service,
+        prompt="a cat",
+        reference_images=[],
+        avatar_reference=[],
+        deadline_seconds=30,
+    )
+    handle = await env.service.submit(req)
+    await asyncio.wait_for(observer_entered.wait(), timeout=2)
+
+    snapshot = await env.service.cancel(handle.job_id, preserve_settled=True)
+    assert snapshot.state is JobState.RESULT_READY
+
+    observer_release.set()
+    result = await env.service.wait(handle.job_id, timeout=2)
+    assert result.state is JobState.SUCCEEDED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["single", "batch"])
+async def test_background_record_survives_cancellation_during_create(
+    make_env, notifier, kind
+):
+    gen_gate = asyncio.Event()
+    client = GatedClient(gate=gen_gate)
+    env = await make_env(client, foreground=0, candidates=batch_candidates())
+
+    create_entered = asyncio.Event()
+    create_release = asyncio.Event()
+    original_create = env.manager.create
+
+    async def gated_create(*args, **kwargs):
+        create_entered.set()
+        await create_release.wait()
+        return await original_create(*args, **kwargs)
+
+    env.manager.create = gated_create
+    event = new_event()
+    extras: dict[str, object] = {}
+    event.get_extra = extras.get
+    event.set_extra = extras.__setitem__
+
+    coro = (
+        call(env, event=event)
+        if kind == "single"
+        else call_batch(
+            env,
+            event=event,
+            tasks=[
+                {"name": "a", "prompt": "a", "image_count": 1, "provider": "legacy"}
+            ],
+        )
+    )
+    tool_task = asyncio.create_task(coro)
+    await asyncio.wait_for(create_entered.wait(), timeout=2)
+
+    tool_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await tool_task
+
+    create_release.set()
+    gen_gate.set()
+
+    async def settled():
+        jobs = await stored_jobs(env)
+        records = list(env.manager._records.values())
+        return (
+            bool(jobs)
+            and all(job.state is JobState.SUCCEEDED for job in jobs)
+            and len(records) == 1
+            and records[0]["status"] == "succeeded"
+        )
+
+    await eventually(settled)
+    assert notifier.results == []
+    record = next(iter(env.manager._records.values()))
+    assert record["kind"] == kind
+    assert "关闭回灌" in record["message"]

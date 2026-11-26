@@ -98,8 +98,10 @@ class GenerationService:
 
         return self._scheduler.result_wait_timeout(deadline_seconds)
 
-    async def cancel(self, job_id: str) -> JobSnapshot:
-        return await self._scheduler.cancel(job_id)
+    async def cancel(
+        self, job_id: str, *, preserve_settled: bool = False
+    ) -> JobSnapshot:
+        return await self._scheduler.cancel(job_id, preserve_settled=preserve_settled)
 
     async def get_status(self, job_id: str) -> JobSnapshot | None:
         return await self._scheduler.get_status(job_id)

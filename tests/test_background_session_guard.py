@@ -288,11 +288,15 @@ async def test_background_job_stop_disables_callback_without_cancelling_generati
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("state", "should_cancel"),
-    [(JobState.RUNNING, True), (JobState.RESULT_READY, False)],
+    ("snapshot", "should_cancel"),
+    [
+        (SimpleNamespace(state=JobState.RUNNING), True),
+        (SimpleNamespace(state=JobState.RESULT_READY), False),
+        (None, False),
+    ],
 )
 async def test_wait_foreground_job_cancels_only_before_result_ready(
-    monkeypatch, state, should_cancel
+    monkeypatch, snapshot, should_cancel
 ):
     signal = asyncio.Event()
     extras = {"_background_stop_signal": signal}
@@ -314,7 +318,7 @@ async def test_wait_foreground_job_cancels_only_before_result_ready(
 
     service = SimpleNamespace(
         wait=wait,
-        get_status=AsyncMock(return_value=SimpleNamespace(state=state)),
+        get_status=AsyncMock(return_value=snapshot),
         cancel=AsyncMock(),
     )
     pending = asyncio.create_task(
@@ -326,7 +330,10 @@ async def test_wait_foreground_job_cancels_only_before_result_ready(
     with pytest.raises(background_notify.ForegroundStopped):
         await pending
 
-    assert service.cancel.await_count == int(should_cancel)
+    if should_cancel:
+        service.cancel.assert_awaited_once_with("fg-job")
+    else:
+        service.cancel.assert_not_awaited()
 
 
 @pytest.mark.asyncio
