@@ -312,3 +312,46 @@ async def test_notify_keeps_astrbot_429_fallback(monkeypatch, pause_after_send):
         summary_note="[BackgroundTask] 旧版通知",
     )
     bump.assert_awaited_once_with(plugin, task_result, scene="test-429")
+
+
+@pytest.mark.parametrize(
+    "raw_url",
+    [
+        "https://images.example.invalid/generated.png?",
+        "HTTP://images.example.invalid/generated.png",
+        "HTTPS://images.example.invalid/generated.png?#preview",
+        "https://images.example.invalid/generated.png?variant=a%2Fb&empty=#preview",
+    ],
+)
+def test_image_receipt_matches_sanitized_url_serialization(raw_url):
+    result = {"image_urls": [raw_url]}
+    urls = background_notify.sanitize_task_result(result)["image_urls"]
+    assert len(urls) == 1
+    receipt = background_notify._ImageDeliveryReceipt(result)
+    receipt.record(SimpleNamespace(chain=[SimpleNamespace(type="Image", url=urls[0])]))
+    assert receipt.complete is True
+
+
+@pytest.mark.parametrize(
+    "original_url,sent_url",
+    [
+        (
+            "https://images.example.invalid/generated.png?variant=a%2Fb",
+            "https://images.example.invalid/generated.png?variant=a/b",
+        ),
+        (
+            "https://images.example.invalid/generated.png?variant=expected",
+            "https://images.example.invalid/generated.png?variant=other",
+        ),
+        (
+            "HTTP://images.example.invalid/generated.png?token=synthetic-only",
+            "http://images.example.invalid/generated.png",
+        ),
+    ],
+)
+def test_image_receipt_keeps_nonempty_query_exact(original_url, sent_url):
+    result = {"image_urls": [original_url]}
+    receipt = background_notify._ImageDeliveryReceipt(result)
+    assert len(receipt.expected) == 1
+    receipt.record(SimpleNamespace(chain=[SimpleNamespace(type="Image", url=sent_url)]))
+    assert receipt.complete is False

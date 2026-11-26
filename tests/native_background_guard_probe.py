@@ -44,6 +44,8 @@ from tl.core.states import JobState
         "after_complete_with_duplicate",
         "after_url",
         "after_url_fragment",
+        "after_url_empty_query",
+        "after_url_upper_scheme",
         "after_unrelated_url",
         "after_mixed_batch",
         "after_duplicate_expected",
@@ -111,6 +113,13 @@ async def test_native_tool_pause_before_and_after_send(
             "task_id": "synthetic-job",
             "image_urls": [f"{result_url}#preview"],
         }
+    elif pause_during == "after_url_empty_query":
+        task_result = {"task_id": "synthetic-job", "image_urls": [f"{result_url}?"]}
+    elif pause_during == "after_url_upper_scheme":
+        task_result = {
+            "task_id": "synthetic-job",
+            "image_urls": ["HTTP://images.example.invalid/generated.png"],
+        }
     elif pause_during == "after_mixed_batch":
         task_result["items"] = [{"image_urls": [result_url]}]
     elif pause_during == "after_duplicate_expected":
@@ -155,6 +164,8 @@ async def test_native_tool_pause_before_and_after_send(
                 elif pause_during in {
                     "after_url",
                     "after_url_fragment",
+                    "after_url_empty_query",
+                    "after_url_upper_scheme",
                     "after_unrelated_url",
                     "after_unrelated_query",
                 }:
@@ -162,7 +173,12 @@ async def test_native_tool_pause_before_and_after_send(
                         {
                             "type": "image",
                             "url": (
-                                f"{result_url}?variant=other"
+                                background_notify.sanitize_task_result(task_result)[
+                                    "image_urls"
+                                ][0]
+                                if pause_during
+                                in {"after_url_empty_query", "after_url_upper_scheme"}
+                                else f"{result_url}?variant=other"
                                 if pause_during == "after_unrelated_query"
                                 else (
                                     unrelated_url
@@ -227,6 +243,8 @@ async def test_native_tool_pause_before_and_after_send(
         "after_text",
         "after_url",
         "after_url_fragment",
+        "after_url_empty_query",
+        "after_url_upper_scheme",
         "after_unrelated_url",
         "after_unrelated_query",
     }:
@@ -244,6 +262,8 @@ async def test_native_tool_pause_before_and_after_send(
         "after_complete_with_duplicate",
         "after_url",
         "after_url_fragment",
+        "after_url_empty_query",
+        "after_url_upper_scheme",
         "after_mixed_batch",
         "after_duplicate_expected",
     }:

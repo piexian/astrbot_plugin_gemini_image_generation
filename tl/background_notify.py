@@ -8,6 +8,7 @@ import json
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from astrbot.api import logger
 
@@ -242,10 +243,18 @@ def _image_location_key(value: Any) -> tuple[str, str] | None:
     if not isinstance(value, str) or not value.strip():
         return None
     value = value.strip()
-    if value.startswith(("http://", "https://")):
-        # Agent payload sanitization omits fragments; preserve all query bytes.
-        # Never fetch the URL or infer an alias.
-        return "url", value.split("#", 1)[0]
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return None
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        # Use the Agent payload's parsing/serialization rules for scheme,
+        # empty query markers and fragments, preserving nonempty query bytes.
+        # Keep even authentication URLs in the original expected set: payload
+        # sanitization may omit them, but that must not shrink delivery scope.
+        return "url", urlunsplit(
+            (parsed.scheme, parsed.netloc, parsed.path, parsed.query, "")
+        )
     path = file_uri_to_path(value)
     if path is None:
         if "://" in value or value.startswith("data:"):
