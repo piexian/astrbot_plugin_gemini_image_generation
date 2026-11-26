@@ -314,44 +314,84 @@ async def test_notify_keeps_astrbot_429_fallback(monkeypatch, pause_after_send):
     bump.assert_awaited_once_with(plugin, task_result, scene="test-429")
 
 
-@pytest.mark.parametrize(
-    "raw_url",
-    [
-        "https://images.example.invalid/generated.png?",
-        "HTTP://images.example.invalid/generated.png",
-        "HTTPS://images.example.invalid/generated.png?#preview",
-        "https://images.example.invalid/generated.png?variant=a%2Fb&empty=#preview",
-    ],
-)
-def test_image_receipt_matches_sanitized_url_serialization(raw_url):
-    result = {"image_urls": [raw_url]}
-    urls = background_notify.sanitize_task_result(result)["image_urls"]
-    assert len(urls) == 1
+def _image_msg(*, url="", file=""):
+    return SimpleNamespace(chain=[SimpleNamespace(type="Image", url=url, file=file)])
+
+
+def test_image_receipt_matches_sanitized_urls_and_requires_full_batch():
+    result = {
+        "items": [
+            {"image_urls": ["HTTP://images.example.invalid/a.png?#preview"]},
+            {
+                "image_urls": [
+                    "https://images.example.invalid/b.png?variant=a%2Fb&empty=#preview"
+                ]
+            },
+        ]
+    }
+    sanitized_items = background_notify.sanitize_task_result(result)["items"]
+    first_url = sanitized_items[0]["image_urls"][0]
+    second_url = sanitized_items[1]["image_urls"][0]
+
     receipt = background_notify._ImageDeliveryReceipt(result)
-    receipt.record(SimpleNamespace(chain=[SimpleNamespace(type="Image", url=urls[0])]))
+    receipt.record(_image_msg(url="https://images.example.invalid/other.png"))
+    receipt.record(_image_msg(url=first_url))
+    receipt.record(_image_msg(url=first_url))
+    assert receipt.complete is False
+
+    receipt.record(_image_msg(url=second_url))
     assert receipt.complete is True
 
 
-@pytest.mark.parametrize(
-    "original_url,sent_url",
-    [
-        (
-            "https://images.example.invalid/generated.png?variant=a%2Fb",
-            "https://images.example.invalid/generated.png?variant=a/b",
-        ),
-        (
-            "https://images.example.invalid/generated.png?variant=expected",
-            "https://images.example.invalid/generated.png?variant=other",
-        ),
-        (
-            "HTTP://images.example.invalid/generated.png?token=synthetic-only",
-            "http://images.example.invalid/generated.png",
-        ),
-    ],
-)
-def test_image_receipt_keeps_nonempty_query_exact(original_url, sent_url):
-    result = {"image_urls": [original_url]}
-    receipt = background_notify._ImageDeliveryReceipt(result)
-    assert len(receipt.expected) == 1
-    receipt.record(SimpleNamespace(chain=[SimpleNamespace(type="Image", url=sent_url)]))
+def test_image_receipt_rejects_query_mismatch_and_unmatchable_items():
+    query_receipt = background_notify._ImageDeliveryReceipt(
+        {"image_urls": ["https://images.example.invalid/gen.png?variant=a%2Fb"]}
+    )
+    query_receipt.record(
+        _image_msg(url="https://images.example.invalid/gen.png?variant=a/b")
+    )
+    assert query_receipt.complete is False
+
+    valid_url = "https://images.example.invalid/first.png"
+    for blocked in (
+        "HTTP://images.example.invalid/auth.png?token=synthetic-only",
+        "https:///hostless.png",
+        "DATA:image/png;base64,aGVsbG8=",
+    ):
+        receipt = background_notify._ImageDeliveryReceipt(
+            {"items": [{"image_urls": [valid_url]}, {"image_urls": [blocked]}]}
+        )
+        assert len(receipt.expected) == 2
+        receipt.record(_image_msg(url=valid_url))
+        assert receipt.complete is False
+
+
+@pytest.mark.asyncio
+async def test_background_send_context_records_receipt_for_current_session_only():
+    valid_url = "https://images.example.invalid/generated.png"
+    receipt = background_notify._ImageDeliveryReceipt({"image_urls": [valid_url]})
+    source = SimpleNamespace(unified_msg_origin=_UMO, is_stopped=lambda: False)
+    send_results = iter([True, False, True])
+
+    async def mutating_send(_session, message):
+        for part in message.chain:
+            part.file = "base64://mutated"
+            part.url = "https://cdn.example.invalid/uploaded.png"
+        return next(send_results)
+
+    core = SimpleNamespace(send_message=AsyncMock(side_effect=mutating_send))
+    boundary = background_notify._BackgroundSendContext(core, source, receipt)
+
+    assert (
+        await boundary.send_message(
+            "test:FriendMessage:other", _image_msg(file=valid_url)
+        )
+        is True
+    )
     assert receipt.complete is False
+
+    assert await boundary.send_message(_UMO, _image_msg(file=valid_url)) is False
+    assert receipt.complete is False
+
+    assert await boundary.send_message(_UMO, _image_msg(file=valid_url)) is True
+    assert receipt.complete is True

@@ -257,7 +257,7 @@ def _image_location_key(value: Any) -> tuple[str, str] | None:
         )
     path = file_uri_to_path(value)
     if path is None:
-        if "://" in value or value.startswith("data:"):
+        if "://" in value or value.lower().startswith("data:"):
             return None
         path = Path(value)
     try:
@@ -282,14 +282,22 @@ class _ImageDeliveryReceipt:
             values = result.get(field)
             if isinstance(values, (list, tuple)):
                 for value in values:
-                    if (key := _image_location_key(value)) is not None:
-                        self.expected.add(key)
+                    if not isinstance(value, str) or not value.strip():
+                        continue
+                    stripped = value.strip()
+                    key = _image_location_key(stripped)
+                    # Unparseable or hostless original locations must still block
+                    # completion rather than shrinking the expected delivery set.
+                    self.expected.add(
+                        key if key is not None else ("unmatched", stripped)
+                    )
         items = result.get("items")
         if isinstance(items, (list, tuple)):
             for item in items:
                 self._collect(item)
 
-    def record(self, message: Any) -> None:
+    def extract_keys(self, message: Any) -> set[tuple[str, str]]:
+        matched: set[tuple[str, str]] = set()
         for part in getattr(message, "chain", None) or ():
             if getattr(part, "type", None) != "Image":
                 continue
@@ -297,7 +305,11 @@ class _ImageDeliveryReceipt:
                 getattr(part, "url", None) or getattr(part, "file", None)
             )
             if key in self.expected:
-                self.sent.add(key)
+                matched.add(key)
+        return matched
+
+    def record(self, message: Any) -> None:
+        self.sent.update(self.extract_keys(message))
 
     @property
     def complete(self) -> bool:
@@ -331,13 +343,14 @@ class _BackgroundSendContext:
                 target_umo=target,
             ):
                 return False
+        matched_keys = (
+            self._receipt.extract_keys(message)
+            if target == self._event.unified_msg_origin and self._receipt is not None
+            else None
+        )
         sent = await self._context.send_message(session, message, *args, **kwargs)
-        if (
-            sent
-            and target == self._event.unified_msg_origin
-            and self._receipt is not None
-        ):
-            self._receipt.record(message)
+        if sent and self._receipt is not None and matched_keys:
+            self._receipt.sent.update(matched_keys)
         return sent
 
 

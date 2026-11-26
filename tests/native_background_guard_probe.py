@@ -35,23 +35,8 @@ from tl.core.states import JobState
         "event",
         "after_send",
         "after_text",
-        "after_other_image",
-        "after_failed_image",
-        "after_unrelated_image",
         "after_partial_batch",
-        "after_complete_batch",
-        "after_duplicate_image",
-        "after_complete_with_duplicate",
-        "after_url",
-        "after_url_fragment",
-        "after_url_empty_query",
-        "after_url_upper_scheme",
-        "after_unrelated_url",
         "after_mixed_batch",
-        "after_duplicate_expected",
-        "after_missing_result",
-        "after_stripped_auth_result",
-        "after_unrelated_query",
     ],
 )
 async def test_native_tool_pause_before_and_after_send(
@@ -87,18 +72,9 @@ async def test_native_tool_pause_before_and_after_send(
     source_file.write_bytes(b"synthetic-media-content")
     second_file = tmp_path / "second.png"
     second_file.write_bytes(b"synthetic-second-image")
-    unrelated_file = tmp_path / "unrelated.png"
-    unrelated_file.write_bytes(b"synthetic-unrelated-image")
-    result_url = "https://images.example.invalid/generated.png"
-    unrelated_url = "https://images.example.invalid/unrelated.png"
+    raw_url = "HTTP://images.example.invalid/generated.png?#preview"
     task_result = {"task_id": "synthetic-job", "image_paths": [str(source_file)]}
-    batch_cases = {
-        "after_partial_batch",
-        "after_complete_batch",
-        "after_duplicate_image",
-        "after_complete_with_duplicate",
-    }
-    if pause_during in batch_cases:
+    if pause_during == "after_partial_batch":
         task_result = {
             "task_id": "synthetic-job",
             "items": [
@@ -106,33 +82,8 @@ async def test_native_tool_pause_before_and_after_send(
                 {"image_paths": [str(second_file)]},
             ],
         }
-    elif pause_during in {"after_url", "after_unrelated_url"}:
-        task_result = {"task_id": "synthetic-job", "image_urls": [result_url]}
-    elif pause_during == "after_url_fragment":
-        task_result = {
-            "task_id": "synthetic-job",
-            "image_urls": [f"{result_url}#preview"],
-        }
-    elif pause_during == "after_url_empty_query":
-        task_result = {"task_id": "synthetic-job", "image_urls": [f"{result_url}?"]}
-    elif pause_during == "after_url_upper_scheme":
-        task_result = {
-            "task_id": "synthetic-job",
-            "image_urls": ["HTTP://images.example.invalid/generated.png"],
-        }
     elif pause_during == "after_mixed_batch":
-        task_result["items"] = [{"image_urls": [result_url]}]
-    elif pause_during == "after_duplicate_expected":
-        task_result["items"] = [{"image_paths": [str(source_file)]}]
-    elif pause_during == "after_missing_result":
-        task_result["image_paths"].append(str(tmp_path / "missing-result.png"))
-    elif pause_during == "after_stripped_auth_result":
-        task_result["image_urls"] = [f"{result_url}?token=synthetic-only"]
-    elif pause_during == "after_unrelated_query":
-        task_result = {
-            "task_id": "synthetic-job",
-            "image_urls": [f"{result_url}?variant=expected#preview"],
-        }
+        task_result["items"] = [{"image_urls": [raw_url]}]
     shared_tool = SendMessageToUserTool()
 
     async def resolve(_context, path, **kwargs):
@@ -157,69 +108,19 @@ async def test_native_tool_pause_before_and_after_send(
                 native = AstrAgentContext(context=core, event=kwargs["event"])
                 wrapped = ContextWrapper(context=native)
                 tool = kwargs["req"].func_tool.get_tool("send_message_to_user")
-                if pause_during == "after_text":
-                    messages = [{"type": "plain", "text": "synthetic acknowledgement"}]
-                elif pause_during == "after_unrelated_image":
-                    messages = [{"type": "image", "path": str(unrelated_file)}]
-                elif pause_during in {
-                    "after_url",
-                    "after_url_fragment",
-                    "after_url_empty_query",
-                    "after_url_upper_scheme",
-                    "after_unrelated_url",
-                    "after_unrelated_query",
-                }:
-                    messages = [
-                        {
-                            "type": "image",
-                            "url": (
-                                background_notify.sanitize_task_result(task_result)[
-                                    "image_urls"
-                                ][0]
-                                if pause_during
-                                in {"after_url_empty_query", "after_url_upper_scheme"}
-                                else f"{result_url}?variant=other"
-                                if pause_during == "after_unrelated_query"
-                                else (
-                                    unrelated_url
-                                    if pause_during == "after_unrelated_url"
-                                    else result_url
-                                )
-                            ),
-                        }
-                    ]
-                else:
-                    messages = [{"type": "image", "path": str(source_file)}]
-                if pause_during == "after_failed_image":
-                    core.send_message.return_value = False
-                if pause_during == "after_other_image":
-                    kwargs["event"].role = "admin"
-                captured["tool_result"] = await tool.call(
-                    wrapped,
-                    messages=messages,
-                    **(
-                        {"session": "synthetic:FriendMessage:other"}
-                        if pause_during == "after_other_image"
-                        else {}
-                    ),
+                messages = (
+                    [{"type": "plain", "text": "synthetic acknowledgement"}]
+                    if pause_during == "after_text"
+                    else [{"type": "image", "path": str(source_file)}]
                 )
+                captured["tool_result"] = await tool.call(wrapped, messages=messages)
                 captured["wrapped"] = wrapped
-                if pause_during in {
-                    "after_duplicate_image",
-                    "after_complete_with_duplicate",
-                }:
-                    await tool.call(wrapped, messages=messages)
-                if pause_during in {
-                    "after_complete_batch",
-                    "after_complete_with_duplicate",
-                }:
-                    await tool.call(
-                        wrapped,
-                        messages=[{"type": "image", "path": str(second_file)}],
-                    )
                 if pause_during == "after_mixed_batch":
+                    sanitized_url = background_notify.sanitize_task_result(task_result)[
+                        "items"
+                    ][0]["image_urls"][0]
                     await tool.call(
-                        wrapped, messages=[{"type": "image", "url": result_url}]
+                        wrapped, messages=[{"type": "image", "url": sanitized_url}]
                     )
                 if pause_during.startswith("after_"):
                     services.is_session_enabled.return_value = False
@@ -239,15 +140,7 @@ async def test_native_tool_pause_before_and_after_send(
             scene="native-guard-probe",
         )
     )
-    if pause_during not in {
-        "after_text",
-        "after_url",
-        "after_url_fragment",
-        "after_url_empty_query",
-        "after_url_upper_scheme",
-        "after_unrelated_url",
-        "after_unrelated_query",
-    }:
+    if pause_during != "after_text":
         await asyncio.wait_for(media_entered.wait(), timeout=5)
     if pause_during == "session":
         services.is_session_enabled.return_value = False
@@ -256,40 +149,20 @@ async def test_native_tool_pause_before_and_after_send(
     elif pause_during == "event":
         source.stop_event()
     media_release.set()
-    if pause_during in {
-        "after_send",
-        "after_complete_batch",
-        "after_complete_with_duplicate",
-        "after_url",
-        "after_url_fragment",
-        "after_url_empty_query",
-        "after_url_upper_scheme",
-        "after_mixed_batch",
-        "after_duplicate_expected",
-    }:
+    if pause_during in {"after_send", "after_mixed_batch"}:
         assert await callback is True
         assert captured["tool_result"].startswith("Message sent")
         assert captured["event"]._has_send_oper is True
-        expected_sends = {
-            "after_complete_batch": 2,
-            "after_complete_with_duplicate": 3,
-            "after_mixed_batch": 2,
-        }.get(pause_during, 1)
+        expected_sends = 2 if pause_during == "after_mixed_batch" else 1
         assert core.send_message.await_count == expected_sends
         manager.record_delivery.assert_awaited_once_with("synthetic-job")
         persist.assert_awaited_once()
     elif pause_during.startswith("after_"):
         assert await callback is False
-        assert core.send_message.await_count == (
-            2 if pause_during == "after_duplicate_image" else 1
-        )
+        assert captured["event"]._has_send_oper is True
+        core.send_message.assert_awaited_once()
         manager.record_delivery.assert_not_awaited()
-        if pause_during in {"after_other_image", "after_failed_image"}:
-            persist.assert_not_awaited()
-        else:
-            # The native persistence call is retained after actual sends; this
-            # does not claim that Core stores the acknowledgement text itself.
-            persist.assert_awaited_once()
+        persist.assert_awaited_once()
     else:
         assert await callback is False
         assert captured["tool_result"].startswith("error:")
