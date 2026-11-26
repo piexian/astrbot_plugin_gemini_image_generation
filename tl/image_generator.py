@@ -10,6 +10,11 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from astrbot.api import logger
 
+from .background_notify import (
+    ForegroundStopped,
+    cancel_unsettled_job,
+    wait_foreground_job,
+)
 from .core.errors import (
     CoreError,
     QueueFullError,
@@ -191,6 +196,7 @@ class ImageGenerator:
             requested_provider=kwargs.get("requested_provider"),
             requested_model=kwargs.get("requested_model"),
             image_count=kwargs.get("image_count", 1),
+            event=event,
         )
 
     def _reset_request_stats(self) -> None:
@@ -458,22 +464,25 @@ class ImageGenerator:
         requested_provider: str | None = None,
         requested_model: str | None = None,
         image_count: int = 1,
+        event: Any = None,
     ) -> tuple[bool, tuple[list[str], list[str], str | None, str | None] | str]:
         """v2 第二阶段：等待 Job 终态并转换为旧调用方兼容结果。"""
         deadline = self.total_timeout
         wait_started = asyncio.get_running_loop().time()
         job_id = getattr(handle, "job_id", None)
         # 等待上限由调度器给出（deadline 之外还容纳观察者钩子时间）；等待期间
-        # 调用方被取消或超时都先取消 Job，与旧路径"取消入口即取消生成"一致。
+        # 收到停止或取消时，未落地则立即取消生成，已落地则保留记录与落盘。
         try:
-            job_result = await v2_service.wait(
-                handle.job_id, timeout=v2_service.result_wait_timeout(deadline)
+            job_result = await wait_foreground_job(
+                event,
+                v2_service,
+                handle.job_id,
+                timeout=v2_service.result_wait_timeout(deadline),
             )
-        except asyncio.CancelledError:
-            await asyncio.shield(v2_service.cancel(handle.job_id))
+        except (asyncio.CancelledError, ForegroundStopped):
             raise
         except asyncio.TimeoutError:
-            await asyncio.shield(v2_service.cancel(handle.job_id))
+            await cancel_unsettled_job(v2_service, handle.job_id)
             error_msg = api_failure_message(
                 message="生成等待超时",
                 status_code=None,
@@ -486,11 +495,11 @@ class ImageGenerator:
             logger.error(error_msg)
             return False, error_msg
         except Exception as e:
-            # wait 自身异常：Job 可能仍在运行，先取消再按旧路径措辞返回。
+            # wait 自身异常：Job 可能仍在运行，先取消未落地任务再按旧路径措辞返回。
             logger.error(
                 f"生成图像时发生未预期的错误: {redact_text(e)[:240]}", exc_info=True
             )
-            await asyncio.shield(v2_service.cancel(handle.job_id))
+            await cancel_unsettled_job(v2_service, handle.job_id)
             return False, f"❌ 生成图像时发生错误: {str(e)}"
         if (
             job_result.state not in (JobState.SUCCEEDED, JobState.PARTIAL)

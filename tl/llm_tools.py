@@ -24,7 +24,14 @@ from pydantic import Field
 from pydantic.dataclasses import dataclass
 
 from .background_dispatch import generation_reference_note
-from .background_notify import register_background_job_stop
+from .background_notify import (
+    ForegroundStopped,
+    _event_stopped,
+    _mark_event_stopped,
+    cancel_unsettled_job,
+    register_background_job_stop,
+    wait_foreground_job,
+)
 from .core.errors import (
     CoreError,
     QueueFullError,
@@ -977,6 +984,10 @@ async def _start_background_record_v2(
             routing_mode=mode,
             message=message,
         )
+    except asyncio.CancelledError:
+        _mark_event_stopped(event)
+        delivery.bind_record(None)
+        raise
     except BaseException:
         # 记录没建成：别让投递方白等绑定超时，结果仍会经它送达。
         delivery.bind_record(None)
@@ -1108,7 +1119,10 @@ async def _run_single_v2(
                 requested_provider=provider,
                 requested_model=model,
                 image_count=1,
+                event=event,
             )
+            if _event_stopped(event):
+                raise asyncio.CancelledError
             return _format_returned_images(
                 success,
                 result_data,
@@ -1116,6 +1130,8 @@ async def _run_single_v2(
                 generation_reference_note(plugin, job_id),
                 forum=forum_mode,
             )
+        except ForegroundStopped:
+            raise asyncio.CancelledError from None
         except Exception as e:
             logger.error(
                 f"[后台任务] 图片生成异常：{redact_text(str(e))[:240]}", exc_info=True
@@ -1128,9 +1144,11 @@ async def _run_single_v2(
     result_wait = service.result_wait_timeout(generator.total_timeout)
     job_result = None
     background_notice: str | None = None
+    delivery_attached = False
     try:
         if foreground_wait_seconds <= 0:
             if service.attach_delivery(job_id, delivery):
+                delivery_attached = True
                 await register_background_job_stop(event, service, job_id)
                 background_notice = _build_background_start_notice(
                     ref_count=ref_count,
@@ -1143,11 +1161,15 @@ async def _run_single_v2(
                 logger.warning(
                     f"[前台等待] attach_delivery 返回 False，回退同步等待: job_id={job_id}, task_id={getattr(delivery, '_task_id', None)}"
                 )
-                job_result = await service.wait(job_id, timeout=result_wait)
+                job_result = await wait_foreground_job(
+                    event, service, job_id, timeout=result_wait
+                )
         else:
             logger.debug(f"[前台等待] 最多等待 {foreground_wait_seconds} 秒。")
             try:
-                job_result = await service.wait(job_id, timeout=foreground_wait_seconds)
+                job_result = await wait_foreground_job(
+                    event, service, job_id, timeout=foreground_wait_seconds
+                )
             except asyncio.TimeoutError:
                 logger.info(
                     f"[前台等待] 等待超时，切换为后台继续生成: job_id={job_id}, "
@@ -1155,6 +1177,7 @@ async def _run_single_v2(
                     f"umo={getattr(event, 'unified_msg_origin', None)}, waited_seconds={foreground_wait_seconds}"
                 )
                 if service.attach_delivery(job_id, delivery):
+                    delivery_attached = True
                     await register_background_job_stop(event, service, job_id)
                     background_notice = _build_background_fallback_notice(
                         ref_count=ref_count,
@@ -1169,13 +1192,21 @@ async def _run_single_v2(
                     logger.warning(
                         f"[前台等待] attach_delivery 返回 False，回退同步等待: job_id={job_id}, task_id={getattr(delivery, '_task_id', None)}"
                     )
-                    job_result = await service.wait(job_id, timeout=result_wait)
-    except asyncio.CancelledError:
-        # 取消入口即取消生成：不留下无人投递的后台 Job。
-        await asyncio.shield(service.cancel(job_id))
-        raise
+                    job_result = await wait_foreground_job(
+                        event, service, job_id, timeout=result_wait
+                    )
+    except (asyncio.CancelledError, ForegroundStopped):
+        if delivery_attached:
+            # 已切入后台：只关闭回灌，继续生成并保留记录。
+            _mark_event_stopped(event)
+            if not delivery._bound.is_set():
+                delivery.bind_record(None)
+        else:
+            await cancel_unsettled_job(service, job_id)
+        raise asyncio.CancelledError from None
     except asyncio.TimeoutError:
-        await asyncio.shield(service.cancel(job_id))
+        if not delivery_attached:
+            await cancel_unsettled_job(service, job_id)
         return api_failure_message(
             message="生成等待超时",
             status_code=None,
@@ -1186,7 +1217,8 @@ async def _run_single_v2(
         logger.error(
             f"[前台等待] 图像生成异常：{redact_text(str(e))[:240]}", exc_info=True
         )
-        await asyncio.shield(service.cancel(job_id))
+        if not delivery_attached:
+            await cancel_unsettled_job(service, job_id)
         return f"❌ 图片生成过程中出错：{str(e)}"
 
     try:
@@ -1194,6 +1226,8 @@ async def _run_single_v2(
             return await _start_background_record_v2(
                 plugin, event, delivery, request_routing_mode, background_notice
             )
+        if _event_stopped(event):
+            raise asyncio.CancelledError
         return await _finish_foreground_v2(
             plugin, job_result, config_value_notice=config_value_notice, job_id=job_id
         )
@@ -1215,6 +1249,7 @@ async def _run_batch_v2(
     message = routing_description(batch_mode)
     delivery = ToolBatchDelivery(plugin, event)
     token = None
+    handle = None
     try:
         token = await bind_session_image_dir(event, generator.context)
         children = []
@@ -1283,6 +1318,9 @@ async def _run_batch_v2(
         )
         await register_background_job_stop(event, service, handle.job_id)
     except asyncio.CancelledError:
+        if handle is not None:
+            delivery.bind_record(None)
+            await cancel_unsettled_job(service, handle.job_id)
         raise
     except QuotaExceededError as error:
         return error.message or "请求过于频繁，请稍后再试"

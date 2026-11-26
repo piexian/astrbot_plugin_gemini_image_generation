@@ -40,6 +40,12 @@ from .tl import (
     resolve_split_source_to_path,
     split_image,
 )
+from .tl.background_notify import (
+    ForegroundStopped,
+    _event_stopped,
+    cancel_unsettled_job,
+    wait_foreground_job,
+)
 from .tl.background_tasks import BackgroundTaskManager
 from .tl.core.errors import (
     CoreError,
@@ -1046,22 +1052,26 @@ class GeminiImageGenerationPlugin(Star):
             try:
                 yield event.plain_result("🎨  生成中...")
             except (asyncio.CancelledError, GeneratorExit):
-                # Job 已在上面提交：此处被取消或关闭，同样要取消生成。
-                await asyncio.shield(service.cancel(handle.job_id))
+                # Job 已在上面提交：未落地则取消生成，已落地则保留记录。
+                await cancel_unsettled_job(service, handle.job_id)
                 raise
 
             api_start = time.perf_counter()
             # 等待上限由调度器给出（deadline 之外还容纳观察者钩子时间）；
-            # 调用方被取消或等待超时都先取消 Job，与旧路径取消语义一致。
+            # 前台收到停止或取消时，未落地立即取消，已落地保留记录并停止发送。
             try:
-                job_result = await service.wait(
-                    handle.job_id, timeout=service.result_wait_timeout(deadline)
+                job_result = await wait_foreground_job(
+                    event,
+                    service,
+                    handle.job_id,
+                    timeout=service.result_wait_timeout(deadline),
                 )
+            except ForegroundStopped:
+                return
             except asyncio.CancelledError:
-                await asyncio.shield(service.cancel(handle.job_id))
                 raise
             except asyncio.TimeoutError:
-                await asyncio.shield(service.cancel(handle.job_id))
+                await cancel_unsettled_job(service, handle.job_id)
                 yield event.plain_result(
                     api_failure_message(
                         message="生成等待超时",
@@ -1070,6 +1080,8 @@ class GeminiImageGenerationPlugin(Star):
                         total_timeout=self.cfg.total_timeout,
                     )
                 )
+                return
+            if _event_stopped(event):
                 return
             if (
                 job_result.state not in (JobState.SUCCEEDED, JobState.PARTIAL)
@@ -1582,16 +1594,22 @@ class GeminiImageGenerationPlugin(Star):
             try:
                 yield event.plain_result("🎨  生成中...")
             except (asyncio.CancelledError, GeneratorExit):
-                # Job 已在上面提交：此处被取消或关闭，同样要取消生成。
-                await asyncio.shield(v2_service.cancel(submission.handle.job_id))
+                # Job 已在上面提交：未落地则取消生成，已落地则保留记录。
+                await cancel_unsettled_job(v2_service, submission.handle.job_id)
                 raise
 
-            success, result_data = await self.image_generator.wait_v2(
-                v2_service=v2_service,
-                handle=submission.handle,
-                requested_provider=requested_provider,
-                requested_model=requested_model,
-            )
+            try:
+                success, result_data = await self.image_generator.wait_v2(
+                    v2_service=v2_service,
+                    handle=submission.handle,
+                    requested_provider=requested_provider,
+                    requested_model=requested_model,
+                    event=event,
+                )
+            except ForegroundStopped:
+                return
+            if _event_stopped(event):
+                return
             api_duration = time.perf_counter() - api_start_time
 
             if not success or not isinstance(result_data, tuple):
@@ -2170,17 +2188,23 @@ class GeminiImageGenerationPlugin(Star):
         try:
             yield event.plain_result("🎨 开始转换风格...")
         except (asyncio.CancelledError, GeneratorExit):
-            # Job 已在上面提交：此处被取消或关闭，同样要取消生成。
-            await asyncio.shield(v2_service.cancel(submission.handle.job_id))
+            # Job 已在上面提交：未落地则取消生成，已落地则保留记录。
+            await cancel_unsettled_job(v2_service, submission.handle.job_id)
             raise
 
         api_start = time.perf_counter()
-        success, result_data = await self.image_generator.wait_v2(
-            v2_service=v2_service,
-            handle=submission.handle,
-            requested_provider=requested_provider,
-            requested_model=requested_model,
-        )
+        try:
+            success, result_data = await self.image_generator.wait_v2(
+                v2_service=v2_service,
+                handle=submission.handle,
+                requested_provider=requested_provider,
+                requested_model=requested_model,
+                event=event,
+            )
+        except ForegroundStopped:
+            return
+        if _event_stopped(event):
+            return
         api_duration = time.perf_counter() - api_start
 
         send_start = time.perf_counter()

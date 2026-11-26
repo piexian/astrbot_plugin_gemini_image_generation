@@ -186,6 +186,7 @@ def single_task_record_changes(
     delivered: bool,
     result_data: Any,
     stats: Mapping[str, Any],
+    callback_suppressed: bool = False,
 ) -> dict[str, Any]:
     """单图后台任务收尾时写入记录的字段；``stats`` 取 successful_* 键。"""
     item = {
@@ -203,6 +204,11 @@ def single_task_record_changes(
     if success and delivered:
         final_status = "succeeded"
         final_message = "图片生成已完成并发送"
+    elif success and callback_suppressed:
+        final_status = "succeeded"
+        final_message = (
+            "图片生成已完成，已按停止请求关闭回灌；可查询任务获取图片 URL/路径"
+        )
     elif success:
         final_status = "partial_success"
         final_message = "图片生成已完成，但结果发送未成功；可查询任务获取图片 URL/路径"

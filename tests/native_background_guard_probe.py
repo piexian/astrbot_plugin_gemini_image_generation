@@ -175,7 +175,9 @@ async def test_native_tool_pause_before_and_after_send(
 
 
 @pytest.mark.asyncio
-async def test_native_agent_stop_cancels_registered_generation(monkeypatch):
+async def test_native_agent_stop_disables_callback_without_cancelling_background_job(
+    monkeypatch,
+):
     core = object.__new__(Context)
     source = CronMessageEvent(
         context=core,
@@ -205,6 +207,6 @@ async def test_native_agent_stop_cancels_registered_generation(monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    service.cancel.assert_awaited_once_with("native-stop-job")
+    service.cancel.assert_not_awaited()
     assert background_notify._event_stopped(source)
     assert not source.is_stopped()
