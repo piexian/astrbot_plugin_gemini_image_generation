@@ -284,6 +284,7 @@ async def test_notify_keeps_astrbot_429_fallback(monkeypatch, pause_after_send):
         task_result,
         notice="旧版通知",
         scene="test-429",
+        require_send_tool=False,
     )
 
     assert delivered is True
@@ -311,3 +312,86 @@ async def test_notify_keeps_astrbot_429_fallback(monkeypatch, pause_after_send):
         summary_note="[BackgroundTask] 旧版通知",
     )
     bump.assert_awaited_once_with(plugin, task_result, scene="test-429")
+
+
+def _image_msg(*, url="", file=""):
+    return SimpleNamespace(chain=[SimpleNamespace(type="Image", url=url, file=file)])
+
+
+def test_image_receipt_matches_sanitized_urls_and_requires_full_batch():
+    result = {
+        "items": [
+            {"image_urls": ["HTTP://images.example.invalid/a.png?#preview"]},
+            {
+                "image_urls": [
+                    "https://images.example.invalid/b.png?variant=a%2Fb&empty=#preview"
+                ]
+            },
+        ]
+    }
+    sanitized_items = background_notify.sanitize_task_result(result)["items"]
+    first_url = sanitized_items[0]["image_urls"][0]
+    second_url = sanitized_items[1]["image_urls"][0]
+
+    receipt = background_notify._ImageDeliveryReceipt(result)
+    receipt.record(_image_msg(url="https://images.example.invalid/other.png"))
+    receipt.record(_image_msg(url=first_url))
+    receipt.record(_image_msg(url=first_url))
+    assert receipt.complete is False
+
+    receipt.record(_image_msg(url=second_url))
+    assert receipt.complete is True
+
+
+def test_image_receipt_rejects_query_mismatch_and_unmatchable_items():
+    query_receipt = background_notify._ImageDeliveryReceipt(
+        {"image_urls": ["https://images.example.invalid/gen.png?variant=a%2Fb"]}
+    )
+    query_receipt.record(
+        _image_msg(url="https://images.example.invalid/gen.png?variant=a/b")
+    )
+    assert query_receipt.complete is False
+
+    valid_url = "https://images.example.invalid/first.png"
+    for blocked in (
+        "HTTP://images.example.invalid/auth.png?token=synthetic-only",
+        "https:///hostless.png",
+        "DATA:image/png;base64,aGVsbG8=",
+    ):
+        receipt = background_notify._ImageDeliveryReceipt(
+            {"items": [{"image_urls": [valid_url]}, {"image_urls": [blocked]}]}
+        )
+        assert len(receipt.expected) == 2
+        receipt.record(_image_msg(url=valid_url))
+        assert receipt.complete is False
+
+
+@pytest.mark.asyncio
+async def test_background_send_context_records_receipt_for_current_session_only():
+    valid_url = "https://images.example.invalid/generated.png"
+    receipt = background_notify._ImageDeliveryReceipt({"image_urls": [valid_url]})
+    source = SimpleNamespace(unified_msg_origin=_UMO, is_stopped=lambda: False)
+    send_results = iter([True, False, True])
+
+    async def mutating_send(_session, message):
+        for part in message.chain:
+            part.file = "base64://mutated"
+            part.url = "https://cdn.example.invalid/uploaded.png"
+        return next(send_results)
+
+    core = SimpleNamespace(send_message=AsyncMock(side_effect=mutating_send))
+    boundary = background_notify._BackgroundSendContext(core, source, receipt)
+
+    assert (
+        await boundary.send_message(
+            "test:FriendMessage:other", _image_msg(file=valid_url)
+        )
+        is True
+    )
+    assert receipt.complete is False
+
+    assert await boundary.send_message(_UMO, _image_msg(file=valid_url)) is False
+    assert receipt.complete is False
+
+    assert await boundary.send_message(_UMO, _image_msg(file=valid_url)) is True
+    assert receipt.complete is True

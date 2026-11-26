@@ -7,13 +7,16 @@ import contextvars
 import copy
 import json
 import time
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from astrbot.api import logger
 
 from . import astrbot_compat
 from .core.errors import redact_text
 from .core.states import TERMINAL_STATES, JobState
+from .file_uri import file_uri_to_path
 from .llm_output import sanitize_task_result
 from .plugin_config import get_session_tool_timeout
 
@@ -239,12 +242,92 @@ async def _background_delivery_allowed(
     return not _event_stopped(event)
 
 
+def _image_location_key(value: Any) -> tuple[str, str] | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    value = value.strip()
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return None
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        # Use the Agent payload's parsing/serialization rules for scheme,
+        # empty query markers and fragments, preserving nonempty query bytes.
+        # Keep even authentication URLs in the original expected set: payload
+        # sanitization may omit them, but that must not shrink delivery scope.
+        return "url", urlunsplit(
+            (parsed.scheme, parsed.netloc, parsed.path, parsed.query, "")
+        )
+    path = file_uri_to_path(value)
+    if path is None:
+        if "://" in value or value.lower().startswith("data:"):
+            return None
+        path = Path(value)
+    try:
+        # Native Image.fromFileSystem uses the same local path normalization.
+        return "path", str(path.resolve(strict=False))
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+class _ImageDeliveryReceipt:
+    """Match all distinct result locations, including nested batch items."""
+
+    def __init__(self, task_result: dict[str, Any]):
+        self.expected: set[tuple[str, str]] = set()
+        self.sent: set[tuple[str, str]] = set()
+        self._collect(task_result)
+
+    def _collect(self, result: Any) -> None:
+        if not isinstance(result, dict):
+            return
+        for field in ("image_paths", "image_urls"):
+            values = result.get(field)
+            if isinstance(values, (list, tuple)):
+                for value in values:
+                    if not isinstance(value, str) or not value.strip():
+                        continue
+                    stripped = value.strip()
+                    key = _image_location_key(stripped)
+                    # Unparseable or hostless original locations must still block
+                    # completion rather than shrinking the expected delivery set.
+                    self.expected.add(
+                        key if key is not None else ("unmatched", stripped)
+                    )
+        items = result.get("items")
+        if isinstance(items, (list, tuple)):
+            for item in items:
+                self._collect(item)
+
+    def extract_keys(self, message: Any) -> set[tuple[str, str]]:
+        matched: set[tuple[str, str]] = set()
+        for part in getattr(message, "chain", None) or ():
+            if getattr(part, "type", None) != "Image":
+                continue
+            key = _image_location_key(
+                getattr(part, "url", None) or getattr(part, "file", None)
+            )
+            if key in self.expected:
+                matched.add(key)
+        return matched
+
+    def record(self, message: Any) -> None:
+        self.sent.update(self.extract_keys(message))
+
+    @property
+    def complete(self) -> bool:
+        return bool(self.expected) and self.expected <= self.sent
+
+
 class _BackgroundSendContext:
     """Delegate only this notification tool's final send to a checked boundary."""
 
-    def __init__(self, context: Any, event: Any):
+    def __init__(
+        self, context: Any, event: Any, receipt: _ImageDeliveryReceipt | None = None
+    ):
         self._context = context
         self._event = event
+        self._receipt = receipt
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._context, name)
@@ -263,10 +346,20 @@ class _BackgroundSendContext:
                 target_umo=target,
             ):
                 return False
-        return await self._context.send_message(session, message, *args, **kwargs)
+        matched_keys = (
+            self._receipt.extract_keys(message)
+            if target == self._event.unified_msg_origin and self._receipt is not None
+            else None
+        )
+        sent = await self._context.send_message(session, message, *args, **kwargs)
+        if sent and self._receipt is not None and matched_keys:
+            self._receipt.sent.update(matched_keys)
+        return sent
 
 
-def _guard_background_send_tool(tool: Any, event: Any) -> Any:
+def _guard_background_send_tool(
+    tool: Any, event: Any, receipt: _ImageDeliveryReceipt | None = None
+) -> Any:
     """Keep the shared builtin unchanged; the copied tool gets a local context."""
     if getattr(tool, "handler", None) is not None:
         raise RuntimeError("后台发送工具 handler 接口不受支持")
@@ -282,7 +375,9 @@ def _guard_background_send_tool(tool: Any, event: Any) -> Any:
             return "error: background session is paused or unavailable"
         wrapped = copy.copy(context)
         wrapped.context = copy.copy(context.context)
-        wrapped.context.context = _BackgroundSendContext(context.context.context, event)
+        wrapped.context.context = _BackgroundSendContext(
+            context.context.context, event, receipt
+        )
         return await original_call(wrapped, **kwargs)
 
     guarded.call = call
@@ -459,7 +554,14 @@ async def notify_llm_background_result(
             raise RuntimeError("主 Agent 构建失败")
         # Core may re-add the builtin while building; wrap the final request tool.
         send_tool = req.func_tool.get_tool("send_message_to_user")
-        req.func_tool.add_tool(_guard_background_send_tool(send_tool, event))
+        receipt = _ImageDeliveryReceipt(task_result)
+        req.func_tool.add_tool(_guard_background_send_tool(send_tool, event, receipt))
+
+        def delivered() -> bool:
+            if require_send_tool:
+                return receipt.complete
+            return bool(getattr(cron_event, "_has_send_oper", False))
+
         if not await _background_delivery_allowed(
             event, context=context, require_llm=True
         ):
@@ -480,8 +582,8 @@ async def notify_llm_background_result(
             req=req,
             summary_note=f"[BackgroundTask] {notice}",
         )
-        if not getattr(cron_event, "_has_send_oper", False):
-            logger.warning(f"[{scene}] 后台通知 agent 未成功调用发送工具")
+        if not delivered():
+            logger.warning(f"[{scene}] 后台通知 agent 未确认当前会话的结果发送")
             logger.warning(
                 f"[{scene}] 后台回灌未触发发送工具: task_id={task_id}, umo={umo}"
             )

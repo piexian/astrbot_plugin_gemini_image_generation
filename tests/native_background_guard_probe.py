@@ -27,7 +27,18 @@ from tl.core.states import JobState
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("pause_during", ["session", "llm", "event", "after_send"])
+@pytest.mark.parametrize(
+    "pause_during",
+    [
+        "session",
+        "llm",
+        "event",
+        "after_send",
+        "after_text",
+        "after_partial_batch",
+        "after_mixed_batch",
+    ],
+)
 async def test_native_tool_pause_before_and_after_send(
     monkeypatch, tmp_path, pause_during
 ):
@@ -59,12 +70,26 @@ async def test_native_tool_pause_before_and_after_send(
     media_entered, media_release = asyncio.Event(), asyncio.Event()
     source_file = tmp_path / "synthetic.png"
     source_file.write_bytes(b"synthetic-media-content")
+    second_file = tmp_path / "second.png"
+    second_file.write_bytes(b"synthetic-second-image")
+    raw_url = "HTTP://images.example.invalid/generated.png?#preview"
+    task_result = {"task_id": "synthetic-job", "image_paths": [str(source_file)]}
+    if pause_during == "after_partial_batch":
+        task_result = {
+            "task_id": "synthetic-job",
+            "items": [
+                {"image_paths": [str(source_file)]},
+                {"image_paths": [str(second_file)]},
+            ],
+        }
+    elif pause_during == "after_mixed_batch":
+        task_result["items"] = [{"image_urls": [raw_url]}]
     shared_tool = SendMessageToUserTool()
 
-    async def resolve(*args, **kwargs):
+    async def resolve(_context, path, **kwargs):
         media_entered.set()
         await media_release.wait()
-        return str(source_file), False
+        return str(path), False
 
     original_call = shared_tool.call
     shared_tool._resolve_path_from_sandbox = AsyncMock(side_effect=resolve)
@@ -83,12 +108,21 @@ async def test_native_tool_pause_before_and_after_send(
                 native = AstrAgentContext(context=core, event=kwargs["event"])
                 wrapped = ContextWrapper(context=native)
                 tool = kwargs["req"].func_tool.get_tool("send_message_to_user")
-                captured["tool_result"] = await tool.call(
-                    wrapped,
-                    messages=[{"type": "image", "path": str(source_file)}],
+                messages = (
+                    [{"type": "plain", "text": "synthetic acknowledgement"}]
+                    if pause_during == "after_text"
+                    else [{"type": "image", "path": str(source_file)}]
                 )
+                captured["tool_result"] = await tool.call(wrapped, messages=messages)
                 captured["wrapped"] = wrapped
-                if pause_during == "after_send":
+                if pause_during == "after_mixed_batch":
+                    sanitized_url = background_notify.sanitize_task_result(task_result)[
+                        "items"
+                    ][0]["image_urls"][0]
+                    await tool.call(
+                        wrapped, messages=[{"type": "image", "url": sanitized_url}]
+                    )
+                if pause_during.startswith("after_"):
                     services.is_session_enabled.return_value = False
                 yield None
 
@@ -101,12 +135,13 @@ async def test_native_tool_pause_before_and_after_send(
         background_notify.notify_llm_background_result(
             plugin,
             source,
-            {"task_id": "synthetic-job", "image_paths": [str(source_file)]},
+            task_result,
             notice="synthetic completed image",
             scene="native-guard-probe",
         )
     )
-    await asyncio.wait_for(media_entered.wait(), timeout=5)
+    if pause_during != "after_text":
+        await asyncio.wait_for(media_entered.wait(), timeout=5)
     if pause_during == "session":
         services.is_session_enabled.return_value = False
     elif pause_during == "llm":
@@ -114,12 +149,19 @@ async def test_native_tool_pause_before_and_after_send(
     elif pause_during == "event":
         source.stop_event()
     media_release.set()
-    if pause_during == "after_send":
+    if pause_during in {"after_send", "after_mixed_batch"}:
         assert await callback is True
         assert captured["tool_result"].startswith("Message sent")
         assert captured["event"]._has_send_oper is True
-        core.send_message.assert_awaited_once()
+        expected_sends = 2 if pause_during == "after_mixed_batch" else 1
+        assert core.send_message.await_count == expected_sends
         manager.record_delivery.assert_awaited_once_with("synthetic-job")
+        persist.assert_awaited_once()
+    elif pause_during.startswith("after_"):
+        assert await callback is False
+        assert captured["event"]._has_send_oper is True
+        core.send_message.assert_awaited_once()
+        manager.record_delivery.assert_not_awaited()
         persist.assert_awaited_once()
     else:
         assert await callback is False
