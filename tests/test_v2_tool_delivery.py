@@ -523,3 +523,50 @@ async def test_batch_delivery_interruption_does_not_notify(plugin, notifier, sta
     record = await read_record(plugin, event, task_id)
     assert record["status"] == "interrupted"
     assert record["message"] == "批量生成已中断"
+
+
+@pytest.mark.asyncio
+async def test_deliver_when_event_stopped_skips_callback_and_keeps_record(
+    plugin, notifier
+):
+    event = _Event()
+    event.get_extra = lambda key, default=None: (
+        True if key == "agent_stop_requested" else default
+    )
+    task_id = await new_record(plugin, event)
+    adapter = ToolBackgroundDelivery(plugin, event, scene=SCENE)
+    adapter.bind_record(task_id)
+
+    await adapter.deliver(make_job(), RESULT)
+
+    assert notifier.results == [] and notifier.failures == []
+    record = await read_record(plugin, event, task_id)
+    assert record["status"] == "succeeded"
+    assert "关闭回灌" in record["message"]
+    assert record["items"][0]["delivery_success"] is False
+    assert record["items"][0]["image_urls"] == ["https://img.test/a.png"]
+    assert record["items"][0]["image_paths"] == [TEST_IMAGE_PATH]
+
+
+@pytest.mark.asyncio
+async def test_batch_deliver_when_event_stopped_skips_callback_and_keeps_record(
+    plugin, notifier
+):
+    event = _Event()
+    event.get_extra = lambda key, default=None: (
+        True if key == "agent_stop_requested" else default
+    )
+    task_id = await new_batch_record(plugin, event, total=1)
+    adapter = ToolBatchDelivery(plugin, event)
+    adapter.bind_record(task_id)
+    parent = make_job(JobState.DELIVERY_PENDING)
+    await adapter.child_finished(parent, batch_child("child-1", "猫", 1), RESULT)
+
+    await adapter.deliver(parent, RESULT)
+
+    assert notifier.results == [] and notifier.failures == []
+    record = await read_record(plugin, event, task_id)
+    assert record["status"] == "succeeded"
+    assert "关闭回灌" in record["message"]
+    assert record["items"][0]["image_urls"] == ["https://img.test/a.png"]
+    assert record["items"][0]["image_paths"] == [TEST_IMAGE_PATH]

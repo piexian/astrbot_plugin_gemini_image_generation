@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import copy
+import inspect
 import json
 import time
 from pathlib import Path
@@ -14,7 +15,7 @@ from urllib.parse import urlsplit, urlunsplit
 from astrbot.api import logger
 
 from . import astrbot_compat
-from .core.errors import redact_text
+from .core.errors import JobNotFoundError, redact_text
 from .core.states import TERMINAL_STATES, JobState
 from .file_uri import file_uri_to_path
 from .llm_output import sanitize_task_result
@@ -102,7 +103,13 @@ def notify_llm_enabled(plugin: Any) -> bool:
     return bool(getattr(cfg, "background_failure_notify_llm", True))
 
 
+class ForegroundStopped(Exception):
+    """当前会话收到停止请求，前台等待已中止。"""
+
+
 def _event_stopped(event: Any) -> bool:
+    if event is None:
+        return False
     get_extra = getattr(event, "get_extra", None)
     if callable(get_extra):
         try:
@@ -123,44 +130,130 @@ def _event_stopped(event: Any) -> bool:
         return True
 
 
+def _mark_event_stopped(event: Any) -> None:
+    if event is None:
+        return
+    set_extra = getattr(event, "set_extra", None)
+    if callable(set_extra):
+        try:
+            set_extra("agent_stop_requested", True)
+        except Exception:
+            pass
+    get_extra = getattr(event, "get_extra", None)
+    if callable(get_extra):
+        try:
+            signal = get_extra("_background_stop_signal")
+            if signal is not None:
+                signal.set()
+        except Exception:
+            pass
+
+
+async def cancel_unsettled_job(service: Any, job_id: str) -> bool:
+    """取消尚未产出结果的前台 Job；结果已落地或任务不存在时保留收尾与历史记录。"""
+    get_status = getattr(service, "get_status", None)
+    if callable(get_status):
+        try:
+            snapshot = await asyncio.shield(get_status(job_id))
+        except Exception:
+            return False
+        if snapshot is None:
+            return False
+        state = getattr(snapshot, "state", None)
+        if state in TERMINAL_STATES or state in {
+            JobState.RESULT_READY,
+            JobState.DELIVERY_PENDING,
+        }:
+            return False
+    cancel = getattr(service, "cancel", None)
+    if not callable(cancel):
+        return False
+    kwargs = (
+        {"preserve_settled": True}
+        if "preserve_settled" in inspect.signature(cancel).parameters
+        else {}
+    )
+    try:
+        result = await asyncio.shield(cancel(job_id, **kwargs))
+    except JobNotFoundError:
+        return False
+    result_state = getattr(result, "state", None)
+    if isinstance(result_state, JobState):
+        return result_state is JobState.CANCELLED
+    return True
+
+
+async def wait_foreground_job(
+    event: Any,
+    service: Any,
+    job_id: str,
+    *,
+    timeout: float | None = None,
+) -> Any:
+    """等待前台 Job，同时监听 AstrBot 停止信号：未落地立即取消，已落地保留记录。"""
+    if _event_stopped(event):
+        await cancel_unsettled_job(service, job_id)
+        raise ForegroundStopped()
+
+    stop_signal = None
+    if active_event_registry is not None and event is not None:
+        getter = getattr(active_event_registry, "get_background_stop_signal", None)
+        if callable(getter):
+            try:
+                stop_signal = getter(event)
+            except Exception:
+                stop_signal = None
+
+    if stop_signal is None:
+        try:
+            return await service.wait(job_id, timeout=timeout)
+        except asyncio.CancelledError:
+            await cancel_unsettled_job(service, job_id)
+            raise
+
+    if stop_signal.is_set():
+        await cancel_unsettled_job(service, job_id)
+        raise ForegroundStopped()
+
+    wait_task = asyncio.create_task(service.wait(job_id, timeout=timeout))
+    stop_task = asyncio.create_task(stop_signal.wait())
+    stopped = False
+    try:
+        done, _ = await asyncio.wait(
+            {wait_task, stop_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if wait_task in done and (
+            stop_task not in done
+            or (not wait_task.cancelled() and wait_task.exception() is None)
+        ):
+            return wait_task.result()
+        stopped = True
+    except asyncio.CancelledError:
+        stopped = True
+        raise
+    finally:
+        for task in (wait_task, stop_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(wait_task, stop_task, return_exceptions=True)
+        if stopped:
+            await cancel_unsettled_job(service, job_id)
+    raise ForegroundStopped()
+
+
 async def register_background_job_stop(
     event: Any, service: Any, job_id: str
 ) -> asyncio.Task[None] | None:
-    """把 LLM 后台 Job 的生成与投递阶段登记到 AstrBot 停止生命周期。"""
-    if active_event_registry is None:
-        return None
-
-    cleanup_started = False
-
-    async def cancel_generation() -> None:
-        nonlocal cleanup_started
-        if cleanup_started:
-            return
-        cleanup_started = True
-        try:
-            snapshot = await service.get_status(job_id)
-            state = getattr(snapshot, "state", None)
-            if (
-                snapshot is None
-                or state in TERMINAL_STATES
-                or state in {JobState.RESULT_READY, JobState.DELIVERY_PENDING}
-            ):
-                return
-            await asyncio.shield(service.cancel(job_id))
-        except Exception as exc:
-            logger.warning(
-                f"[后台任务] 停止生成失败: job_id={job_id}, error={redact_text(exc)[:240]}"
-            )
-
-    if _event_stopped(event):
-        await cancel_generation()
+    """把 LLM 后台 Job 登记到 AstrBot 停止生命周期：收到停止时仅关闭回灌，不取消生成。"""
+    if active_event_registry is None or _event_stopped(event):
         return None
 
     async def supervise() -> None:
         try:
             await service.wait(job_id)
         except asyncio.CancelledError:
-            await cancel_generation()
+            _mark_event_stopped(event)
             raise
         except Exception as exc:
             logger.debug(
@@ -169,10 +262,10 @@ async def register_background_job_stop(
 
     task = asyncio.create_task(supervise(), name=f"llm-background-job:{job_id}")
     active_event_registry.register_background_task(event, task)
-    # 登记时已经停止的 Task 可能在协程首次运行前被取消，需要补上生成取消。
+    # 登记瞬间若已被停止，确保回灌停止标记在后台结果回传前生效。
     await asyncio.sleep(0)
     if task.cancelled():
-        await cancel_generation()
+        _mark_event_stopped(event)
     return task
 
 

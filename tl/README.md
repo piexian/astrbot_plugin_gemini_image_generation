@@ -376,7 +376,7 @@ DashScope（阿里云百炼）provider，接入原生 multimodal-generation 同�
 |-------------|------|
 | `astrbot_compat.ASTRBOT_VERSION` | 优先通过 `importlib.metadata` 读取 `astrbot` 包版本，源码运行回退 `astrbot.cli.__version__`，使用 `packaging.version.Version` 解析 |
 | `has_modern_session_config()` / `has_async_session_manager()` / `has_background_stop_registry()` | 按 AstrBot 版本声明能力边界：`≥4.30.0a1` 走会话配置检查，`4.11.0`–`4.30.0a1` 走异步 `SessionServiceManager`（更早版本同步调用），`≥4.29.0b2` 启用 `active_event_registry` |
-| `register_background_job_stop(event, service, job_id)` | 由 `llm_tools.py` 在单图转后台与批量提交后调用，将监管 task 注册到 `active_event_registry`；收到停止信号时取消仍在生成阶段（未进入 `RESULT_READY` / `DELIVERY_PENDING` 及终态）的 Job |
+| `register_background_job_stop(event, service, job_id)` / `wait_foreground_job(event, service, job_id)` | 前台等待在收到停止信号时立即取消未落地的生成，已进入 `RESULT_READY` / `DELIVERY_PENDING` 或终态则保留保存；后台单图与批量任务登记到 `active_event_registry`，触发停止时仅关闭回灌，继续生成并保留任务与画廊记录 |
 | `notify_llm_background_result()` / `notify_llm_background_failure()` | 后台结果与失败回灌主 Agent：4.30 走 `AgentService.run_turn` 并校验 `send_message_to_user` 回执；4.29 走 `CronMessageEvent` + `build_main_agent`，复制并守卫 `send_message_to_user` 工具与发送上下文，按当前会话全部预期结果图位置的成功发送回执确认交付，已发送消息在后续暂停时立即停止后续步骤并保留任务摘要持久化 |
 | `report_background_failure()` | 后台失败统一出口：按 `background_failure_notify_llm` 回灌主 Agent，失败或关闭时经会话开关复核后直发兜底文本 |
 

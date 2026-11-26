@@ -19,6 +19,12 @@ from tests.test_llm_routing_and_tasks import _context, _Event
 from tests.test_web_studio_service import _config, _png, _SequenceClient
 from tl import enhanced_prompts, llm_tools
 from tl.api_types import ApiRequestConfig
+from tl.background_notify import (
+    ForegroundStopped,
+    _event_stopped,
+    cancel_unsettled_job,
+    wait_foreground_job,
+)
 from tl.background_tasks import BackgroundTaskManager
 from tl.core.errors import (
     CoreError,
@@ -519,6 +525,10 @@ def _command_class():
         "requester_from_event": lambda event: {},
         "_build_no_ref_msg": lambda mode, suggestion: f"{mode}: {suggestion}",
         "JobState": JobState,
+        "ForegroundStopped": ForegroundStopped,
+        "_event_stopped": _event_stopped,
+        "cancel_unsettled_job": cancel_unsettled_job,
+        "wait_foreground_job": wait_foreground_job,
         "v2_failure_message": v2_failure_message,
         "v2_failure_text": v2_failure_text,
         "api_failure_message": api_failure_message,

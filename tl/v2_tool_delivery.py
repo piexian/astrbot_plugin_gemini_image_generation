@@ -12,7 +12,7 @@ from .background_dispatch import (
     generation_reference_note,
     single_task_record_changes,
 )
-from .background_notify import report_background_failure
+from .background_notify import _event_stopped, report_background_failure
 from .batch_generation import (
     _batch_item_result,
     _batch_summary,
@@ -57,25 +57,34 @@ class ToolBackgroundDelivery:
             f"task_id={task_id}, state={getattr(job, 'state', None)}, images={len(image_urls) + len(image_paths)}"
         )
         result_data = (image_urls, image_paths, result.text, None)
-        try:
-            delivered = await dispatch_generation_result(
-                self._plugin,
-                self._event,
-                True,
-                result_data,
-                scene=self._scene,
-                notify_llm=True,
-                task_id=task_id,
-                reference_note=generation_reference_note(
-                    self._plugin, getattr(job, "job_id", None)
-                ),
-            )
-        except Exception as exc:
-            logger.error(
-                f"[{self._scene}] 后台结果分发异常: {redact_text(exc)[:240]}",
-                exc_info=True,
+        callback_stopped = _event_stopped(self._event)
+        if callback_stopped:
+            logger.info(
+                f"[{self._scene}] 会话已触发停止，关闭后台结果回灌并保留记录: "
+                f"job_id={getattr(job, 'job_id', None)}, task_id={task_id}"
             )
             delivered = False
+        else:
+            try:
+                delivered = await dispatch_generation_result(
+                    self._plugin,
+                    self._event,
+                    True,
+                    result_data,
+                    scene=self._scene,
+                    notify_llm=True,
+                    task_id=task_id,
+                    reference_note=generation_reference_note(
+                        self._plugin, getattr(job, "job_id", None)
+                    ),
+                )
+            except Exception as exc:
+                logger.error(
+                    f"[{self._scene}] 后台结果分发异常: {redact_text(exc)[:240]}",
+                    exc_info=True,
+                )
+                delivered = False
+            callback_stopped = not delivered and _event_stopped(self._event)
         stats = result.stats
         await self._update_record(
             task_id,
@@ -83,6 +92,7 @@ class ToolBackgroundDelivery:
             single_task_record_changes(
                 success=True,
                 delivered=delivered,
+                callback_suppressed=callback_stopped,
                 result_data=result_data,
                 stats={
                     "successful_provider": result.provider,
@@ -92,7 +102,7 @@ class ToolBackgroundDelivery:
                 },
             ),
         )
-        if not delivered:
+        if not delivered and not callback_stopped:
             # 让调度器把 Job 收尾为 PARTIAL + delivery_failed，结果仍在 Job 上。
             raise RuntimeError("后台结果未送达")
 
@@ -104,13 +114,20 @@ class ToolBackgroundDelivery:
         )
         if job.state is JobState.FAILED:
             message = v2_failure_message(job, total_timeout=self._total_timeout())
-            delivered = await report_background_failure(
-                self._plugin,
-                self._event,
-                message,
-                scene=self._scene,
-                task_id=task_id,
-            )
+            if _event_stopped(self._event):
+                logger.info(
+                    f"[{self._scene}] 会话已触发停止，关闭后台失败通知并保留记录: "
+                    f"job_id={getattr(job, 'job_id', None)}, task_id={task_id}"
+                )
+                delivered = False
+            else:
+                delivered = await report_background_failure(
+                    self._plugin,
+                    self._event,
+                    message,
+                    scene=self._scene,
+                    task_id=task_id,
+                )
             changes = single_task_record_changes(
                 success=False, delivered=delivered, result_data=message, stats={}
             )
@@ -241,45 +258,72 @@ class ToolBatchDelivery(ToolBackgroundDelivery):
 
     async def deliver(self, job: Any, result: Any) -> None:
         task_id = await self._wait_record()
-        try:
-            delivered = await _send_batch_results(
-                self._plugin, self._event, task_id or "", self._ordered_results()
-            )
-        except Exception as exc:
-            logger.error(
-                f"[批量任务/{task_id}] 结果分发异常: {redact_text(exc)[:240]}",
-                exc_info=True,
+        callback_stopped = _event_stopped(self._event)
+        if callback_stopped:
+            logger.info(
+                f"[批量任务/{task_id}] 会话已触发停止，关闭批量结果回灌并保留记录: "
+                f"parent_job_id={getattr(job, 'job_id', None)}"
             )
             delivered = False
-        await self._finalize_record(task_id, job, delivered=delivered)
+        else:
+            try:
+                delivered = await _send_batch_results(
+                    self._plugin, self._event, task_id or "", self._ordered_results()
+                )
+            except Exception as exc:
+                logger.error(
+                    f"[批量任务/{task_id}] 结果分发异常: {redact_text(exc)[:240]}",
+                    exc_info=True,
+                )
+                delivered = False
+            callback_stopped = not delivered and _event_stopped(self._event)
+        await self._finalize_record(
+            task_id,
+            job,
+            delivered=delivered,
+            callback_suppressed=callback_stopped,
+        )
         succeeded = sum(bool(item["success"]) for item in self._ordered_results())
         logger.info(
             f"[批量任务] 汇总投递: parent_job_id={getattr(job, 'job_id', None)}, "
             f"task_id={task_id}, succeeded={succeeded}, failed={len(self._results) - succeeded}"
         )
-        if not delivered:
+        if not delivered and not callback_stopped:
             raise RuntimeError("批量结果未送达")
 
     async def deliver_failure(self, job: Any) -> None:
         task_id = await self._wait_record()
         if job.state is JobState.FAILED:
             summary = _batch_summary(task_id or "", self._ordered_results())
-            try:
-                delivered = await report_background_failure(
-                    self._plugin,
-                    self._event,
-                    summary,
-                    scene=f"批量任务/{task_id}",
-                    task_id=task_id,
-                )
-            except Exception as exc:
-                logger.error(
-                    f"[批量任务/{task_id}] 失败通知异常: {redact_text(exc)[:240]}",
-                    exc_info=True,
+            callback_stopped = _event_stopped(self._event)
+            if callback_stopped:
+                logger.info(
+                    f"[批量任务/{task_id}] 会话已触发停止，关闭批量失败通知并保留记录: "
+                    f"parent_job_id={getattr(job, 'job_id', None)}"
                 )
                 delivered = False
+            else:
+                try:
+                    delivered = await report_background_failure(
+                        self._plugin,
+                        self._event,
+                        summary,
+                        scene=f"批量任务/{task_id}",
+                        task_id=task_id,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        f"[批量任务/{task_id}] 失败通知异常: {redact_text(exc)[:240]}",
+                        exc_info=True,
+                    )
+                    delivered = False
+                callback_stopped = not delivered and _event_stopped(self._event)
             await self._finalize_record(
-                task_id, job, delivered=delivered, force_failed=True
+                task_id,
+                job,
+                delivered=delivered,
+                force_failed=True,
+                callback_suppressed=callback_stopped,
             )
             succeeded = sum(bool(item["success"]) for item in self._ordered_results())
             logger.warning(
@@ -304,6 +348,7 @@ class ToolBatchDelivery(ToolBackgroundDelivery):
         *,
         delivered: bool,
         force_failed: bool = False,
+        callback_suppressed: bool = False,
     ) -> None:
         results = self._ordered_results()
         succeeded = sum(bool(item["success"]) for item in results)
@@ -316,18 +361,24 @@ class ToolBatchDelivery(ToolBackgroundDelivery):
             status = "partial_success"
         else:
             status = "failed"
-        if not delivered and status == "succeeded":
+        if not delivered and not callback_suppressed and status == "succeeded":
             status = "partial_success"
+        if delivered:
+            message = "批量生成已完成，Agent 已调用发送工具"
+        elif callback_suppressed and force_failed:
+            message = "批量生成失败，已按停止请求关闭回灌"
+        elif callback_suppressed:
+            message = (
+                "批量生成已完成，已按停止请求关闭回灌；可查询任务获取图片 URL/路径"
+            )
+        else:
+            message = "批量生成已完成，但结果发送未成功；可查询任务获取图片 URL/路径"
         await self._update_record(
             task_id,
             job,
             {
                 "status": status,
-                "message": (
-                    "批量生成已完成，Agent 已调用发送工具"
-                    if delivered
-                    else "批量生成已完成，但结果发送未成功；可查询任务获取图片 URL/路径"
-                ),
+                "message": message,
                 "current_item": None,
                 "completed_items": len(results),
                 "succeeded_items": succeeded,

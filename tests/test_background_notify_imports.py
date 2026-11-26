@@ -41,7 +41,11 @@ def _load_background_notify(
     add(f"{package}.core", _module(f"{package}.core", package=True))
     add(
         f"{package}.core.errors",
-        _module(f"{package}.core.errors", redact_text=lambda value: str(value)),
+        _module(
+            f"{package}.core.errors",
+            JobNotFoundError=type("JobNotFoundError", (Exception,), {}),
+            redact_text=lambda value: str(value),
+        ),
     )
     add(
         f"{package}.core.states",
