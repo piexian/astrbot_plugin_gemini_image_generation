@@ -44,6 +44,7 @@ def _load_background_notify(
         _module(
             f"{package}.core.errors",
             JobNotFoundError=type("JobNotFoundError", (Exception,), {}),
+            StaleJobError=type("StaleJobError", (Exception,), {}),
             redact_text=lambda value: str(value),
         ),
     )

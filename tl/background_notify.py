@@ -15,7 +15,7 @@ from urllib.parse import urlsplit, urlunsplit
 from astrbot.api import logger
 
 from . import astrbot_compat
-from .core.errors import JobNotFoundError, redact_text
+from .core.errors import JobNotFoundError, StaleJobError, redact_text
 from .core.states import TERMINAL_STATES, JobState
 from .file_uri import file_uri_to_path
 from .llm_output import sanitize_task_result
@@ -175,7 +175,7 @@ async def cancel_unsettled_job(service: Any, job_id: str) -> bool:
     )
     try:
         result = await asyncio.shield(cancel(job_id, **kwargs))
-    except JobNotFoundError:
+    except (JobNotFoundError, StaleJobError):
         return False
     result_state = getattr(result, "state", None)
     if isinstance(result_state, JobState):
