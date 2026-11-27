@@ -1619,6 +1619,7 @@ class JobScheduler:
             if job.state in protected:
                 return JobSnapshot.from_job(job)
             task = self._tasks.get(job_id)
+            revision = job.revision
             job.request_cancel()
             try:
                 job.transition(JobState.CANCELLED)
@@ -1629,6 +1630,19 @@ class JobScheduler:
                         task.cancel()
                         await asyncio.gather(task, return_exceptions=True)
                     break
+                current = await self.store.get(job_id)
+                if current is None:
+                    raise JobNotFoundError(f"Job 不存在: {job_id}")
+                if current.state in protected:
+                    return JobSnapshot.from_job(current)
+                if current.revision <= revision or (
+                    current.owner_id is not None
+                    and (
+                        current.owner_id != self.store.owner_id
+                        or current.fencing_token != self.store.fencing_token
+                    )
+                ):
+                    raise
                 continue
             if task is not None and not task.done():
                 task.cancel()
